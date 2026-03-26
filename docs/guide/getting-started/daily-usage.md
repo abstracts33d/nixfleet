@@ -41,10 +41,10 @@ Use these on any machine with Nix installed — no clone needed:
 
 ```sh
 # Full dev shell (zsh + tools + config)
-nix run github:abstracts33d/nixos-config#shell
+nix run github:abstracts33d/nixfleet#shell
 
 # Dev shell + kitty terminal
-nix run github:abstracts33d/nixos-config#terminal
+nix run github:abstracts33d/nixfleet#terminal
 ```
 
 ## Rolling Back

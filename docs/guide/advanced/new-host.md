@@ -83,7 +83,7 @@ nix run .#validate
 ## 6. Install
 
 ```sh
-nix run .#install -- --target root@<ip> -h my-host -u s33d
+nix run .#install -- --target root@<ip> -h my-host -u <username>
 ```
 
 ## Further Reading

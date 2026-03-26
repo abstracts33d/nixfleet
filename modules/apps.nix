@@ -175,19 +175,19 @@
             echo ""
             echo "Options:"
             echo "  -h          Target hostname (must match a host in the flake)"
-            echo "  -u          Username (default: s33d)"
+            echo "  -u          Username (default: current user)"
             echo "  --target    SSH target for NixOS remote install (e.g., root@192.168.1.50)"
             echo "  -p          SSH port (default: 22)"
             echo ""
             echo "Examples:"
-            echo "  macOS (local):  nix run .#install -- -h aether -u s33d"
-            echo "  NixOS (remote): nix run .#install -- --target root@192.168.1.50 -h krach -u s33d"
+            echo "  macOS (local):  nix run .#install -- -h <hostname> -u <username>"
+            echo "  NixOS (remote): nix run .#install -- --target root@<ip> -h <hostname> -u <username>"
             echo "  QEMU VM:       nix run .#install -- --target root@localhost -p 2222 -h qemu"
             exit 1
           }
 
           HOST=""
-          USERNAME="s33d"
+          USERNAME="${USERNAME:-$(whoami)}"
           TARGET=""
           SSH_PORT="22"
           FLAKE_DIR=""

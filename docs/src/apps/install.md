@@ -12,10 +12,10 @@ Unified install script for both macOS (local nix-darwin) and NixOS (remote via n
 
 ```sh
 # macOS (local)
-nix run .#install -- -h aether -u s33d
+nix run .#install -- -h <hostname> -u <username>
 
 # NixOS (remote)
-nix run .#install -- --target root@192.168.1.50 -h krach -u s33d
+nix run .#install -- --target root@<ip> -h <hostname> -u <username>
 
 # QEMU VM
 nix run .#install -- --target root@localhost -p 2222 -h qemu

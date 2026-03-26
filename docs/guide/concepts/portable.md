@@ -11,7 +11,7 @@ Portable wrappers solve this: self-contained packages that bring your entire dev
 ## The Shell
 
 ```sh
-nix run github:abstracts33d/nixos-config#shell
+nix run github:abstracts33d/nixfleet#shell
 ```
 
 This gives you:
@@ -25,7 +25,7 @@ No installation. No system changes. Just run and go.
 ## The Terminal
 
 ```sh
-nix run github:abstracts33d/nixos-config#terminal
+nix run github:abstracts33d/nixfleet#terminal
 ```
 
 Kitty terminal wrapping the portable shell. For when you also want your terminal emulator config.
