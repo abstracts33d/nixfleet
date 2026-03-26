@@ -43,7 +43,7 @@ modules/
 │   ├── dev/           # isDev: direnv, docker, claude-code
 │   ├── desktop/       # Compositors: niri, hyprland, gnome
 │   ├── display/       # Display managers: gdm, greetd
-│   ├── hardware/      # bluetooth, secure-boot
+│   ├── hardware/      # bluetooth
 │   └── darwin/        # homebrew, karabiner, aerospace
 ├── wrappers/          # Portable composites (shell, terminal)
 ├── tests/             # Eval tests, VM tests, integration tests
@@ -73,7 +73,6 @@ Hosts declare flags in `hostSpecValues`. Scope modules auto-activate:
 | `useGnome` | `desktop/gnome.nix` | GNOME desktop + GDM |
 | `isImpermanent` | `impermanence.nix` | Ephemeral root, btrfs wipe |
 | `hasBluetooth` | `hardware/bluetooth.nix` | Bluetooth + Blueman |
-| `useSecureBoot` | `hardware/secure-boot.nix` | Lanzaboote Secure Boot |
 | `isDarwin` | `darwin/` | Homebrew, karabiner, aerospace |
 
 ## Portable Environments

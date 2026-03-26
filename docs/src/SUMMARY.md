@@ -37,7 +37,6 @@
     - [gdm](scopes/display/gdm.md)
   - [Hardware](scopes/hardware/README.md)
     - [bluetooth](scopes/hardware/bluetooth.md)
-    - [secure-boot](scopes/hardware/secure-boot.md)
   - [Darwin](scopes/darwin/README.md)
     - [homebrew](scopes/darwin/homebrew.md)
     - [karabiner](scopes/darwin/karabiner.md)
