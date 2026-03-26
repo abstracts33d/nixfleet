@@ -173,7 +173,7 @@
 
     # --- system packages ---
     environment.systemPackages = with pkgs; [
-      gitFull
+      git
       inetutils
     ];
 
