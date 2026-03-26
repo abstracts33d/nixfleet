@@ -44,9 +44,16 @@
         allowBroken = false;
         allowInsecure = false;
         allowUnsupportedSystem = true;
-        # nss_wrapper is marked broken but pulled in transitively by HM font management
-        problems.handlers.nss_wrapper.broken = "warn";
       };
+
+      # nss_wrapper is marked broken on Darwin but pulled transitively by HM font management
+      nixpkgs.overlays = [
+        (_final: prev: {
+          nss_wrapper = prev.nss_wrapper.overrideAttrs (_old: {
+            meta = _old.meta // {broken = false;};
+          });
+        })
+      ];
 
       # --- nix (Determinate install compatible) ---
       nix = {
