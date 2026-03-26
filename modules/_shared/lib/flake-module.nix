@@ -33,7 +33,7 @@ in {
     description = "NixFleet library (mkFleet, mkOrg, mkRole, mkHost, mkBatchHosts, mkTestMatrix)";
   };
 
-  # Framework deferred modules (lib + base only — scopes/wrappers are fleet-specific)
+  # Framework deferred modules (lib + base + generic scopes)
   imports = [
     # Module namespace declaration
     ../../module-options.nix
@@ -41,5 +41,9 @@ in {
     # Core
     ../../core/nixos.nix
     ../../core/darwin.nix
+
+    # Generic scopes (infrastructure, not opinionated)
+    ../../scopes/base.nix
+    ../../scopes/impermanence.nix
   ];
 }
