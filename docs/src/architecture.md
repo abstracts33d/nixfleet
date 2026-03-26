@@ -109,7 +109,6 @@ Scope modules use `lib.mkIf hS.<flag>` to self-activate. Adding a new scope file
 | catppuccin/nix | Theming (200+ apps) |
 | nix-wrapper-modules | Portable composites |
 | nixos-anywhere | Remote NixOS installation |
-| lanzaboote | Secure Boot |
 | nix-index-database | command-not-found |
 | treefmt-nix | Multi-language formatting |
 

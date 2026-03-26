@@ -64,7 +64,6 @@
   - [spawn-qemu](apps/spawn-qemu.md)
   - [spawn-utm](apps/spawn-utm.md)
   - [test-vm](apps/test-vm.md)
-  - [control-plane](apps/control-plane.md)
   - [rollback](apps/rollback.md)
 
 # Testing

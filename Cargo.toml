@@ -1,3 +1,0 @@
-[workspace]
-members = ["agent", "cli", "control-plane", "shared"]
-resolver = "2"

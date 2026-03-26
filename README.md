@@ -50,10 +50,6 @@ modules/
 ├── apps.nix           # Flake apps (install, build-switch, validate, spawn-qemu, ...)
 ├── fleet.nix          # Test fleet for framework CI
 └── flake-module.nix   # flakeModules.default for consumers
-agent/                 # Rust fleet agent daemon
-control-plane/         # Rust control plane server
-cli/                   # Rust CLI (nixfleet host add, deploy, status)
-shared/                # Rust shared types
 docs/
 ├── src/               # Technical reference (mdbook)
 ├── guide/             # User guide (mdbook)
@@ -119,8 +115,7 @@ nix run .#test-vm -- -h krach-qemu                     # Full VM test cycle
 
 ```sh
 nix develop                        # Dev shell
-cargo test --workspace             # Rust tests (139 tests)
-nix flake check --no-build         # Eval tests (24 checks)
+nix flake check --no-build         # Eval tests
 nix run .#validate                 # Full validation
 nix fmt                            # Format (alejandra + shfmt)
 ```

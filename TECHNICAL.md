@@ -34,7 +34,6 @@ The monorepo wrapper (`modules/flake-module.nix`) ties the import-tree-based int
 The framework provides **mechanism**, not **policy**:
 - `mkFleet`, `mkOrg`, `mkRole`, `mkHost` are generic constructors with no org-specific assumptions
 - The `abstracts33d` organization (org defaults, host list, secrets paths) lives in `fleet.nix` as a client of the framework
-- Enterprise scopes (`scopes/enterprise/`) are mechanism stubs — VPN, LDAP, printing, certs, proxy — that clients wire to their infrastructure
 - Secrets are referenced by path, never by content — the framework is secrets-backend-agnostic (agenix, sops, vault)
 
 ### Framework API (`modules/_shared/lib/`)
@@ -47,41 +46,6 @@ The framework provides **mechanism**, not **policy**:
 | `mkHost` | Single host definition |
 | `mkBatchHosts` | N identical hosts from a template |
 | `mkTestMatrix` | Cross-product of roles x platforms for CI |
-
-## Rust Workspace
-
-Four crates in a Cargo workspace at the repo root:
-
-| Crate | Binary | Purpose |
-|-------|--------|---------|
-| `agent/` | `nixfleet-agent` | Runs on each managed host. State machine: Idle -> Deploying -> Deployed -> Unhealthy |
-| `control-plane/` | `nixfleet-control-plane` | Axum HTTP server. Machine registry, deployment orchestration |
-| `cli/` | `nixfleet` | Operator CLI. Deploy, status, rollback commands |
-| `shared/` | (library) | `nixfleet-types`: shared data types, API contracts |
-
-### Agent <-> Control Plane Communication
-
-```
-Agent (on host)                    Control Plane (central)
-    │                                      │
-    ├── POST /api/machines/register ──────>│  Register with hostname + platform
-    │                                      │
-    ├── GET  /api/machines/{id}/config ──>│  Poll for desired state
-    │                                      │
-    ├── POST /api/machines/{id}/status ──>│  Report deploy result
-    │                                      │
-    └── heartbeat loop ──────────────────>│  Liveness signal
-```
-
-### Machine Lifecycle States
-
-```
-Registered -> Idle -> Deploying -> Deployed
-                                      │
-                                      └── Unhealthy (failed health check)
-                                              │
-                                              └── Deploying (auto-remediation)
-```
 
 ## Core Concepts
 
@@ -166,7 +130,6 @@ Persist paths are co-located with their scope, NOT centralized:
 | `graphical/nixos.nix` | Chrome, Firefox, Brave, VS Code, Slack, halloy |
 | `dev/nixos.nix` | Docker, PostgreSQL, npm, cargo, pip, mise, direnv, .claude |
 | `desktop/gnome.nix` | dconf, gnome online accounts |
-| `hardware/secure-boot.nix` | /etc/secureboot |
 | Host-specific (krach) | JetBrains config/data/cache |
 
 **Rule:** When adding a program to a scope, add its persist paths in the same module with `lib.mkIf hS.isImpermanent`.
@@ -218,6 +181,5 @@ Don't use `mkDefault` for `networking.useDHCP = false` in core -- it conflicts w
 | `wrapper-modules` | Portable wrapped composites |
 | `nixos-hardware` | Hardware-specific optimizations |
 | `nix-index-database` | Pre-built nix-index + comma |
-| `lanzaboote` | Secure Boot |
 | `treefmt-nix` | Multi-language formatting |
 | `catppuccin` | Consistent theming (macchiato + lavender) |

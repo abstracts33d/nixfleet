@@ -61,12 +61,5 @@ in {
     ../../scopes/darwin/homebrew.nix
     ../../scopes/darwin/karabiner.nix
     ../../scopes/darwin/aerospace.nix
-
-    # NixFleet services
-    ../../scopes/nixfleet/agent.nix
-    ../../scopes/nixfleet/control-plane.nix
-
-    # perSystem packages (agent, control-plane, CLI binaries)
-    ../../agent-package.nix
   ];
 }
