@@ -583,12 +583,30 @@
           echo -e "''${GREEN}SSH ready (''${ELAPSED}s)''${NC}"
 
           # --- Step 4: Run nixos-anywhere ---
+          # Provision agenix decryption key
+          EXTRA_FILES=$(mktemp -d)
+          EXTRA_FILES_ARGS=""
+          KEY_SRC="''$HOME/.keys/id_ed25519"
+          [ ! -f "''$KEY_SRC" ] && KEY_SRC="''$HOME/.ssh/id_ed25519"
+          if [ -f "''$KEY_SRC" ]; then
+            VM_USER="''$(nix eval ".#nixosConfigurations.''$HOST.config.hostSpec.userName" --raw 2>/dev/null || echo "root")"
+            for prefix in "persist/home/''$VM_USER" "home/''$VM_USER"; do
+              mkdir -p "''$EXTRA_FILES/''$prefix/.keys"
+              cp "''$KEY_SRC" "''$EXTRA_FILES/''$prefix/.keys/id_ed25519"
+              chmod 600 "''$EXTRA_FILES/''$prefix/.keys/id_ed25519"
+            done
+            EXTRA_FILES_ARGS="--extra-files ''$EXTRA_FILES"
+            echo -e "''${GREEN}Provisioning agenix key for ''$VM_USER''${NC}"
+          fi
+
           echo -e "''${YELLOW}[4/6] Running nixos-anywhere (host: ''$HOST)...''${NC}"
           ${nixos-anywhere-bin} \
             --flake ".#''$HOST" \
             --ssh-port "''$SSH_PORT" \
             --no-reboot \
+            ''$EXTRA_FILES_ARGS \
             root@localhost
+          rm -rf "''$EXTRA_FILES"
 
           # --- Step 5: Reboot from disk ---
           echo -e "''${YELLOW}[5/6] Rebooting from disk...''${NC}"
@@ -781,12 +799,40 @@
           done
           echo -e "''${GREEN}SSH ready (''${ELAPSED}s)''${NC}"
 
+          # Provision agenix decryption key for the VM
+          EXTRA_FILES=$(mktemp -d)
+          EXTRA_FILES_ARGS=""
+          KEY_SRC="''$HOME/.keys/id_ed25519"
+          if [ ! -f "''$KEY_SRC" ]; then
+            KEY_SRC="''$HOME/.ssh/id_ed25519"
+          fi
+          if [ -f "''$KEY_SRC" ]; then
+            # Detect username from fleet.nix org defaults
+            VM_USER="''$(nix eval ".#nixosConfigurations.''$HOST.config.hostSpec.userName" --raw 2>/dev/null || echo "root")"
+            KEY_DEST="''$EXTRA_FILES/persist/home/''$VM_USER/.keys"
+            mkdir -p "''$KEY_DEST"
+            cp "''$KEY_SRC" "''$KEY_DEST/id_ed25519"
+            chmod 600 "''$KEY_DEST/id_ed25519"
+            # Also put in non-persist path for non-impermanent hosts
+            KEY_DEST2="''$EXTRA_FILES/home/''$VM_USER/.keys"
+            mkdir -p "''$KEY_DEST2"
+            cp "''$KEY_SRC" "''$KEY_DEST2/id_ed25519"
+            chmod 600 "''$KEY_DEST2/id_ed25519"
+            EXTRA_FILES_ARGS="--extra-files ''$EXTRA_FILES"
+            echo -e "''${GREEN}Provisioning agenix key for ''$VM_USER from ''$KEY_SRC''${NC}"
+          else
+            echo -e "''${YELLOW}Warning: No decryption key found. Secrets will not work in VM.''${NC}"
+          fi
+
           echo -e "''${YELLOW}[4/5] Installing ''$HOST via nixos-anywhere...''${NC}"
           ${nixos-anywhere-bin} \
             --flake ".#''$HOST" \
             --ssh-port "''$SSH_PORT" \
             --no-reboot \
+            ''$EXTRA_FILES_ARGS \
             root@localhost
+
+          rm -rf "''$EXTRA_FILES"
 
           kill "$(cat "''$PIDFILE")" 2>/dev/null || true
           rm -f "''$PIDFILE"
