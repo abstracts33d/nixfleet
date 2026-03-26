@@ -44,6 +44,8 @@
         allowBroken = false;
         allowInsecure = false;
         allowUnsupportedSystem = true;
+        # nss_wrapper is marked broken but pulled in transitively by HM font management
+        problems.handlers.nss_wrapper.broken = "warn";
       };
 
       # --- nix (Determinate install compatible) ---
