@@ -6,7 +6,7 @@
 # Requires: gh CLI authenticated with project scope
 # Project: NixFleet (#1)
 
-REPO="abstracts33d/nixfleet"
+REPO="abstracts33d/fleet"
 PROJECT_NUM="1"
 
 # Cache for project metadata (avoids repeated GraphQL calls — saves rate limit)

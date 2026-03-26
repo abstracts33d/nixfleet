@@ -19,7 +19,7 @@ echo ""
 
 echo "[1/25] NixFleet: Paradigm Shift (epic)"
 gh_create_issue \
-  "NixFleet: Paradigm Shift — Transform nixos-config into a fleet management platform" \
+  "NixFleet: Paradigm Shift — Transform fleet into a fleet management platform" \
   '## Context
 
 Epic tracking the full NixFleet roadmap. This config is the reference implementation.
@@ -59,7 +59,7 @@ Spec: `docs/superpowers/specs/2026-03-25-enterprise-features.md`
 - [ ] Implement `modules/scopes/enterprise/vpn.nix` with WireGuard support
 - [ ] Support OpenVPN as alternative backend
 - [ ] Secrets managed via agenix (WireGuard private key, PSK)
-- [ ] Per-host config via `hostSpec.vpnConfig` or nix-secrets mapping
+- [ ] Per-host config via `hostSpec.vpnConfig` or fleet-secrets mapping
 - [ ] Eval test: `useVpn = true` activates the scope
 - [ ] README.md enterprise scopes table updated' \
   "scope:enterprise,feature,impact:high,urgency:soon,phase:S2" \
@@ -155,7 +155,7 @@ Spec: `docs/superpowers/specs/2026-03-25-enterprise-features.md`
 
 - [ ] Set system-wide `http_proxy`/`https_proxy`/`no_proxy` environment variables
 - [ ] Nix daemon proxy config (`nix.settings.extra-substituters` compatible)
-- [ ] Proxy config via nix-secrets (URL, credentials)
+- [ ] Proxy config via fleet-secrets (URL, credentials)
 - [ ] Eval test: `useProxy = true` activates the scope
 - [ ] README.md enterprise scopes table updated' \
   "scope:enterprise,feature,impact:high,urgency:soon,phase:S2" \
@@ -166,7 +166,7 @@ gh_create_issue \
   "Share Claude Code project memories across machines" \
   '## Context
 
-Project memories live in `~/.claude/projects/<path-encoded>/memory/`. The path encoding differs between machines (`-mnt-dev-nixos-config` vs `-Users-s33d-.local-share-src-nixos-config`), so memories are not shared.
+Project memories live in `~/.claude/projects/<path-encoded>/memory/`. The path encoding differs between machines (`-mnt-dev-fleet` vs `-Users-s33d-.local-share-src-fleet`), so memories are not shared.
 
 ## Problem
 
@@ -256,19 +256,19 @@ gh_create_issue \
   "Provision WiFi secrets via agenix (complete wifiNetworks implementation)" \
   '## Context
 
-`wifiNetworks` hostSpec option is implemented but no encrypted secrets exist yet in nix-secrets. Each entry maps to `wifi-<name>.age`.
+`wifiNetworks` hostSpec option is implemented but no encrypted secrets exist yet in fleet-secrets. Each entry maps to `wifi-<name>.age`.
 
 ## Steps
 
 1. On each machine: `nmcli connection export <ssid> > wifi-<name>.nmconnection`
 2. Encrypt: `age -R ~/.ssh/id_ed25519.pub wifi-<name>.nmconnection > wifi-<name>.age`
-3. Add to nix-secrets repo and commit
+3. Add to fleet-secrets repo and commit
 4. Update flake input: `nix flake update secrets`
 
 ## Deliverables
 
 - [ ] Export .nmconnection files for all required SSIDs (krach, ohm)
-- [ ] Encrypt and commit to nix-secrets
+- [ ] Encrypt and commit to fleet-secrets
 - [ ] Update flake.lock: `nix flake update secrets`
 - [ ] Verify WiFi bootstrap on fresh install (test with krach-qemu or similar)
 - [ ] Add eval test asserting WiFi service activates when wifiNetworks is non-empty' \

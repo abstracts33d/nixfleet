@@ -1,0 +1,78 @@
+# NixFleet — Technical Roadmap
+phases:
+  - id: phase-0
+    name: "Reference Implementation"
+    status: done
+    description: "NixOS config with flake-parts, deferred modules, multi-host, multi-platform"
+    deliverables:
+      - Flake-parts + import-tree architecture
+      - Multi-host (NixOS + Darwin)
+      - Impermanence + agenix
+      - Testing pyramid (eval + VM + test-vm)
+      - Automation layer (15 agents, 17 skills, 8 hooks)
+
+  - id: phase-1
+    name: "Generalization"
+    status: in-progress
+    description: "Extract organization concept, define role system, 'bring your own flake' import path"
+    stories:
+      - id: S1
+        name: Multi-organization host grouping
+        priority: high
+        status: done
+        description: "Hosts belong to organizations with own defaults, scopes, secrets. Implemented: mkFleet, mkOrg, mkHost, mkBatchHosts, mkTestMatrix in modules/_shared/lib/. Single fleet.nix replaces 8 host files. Framework decontamination complete: agenix, brews/casks, org packages, SSH keys, GPG key, timezone/locale/keyboard, theme, password files all moved to org modules (mkOrg nixosModules/darwinModules/hmModules). 23 eval tests validate the full framework."
+      - id: S2
+        name: Role-based configuration
+        priority: high
+        status: done
+        description: "Extract common patterns into composable roles (workstation, server, minimal, vm-test, edge, darwin-workstation). Implemented: mkRole, builtinRoles in modules/_shared/lib/roles.nix. 18 eval tests validate the framework."
+      - id: S8
+        name: Open-core licensing
+        priority: medium
+        description: "Apache 2.0 core, Pro/Enterprise feature gates"
+
+  - id: phase-2
+    name: "Agent + Cache"
+    status: in-progress
+    description: "Rust fleet agent + Attic binary cache integration"
+    stories:
+      - id: S3
+        name: Fleet orchestration agent
+        priority: high
+        description: "Rust agent for push/pull deployment, health checks, rollback"
+      - id: S5
+        name: Binary cache integration
+        priority: high
+        description: "Attic cache, S3-compatible, EU-hosted, per-org namespaces"
+
+  - id: phase-3
+    name: "Control Plane"
+    status: planned
+    description: "Fleet control plane with machine inventory and drift detection"
+    stories:
+      - id: S4
+        name: Control plane dashboard
+        priority: high
+        description: "Machine inventory, generation history, drift detection, RBAC, audit log"
+      - id: S7
+        name: NIS2 compliance module
+        priority: medium
+        description: "Auto SBOM, incident timeline, supply chain audit"
+
+  - id: phase-4
+    name: "Commercialization"
+    status: planned
+    description: "Open-source core, EU certifications, enterprise sales"
+    stories:
+      - id: S6
+        name: Air-gap deployment
+        priority: medium
+        description: "Offline closure export/import, signed closures, USB deployment"
+
+tech_stack:
+  control_plane: "Rust (Axum)"
+  agent: "Rust (static binary)"
+  cache: "Attic (S3-compatible)"
+  secrets: "agenix / sops-nix → Vault (Pro tier)"
+  config: "NixOS flakes"
+  frontend: "SvelteKit (Phase 3)"

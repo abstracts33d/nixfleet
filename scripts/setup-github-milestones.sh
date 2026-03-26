@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-REPO="abstracts33d/nixfleet"
+REPO="abstracts33d/fleet"
 
 declare -A MILESTONES
 MILESTONES["S0: Foundation"]="Pre-NixFleet config work (scopes, testing, desktop, secrets)"
