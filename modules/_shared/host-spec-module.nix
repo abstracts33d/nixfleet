@@ -167,6 +167,11 @@
       default = false;
       description = "Used to indicate a host that has bluetooth capabilities";
     };
+    useSecureBoot = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Used to indicate a host that uses Secure Boot (lanzaboote)";
+    };
     hashedPasswordFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
