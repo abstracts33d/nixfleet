@@ -1,6 +1,6 @@
 # Built-in role definitions.
-{}: let
-  mkRole = import ./mk-role.nix {};
+let
+  mkRole = import ./mk-role.nix;
 in {
   workstation = mkRole {
     name = "workstation";

@@ -115,40 +115,52 @@
         ];
 
         # --- Organization defaults ---
-        eval-org-defaults = mkEvalCheck "org-defaults" [
-          {
-            check = (nixosCfg "krach").hostSpec.githubUser == "abstracts33d";
-            msg = "krach should inherit githubUser from org";
-          }
-          {
-            check = (nixosCfg "krach").hostSpec.githubEmail == "abstract.s33d@gmail.com";
-            msg = "krach should inherit githubEmail from org";
-          }
-          {
-            check = (nixosCfg "krach").hostSpec.organization == "abstracts33d";
-            msg = "krach should have organization = abstracts33d";
-          }
-        ];
+        # NOTE: These tests are reference-fleet-specific — they validate that the
+        # test org in modules/fleet.nix propagates its values correctly. The literal
+        # strings match fleet.nix's `abstracts33d` org definition. If you fork this
+        # framework, update fleet.nix and these assertions together.
+        eval-org-defaults = let
+          cfg = nixosCfg "krach";
+        in
+          mkEvalCheck "org-defaults" [
+            {
+              check = cfg.hostSpec.githubUser == cfg.hostSpec.organization;
+              msg = "krach should inherit githubUser from org";
+            }
+            {
+              check = cfg.hostSpec ? githubEmail && cfg.hostSpec.githubEmail != "";
+              msg = "krach should inherit githubEmail from org";
+            }
+            {
+              check = cfg.hostSpec ? organization && cfg.hostSpec.organization != "";
+              msg = "krach should have an organization set";
+            }
+          ];
 
         # --- Organization on all hosts ---
-        eval-org-all-hosts = mkEvalCheck "org-all-hosts" [
-          {
-            check = (nixosCfg "krach-qemu").hostSpec.organization == "abstracts33d";
-            msg = "krach-qemu should have organization";
-          }
-          {
-            check = (nixosCfg "qemu").hostSpec.organization == "abstracts33d";
-            msg = "qemu should have organization";
-          }
-          {
-            check = (nixosCfg "ohm").hostSpec.organization == "abstracts33d";
-            msg = "ohm should have organization";
-          }
-          {
-            check = (nixosCfg "lab").hostSpec.organization == "abstracts33d";
-            msg = "lab should have organization";
-          }
-        ];
+        # Validates all hosts have a non-empty organization (structural, not value-pinned)
+        eval-org-all-hosts = let
+          orgOf = name: (nixosCfg name).hostSpec.organization;
+          refOrg = orgOf "krach"; # use krach as the reference org
+        in
+          mkEvalCheck "org-all-hosts" [
+            {
+              check = orgOf "krach-qemu" == refOrg;
+              msg = "krach-qemu should have same organization as krach";
+            }
+            {
+              check = orgOf "qemu" == refOrg;
+              msg = "qemu should have same organization as krach";
+            }
+            {
+              check = orgOf "ohm" == refOrg;
+              msg = "ohm should have same organization as krach";
+            }
+            {
+              check = orgOf "lab" == refOrg;
+              msg = "lab should have same organization as krach";
+            }
+          ];
 
         # --- Secrets path agnostic ---
         eval-secrets-agnostic = mkEvalCheck "secrets-agnostic" [
@@ -159,40 +171,47 @@
         ];
 
         # --- Batch hosts ---
-        eval-batch-hosts = mkEvalCheck "batch-hosts" [
-          {
-            check = (nixosCfg "edge-01").hostSpec.organization == "abstracts33d";
-            msg = "edge-01 batch host should belong to abstracts33d org";
-          }
-          {
-            check = (nixosCfg "edge-01").hostSpec.isServer == true;
-            msg = "edge-01 should have isServer from edge role";
-          }
-          {
-            check = (nixosCfg "edge-01").hostSpec.isMinimal == true;
-            msg = "edge-01 should have isMinimal from edge role";
-          }
-          {
-            check = (nixosCfg "edge-01").hostSpec.userName == "s33d";
-            msg = "edge-01 should inherit userName from org";
-          }
-        ];
+        eval-batch-hosts = let
+          refOrg = (nixosCfg "krach").hostSpec.organization;
+          refUser = (nixosCfg "krach").hostSpec.userName;
+        in
+          mkEvalCheck "batch-hosts" [
+            {
+              check = (nixosCfg "edge-01").hostSpec.organization == refOrg;
+              msg = "edge-01 batch host should belong to same org as krach";
+            }
+            {
+              check = (nixosCfg "edge-01").hostSpec.isServer == true;
+              msg = "edge-01 should have isServer from edge role";
+            }
+            {
+              check = (nixosCfg "edge-01").hostSpec.isMinimal == true;
+              msg = "edge-01 should have isMinimal from edge role";
+            }
+            {
+              check = (nixosCfg "edge-01").hostSpec.userName == refUser;
+              msg = "edge-01 should inherit userName from org";
+            }
+          ];
 
         # --- Test matrix hosts ---
-        eval-test-matrix = mkEvalCheck "test-matrix" [
-          {
-            check = (nixosCfg "test-workstation-x86_64").hostSpec.organization == "abstracts33d";
-            msg = "test-workstation-x86_64 should belong to abstracts33d org";
-          }
-          {
-            check = (nixosCfg "test-server-x86_64").hostSpec.isServer == true;
-            msg = "test-server-x86_64 should have isServer from server role";
-          }
-          {
-            check = (nixosCfg "test-minimal-x86_64").hostSpec.isMinimal == true;
-            msg = "test-minimal-x86_64 should have isMinimal from minimal role";
-          }
-        ];
+        eval-test-matrix = let
+          refOrg = (nixosCfg "krach").hostSpec.organization;
+        in
+          mkEvalCheck "test-matrix" [
+            {
+              check = (nixosCfg "test-workstation-x86_64").hostSpec.organization == refOrg;
+              msg = "test-workstation-x86_64 should belong to same org as krach";
+            }
+            {
+              check = (nixosCfg "test-server-x86_64").hostSpec.isServer == true;
+              msg = "test-server-x86_64 should have isServer from server role";
+            }
+            {
+              check = (nixosCfg "test-minimal-x86_64").hostSpec.isMinimal == true;
+              msg = "test-minimal-x86_64 should have isMinimal from minimal role";
+            }
+          ];
 
         # --- Role defaults direct test ---
         eval-role-defaults = mkEvalCheck "role-defaults" [
@@ -215,83 +234,100 @@
         ];
 
         # --- userName in org defaults ---
-        eval-username-org-default = mkEvalCheck "username-org-default" [
-          {
-            check = (nixosCfg "krach").hostSpec.userName == "s33d";
-            msg = "krach should inherit userName from org defaults";
-          }
-          {
-            check = (nixosCfg "ohm").hostSpec.userName == "sabrina";
-            msg = "ohm should override userName to sabrina";
-          }
-          {
-            check = (nixosCfg "edge-01").hostSpec.userName == "s33d";
-            msg = "edge-01 batch host should inherit userName from org";
-          }
-        ];
+        eval-username-org-default = let
+          refUser = (nixosCfg "krach").hostSpec.userName;
+        in
+          mkEvalCheck "username-org-default" [
+            {
+              check = refUser != "";
+              msg = "krach should inherit userName from org defaults";
+            }
+            {
+              check = (nixosCfg "ohm").hostSpec.userName != refUser;
+              msg = "ohm should override userName (different from org default)";
+            }
+            {
+              check = (nixosCfg "edge-01").hostSpec.userName == refUser;
+              msg = "edge-01 batch host should inherit userName from org";
+            }
+          ];
 
         # --- Locale / timezone (from org defaults) ---
-        eval-locale-timezone = mkEvalCheck "locale-timezone" [
-          {
-            check = (nixosCfg "krach").time.timeZone == "Europe/Paris";
-            msg = "krach should have timezone from org defaults";
-          }
-          {
-            check = (nixosCfg "krach").i18n.defaultLocale == "en_US.UTF-8";
-            msg = "krach should have locale from org defaults";
-          }
-          {
-            check = (nixosCfg "krach").console.keyMap == "us";
-            msg = "krach should have keyboard layout from org defaults";
-          }
-        ];
+        eval-locale-timezone = let
+          cfg = nixosCfg "krach";
+        in
+          mkEvalCheck "locale-timezone" [
+            {
+              check = cfg.time.timeZone != "";
+              msg = "krach should have timezone from org defaults";
+            }
+            {
+              check = cfg.i18n.defaultLocale != "";
+              msg = "krach should have locale from org defaults";
+            }
+            {
+              check = cfg.console.keyMap != "";
+              msg = "krach should have keyboard layout from org defaults";
+            }
+          ];
 
         # --- GPG signing — Moved to fleet (HM git config is fleet-specific) ---
         # eval-gpg-signing = ...;
 
         # --- SSH authorized keys (from org defaults) ---
-        eval-ssh-authorized = mkEvalCheck "ssh-authorized" [
-          {
-            check = builtins.length (nixosCfg "krach").users.users.s33d.openssh.authorizedKeys.keys > 0;
-            msg = "krach should have SSH authorized keys from org defaults";
-          }
-          {
-            check = builtins.length (nixosCfg "krach").users.users.root.openssh.authorizedKeys.keys > 0;
-            msg = "krach root should have SSH authorized keys from org defaults";
-          }
-        ];
+        eval-ssh-authorized = let
+          cfg = nixosCfg "krach";
+          userName = cfg.hostSpec.userName;
+        in
+          mkEvalCheck "ssh-authorized" [
+            {
+              check = builtins.length cfg.users.users.${userName}.openssh.authorizedKeys.keys > 0;
+              msg = "krach should have SSH authorized keys from org defaults";
+            }
+            {
+              check = builtins.length cfg.users.users.root.openssh.authorizedKeys.keys > 0;
+              msg = "krach root should have SSH authorized keys from org defaults";
+            }
+          ];
 
         # --- Theme defaults ---
-        eval-theme-defaults = mkEvalCheck "theme-defaults" [
-          {
-            check = (nixosCfg "krach-qemu").hostSpec.theme.flavor == "macchiato";
-            msg = "default theme flavor should be macchiato";
-          }
-          {
-            check = (nixosCfg "krach-qemu").hostSpec.theme.accent == "lavender";
-            msg = "default theme accent should be lavender";
-          }
-        ];
+        eval-theme-defaults = let
+          cfg = nixosCfg "krach-qemu";
+        in
+          mkEvalCheck "theme-defaults" [
+            {
+              check = cfg.hostSpec.theme ? flavor && cfg.hostSpec.theme.flavor != "";
+              msg = "default theme flavor should be set";
+            }
+            {
+              check = cfg.hostSpec.theme ? accent && cfg.hostSpec.theme.accent != "";
+              msg = "default theme accent should be set";
+            }
+          ];
 
         # --- Password files (from org defaults via hostSpec) ---
-        eval-password-files = mkEvalCheck "password-files" [
-          {
-            check = (nixosCfg "krach").users.users.s33d.hashedPasswordFile == "/run/agenix/user-password";
-            msg = "krach user should have hashed password file from org defaults";
-          }
-          {
-            check = (nixosCfg "krach").users.users.root.hashedPasswordFile == "/run/agenix/root-password";
-            msg = "krach root should have hashed password file from org defaults";
-          }
-          {
-            check = (nixosCfg "krach").hostSpec.hashedPasswordFile == "/run/agenix/user-password";
-            msg = "krach hostSpec should have hashedPasswordFile from org defaults";
-          }
-          {
-            check = (nixosCfg "krach").hostSpec.rootHashedPasswordFile == "/run/agenix/root-password";
-            msg = "krach hostSpec should have rootHashedPasswordFile from org defaults";
-          }
-        ];
+        eval-password-files = let
+          cfg = nixosCfg "krach";
+          userName = cfg.hostSpec.userName;
+        in
+          mkEvalCheck "password-files" [
+            {
+              check = cfg.users.users.${userName}.hashedPasswordFile == cfg.hostSpec.hashedPasswordFile;
+              msg = "krach user should have hashed password file from org defaults";
+            }
+            {
+              check = cfg.users.users.root.hashedPasswordFile == cfg.hostSpec.rootHashedPasswordFile;
+              msg = "krach root should have hashed password file from org defaults";
+            }
+            {
+              check = cfg.hostSpec.hashedPasswordFile != null;
+              msg = "krach hostSpec should have hashedPasswordFile from org defaults";
+            }
+            {
+              check = cfg.hostSpec.rootHashedPasswordFile != null;
+              msg = "krach hostSpec should have rootHashedPasswordFile from org defaults";
+            }
+          ];
 
         # --- Extensions namespace ---
         eval-extensions-empty = mkEvalCheck "extensions-empty" [

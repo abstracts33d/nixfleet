@@ -97,7 +97,8 @@
 
           echo ""
           echo "=== NixOS Test Hosts (build) ==="
-          for host in krach krach-qemu qemu ohm lab; do
+          HOSTS=$(nix eval .#nixosConfigurations --apply 'x: builtins.concatStringsSep " " (builtins.attrNames x)' --raw 2>/dev/null)
+          for host in $HOSTS; do
             check "$host" nix build ".#nixosConfigurations.$host.config.system.build.toplevel" --no-link
           done
 
@@ -184,7 +185,7 @@
             FLAKE_DIR="''$HOME/fleet"
           else
             echo -e "''${YELLOW}Cloning fleet repo...''${NC}"
-            CLONE_URL="''$(git remote get-url origin 2>/dev/null || echo 'git@github.com:abstracts33d/fleet.git')"
+            CLONE_URL="''$(git remote get-url origin 2>/dev/null || { echo "Error: not in a git repo. Clone your fleet repo first."; exit 1; })"
             git clone "''$CLONE_URL" "''$HOME/fleet"
             FLAKE_DIR="''$HOME/fleet"
           fi
@@ -846,7 +847,7 @@
           PATH=${lib.makeBinPath (with pkgs; [coreutils openssh])}:''$PATH
 
           VM_NAME="nixos"
-          HOST="krach-utm"
+          HOST=""
           ACTION="setup"
 
           usage() {
@@ -854,7 +855,7 @@
             echo ""
             echo "Options:"
             echo "  --name NAME     VM name in UTM (default: nixos)"
-            echo "  --host NAME     NixOS host config to install (default: krach-utm)"
+            echo "  --host NAME     NixOS host config to install (required)"
             echo "  --start         Start existing VM and show IP"
             echo "  --ip            Show IP of running VM"
             echo ""
@@ -879,6 +880,11 @@
               *) echo -e "''${RED}Unknown option: ''$1''${NC}"; usage ;;
             esac
           done
+
+          if [ -z "''$HOST" ] && [ "''$ACTION" != "ip" ]; then
+            echo -e "''${RED}Error: --host is required''${NC}"
+            usage
+          fi
 
           UTMCTL="/Applications/UTM.app/Contents/MacOS/utmctl"
           if [ ! -x "''$UTMCTL" ]; then

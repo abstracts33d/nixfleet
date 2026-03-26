@@ -1,6 +1,6 @@
 # Host descriptor. Builds the attrset that mkFleet consumes.
 # Does NOT build the NixOS/Darwin system — mkFleet does that.
-{}: {
+{
   hostName,
   platform,
   org,

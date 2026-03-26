@@ -5,12 +5,12 @@
   config,
   lib,
 }: {
-  mkOrg = import ./mk-org.nix {};
-  mkRole = import ./mk-role.nix {};
-  mkHost = import ./mk-host.nix {};
+  mkOrg = import ./mk-org.nix;
+  mkRole = import ./mk-role.nix;
+  mkHost = import ./mk-host.nix;
   mkFleet = import ./mk-fleet.nix {inherit inputs config lib;};
-  mkBatchHosts = import ./mk-batch-hosts.nix {};
+  mkBatchHosts = import ./mk-batch-hosts.nix;
   mkTestMatrix = import ./mk-test-matrix.nix {inherit lib;};
-  builtinRoles = import ./roles.nix {};
+  builtinRoles = import ./roles.nix;
   extensionsModule = ./extensions-options.nix;
 }

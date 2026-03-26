@@ -1,7 +1,7 @@
 # Test matrix generator. Creates one VM host per role×platform combination.
 # Used for CI validation that all roles build correctly.
 {lib}: let
-  mkHost = import ./mk-host.nix {};
+  mkHost = import ./mk-host.nix;
 
   # Convert platform string to a clean hostname suffix
   # "x86_64-linux" -> "x86-64"

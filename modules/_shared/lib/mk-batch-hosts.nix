@@ -1,7 +1,7 @@
 # Batch host generator. Takes a template + instances, returns a list of mkHost outputs.
 # Template is a partial mkHost attrset. Each instance provides hostName + optional overrides.
-{}: let
-  mkHost = import ./mk-host.nix {};
+let
+  mkHost = import ./mk-host.nix;
 in
   {
     template,

@@ -1,5 +1,5 @@
 # Organization factory. Returns a typed attrset consumed by mkFleet.
-{}: {
+{
   name,
   description ? "",
   hostSpecDefaults ? {},
