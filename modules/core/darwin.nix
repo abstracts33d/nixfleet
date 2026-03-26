@@ -46,18 +46,6 @@
         allowUnsupportedSystem = true;
       };
 
-      # nss_wrapper doesn't compile on Darwin (missing getgrent_r) but is pulled
-      # transitively by mailutils/emacs/notmuch/HM fonts. Replace with empty stub.
-      # TODO: remove when nixpkgs fixes nss_wrapper for Darwin
-      nixpkgs.overlays = [
-        (_final: prev: {
-          nss_wrapper = prev.emptyDirectory.overrideAttrs (_old: {
-            pname = "nss_wrapper-stub";
-            version = prev.nss_wrapper.version;
-            meta = prev.nss_wrapper.meta // {broken = false;};
-          });
-        })
-      ];
 
       # --- nix (Determinate install compatible) ---
       nix = {
