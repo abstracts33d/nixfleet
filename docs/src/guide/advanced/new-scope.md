@@ -66,4 +66,4 @@ Update CLAUDE.md (flags table, module tree) and README.md (scopes table).
 ## Further Reading
 
 - [The Scope System](../concepts/scopes.md) — conceptual overview
-- [Technical Scope Details](../../src/scopes/README.md) — all scope modules
+- [Technical Scope Details](../../scopes/README.md) — all scope modules

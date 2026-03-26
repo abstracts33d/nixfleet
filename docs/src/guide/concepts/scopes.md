@@ -62,5 +62,5 @@ Scopes handle platform differences internally. The dev scope installs Docker on 
 
 ## Further Reading
 
-- [Technical Scope Details](../../src/scopes/README.md) — every scope module documented
+- [Technical Scope Details](../../scopes/README.md) — every scope module documented
 - [Adding a New Scope](../advanced/new-scope.md) — step-by-step guide

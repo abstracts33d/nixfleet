@@ -48,4 +48,4 @@ When you run `nix run .#build-switch`:
 ## Further Reading
 
 - [The Scope System](scopes.md) — how features are organized
-- [Technical Module Details](../../src/core/README.md) — core module internals
+- [Technical Module Details](../../core/README.md) — core module internals

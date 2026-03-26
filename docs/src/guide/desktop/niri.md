@@ -41,4 +41,4 @@ This automatically enables `isGraphical` and `useGreetd`.
 
 - [Choosing a Desktop](choosing.md) — compare all options
 - [Theming](theming.md) — Catppuccin integration
-- [Technical Desktop Details](../../src/scopes/desktop/niri.md) — module internals
+- [Technical Desktop Details](../../scopes/desktop/niri.md) — module internals

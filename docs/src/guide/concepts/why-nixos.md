@@ -46,4 +46,4 @@ For this config, the benefits far outweigh the costs. Multiple machines stay in 
 
 - [Declarative Configuration](declarative.md) — how the module system works
 - [The Scope System](scopes.md) — feature organization
-- [Technical Architecture](../../src/architecture.md) — detailed module structure
+- [Technical Architecture](../../architecture.md) — detailed module structure

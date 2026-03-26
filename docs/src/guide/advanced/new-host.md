@@ -88,5 +88,5 @@ nix run .#install -- --target root@<ip> -h my-host -u <username>
 
 ## Further Reading
 
-- [Host System](../../src/hosts/README.md) — fleet table and architecture
+- [Host System](../../hosts/README.md) — fleet table and architecture
 - [Adding a New Scope](new-scope.md) — if your host needs new features

@@ -1,5 +1,5 @@
 [book]
-title = "nixos-config"
+title = "NixFleet Documentation"
 authors = ["abstracts33d"]
 language = "en"
 src = "."
@@ -8,4 +8,4 @@ src = "."
 build-dir = "../../result-docs"
 
 [output.html]
-git-repository-url = "https://github.com/abstracts33d/nixos-config"
+git-repository-url = "https://github.com/abstracts33d/nixfleet"

@@ -49,5 +49,5 @@ Hosts without this flag use a normal persistent root.
 
 ## Further Reading
 
-- [Technical Impermanence Details](../../src/scopes/impermanence.md) — paths and implementation
+- [Technical Impermanence Details](../../scopes/impermanence.md) — paths and implementation
 - [Secrets Management](secrets.md) — how secrets work with ephemeral roots
