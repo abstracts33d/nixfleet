@@ -653,6 +653,159 @@
 
           echo -e "''${GREEN}All checks passed! VM test successful.''${NC}"
         '';
+        "launch-vm" = mkScript "launch-vm" ''
+          set -euo pipefail
+
+          GREEN='\033[1;32m'
+          YELLOW='\033[1;33m'
+          RED='\033[1;31m'
+          NC='\033[0m'
+
+          PATH=${lib.makeBinPath (with pkgs; [qemu coreutils openssh nix git virt-viewer])}:''$PATH
+          export LIBGL_DRIVERS_PATH="${pkgs.mesa}/lib/dri"
+          export __EGL_VENDOR_LIBRARY_DIRS="${pkgs.mesa}/share/glvnd/egl_vendor.d"
+
+          HOST="krach-qemu"
+          RAM="4096"
+          CPUS="2"
+          SSH_PORT="2222"
+          DISK_SIZE="20G"
+          DISK_DIR="''${XDG_DATA_HOME:-''$HOME/.local/share}/nixfleet/vms"
+
+          usage() {
+            echo "Usage: nix run .#launch-vm [-- [options]]"
+            echo ""
+            echo "Build, install, and launch a graphical VM for visual verification."
+            echo "Persistent disk — survives reboots. Rebuild with --rebuild."
+            echo ""
+            echo "Options:"
+            echo "  -h HOST        Host config (default: krach-qemu)"
+            echo "  --rebuild      Wipe disk and reinstall from scratch"
+            echo "  --ram MB       RAM in MB (default: 4096)"
+            echo "  --cpus N       CPU count (default: 2)"
+            echo "  --ssh-port N   SSH port (default: 2222)"
+            echo "  --help         Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  nix run .#launch-vm                          # launch krach-qemu"
+            echo "  nix run .#launch-vm -- -h ohm                # launch ohm config"
+            echo "  nix run .#launch-vm -- --rebuild              # fresh install"
+            exit 0
+          }
+
+          REBUILD=0
+          while [[ ''$# -gt 0 ]]; do
+            case "''$1" in
+              -h) HOST="''$2"; shift 2 ;;
+              --rebuild) REBUILD=1; shift ;;
+              --ram) RAM="''$2"; shift 2 ;;
+              --cpus) CPUS="''$2"; shift 2 ;;
+              --ssh-port) SSH_PORT="''$2"; shift 2 ;;
+              --help) usage ;;
+              *) echo -e "''${RED}Unknown option: ''$1''${NC}"; usage ;;
+            esac
+          done
+
+          DISK="''$DISK_DIR/''$HOST.qcow2"
+          mkdir -p "''$DISK_DIR"
+
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2"
+
+          # Setup OpenGL for SPICE on non-NixOS hosts
+          setup_gl() {
+            if [ ! -d /run/opengl-driver/lib/gbm ]; then
+              echo -e "''${YELLOW}Setting up OpenGL drivers (requires sudo)...''${NC}"
+              sudo mkdir -p /run/opengl-driver/lib
+              sudo ln -sf ${pkgs.mesa}/lib/gbm /run/opengl-driver/lib/gbm
+            fi
+          }
+
+          # If disk exists and no rebuild, just boot graphically
+          if [ -f "''$DISK" ] && [ "''$REBUILD" = "0" ]; then
+            echo -e "''${GREEN}Booting existing VM: ''$HOST (''$DISK)''${NC}"
+            echo -e "''${GREEN}VM: ''${CPUS} CPUs, ''${RAM}MB RAM, SSH on localhost:''${SSH_PORT}''${NC}"
+            setup_gl
+            (sleep 3 && remote-viewer spice://localhost:5900 2>/dev/null) &
+            exec qemu-system-x86_64 \
+              -enable-kvm \
+              -m "''$RAM" \
+              -smp "''$CPUS" \
+              -drive file="''$DISK",format=qcow2,if=virtio \
+              -nic user,model=virtio-net-pci,hostfwd=tcp::''${SSH_PORT}-:22 \
+              -device virtio-vga-gl -display egl-headless,rendernode=/dev/dri/renderD128 \
+              -spice port=5900,disable-ticketing=on \
+              -bios ${pkgs.OVMF.fd}/FV/OVMF.fd
+          fi
+
+          # Fresh install: build ISO, install headless, then reboot graphically
+          echo -e "''${YELLOW}[1/5] Building custom ISO...''${NC}"
+          ISO_PATH=$(nix build .#iso --no-link --print-out-paths)
+          ISO_FILE=$(find "''$ISO_PATH/iso" -name '*.iso' | head -1)
+          if [ -z "''$ISO_FILE" ]; then
+            echo -e "''${RED}Error: No ISO file found''${NC}"
+            exit 1
+          fi
+          echo -e "''${GREEN}ISO: ''$ISO_FILE''${NC}"
+
+          echo -e "''${YELLOW}[2/5] Creating disk: ''$DISK (''$DISK_SIZE)...''${NC}"
+          rm -f "''$DISK"
+          qemu-img create -f qcow2 "''$DISK" "''$DISK_SIZE"
+
+          echo -e "''${YELLOW}[3/5] Booting from ISO (headless install)...''${NC}"
+          PIDFILE="''$(mktemp)"
+          qemu-system-x86_64 \
+            -enable-kvm \
+            -m "''$RAM" \
+            -smp "''$CPUS" \
+            -drive file="''$DISK",format=qcow2,if=virtio \
+            -nic user,model=virtio-net-pci,hostfwd=tcp::''${SSH_PORT}-:22 \
+            -display none \
+            -serial null \
+            -bios ${pkgs.OVMF.fd}/FV/OVMF.fd \
+            -cdrom "''$ISO_FILE" \
+            -boot d \
+            -daemonize \
+            -pidfile "''$PIDFILE"
+
+          echo -e "''${YELLOW}Waiting for SSH (timeout 120s)...''${NC}"
+          ELAPSED=0
+          while ! ssh ''$SSH_OPTS -p "''$SSH_PORT" root@localhost true 2>/dev/null; do
+            sleep 1
+            ELAPSED=$((ELAPSED + 1))
+            if [ "''$ELAPSED" -ge 120 ]; then
+              echo -e "''${RED}Error: SSH timeout after 120s''${NC}"
+              kill "$(cat "''$PIDFILE")" 2>/dev/null || true
+              exit 1
+            fi
+          done
+          echo -e "''${GREEN}SSH ready (''${ELAPSED}s)''${NC}"
+
+          echo -e "''${YELLOW}[4/5] Installing ''$HOST via nixos-anywhere...''${NC}"
+          ${nixos-anywhere-bin} \
+            --flake ".#''$HOST" \
+            --ssh-port "''$SSH_PORT" \
+            --no-reboot \
+            root@localhost
+
+          kill "$(cat "''$PIDFILE")" 2>/dev/null || true
+          rm -f "''$PIDFILE"
+          sleep 2
+
+          echo -e "''${YELLOW}[5/5] Launching graphical VM...''${NC}"
+          setup_gl
+          echo -e "''${GREEN}VM: ''${CPUS} CPUs, ''${RAM}MB RAM, SSH on localhost:''${SSH_PORT}''${NC}"
+          echo -e "''${GREEN}SPICE viewer will open automatically.''${NC}"
+          (sleep 3 && remote-viewer spice://localhost:5900 2>/dev/null) &
+          exec qemu-system-x86_64 \
+            -enable-kvm \
+            -m "''$RAM" \
+            -smp "''$CPUS" \
+            -drive file="''$DISK",format=qcow2,if=virtio \
+            -nic user,model=virtio-net-pci,hostfwd=tcp::''${SSH_PORT}-:22 \
+            -device virtio-vga-gl -display egl-headless,rendernode=/dev/dri/renderD128 \
+            -spice port=5900,disable-ticketing=on \
+            -bios ${pkgs.OVMF.fd}/FV/OVMF.fd
+        '';
         "build-switch" = mkScript "build-switch" ''
           PATH=${pkgs.git}/bin:$PATH
           echo "Running build-switch for ${system}"
