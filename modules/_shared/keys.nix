@@ -1,0 +1,5 @@
+{
+  sshPublicKeys = [
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB+qnpVT15QebM41WFgwktTMP6W/KXymb8gxNV0bu5dw"
+  ];
+}

@@ -1,0 +1,438 @@
+# Tier C — Eval tests: assert config properties at evaluation time.
+# Runs via `nix flake check` (--no-build skips VM tests, eval checks are instant).
+# Each check is a `pkgs.runCommand` that fails if any assertion is false.
+{self, ...}: {
+  perSystem = {
+    pkgs,
+    system,
+    lib,
+    ...
+  }: let
+    helpers = import ./_lib/helpers.nix {inherit lib;};
+    mkEvalCheck = helpers.mkEvalCheck pkgs;
+
+    # Helper to get a NixOS config by hostname
+    nixosCfg = name: self.nixosConfigurations.${name}.config;
+
+    # Helper to get HM config for the primary user of a NixOS host
+    hmCfg = name: let
+      cfg = nixosCfg name;
+    in
+      cfg.home-manager.users.${cfg.hostSpec.userName};
+    # Only run on x86_64-linux (all test hosts are x86_64-linux)
+  in
+    lib.optionalAttrs (system == "x86_64-linux") {
+      checks = {
+        # --- hostSpec smart defaults ---
+        eval-hostspec-defaults = mkEvalCheck "hostspec-defaults" [
+          # useNiri implies isGraphical + useGreetd
+          {
+            check = (nixosCfg "krach-qemu").hostSpec.isGraphical;
+            msg = "useNiri implies isGraphical";
+          }
+          {
+            check = (nixosCfg "krach-qemu").hostSpec.useGreetd;
+            msg = "useNiri implies useGreetd";
+          }
+          # useGnome implies isGraphical + useGdm
+          {
+            check = (nixosCfg "ohm").hostSpec.isGraphical;
+            msg = "useGnome implies isGraphical";
+          }
+          {
+            check = (nixosCfg "ohm").hostSpec.useGdm;
+            msg = "useGnome implies useGdm";
+          }
+          # isMinimal implies !isGraphical + !isDev
+          {
+            check = (nixosCfg "qemu").hostSpec.isGraphical == false;
+            msg = "isMinimal implies !isGraphical";
+          }
+          {
+            check = (nixosCfg "qemu").hostSpec.isDev == false;
+            msg = "isMinimal implies !isDev";
+          }
+        ];
+
+        # --- Scope activation (krach-qemu: useNiri + isImpermanent) ---
+        eval-scope-activation = mkEvalCheck "scope-activation" [
+          {
+            check = (nixosCfg "krach-qemu").programs.niri.enable;
+            msg = "niri enabled on krach-qemu";
+          }
+          {
+            check = (nixosCfg "krach-qemu").services.greetd.enable;
+            msg = "greetd enabled on krach-qemu";
+          }
+          {
+            check = (nixosCfg "krach-qemu").security.polkit.enable;
+            msg = "polkit enabled on krach-qemu";
+          }
+          {
+            check = (nixosCfg "krach-qemu").networking.firewall.enable;
+            msg = "firewall enabled on krach-qemu";
+          }
+          {
+            check = (nixosCfg "krach-qemu").networking.networkmanager.enable;
+            msg = "networkmanager enabled on krach-qemu";
+          }
+        ];
+
+        # --- Scope deactivation (qemu: isMinimal) ---
+        eval-scope-deactivation = mkEvalCheck "scope-deactivation" [
+          {
+            check = (nixosCfg "qemu").hostSpec.isGraphical == false;
+            msg = "qemu isGraphical is false";
+          }
+          {
+            check = (nixosCfg "qemu").hostSpec.isDev == false;
+            msg = "qemu isDev is false";
+          }
+          {
+            check = !(nixosCfg "qemu").programs.niri.enable or false;
+            msg = "niri not enabled on minimal qemu";
+          }
+          {
+            check = !(nixosCfg "qemu").services.greetd.enable or false;
+            msg = "greetd not enabled on minimal qemu";
+          }
+        ];
+
+        # --- Impermanence paths (krach-qemu: isImpermanent) ---
+        eval-impermanence-paths = let
+          cfg = nixosCfg "krach-qemu";
+          persistDirs = cfg.environment.persistence."/persist/system".directories;
+          # Normalize: directories can be strings or attrsets with `directory` key
+          dirPaths = map (d:
+            if builtins.isString d
+            then d
+            else d.directory or "")
+          persistDirs;
+        in
+          mkEvalCheck "impermanence-paths" [
+            {
+              check = builtins.elem "/etc/nixos" dirPaths;
+              msg = "/etc/nixos in persist directories";
+            }
+            {
+              check = builtins.elem "/etc/NetworkManager/system-connections" dirPaths;
+              msg = "/etc/NetworkManager/system-connections in persist directories";
+            }
+            {
+              check = builtins.elem "/var/lib/nixos" dirPaths;
+              msg = "/var/lib/nixos in persist directories";
+            }
+            {
+              check = builtins.elem "/var/log" dirPaths;
+              msg = "/var/log in persist directories";
+            }
+            {
+              check = cfg.fileSystems."/persist".neededForBoot;
+              msg = "/persist neededForBoot is true";
+            }
+          ];
+
+        # --- SSH hardening ---
+        eval-ssh-hardening = let
+          cfg = nixosCfg "krach-qemu";
+        in
+          mkEvalCheck "ssh-hardening" [
+            {
+              check = cfg.services.openssh.settings.PermitRootLogin == "prohibit-password";
+              msg = "PermitRootLogin is prohibit-password";
+            }
+            {
+              check = cfg.services.openssh.settings.PasswordAuthentication == false;
+              msg = "PasswordAuthentication is false";
+            }
+            {
+              check = cfg.networking.firewall.enable;
+              msg = "firewall is enabled";
+            }
+          ];
+
+        # --- HM programs (krach-qemu) ---
+        eval-hm-programs = let
+          hm = hmCfg "krach-qemu";
+        in
+          mkEvalCheck "hm-programs" [
+            {
+              check = hm.programs.zsh.enable;
+              msg = "HM zsh enabled";
+            }
+            {
+              check = hm.programs.git.enable;
+              msg = "HM git enabled";
+            }
+            {
+              check = hm.programs.starship.enable;
+              msg = "HM starship enabled";
+            }
+            {
+              check = hm.programs.ssh.enable;
+              msg = "HM ssh enabled";
+            }
+          ];
+
+        # --- Dev scope activation (krach: isDev = true by default) ---
+        eval-dev-scope-activation = mkEvalCheck "dev-scope-activation" [
+          {
+            check = (nixosCfg "krach").hostSpec.isDev;
+            msg = "krach isDev is true";
+          }
+          {
+            check = (nixosCfg "krach").virtualisation.docker.enable;
+            msg = "docker enabled when isDev = true";
+          }
+        ];
+
+        # --- Dev scope deactivation (qemu: isMinimal implies isDev = false) ---
+        eval-dev-scope-deactivation = mkEvalCheck "dev-scope-deactivation" [
+          {
+            check = (nixosCfg "qemu").hostSpec.isDev == false;
+            msg = "qemu isDev is false (isMinimal implies !isDev)";
+          }
+          {
+            check = !(nixosCfg "qemu").virtualisation.docker.enable or false;
+            msg = "docker not enabled when isDev = false";
+          }
+        ];
+
+        # --- NixFleet framework options exist on all hosts ---
+        eval-org-field-exists = mkEvalCheck "org-field-exists" [
+          {
+            check = (nixosCfg "krach-qemu").hostSpec ? organization;
+            msg = "hostSpec should have organization option";
+          }
+          {
+            check = (nixosCfg "krach-qemu").hostSpec ? role;
+            msg = "hostSpec should have role option";
+          }
+          {
+            check = (nixosCfg "krach-qemu").hostSpec ? secretsPath;
+            msg = "hostSpec should have secretsPath option";
+          }
+        ];
+
+        # --- Enterprise scope negative test (krach-qemu: no enterprise flags set) ---
+        eval-enterprise-scope-negative = mkEvalCheck "enterprise-scope-negative" [
+          {
+            check = (nixosCfg "krach-qemu").hostSpec.useVpn == false;
+            msg = "krach-qemu useVpn is false";
+          }
+          {
+            check = (nixosCfg "krach-qemu").hostSpec.useFilesharing == false;
+            msg = "krach-qemu useFilesharing is false";
+          }
+          {
+            check = (nixosCfg "krach-qemu").hostSpec.useLdap == false;
+            msg = "krach-qemu useLdap is false";
+          }
+          {
+            check =
+              !(builtins.elem "wireguard-tools" (
+                map (p: p.pname or p.name or "")
+                (nixosCfg "krach-qemu").environment.systemPackages
+              ));
+            msg = "wireguard-tools not in systemPackages when useVpn = false";
+          }
+        ];
+
+        # --- Organization defaults ---
+        eval-org-defaults = mkEvalCheck "org-defaults" [
+          {
+            check = (nixosCfg "krach").hostSpec.githubUser == "abstracts33d";
+            msg = "krach should inherit githubUser from org";
+          }
+          {
+            check = (nixosCfg "krach").hostSpec.githubEmail == "abstract.s33d@gmail.com";
+            msg = "krach should inherit githubEmail from org";
+          }
+          {
+            check = (nixosCfg "krach").hostSpec.organization == "abstracts33d";
+            msg = "krach should have organization = abstracts33d";
+          }
+        ];
+
+        # --- Organization on all hosts ---
+        eval-org-all-hosts = mkEvalCheck "org-all-hosts" [
+          {
+            check = (nixosCfg "krach-qemu").hostSpec.organization == "abstracts33d";
+            msg = "krach-qemu should have organization";
+          }
+          {
+            check = (nixosCfg "qemu").hostSpec.organization == "abstracts33d";
+            msg = "qemu should have organization";
+          }
+          {
+            check = (nixosCfg "ohm").hostSpec.organization == "abstracts33d";
+            msg = "ohm should have organization";
+          }
+          {
+            check = (nixosCfg "lab").hostSpec.organization == "abstracts33d";
+            msg = "lab should have organization";
+          }
+        ];
+
+        # --- Secrets path agnostic ---
+        eval-secrets-agnostic = mkEvalCheck "secrets-agnostic" [
+          {
+            check = (nixosCfg "krach").hostSpec.secretsPath == null;
+            msg = "secretsPath should default to null (framework-agnostic)";
+          }
+        ];
+
+        # --- Batch hosts ---
+        eval-batch-hosts = mkEvalCheck "batch-hosts" [
+          {
+            check = (nixosCfg "edge-01").hostSpec.organization == "abstracts33d";
+            msg = "edge-01 batch host should belong to abstracts33d org";
+          }
+          {
+            check = (nixosCfg "edge-01").hostSpec.isServer == true;
+            msg = "edge-01 should have isServer from edge role";
+          }
+          {
+            check = (nixosCfg "edge-01").hostSpec.isMinimal == true;
+            msg = "edge-01 should have isMinimal from edge role";
+          }
+          {
+            check = (nixosCfg "edge-01").hostSpec.userName == "s33d";
+            msg = "edge-01 should inherit userName from org";
+          }
+        ];
+
+        # --- Test matrix hosts ---
+        eval-test-matrix = mkEvalCheck "test-matrix" [
+          {
+            check = (nixosCfg "test-workstation-x86_64").hostSpec.organization == "abstracts33d";
+            msg = "test-workstation-x86_64 should belong to abstracts33d org";
+          }
+          {
+            check = (nixosCfg "test-server-x86_64").hostSpec.isServer == true;
+            msg = "test-server-x86_64 should have isServer from server role";
+          }
+          {
+            check = (nixosCfg "test-minimal-x86_64").hostSpec.isMinimal == true;
+            msg = "test-minimal-x86_64 should have isMinimal from minimal role";
+          }
+        ];
+
+        # --- Role defaults direct test ---
+        eval-role-defaults = mkEvalCheck "role-defaults" [
+          {
+            check = (nixosCfg "test-workstation-x86_64").hostSpec.isDev == true;
+            msg = "workstation role should set isDev = true";
+          }
+          {
+            check = (nixosCfg "test-workstation-x86_64").hostSpec.isGraphical == true;
+            msg = "workstation role should set isGraphical = true";
+          }
+          {
+            check = (nixosCfg "test-server-x86_64").hostSpec.isServer == true;
+            msg = "server role should set isServer = true";
+          }
+          {
+            check = (nixosCfg "test-server-x86_64").hostSpec.isDev == false;
+            msg = "server role should set isDev = false";
+          }
+        ];
+
+        # --- userName in org defaults ---
+        eval-username-org-default = mkEvalCheck "username-org-default" [
+          {
+            check = (nixosCfg "krach").hostSpec.userName == "s33d";
+            msg = "krach should inherit userName from org defaults";
+          }
+          {
+            check = (nixosCfg "ohm").hostSpec.userName == "sabrina";
+            msg = "ohm should override userName to sabrina";
+          }
+          {
+            check = (nixosCfg "edge-01").hostSpec.userName == "s33d";
+            msg = "edge-01 batch host should inherit userName from org";
+          }
+        ];
+
+        # --- Locale / timezone (from org defaults) ---
+        eval-locale-timezone = mkEvalCheck "locale-timezone" [
+          {
+            check = (nixosCfg "krach").time.timeZone == "Europe/Paris";
+            msg = "krach should have timezone from org defaults";
+          }
+          {
+            check = (nixosCfg "krach").i18n.defaultLocale == "en_US.UTF-8";
+            msg = "krach should have locale from org defaults";
+          }
+          {
+            check = (nixosCfg "krach").console.keyMap == "us";
+            msg = "krach should have keyboard layout from org defaults";
+          }
+        ];
+
+        # --- GPG signing (from org defaults) ---
+        eval-gpg-signing = mkEvalCheck "gpg-signing" [
+          {
+            check = (hmCfg "krach").programs.git.signing.key == "77C21CC574933465";
+            msg = "krach should have GPG signing key from org defaults";
+          }
+          {
+            check = (hmCfg "krach").programs.git.signing.signByDefault == true;
+            msg = "krach should have signByDefault enabled";
+          }
+        ];
+
+        # --- SSH authorized keys (from org defaults) ---
+        eval-ssh-authorized = mkEvalCheck "ssh-authorized" [
+          {
+            check = builtins.length (nixosCfg "krach").users.users.s33d.openssh.authorizedKeys.keys > 0;
+            msg = "krach should have SSH authorized keys from org defaults";
+          }
+          {
+            check = builtins.length (nixosCfg "krach").users.users.root.openssh.authorizedKeys.keys > 0;
+            msg = "krach root should have SSH authorized keys from org defaults";
+          }
+        ];
+
+        # --- Theme defaults ---
+        eval-theme-defaults = mkEvalCheck "theme-defaults" [
+          {
+            check = (nixosCfg "krach-qemu").hostSpec.theme.flavor == "macchiato";
+            msg = "default theme flavor should be macchiato";
+          }
+          {
+            check = (nixosCfg "krach-qemu").hostSpec.theme.accent == "lavender";
+            msg = "default theme accent should be lavender";
+          }
+        ];
+
+        # --- Password files (from org defaults via hostSpec) ---
+        eval-password-files = mkEvalCheck "password-files" [
+          {
+            check = (nixosCfg "krach").users.users.s33d.hashedPasswordFile == "/run/agenix/user-password";
+            msg = "krach user should have hashed password file from org defaults";
+          }
+          {
+            check = (nixosCfg "krach").users.users.root.hashedPasswordFile == "/run/agenix/root-password";
+            msg = "krach root should have hashed password file from org defaults";
+          }
+          {
+            check = (nixosCfg "krach").hostSpec.hashedPasswordFile == "/run/agenix/user-password";
+            msg = "krach hostSpec should have hashedPasswordFile from org defaults";
+          }
+          {
+            check = (nixosCfg "krach").hostSpec.rootHashedPasswordFile == "/run/agenix/root-password";
+            msg = "krach hostSpec should have rootHashedPasswordFile from org defaults";
+          }
+        ];
+
+        # --- Extensions namespace ---
+        eval-extensions-empty = mkEvalCheck "extensions-empty" [
+          {
+            check = (nixosCfg "krach-qemu").nixfleet.extensions == {};
+            msg = "nixfleet.extensions should be empty attrset by default";
+          }
+        ];
+      };
+    };
+}
