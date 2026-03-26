@@ -28,12 +28,7 @@
       hostSpecModule = ../_shared/host-spec-module.nix;
     };
 
-    defaultTestSpec =
-      helpers.defaultTestSpec
-      // {
-        isGraphical = false;
-        isDev = false;
-      };
+    defaultTestSpec = helpers.defaultTestSpec;
   in
     lib.optionalAttrs (system == "x86_64-linux") {
       checks = {

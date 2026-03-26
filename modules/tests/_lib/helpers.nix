@@ -18,8 +18,6 @@
   defaultTestSpec = {
     hostName = "testvm";
     userName = "testuser";
-    githubUser = "test";
-    githubEmail = "test@test.com";
     organization = "test";
     isImpermanent = false;
   };

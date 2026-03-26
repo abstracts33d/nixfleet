@@ -1,18 +1,22 @@
 # Custom NixOS minimal ISO with SSH key pre-configured for automated installs.
 # Available as `packages.iso` on Linux systems only.
-# The SSH key comes from _shared/keys.nix (framework test key by default).
-# Fleets should override sshAuthorizedKeys in their org definition; the ISO
-# uses the keys.nix file directly since it builds outside the fleet context.
-{inputs, ...}: {
-  perSystem = {
+# Fleet sets `nixfleet.isoSshKeys` to bake its SSH keys into the ISO.
+{inputs, config, lib, ...}: {
+  options.nixfleet.isoSshKeys = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [];
+    description = "SSH public keys baked into the installer ISO for passwordless root access.";
+  };
+
+  config.perSystem = {
     system,
     lib,
     ...
   }: let
     isLinux = builtins.elem system ["x86_64-linux" "aarch64-linux"];
-    keys = (import ./_shared/keys.nix).sshPublicKeys;
+    keys = config.nixfleet.isoSshKeys;
   in
-    lib.optionalAttrs isLinux {
+    lib.optionalAttrs (isLinux && keys != []) {
       packages.iso = let
         isoSystem = inputs.nixpkgs.lib.nixosSystem {
           modules = [
@@ -20,7 +24,7 @@
             {
               nixpkgs.hostPlatform = system;
 
-              # SSH key for passwordless root access (ISO only)
+              # SSH keys for passwordless root access (ISO only)
               users.users.root.openssh.authorizedKeys.keys = keys;
               services.openssh = {
                 enable = true;

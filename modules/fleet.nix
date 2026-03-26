@@ -1,6 +1,8 @@
 # Minimal test fleet for the NixFleet framework repo.
 # These hosts exist to make eval tests pass — they are NOT a real org fleet.
 # No secrets, no agenix, no real hardware.
+# Fleet-specific hostSpec options (isDev, isGraphical, useNiri, theme, etc.)
+# are NOT available here — those are declared by consuming fleets.
 {config, ...}: let
   inherit (config.nixfleet.lib) mkFleet mkOrg mkHost mkBatchHosts mkTestMatrix builtinRoles;
 
@@ -10,18 +12,12 @@
     description = "Framework test organization";
     hostSpecDefaults = {
       userName = "testuser";
-      githubUser = "test-user";
-      githubEmail = "test@example.com";
       timeZone = "UTC";
       locale = "en_US.UTF-8";
       keyboardLayout = "us";
-      gpgSigningKey = null;
-      sshAuthorizedKeys =
-        (import ./_shared/keys.nix).sshPublicKeys;
-      theme = {
-        flavor = "macchiato";
-        accent = "lavender";
-      };
+      sshAuthorizedKeys = [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINixfleetTestKeyDoNotUseInProduction"
+      ];
     };
     # No nixosModules — framework repo has no agenix/secrets input
   };
@@ -30,7 +26,7 @@
     organizations = [testOrg];
     hosts =
       [
-        # krach: isDev=true (default), used for org defaults / password / GPG / SSH tests
+        # krach: used for org defaults / password / SSH tests
         (mkHost {
           hostName = "krach";
           org = testOrg;
@@ -39,11 +35,10 @@
           hostSpecValues = {
             hostName = "krach";
             isImpermanent = true;
-            useNiri = true;
           };
         })
 
-        # krach-qemu: useNiri + isImpermanent, scope activation tests
+        # krach-qemu: scope activation tests
         (mkHost {
           hostName = "krach-qemu";
           org = testOrg;
@@ -52,12 +47,10 @@
           hostSpecValues = {
             hostName = "krach-qemu";
             isImpermanent = true;
-            useNiri = true;
-            isDev = false;
           };
         })
 
-        # ohm: useGnome, userName override
+        # ohm: userName override
         (mkHost {
           hostName = "ohm";
           org = testOrg;
@@ -66,8 +59,6 @@
           hostSpecValues = {
             hostName = "ohm";
             userName = "sabrina";
-            useGnome = true;
-            isDev = false;
           };
         })
 
@@ -92,8 +83,6 @@
           hostSpecValues = {
             hostName = "lab";
             isServer = true;
-            isDev = false;
-            isGraphical = false;
           };
         })
       ]

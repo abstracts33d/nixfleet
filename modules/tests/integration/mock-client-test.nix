@@ -5,7 +5,10 @@
 # 1. config.nixfleet.lib is accessible
 # 2. mkFleet, mkOrg, mkHost produce valid nixosConfigurations
 # 3. Deferred modules (core, scopes) are available to hosts
-# 4. hostSpec options (organization, role, theme, etc.) work through the flakeModule
+# 4. Framework-level hostSpec options (organization, role, etc.) work through the flakeModule
+#
+# NOTE: Fleet-specific hostSpec options (isDev, isGraphical, theme, etc.)
+# are NOT tested here — those are declared by consuming fleets.
 #
 # Run: nix build .#checks.x86_64-linux.integration-mock-client --no-link
 {
@@ -22,8 +25,6 @@
     name = "mock-client";
     hostSpecDefaults = {
       userName = "testuser";
-      githubUser = "mock";
-      githubEmail = "mock@test.com";
       timeZone = "America/New_York";
       locale = "en_US.UTF-8";
       keyboardLayout = "us";
@@ -84,7 +85,6 @@ in {
       # 3. Org defaults propagate
       (assert' (mockCfg.config.hostSpec.organization == "mock-client") "organization from mkOrg propagates")
       (assert' (mockCfg.config.hostSpec.userName == "testuser") "userName from org defaults propagates")
-      (assert' (mockCfg.config.hostSpec.githubUser == "mock") "githubUser from org defaults propagates")
 
       # 4. Locale/timezone from org defaults
       (assert' (mockCfg.config.time.timeZone == "America/New_York") "timeZone from org defaults reaches NixOS config")

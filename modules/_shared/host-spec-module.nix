@@ -1,28 +1,13 @@
 # Specifications For Differentiating Hosts
+#
+# Framework-level options only. Fleet-specific options (isDev, isGraphical,
+# useNiri, theme, githubUser, etc.) are declared in the consuming fleet repo
+# via deferred modules on hostSpec.
 {
   config,
   lib,
   ...
 }: {
-  config.hostSpec = lib.mkMerge [
-    (lib.mkIf config.hostSpec.isMinimal {
-      isGraphical = lib.mkDefault false;
-      isDev = lib.mkDefault false;
-    })
-    (lib.mkIf config.hostSpec.useNiri {
-      isGraphical = lib.mkDefault true;
-      useGreetd = lib.mkDefault true;
-    })
-    (lib.mkIf config.hostSpec.useHyprland {
-      isGraphical = lib.mkDefault true;
-      useGreetd = lib.mkDefault true;
-    })
-    (lib.mkIf config.hostSpec.useGnome {
-      isGraphical = lib.mkDefault true;
-      useGdm = lib.mkDefault true;
-    })
-  ];
-
   options.hostSpec = {
     # Data variables that don't dictate configuration settings
     userName = lib.mkOption {
@@ -37,14 +22,6 @@
       default = {};
       type = lib.types.attrsOf lib.types.anything;
       description = "An attribute set of networking information";
-    };
-    githubUser = lib.mkOption {
-      type = lib.types.str;
-      description = "The handle of the user";
-    };
-    githubEmail = lib.mkOption {
-      type = lib.types.str;
-      description = "The email of the user";
     };
 
     # NixFleet framework options
@@ -77,11 +54,6 @@
       default = "us";
       description = "XKB keyboard layout";
     };
-    gpgSigningKey = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "GPG key fingerprint for git commit signing. Null disables signing.";
-    };
     sshAuthorizedKeys = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [];
@@ -105,11 +77,6 @@
       default = false;
       description = "Used to indicate a minimal host";
     };
-    isServer = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Used to indicate a server host";
-    };
     isDarwin = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -120,57 +87,10 @@
       default = false;
       description = "Used to indicate an impermanent host";
     };
-    isDev = lib.mkOption {
+    isServer = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Used to indicate a development host";
-    };
-    isGraphical = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Used to indicate a host that is graphical";
-    };
-    useGnome = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Used to indicate a host that uses a Gnome";
-    };
-    useHyprland = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Used to indicate a host that uses Hyprland";
-    };
-    useNiri = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Used to indicate a host that uses Niri";
-    };
-    useGdm = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Used to indicate a host that uses a GDM";
-    };
-    useGreetd = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Used to indicate a host that uses a Greetd";
-    };
-    useAerospace = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Used to indicate a host that uses a aerospace";
-    };
-
-    # Hardware Configuration Settings
-    hasBluetooth = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Used to indicate a host that has bluetooth capabilities";
-    };
-    useSecureBoot = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Used to indicate a host that uses Secure Boot (lanzaboote)";
+      description = "Used to indicate a server host";
     };
     hashedPasswordFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -181,24 +101,6 @@
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Path to hashed password file for root. Null = no managed password.";
-    };
-    wifiNetworks = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [];
-      description = "List of WiFi network secret names to bootstrap (must exist in secrets repo as wifi-<name>.age)";
-    };
-
-    theme = {
-      flavor = lib.mkOption {
-        type = lib.types.str;
-        default = "macchiato";
-        description = "Catppuccin flavor (latte, frappe, macchiato, mocha).";
-      };
-      accent = lib.mkOption {
-        type = lib.types.str;
-        default = "lavender";
-        description = "Catppuccin accent color.";
-      };
     };
   };
 }

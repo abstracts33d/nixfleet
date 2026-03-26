@@ -1,22 +1,21 @@
 # Built-in role definitions.
+#
+# Framework roles set only framework-level hostSpec flags.
+# Fleet-specific flags (isDev, isGraphical, useNiri, etc.) should be
+# set by the consuming fleet's own role definitions or host overrides.
 let
   mkRole = import ./mk-role.nix;
 in {
   workstation = mkRole {
     name = "workstation";
     hostSpecDefaults = {
-      isDev = true;
-      isGraphical = true;
       isImpermanent = true;
-      useNiri = true;
     };
   };
   server = mkRole {
     name = "server";
     hostSpecDefaults = {
       isServer = true;
-      isDev = false;
-      isGraphical = false;
     };
   };
   minimal = mkRole {
@@ -28,10 +27,7 @@ in {
   vm-test = mkRole {
     name = "vm-test";
     hostSpecDefaults = {
-      isDev = false;
-      isGraphical = true;
       isImpermanent = true;
-      useNiri = true;
     };
   };
   edge = mkRole {
@@ -45,8 +41,6 @@ in {
     name = "darwin-workstation";
     hostSpecDefaults = {
       isDarwin = true;
-      isDev = true;
-      isGraphical = true;
     };
   };
 }

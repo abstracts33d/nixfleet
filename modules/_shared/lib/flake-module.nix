@@ -33,6 +33,7 @@ in {
     description = "NixFleet library (mkFleet, mkOrg, mkRole, mkHost, mkBatchHosts, mkTestMatrix)";
   };
 
+
   # Framework deferred modules (lib + base + generic scopes)
   imports = [
     # Module namespace declaration

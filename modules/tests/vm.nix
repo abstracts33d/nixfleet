@@ -29,12 +29,7 @@
         vm-core = pkgs.testers.nixosTest {
           name = "vm-core";
           nodes.machine = mkTestNode {
-            hostSpecValues =
-              defaultTestSpec
-              // {
-                isGraphical = false;
-                isDev = false;
-              };
+            hostSpecValues = defaultTestSpec;
           };
           testScript = ''
             machine.wait_for_unit("multi-user.target")
