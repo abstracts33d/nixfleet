@@ -214,30 +214,6 @@
           }
         ];
 
-        # --- Enterprise scope negative test (krach-qemu: no enterprise flags set) ---
-        eval-enterprise-scope-negative = mkEvalCheck "enterprise-scope-negative" [
-          {
-            check = (nixosCfg "krach-qemu").hostSpec.useVpn == false;
-            msg = "krach-qemu useVpn is false";
-          }
-          {
-            check = (nixosCfg "krach-qemu").hostSpec.useFilesharing == false;
-            msg = "krach-qemu useFilesharing is false";
-          }
-          {
-            check = (nixosCfg "krach-qemu").hostSpec.useLdap == false;
-            msg = "krach-qemu useLdap is false";
-          }
-          {
-            check =
-              !(builtins.elem "wireguard-tools" (
-                map (p: p.pname or p.name or "")
-                (nixosCfg "krach-qemu").environment.systemPackages
-              ));
-            msg = "wireguard-tools not in systemPackages when useVpn = false";
-          }
-        ];
-
         # --- Organization defaults ---
         eval-org-defaults = mkEvalCheck "org-defaults" [
           {

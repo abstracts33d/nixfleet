@@ -1,10 +1,7 @@
 # Minimal test fleet for the NixFleet framework repo.
 # These hosts exist to make eval tests pass — they are NOT a real org fleet.
 # No secrets, no agenix, no real hardware.
-{
-  config,
-  ...
-}: let
+{config, ...}: let
   inherit (config.nixfleet.lib) mkFleet mkOrg mkHost mkBatchHosts mkTestMatrix builtinRoles;
 
   # -- Test organization (mirrors abstracts33d defaults for eval test compatibility) --

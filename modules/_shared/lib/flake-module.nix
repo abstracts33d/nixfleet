@@ -62,12 +62,6 @@ in {
     ../../scopes/darwin/homebrew.nix
     ../../scopes/darwin/karabiner.nix
     ../../scopes/darwin/aerospace.nix
-    ../../scopes/enterprise/vpn.nix
-    ../../scopes/enterprise/filesharing.nix
-    ../../scopes/enterprise/auth.nix
-    ../../scopes/enterprise/printing.nix
-    ../../scopes/enterprise/certificates.nix
-    ../../scopes/enterprise/proxy.nix
 
     # NixFleet services
     ../../scopes/nixfleet/agent.nix

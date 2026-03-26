@@ -42,13 +42,6 @@
     - [homebrew](scopes/darwin/homebrew.md)
     - [karabiner](scopes/darwin/karabiner.md)
     - [aerospace](scopes/darwin/aerospace.md)
-  - [Enterprise](scopes/enterprise/README.md)
-    - [vpn](scopes/enterprise/vpn.md)
-    - [filesharing](scopes/enterprise/filesharing.md)
-    - [auth](scopes/enterprise/auth.md)
-    - [printing](scopes/enterprise/printing.md)
-    - [certificates](scopes/enterprise/certificates.md)
-    - [proxy](scopes/enterprise/proxy.md)
 
 # Core Modules
 

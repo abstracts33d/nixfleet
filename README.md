@@ -44,7 +44,6 @@ modules/
 │   ├── desktop/       # Compositors: niri, hyprland, gnome
 │   ├── display/       # Display managers: gdm, greetd
 │   ├── hardware/      # bluetooth, secure-boot
-│   ├── enterprise/    # vpn, filesharing, auth, printing, certs, proxy
 │   └── darwin/        # homebrew, karabiner, aerospace
 ├── wrappers/          # Portable composites (shell, terminal)
 ├── tests/             # Eval tests, VM tests, integration tests
@@ -76,7 +75,6 @@ Hosts declare flags in `hostSpecValues`. Scope modules auto-activate:
 | `hasBluetooth` | `hardware/bluetooth.nix` | Bluetooth + Blueman |
 | `useSecureBoot` | `hardware/secure-boot.nix` | Lanzaboote Secure Boot |
 | `isDarwin` | `darwin/` | Homebrew, karabiner, aerospace |
-| `useVpn` | `enterprise/vpn.nix` | Corporate VPN (WireGuard/OpenVPN) |
 
 ## Portable Environments
 
