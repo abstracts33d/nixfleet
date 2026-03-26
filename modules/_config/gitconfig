@@ -1,5 +1,0 @@
-# Framework default gitconfig — override in your fleet's _config/gitconfig
-[init]
-  defaultBranch = main
-[core]
-  editor = nvim

@@ -36,18 +36,9 @@ See the [User Guide](docs/guide/README.md) for a full walkthrough.
 modules/
 ├── _shared/lib/       # Framework API: mkFleet, mkOrg, mkRole, mkHost, mkBatchHosts, mkTestMatrix
 ├── _shared/           # hostSpec options, disk templates, keys
-├── core/              # Core deferred modules (nixos.nix, darwin.nix, home.nix, _home/)
-├── scopes/            # Scope modules (auto-activate via mkIf on hostSpec flags)
-│   ├── catppuccin.nix # Theming
-│   ├── graphical/     # isGraphical: pipewire, fonts, browsers
-│   ├── dev/           # isDev: direnv, docker, claude-code
-│   ├── desktop/       # Compositors: niri, hyprland, gnome
-│   ├── display/       # Display managers: gdm, greetd
-│   ├── hardware/      # bluetooth, secure-boot
-│   └── darwin/        # homebrew, karabiner, aerospace
-├── wrappers/          # Portable composites (shell, terminal)
+├── core/              # Core deferred modules (nixos.nix, darwin.nix)
 ├── tests/             # Eval tests, VM tests, integration tests
-├── apps.nix           # Flake apps (install, build-switch, validate, spawn-qemu, ...)
+├── apps.nix           # Flake apps (install, validate, spawn-qemu, ...)
 ├── fleet.nix          # Test fleet for framework CI
 └── flake-module.nix   # flakeModules.default for consumers
 docs/
@@ -56,28 +47,11 @@ docs/
 └── nixfleet/          # Business docs, specs, research
 ```
 
-## Scopes
+> **Note:** Opinionated modules (scopes, wrappers, HM programs, config files) live in your fleet repo, not in the framework. NixFleet provides the lib + base NixOS/Darwin core. Your fleet adds the opinions.
 
-Hosts declare flags in `hostSpecValues`. Scope modules auto-activate:
+## Scope Pattern
 
-| Flag | Scope | What it enables |
-|------|-------|-----------------|
-| `!isMinimal` | `catppuccin.nix` | Catppuccin Macchiato theming |
-| `isGraphical` | `graphical/` | Pipewire, fonts, XDG portals, browsers |
-| `isDev` | `dev/` | Direnv, mise, docker, claude-code |
-| `useNiri` | `desktop/niri.nix` | Niri compositor + Noctalia Shell |
-| `useGnome` | `desktop/gnome.nix` | GNOME desktop + GDM |
-| `isImpermanent` | `impermanence.nix` | Ephemeral root, btrfs wipe |
-| `hasBluetooth` | `hardware/bluetooth.nix` | Bluetooth + Blueman |
-| `useSecureBoot` | `hardware/secure-boot.nix` | Lanzaboote Secure Boot |
-| `isDarwin` | `darwin/` | Homebrew, karabiner, aerospace |
-
-## Portable Environments
-
-```sh
-nix run github:abstracts33d/nixfleet#shell      # Full dev shell
-nix run github:abstracts33d/nixfleet#terminal    # Kitty wrapping the dev shell
-```
+Hosts declare flags in `hostSpecValues` (e.g., `useNiri`, `isDev`, `isGraphical`). Scope modules in your fleet auto-activate based on these flags using `lib.mkIf`. The framework defines the hostSpec options; your fleet provides the scope implementations.
 
 ## Installing a Host
 

@@ -24,21 +24,6 @@
       inputs.home-manager.follows = "home-manager";
       inputs.darwin.follows = "darwin";
     };
-    nix-homebrew = {
-      url = "github:zhaofengli-wip/nix-homebrew";
-    };
-    homebrew-bundle = {
-      url = "github:homebrew/homebrew-bundle";
-      flake = false;
-    };
-    homebrew-core = {
-      url = "github:homebrew/homebrew-core";
-      flake = false;
-    };
-    homebrew-cask = {
-      url = "github:homebrew/homebrew-cask";
-      flake = false;
-    };
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
     };
@@ -52,16 +37,8 @@
       inputs.disko.follows = "disko";
       inputs.treefmt-nix.follows = "treefmt-nix";
     };
-    wrapper-modules = {
-      url = "github:BirdeeHub/nix-wrapper-modules";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     nixos-hardware = {
       url = "github:NixOS/nixos-hardware/master";
-    };
-    nix-index-database = {
-      url = "github:Mic92/nix-index-database";
-      inputs.nixpkgs.follows = "nixpkgs";
     };
     lanzaboote = {
       url = "github:nix-community/lanzaboote/v1.0.0";
@@ -69,10 +46,6 @@
     };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-    catppuccin = {
-      url = "github:catppuccin/nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

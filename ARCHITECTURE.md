@@ -16,7 +16,7 @@ High-level overview of NixFleet. For detailed internals, see [TECHNICAL.md](TECH
 |  Agent <-> Control Plane <-> CLI        |
 +-----------------------------------------+
 |  NixOS Module System                    |
-|  Core + Scopes (auto-activate)          |
+|  Core (base) + Fleet Scopes             |
 +-----------------------------------------+
 ```
 
@@ -64,7 +64,7 @@ Example: an org sets `isDev = true` for all hosts. The `minimal` role overrides 
 
 **Framework** (`modules/_shared/lib/`): Generic constructors with no org-specific assumptions. Exported via `flakeModules.default` for external consumers.
 
-**Client** (`modules/fleet.nix` + `modules/scopes/` + `modules/core/`): The `abstracts33d` reference fleet. Org defaults, host list, secrets paths, scope implementations.
+**Client** (your fleet repo): Org defaults, host list, secrets paths, scope implementations, HM programs, wrappers. The framework provides a minimal test fleet in `fleet.nix` for CI.
 
 This separation means an external organization can consume the framework without forking:
 
@@ -81,19 +81,17 @@ This separation means an external organization can consume the framework without
 
 ## Nix Module Layers
 
-### Core (always active)
+### Core (always active, framework-provided)
 
-`modules/core/` -- boot, networking, user accounts, security, secrets, shell tools. Every host gets these regardless of flags.
+`modules/core/` -- boot, networking, user accounts, security, zsh, git. Every host gets these regardless of flags.
 
-### Scopes (flag-gated)
+### Scopes (flag-gated, fleet-provided)
 
-`modules/scopes/` -- conditionally active based on `hostSpec` flags. Each scope self-activates with `lib.mkIf hS.<flag>` and co-locates its impermanence persist paths.
+Scope modules live in fleet repos, not in the framework. They self-activate with `lib.mkIf hS.<flag>` and co-locate impermanence persist paths. Common scopes: graphical, dev, desktop, display, hardware, darwin.
 
-Key scopes: graphical, dev, desktop (niri/hyprland/gnome), enterprise (vpn/ldap/printing/certs/proxy), hardware (bluetooth, secure-boot), darwin (homebrew, karabiner).
+### HM Programs, Wrappers, Config Files (fleet-provided)
 
-### Wrappers (portable)
-
-`modules/wrappers/` -- portable composites that work on any machine with Nix. The shell wrapper bundles zsh + 25 CLI tools + configs from `_config/`. The terminal wrapper wraps kitty around the shell.
+HM program configs (starship, nvim, tmux, kitty, etc.), portable wrappers (shell, terminal), and raw config files live in fleet repos.
 
 ## Rust Workspace
 
@@ -112,7 +110,7 @@ Each Rust binary is packaged as a Nix derivation (e.g., `agent/default.nix`) and
 
 | Repo | Content |
 |------|---------|
-| `fleet` (this repo) | Framework + reference fleet + Rust workspace |
+| `nixfleet` (this repo) | Framework (lib + core) + test fleet |
 | `fleet-secrets` (private) | Age-encrypted secrets (SSH keys, passwords, WiFi) |
 
 Secrets are referenced by path in the public repo. The private repo is a flake input (`inputs.secrets`). Update with `nix flake update secrets`.
@@ -122,6 +120,6 @@ Secrets are referenced by path in the public repo. The private repo is a flake i
 1. **Dendritic import**: Every `.nix` under `modules/` is auto-imported. No import lists to maintain.
 2. **Deferred modules**: Scope modules register themselves; constructors auto-include all via `builtins.attrValues`.
 3. **Central fleet definition**: All hosts in `fleet.nix`, not scattered across directories.
-4. **HM for tools, wrappers for composites**: Avoids duplication, preserves catppuccin theming.
-5. **Scope-aware impermanence**: Persist paths live alongside their program definitions, not centralized.
-6. **Mechanism over policy**: Framework provides constructors; clients provide values.
+4. **Framework = lib + base**: Opinionated modules (scopes, wrappers, HM programs) live in fleet repos.
+5. **Scope-aware impermanence**: Persist paths live alongside their program definitions in fleet scopes.
+6. **Mechanism over policy**: Framework provides constructors; fleets provide opinions.

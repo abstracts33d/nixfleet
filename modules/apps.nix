@@ -85,7 +85,7 @@
           ${
             if isLinux
             then ''
-              for t in eval-hostspec-defaults eval-scope-activation eval-scope-deactivation eval-impermanence-paths eval-ssh-hardening eval-hm-programs; do
+              for t in eval-hostspec-defaults eval-ssh-hardening eval-org-field-exists eval-org-defaults eval-org-all-hosts eval-secrets-agnostic eval-batch-hosts eval-test-matrix eval-role-defaults eval-username-org-default eval-locale-timezone eval-ssh-authorized eval-theme-defaults eval-password-files eval-extensions-empty; do
                 check "$t" nix build ".#checks.${system}.$t" --no-link
               done
             ''
@@ -96,22 +96,12 @@
           }
 
           echo ""
-          echo "=== NixOS Hosts (build) ==="
+          echo "=== NixOS Test Hosts (build) ==="
           for host in krach krach-qemu qemu ohm lab; do
             check "$host" nix build ".#nixosConfigurations.$host.config.system.build.toplevel" --no-link
           done
 
-          echo ""
-          echo "=== Cross-platform Hosts (eval only) ==="
-          for host in utm krach-utm; do
-            check_eval "$host" ".#nixosConfigurations.$host"
-          done
-          check_eval "aether (darwin)" ".#darwinConfigurations.aether"
-
-          echo ""
-          echo "=== Packages ==="
-          check "shell" nix build .#shell --no-link
-          check "terminal" nix build .#terminal --no-link
+          # Cross-platform hosts (aether, utm) are fleet-specific — removed from framework validate
 
           ${
             if isLinux
@@ -119,7 +109,7 @@
               if [ "$VM" = "1" ]; then
                 echo ""
                 echo "=== VM Integration Tests ==="
-                for t in vm-core vm-shell-hm vm-graphical vm-minimal; do
+                for t in vm-core vm-minimal; do
                   check "$t" nix build ".#checks.${system}.$t" --no-link
                 done
               fi

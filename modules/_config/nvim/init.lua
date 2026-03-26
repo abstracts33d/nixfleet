@@ -1,1 +1,0 @@
--- Framework default nvim config — override in your fleet

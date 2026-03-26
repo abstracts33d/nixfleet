@@ -13,12 +13,10 @@
 
     # Helper to get a NixOS config by hostname
     nixosCfg = name: self.nixosConfigurations.${name}.config;
-
-    # Helper to get HM config for the primary user of a NixOS host
-    hmCfg = name: let
-      cfg = nixosCfg name;
-    in
-      cfg.home-manager.users.${cfg.hostSpec.userName};
+    # Helper to get HM config — unused now (HM tests moved to fleet)
+    # hmCfg = name: let
+    #   cfg = nixosCfg name;
+    # in cfg.home-manager.users.${cfg.hostSpec.userName};
     # Only run on x86_64-linux (all test hosts are x86_64-linux)
   in
     lib.optionalAttrs (system == "x86_64-linux") {
@@ -54,85 +52,27 @@
           }
         ];
 
-        # --- Scope activation (krach-qemu: useNiri + isImpermanent) ---
-        eval-scope-activation = mkEvalCheck "scope-activation" [
-          {
-            check = (nixosCfg "krach-qemu").programs.niri.enable;
-            msg = "niri enabled on krach-qemu";
-          }
-          {
-            check = (nixosCfg "krach-qemu").services.greetd.enable;
-            msg = "greetd enabled on krach-qemu";
-          }
-          {
-            check = (nixosCfg "krach-qemu").security.polkit.enable;
-            msg = "polkit enabled on krach-qemu";
-          }
-          {
-            check = (nixosCfg "krach-qemu").networking.firewall.enable;
-            msg = "firewall enabled on krach-qemu";
-          }
-          {
-            check = (nixosCfg "krach-qemu").networking.networkmanager.enable;
-            msg = "networkmanager enabled on krach-qemu";
-          }
-        ];
+        # --- Scope activation — Moved to fleet (scopes are fleet-specific) ---
+        # eval-scope-activation = mkEvalCheck "scope-activation" [
+        #   { check = (nixosCfg "krach-qemu").programs.niri.enable; msg = "niri enabled on krach-qemu"; }
+        #   { check = (nixosCfg "krach-qemu").services.greetd.enable; msg = "greetd enabled on krach-qemu"; }
+        #   { check = (nixosCfg "krach-qemu").security.polkit.enable; msg = "polkit enabled on krach-qemu"; }
+        #   { check = (nixosCfg "krach-qemu").networking.firewall.enable; msg = "firewall enabled on krach-qemu"; }
+        #   { check = (nixosCfg "krach-qemu").networking.networkmanager.enable; msg = "networkmanager enabled on krach-qemu"; }
+        # ];
 
-        # --- Scope deactivation (qemu: isMinimal) ---
-        eval-scope-deactivation = mkEvalCheck "scope-deactivation" [
-          {
-            check = (nixosCfg "qemu").hostSpec.isGraphical == false;
-            msg = "qemu isGraphical is false";
-          }
-          {
-            check = (nixosCfg "qemu").hostSpec.isDev == false;
-            msg = "qemu isDev is false";
-          }
-          {
-            check = !(nixosCfg "qemu").programs.niri.enable or false;
-            msg = "niri not enabled on minimal qemu";
-          }
-          {
-            check = !(nixosCfg "qemu").services.greetd.enable or false;
-            msg = "greetd not enabled on minimal qemu";
-          }
-        ];
+        # --- Scope deactivation — Moved to fleet (scopes are fleet-specific) ---
+        # eval-scope-deactivation = mkEvalCheck "scope-deactivation" [
+        #   { check = (nixosCfg "qemu").hostSpec.isGraphical == false; msg = "qemu isGraphical is false"; }
+        #   { check = (nixosCfg "qemu").hostSpec.isDev == false; msg = "qemu isDev is false"; }
+        #   { check = !(nixosCfg "qemu").programs.niri.enable or false; msg = "niri not enabled on minimal qemu"; }
+        #   { check = !(nixosCfg "qemu").services.greetd.enable or false; msg = "greetd not enabled on minimal qemu"; }
+        # ];
 
-        # --- Impermanence paths (krach-qemu: isImpermanent) ---
-        eval-impermanence-paths = let
-          cfg = nixosCfg "krach-qemu";
-          persistDirs = cfg.environment.persistence."/persist/system".directories;
-          # Normalize: directories can be strings or attrsets with `directory` key
-          dirPaths = map (d:
-            if builtins.isString d
-            then d
-            else d.directory or "")
-          persistDirs;
-        in
-          mkEvalCheck "impermanence-paths" [
-            {
-              check = builtins.elem "/etc/nixos" dirPaths;
-              msg = "/etc/nixos in persist directories";
-            }
-            {
-              check = builtins.elem "/etc/NetworkManager/system-connections" dirPaths;
-              msg = "/etc/NetworkManager/system-connections in persist directories";
-            }
-            {
-              check = builtins.elem "/var/lib/nixos" dirPaths;
-              msg = "/var/lib/nixos in persist directories";
-            }
-            {
-              check = builtins.elem "/var/log" dirPaths;
-              msg = "/var/log in persist directories";
-            }
-            {
-              check = cfg.fileSystems."/persist".neededForBoot;
-              msg = "/persist neededForBoot is true";
-            }
-          ];
+        # --- Impermanence paths — Moved to fleet (scopes are fleet-specific) ---
+        # eval-impermanence-paths = ...;
 
-        # --- SSH hardening ---
+        # --- SSH hardening (core/nixos.nix — still in framework) ---
         eval-ssh-hardening = let
           cfg = nixosCfg "krach-qemu";
         in
@@ -151,52 +91,12 @@
             }
           ];
 
-        # --- HM programs (krach-qemu) ---
-        eval-hm-programs = let
-          hm = hmCfg "krach-qemu";
-        in
-          mkEvalCheck "hm-programs" [
-            {
-              check = hm.programs.zsh.enable;
-              msg = "HM zsh enabled";
-            }
-            {
-              check = hm.programs.git.enable;
-              msg = "HM git enabled";
-            }
-            {
-              check = hm.programs.starship.enable;
-              msg = "HM starship enabled";
-            }
-            {
-              check = hm.programs.ssh.enable;
-              msg = "HM ssh enabled";
-            }
-          ];
+        # --- HM programs — Moved to fleet (core/_home/ is fleet-specific) ---
+        # eval-hm-programs = ...;
 
-        # --- Dev scope activation (krach: isDev = true by default) ---
-        eval-dev-scope-activation = mkEvalCheck "dev-scope-activation" [
-          {
-            check = (nixosCfg "krach").hostSpec.isDev;
-            msg = "krach isDev is true";
-          }
-          {
-            check = (nixosCfg "krach").virtualisation.docker.enable;
-            msg = "docker enabled when isDev = true";
-          }
-        ];
-
-        # --- Dev scope deactivation (qemu: isMinimal implies isDev = false) ---
-        eval-dev-scope-deactivation = mkEvalCheck "dev-scope-deactivation" [
-          {
-            check = (nixosCfg "qemu").hostSpec.isDev == false;
-            msg = "qemu isDev is false (isMinimal implies !isDev)";
-          }
-          {
-            check = !(nixosCfg "qemu").virtualisation.docker.enable or false;
-            msg = "docker not enabled when isDev = false";
-          }
-        ];
+        # --- Dev scope activation/deactivation — Moved to fleet (scopes are fleet-specific) ---
+        # eval-dev-scope-activation = ...;
+        # eval-dev-scope-deactivation = ...;
 
         # --- NixFleet framework options exist on all hosts ---
         eval-org-field-exists = mkEvalCheck "org-field-exists" [
@@ -346,17 +246,8 @@
           }
         ];
 
-        # --- GPG signing (from org defaults) ---
-        eval-gpg-signing = mkEvalCheck "gpg-signing" [
-          {
-            check = (hmCfg "krach").programs.git.signing.key == "77C21CC574933465";
-            msg = "krach should have GPG signing key from org defaults";
-          }
-          {
-            check = (hmCfg "krach").programs.git.signing.signByDefault == true;
-            msg = "krach should have signByDefault enabled";
-          }
-        ];
+        # --- GPG signing — Moved to fleet (HM git config is fleet-specific) ---
+        # eval-gpg-signing = ...;
 
         # --- SSH authorized keys (from org defaults) ---
         eval-ssh-authorized = mkEvalCheck "ssh-authorized" [

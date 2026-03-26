@@ -33,7 +33,7 @@ in {
     description = "NixFleet library (mkFleet, mkOrg, mkRole, mkHost, mkBatchHosts, mkTestMatrix)";
   };
 
-  # Framework deferred modules
+  # Framework deferred modules (lib + base only — scopes/wrappers are fleet-specific)
   imports = [
     # Module namespace declaration
     ../../module-options.nix
@@ -41,26 +41,5 @@ in {
     # Core
     ../../core/nixos.nix
     ../../core/darwin.nix
-    ../../core/home.nix
-
-    # Scopes
-    ../../scopes/base.nix
-    ../../scopes/catppuccin.nix
-    ../../scopes/nix-index.nix
-    ../../scopes/impermanence.nix
-    ../../scopes/graphical/nixos.nix
-    ../../scopes/graphical/home.nix
-    ../../scopes/dev/nixos.nix
-    ../../scopes/dev/home.nix
-    ../../scopes/desktop/niri.nix
-    ../../scopes/desktop/hyprland.nix
-    ../../scopes/desktop/gnome.nix
-    ../../scopes/display/greetd.nix
-    ../../scopes/display/gdm.nix
-    ../../scopes/hardware/bluetooth.nix
-    ../../scopes/hardware/secure-boot.nix
-    ../../scopes/darwin/homebrew.nix
-    ../../scopes/darwin/karabiner.nix
-    ../../scopes/darwin/aerospace.nix
   ];
 }

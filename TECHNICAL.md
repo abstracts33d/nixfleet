@@ -59,9 +59,7 @@ flake.nix -> mkFlake -> import-tree ./modules -> every .nix file is a flake-part
 
 The `_` prefix convention excludes directories from auto-import:
 - `_shared/` -- helper functions, option definitions, framework API
-- `_config/` -- raw config files (zsh, kitty, starship, etc.)
 - `_hardware/` -- per-host disk and hardware configs
-- `core/_home/` -- HM module fragments (imported by `core/home.nix`, not import-tree)
 
 ### Deferred Modules + Auto-Inclusion
 
@@ -77,76 +75,27 @@ modules = hardwareModules
 
 Each scope module self-gates with `lib.mkIf hS.<flag>`. Adding a new scope file = automatic for all hosts. No manual feature lists.
 
-### Scopes vs Core
+### Framework vs Fleet
 
-**Core** (`core/`) -- always active on every host. Boot, networking, user, security, secrets, shell tools.
+**Framework** (`core/`) -- always active on every host. Boot, networking, user, security, shell basics. Provides mechanism, not policy.
 
-**Scopes** (`scopes/`) -- conditionally active based on hostSpec flags. Each scope owns its config AND its impermanence persist paths.
+**Fleet** (your repo) -- opinionated modules: scopes (graphical, dev, desktop, display, hardware, darwin), wrappers (shell, terminal), HM programs (zsh, git, starship, nvim, etc.), config files, theming. These register as deferred modules that the framework auto-includes.
 
-## The Wrapper / HM Boundary
+### Scope Pattern (fleet-side)
 
-**This is the most important design decision.** Getting it wrong causes duplication, broken theming, and binary conflicts.
+Scope modules live in your fleet and self-gate with `lib.mkIf hS.<flag>`:
+- `isGraphical` -- pipewire, fonts, browsers
+- `isDev` -- direnv, docker, claude-code
+- `useNiri` -- niri compositor + greetd
+- `isImpermanent` -- ephemeral root, persist paths
+- etc.
 
-### Rule: HM for local tools, Wrappers for portable composites only
-
-| What | Managed by | Why |
-|------|-----------|-----|
-| Individual tools (kitty, git, starship, bat, helix, btop, zellij) | HM `programs.*` | Catppuccin auto-themes them, shell integrations work, no conflicts |
-| Portable dev shell (`nix run .#shell`) | Wrapper | Self-contained zsh + tools for remote machines |
-| Portable terminal (`nix run .#terminal`) | Wrapper | Kitty wrapping the portable shell |
-| Desktop session (niri + noctalia) | Wrapper + NixOS module | Portable compositor config |
-
-### Why NOT wrap individual tools
-
-Attempted and reverted. Problems:
-1. **Catppuccin breakage** -- catppuccin/nix themes HM `programs.*`. Wrapped kitty doesn't get themed.
-2. **Binary conflicts** -- wrapped zsh + HM `programs.zsh.enable` = two zsh binaries in PATH.
-3. **Duplication** -- git config in both wrapper (flags) and HM (gitconfig). Drift happens.
-4. **Shell integration loss** -- HM `programs.zoxide.enable` adds `eval "$(zoxide init zsh)"` to zshrc. Wrapped zoxide doesn't.
-
-### Config Sharing (`_config/`)
-
-Both HM and wrappers read from `_config/`:
-
-| File | HM consumer | Wrapper consumer |
-|------|-----------|-----------------|
-| `_config/kitty.conf` | `programs.kitty.extraConfig = readFile` | `terminal.nix` `--config` flag |
-| `_config/starship.toml` | `programs.starship.settings = importTOML` | `shell.nix` `STARSHIP_CONFIG` env |
-| `_config/gitconfig` | N/A (HM has its own settings + user/signing) | `shell.nix` `GIT_CONFIG_GLOBAL` env |
-| `_config/zsh/aliases.zsh` | `initContent` sources it | Bundled in shell zshrc |
-| `_config/zsh/functions.zsh` | `initContent` sources it | Bundled in shell zshrc |
-| `_config/zsh/wrapperrc.zsh` | N/A | Core zshrc for wrapper |
-
-**Sync requirement:** When changing `_config/zsh/wrapperrc.zsh`, verify `core/_home/zsh.nix` has matching settings (and vice versa). They express the same config in different formats (raw zsh vs Nix options).
-
-## Scope-Aware Impermanence
-
-Persist paths are co-located with their scope, NOT centralized:
-
-| Module | Persist paths |
-|--------|---------------|
-| `impermanence.nix` | System dirs, user data, .ssh, .gnupg, .config/gh |
-| `core/nixos.nix` | Neovim plugins, tmux resurrect, zoxide db |
-| `graphical/nixos.nix` | Chrome, Firefox, Brave, VS Code, Slack, halloy |
-| `dev/nixos.nix` | Docker, PostgreSQL, npm, cargo, pip, mise, direnv, .claude |
-| `desktop/gnome.nix` | dconf, gnome online accounts |
-| Host-specific (krach) | JetBrains config/data/cache |
-
-**Rule:** When adding a program to a scope, add its persist paths in the same module with `lib.mkIf hS.isImpermanent`.
+Persist paths should be co-located with their scope, NOT centralized. When adding a program to a scope, add its persist paths in the same module with `lib.mkIf hS.isImpermanent`.
 
 ## Nix Gotchas
 
-### constructFiles keys
-In nix-wrapper-modules, `constructFiles` keys become bash variable names. Use underscores only: `kitty_config`, NOT `kitty.conf` or `kitty-config`.
-
 ### perSystem and unfree
-`perSystem` pkgs don't inherit `nixpkgs.config.allowUnfree` from NixOS. Unfree packages (claude-code, ruby-mine) must go in NixOS/HM modules, not wrappers.
-
-### catppuccin/nix and Darwin
-catppuccin only provides `nixosModules` and `homeModules` -- no `darwinModules`. Importing `nixosModules` into Darwin causes a class mismatch error. Darwin gets catppuccin via the HM module only.
-
-### nix-index-database
-Upstream renamed `hmModules` to `homeModules`. Use `inputs.nix-index-database.homeModules.nix-index`.
+`perSystem` pkgs don't inherit `nixpkgs.config.allowUnfree` from NixOS. Unfree packages must go in NixOS/HM modules, not perSystem apps.
 
 ### Backup file collisions
 `backupFileExtension` creates fixed-name backups that block future activations. Use `backupCommand` with timestamped names and pruning:
@@ -173,13 +122,11 @@ Don't use `mkDefault` for `networking.useDHCP = false` in core -- it conflicts w
 | `flake-parts` | Module system for flake outputs |
 | `import-tree` | Auto-import directory tree as modules |
 | `disko` | Declarative disk partitioning |
-| `impermanence` | Ephemeral root filesystem |
+| `impermanence` | Ephemeral root filesystem (fleet-consumed) |
 | `agenix` | Age-encrypted secrets |
-| `secrets` | Private repo with encrypted secrets |
-| `nix-homebrew` + `homebrew-*` | Homebrew on macOS |
 | `nixos-anywhere` | Remote NixOS installation via SSH |
-| `wrapper-modules` | Portable wrapped composites |
 | `nixos-hardware` | Hardware-specific optimizations |
-| `nix-index-database` | Pre-built nix-index + comma |
+| `lanzaboote` | Secure Boot (fleet-consumed) |
 | `treefmt-nix` | Multi-language formatting |
-| `catppuccin` | Consistent theming (macchiato + lavender) |
+
+Opinionated inputs (catppuccin, nix-index-database, wrapper-modules, nix-homebrew) are added by fleets that need them.

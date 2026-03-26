@@ -1,5 +1,7 @@
 # Architecture
 
+> **Note:** As of the framework/fleet split, opinionated modules (scopes, wrappers, HM programs, config files) have moved to fleet repos. Documentation in `docs/src/scopes/`, `docs/src/wrappers/`, and `docs/src/core/home.md` describes the reference fleet implementation and needs updating to reflect the new split.
+
 ## Purpose
 
 This repository is a multi-platform Nix configuration targeting NixOS (x86_64, aarch64), macOS (aarch64-darwin, x86_64-darwin), and portable environments. It uses a dendritic architecture where modules self-compose based on host flags.

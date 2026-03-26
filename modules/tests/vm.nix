@@ -115,69 +115,13 @@
           '';
         };
 
-        # --- vm-shell-hm: HM activation, zsh, git, starship, nvim, tmux, fzf ---
-        vm-shell-hm = pkgs.testers.nixosTest {
-          name = "vm-shell-hm";
-          nodes.machine = mkTestNode {
-            hostSpecValues =
-              defaultTestSpec
-              // {
-                isGraphical = false;
-                isDev = false;
-              };
-          };
-          testScript = ''
-            machine.wait_for_unit("multi-user.target")
+        # --- vm-shell-hm — Moved to fleet (HM programs are fleet-specific) ---
+        # vm-shell-hm: starship, nvim, tmux, fzf, eza, rg, bat — all from core/_home/
 
-            # Wait for HM activation to complete
-            machine.wait_for_unit("home-manager-testuser.service")
+        # --- vm-graphical — Moved to fleet (scopes are fleet-specific) ---
+        # vm-graphical: greetd, niri, kitty, pipewire, fonts
 
-            # Core HM programs
-            machine.succeed("su - testuser -c 'test -e ~/.config/starship.toml'")
-            machine.succeed("su - testuser -c 'which starship'")
-            machine.succeed("su - testuser -c 'which nvim'")
-            machine.succeed("su - testuser -c 'which tmux'")
-            machine.succeed("su - testuser -c 'which fzf'")
-            machine.succeed("su - testuser -c 'which eza'")
-            machine.succeed("su - testuser -c 'which rg'")
-            machine.succeed("su - testuser -c 'which bat'")
-            machine.succeed("su - testuser -c 'git config user.name'")
-          '';
-        };
-
-        # --- vm-graphical: greetd, niri, kitty, pipewire, fonts, niri config ---
-        vm-graphical = pkgs.testers.nixosTest {
-          name = "vm-graphical";
-          nodes.machine = mkTestNode {
-            hostSpecValues =
-              defaultTestSpec
-              // {
-                useNiri = true;
-                # useNiri implies isGraphical + useGreetd via host-spec-module
-              };
-          };
-          testScript = ''
-            machine.wait_for_unit("multi-user.target")
-            machine.wait_for_unit("greetd")
-            machine.succeed("which niri")
-            # tuigreet is referenced by greetd config, verify it exists in the store
-            machine.succeed("find /nix/store -name tuigreet -type f 2>/dev/null | head -1 | grep -q tuigreet")
-
-            # Wait for HM activation
-            machine.wait_for_unit("home-manager-testuser.service")
-
-            machine.succeed("su - testuser -c 'which kitty'")
-            machine.succeed("su - testuser -c 'test -f ~/.config/niri/config.kdl'")
-
-            # Pipewire may not fully start without audio hardware, but the unit should exist
-            machine.succeed("systemctl list-unit-files | grep -q pipewire")
-
-            # Fonts installed
-            machine.succeed("fc-list | grep -qi meslo")
-          '';
-        };
-
-        # --- vm-minimal: negative test (no graphical, no dev, no docker) ---
+        # --- vm-minimal: negative test (core only, no scopes) ---
         vm-minimal = pkgs.testers.nixosTest {
           name = "vm-minimal";
           nodes.machine = mkTestNode {
@@ -191,20 +135,14 @@
           testScript = ''
             machine.wait_for_unit("multi-user.target")
 
-            # Core always present
+            # Core always present (from core/nixos.nix)
             machine.succeed("su - testuser -c 'which zsh'")
+            machine.succeed("su - testuser -c 'which git'")
 
-            # No graphical
+            # No graphical (no scope modules in framework)
             machine.fail("which niri")
 
-            # Wait for HM activation
-            machine.wait_for_unit("home-manager-testuser.service")
-
-            # Note: kitty is in core HM (simple.nix), so it's present even on minimal
-            # Verify no graphical HM apps like firefox/chrome
-            machine.fail("su - testuser -c 'which firefox'")
-
-            # Docker should not be running (isDev = false via isMinimal)
+            # Docker should not be present (no dev scope in framework)
             machine.fail("systemctl is-active docker")
           '';
         };
