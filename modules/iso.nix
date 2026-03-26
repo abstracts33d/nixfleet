@@ -1,5 +1,8 @@
 # Custom NixOS minimal ISO with SSH key pre-configured for automated installs.
 # Available as `packages.iso` on Linux systems only.
+# The SSH key comes from _shared/keys.nix (framework test key by default).
+# Fleets should override sshAuthorizedKeys in their org definition; the ISO
+# uses the keys.nix file directly since it builds outside the fleet context.
 {inputs, ...}: {
   perSystem = {
     system,

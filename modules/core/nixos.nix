@@ -177,9 +177,13 @@
       inetutils
     ];
 
-    # --- organization-scope Claude Code managed policy (/etc/claude-code/) ---
+    # --- Claude Code managed policy (/etc/claude-code/) ---
     # Level 1: Managed policy — non-overridable security floor.
     # These deny rules CANNOT be bypassed by project or user settings.
+    # This is kept in the framework (not fleet-specific) because any NixFleet
+    # fleet benefits from blocking destructive OS/git/nix commands at the org
+    # level. Fleets that don't use Claude Code can ignore this — the file is
+    # inert if Claude Code is not installed.
     environment.etc."claude-code/settings.json".text = builtins.toJSON {
       permissions = {
         deny = [
@@ -206,6 +210,6 @@
       };
     };
 
-    system.stateVersion = "21.05";
+    system.stateVersion = lib.mkDefault "24.11";
   };
 }

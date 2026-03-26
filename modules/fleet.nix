@@ -4,39 +4,36 @@
 {config, ...}: let
   inherit (config.nixfleet.lib) mkFleet mkOrg mkHost mkBatchHosts mkTestMatrix builtinRoles;
 
-  # -- Test organization (mirrors abstracts33d defaults for eval test compatibility) --
-  abstracts33d = mkOrg {
-    name = "abstracts33d";
+  # -- Test organization (generic defaults for framework eval tests) --
+  testOrg = mkOrg {
+    name = "test-org";
     description = "Framework test organization";
     hostSpecDefaults = {
-      userName = "s33d";
-      githubUser = "abstracts33d";
-      githubEmail = "abstract.s33d@gmail.com";
-      timeZone = "Europe/Paris";
+      userName = "testuser";
+      githubUser = "test-user";
+      githubEmail = "test@example.com";
+      timeZone = "UTC";
       locale = "en_US.UTF-8";
       keyboardLayout = "us";
-      gpgSigningKey = "77C21CC574933465";
-      sshAuthorizedKeys = [
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB+qnpVT15QebM41WFgwktTMP6W/KXymb8gxNV0bu5dw"
-      ];
+      gpgSigningKey = null;
+      sshAuthorizedKeys =
+        (import ./_shared/keys.nix).sshPublicKeys;
       theme = {
         flavor = "macchiato";
         accent = "lavender";
       };
-      hashedPasswordFile = "/run/agenix/user-password";
-      rootHashedPasswordFile = "/run/agenix/root-password";
     };
     # No nixosModules — framework repo has no agenix/secrets input
   };
 
   fleet = mkFleet {
-    organizations = [abstracts33d];
+    organizations = [testOrg];
     hosts =
       [
         # krach: isDev=true (default), used for org defaults / password / GPG / SSH tests
         (mkHost {
           hostName = "krach";
-          org = abstracts33d;
+          org = testOrg;
           platform = "x86_64-linux";
           isVm = true;
           hostSpecValues = {
@@ -49,7 +46,7 @@
         # krach-qemu: useNiri + isImpermanent, scope activation tests
         (mkHost {
           hostName = "krach-qemu";
-          org = abstracts33d;
+          org = testOrg;
           platform = "x86_64-linux";
           isVm = true;
           hostSpecValues = {
@@ -63,7 +60,7 @@
         # ohm: useGnome, userName override
         (mkHost {
           hostName = "ohm";
-          org = abstracts33d;
+          org = testOrg;
           platform = "x86_64-linux";
           isVm = true;
           hostSpecValues = {
@@ -77,7 +74,7 @@
         # qemu: isMinimal
         (mkHost {
           hostName = "qemu";
-          org = abstracts33d;
+          org = testOrg;
           platform = "x86_64-linux";
           isVm = true;
           hostSpecValues = {
@@ -89,7 +86,7 @@
         # lab: server host
         (mkHost {
           hostName = "lab";
-          org = abstracts33d;
+          org = testOrg;
           platform = "x86_64-linux";
           isVm = true;
           hostSpecValues = {
@@ -103,7 +100,7 @@
       # Batch hosts (edge fleet)
       ++ (mkBatchHosts {
         template = {
-          org = abstracts33d;
+          org = testOrg;
           role = builtinRoles.edge;
           platform = "x86_64-linux";
           isVm = true;
@@ -116,7 +113,7 @@
       })
       # Test matrix (validates all roles evaluate correctly)
       ++ (mkTestMatrix {
-        org = abstracts33d;
+        org = testOrg;
         roles = with builtinRoles; [workstation server minimal];
         platforms = ["x86_64-linux"];
       });

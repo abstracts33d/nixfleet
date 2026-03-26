@@ -19,78 +19,21 @@
     lib,
     ...
   }: let
-    nixosModules = builtins.attrValues config.flake.modules.nixos;
-    hmModules = builtins.attrValues config.flake.modules.homeManager;
-    hostSpecModule = ../_shared/host-spec-module.nix;
+    helpers = import ./_lib/helpers.nix {inherit lib;};
 
-    defaultTestSpec = {
-      hostName = "testvm";
-      userName = "testuser";
-      githubUser = "test";
-      githubEmail = "test@test.com";
-      organization = "test";
-      isImpermanent = false;
-      isGraphical = false;
-      isDev = false;
+    mkTestNode = helpers.mkTestNode {
+      inherit inputs;
+      nixosModules = builtins.attrValues config.flake.modules.nixos;
+      hmModules = builtins.attrValues config.flake.modules.homeManager;
+      hostSpecModule = ../_shared/host-spec-module.nix;
     };
 
-    # Reuse the mkTestNode pattern from vm.nix — deferred modules expect
-    # full HM setup, users, nixpkgs overrides, etc.
-    mkTestNode = {
-      hostSpecValues,
-      extraModules ? [],
-    }: {
-      imports =
-        [
-          hostSpecModule
-          {hostSpec = hostSpecValues;}
-        ]
-        ++ nixosModules
-        ++ [
-          inputs.home-manager.nixosModules.home-manager
-          {
-            users.users.${hostSpecValues.userName} = {
-              hashedPasswordFile = lib.mkForce null;
-              password = lib.mkForce "test";
-            };
-            users.users.root = {
-              hashedPasswordFile = lib.mkForce null;
-              password = lib.mkForce "test";
-            };
-
-            nixpkgs.pkgs = lib.mkForce (import inputs.nixpkgs {
-              system = "x86_64-linux";
-              config = {
-                allowUnfree = true;
-                allowBroken = false;
-                allowInsecure = false;
-                allowUnsupportedSystem = true;
-              };
-            });
-            nixpkgs.config = lib.mkForce {};
-            nixpkgs.hostPlatform = lib.mkForce "x86_64-linux";
-
-            home-manager = {
-              useGlobalPkgs = true;
-              useUserPackages = true;
-              users.${hostSpecValues.userName} = {
-                imports =
-                  [hostSpecModule]
-                  ++ hmModules;
-                hostSpec = hostSpecValues;
-                home = {
-                  stateVersion = "21.05";
-                  username = hostSpecValues.userName;
-                  homeDirectory = "/home/${hostSpecValues.userName}";
-                  enableNixpkgsReleaseCheck = false;
-                };
-                systemd.user.startServices = "sd-switch";
-              };
-            };
-          }
-        ]
-        ++ extraModules;
-    };
+    defaultTestSpec =
+      helpers.defaultTestSpec
+      // {
+        isGraphical = false;
+        isDev = false;
+      };
   in
     lib.optionalAttrs (system == "x86_64-linux") {
       checks = {

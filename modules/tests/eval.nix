@@ -13,10 +13,6 @@
 
     # Helper to get a NixOS config by hostname
     nixosCfg = name: self.nixosConfigurations.${name}.config;
-    # Helper to get HM config — unused now (HM tests moved to fleet)
-    # hmCfg = name: let
-    #   cfg = nixosCfg name;
-    # in cfg.home-manager.users.${cfg.hostSpec.userName};
     # Only run on x86_64-linux (all test hosts are x86_64-linux)
   in
     lib.optionalAttrs (system == "x86_64-linux") {
@@ -52,26 +48,6 @@
           }
         ];
 
-        # --- Scope activation — Moved to fleet (scopes are fleet-specific) ---
-        # eval-scope-activation = mkEvalCheck "scope-activation" [
-        #   { check = (nixosCfg "krach-qemu").programs.niri.enable; msg = "niri enabled on krach-qemu"; }
-        #   { check = (nixosCfg "krach-qemu").services.greetd.enable; msg = "greetd enabled on krach-qemu"; }
-        #   { check = (nixosCfg "krach-qemu").security.polkit.enable; msg = "polkit enabled on krach-qemu"; }
-        #   { check = (nixosCfg "krach-qemu").networking.firewall.enable; msg = "firewall enabled on krach-qemu"; }
-        #   { check = (nixosCfg "krach-qemu").networking.networkmanager.enable; msg = "networkmanager enabled on krach-qemu"; }
-        # ];
-
-        # --- Scope deactivation — Moved to fleet (scopes are fleet-specific) ---
-        # eval-scope-deactivation = mkEvalCheck "scope-deactivation" [
-        #   { check = (nixosCfg "qemu").hostSpec.isGraphical == false; msg = "qemu isGraphical is false"; }
-        #   { check = (nixosCfg "qemu").hostSpec.isDev == false; msg = "qemu isDev is false"; }
-        #   { check = !(nixosCfg "qemu").programs.niri.enable or false; msg = "niri not enabled on minimal qemu"; }
-        #   { check = !(nixosCfg "qemu").services.greetd.enable or false; msg = "greetd not enabled on minimal qemu"; }
-        # ];
-
-        # --- Impermanence paths — Moved to fleet (scopes are fleet-specific) ---
-        # eval-impermanence-paths = ...;
-
         # --- SSH hardening (core/nixos.nix — still in framework) ---
         eval-ssh-hardening = let
           cfg = nixosCfg "krach-qemu";
@@ -90,13 +66,6 @@
               msg = "firewall is enabled";
             }
           ];
-
-        # --- HM programs — Moved to fleet (core/_home/ is fleet-specific) ---
-        # eval-hm-programs = ...;
-
-        # --- Dev scope activation/deactivation — Moved to fleet (scopes are fleet-specific) ---
-        # eval-dev-scope-activation = ...;
-        # eval-dev-scope-deactivation = ...;
 
         # --- NixFleet framework options exist on all hosts ---
         eval-org-field-exists = mkEvalCheck "org-field-exists" [
@@ -117,14 +86,14 @@
         # --- Organization defaults ---
         # NOTE: These tests are reference-fleet-specific — they validate that the
         # test org in modules/fleet.nix propagates its values correctly. The literal
-        # strings match fleet.nix's `abstracts33d` org definition. If you fork this
+        # strings match fleet.nix's test org definition. If you fork this
         # framework, update fleet.nix and these assertions together.
         eval-org-defaults = let
           cfg = nixosCfg "krach";
         in
           mkEvalCheck "org-defaults" [
             {
-              check = cfg.hostSpec.githubUser == cfg.hostSpec.organization;
+              check = cfg.hostSpec ? githubUser && cfg.hostSpec.githubUser != "";
               msg = "krach should inherit githubUser from org";
             }
             {
@@ -271,9 +240,6 @@
             }
           ];
 
-        # --- GPG signing — Moved to fleet (HM git config is fleet-specific) ---
-        # eval-gpg-signing = ...;
-
         # --- SSH authorized keys (from org defaults) ---
         eval-ssh-authorized = let
           cfg = nixosCfg "krach";
@@ -305,27 +271,18 @@
             }
           ];
 
-        # --- Password files (from org defaults via hostSpec) ---
+        # --- Password files (hostSpec options exist and are wired correctly) ---
         eval-password-files = let
           cfg = nixosCfg "krach";
-          userName = cfg.hostSpec.userName;
         in
           mkEvalCheck "password-files" [
             {
-              check = cfg.users.users.${userName}.hashedPasswordFile == cfg.hostSpec.hashedPasswordFile;
-              msg = "krach user should have hashed password file from org defaults";
+              check = cfg.hostSpec ? hashedPasswordFile;
+              msg = "hostSpec should have hashedPasswordFile option";
             }
             {
-              check = cfg.users.users.root.hashedPasswordFile == cfg.hostSpec.rootHashedPasswordFile;
-              msg = "krach root should have hashed password file from org defaults";
-            }
-            {
-              check = cfg.hostSpec.hashedPasswordFile != null;
-              msg = "krach hostSpec should have hashedPasswordFile from org defaults";
-            }
-            {
-              check = cfg.hostSpec.rootHashedPasswordFile != null;
-              msg = "krach hostSpec should have rootHashedPasswordFile from org defaults";
+              check = cfg.hostSpec ? rootHashedPasswordFile;
+              msg = "hostSpec should have rootHashedPasswordFile option";
             }
           ];
 

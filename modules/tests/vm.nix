@@ -12,83 +12,16 @@
     lib,
     ...
   }: let
-    # Collect all deferred modules (same as mkNixosHost uses)
-    nixosModules = builtins.attrValues config.flake.modules.nixos;
-    hmModules = builtins.attrValues config.flake.modules.homeManager;
-    hostSpecModule = ../_shared/host-spec-module.nix;
+    helpers = import ./_lib/helpers.nix {inherit lib;};
 
-    # Build a nixosTest-compatible node config with stubbed secrets and known passwords.
-    # Returns a NixOS module (attrset) — nixosTest handles calling nixosSystem.
-    mkTestNode = {
-      hostSpecValues,
-      extraModules ? [],
-    }: {
-      imports =
-        [
-          hostSpecModule
-          {hostSpec = hostSpecValues;}
-        ]
-        ++ nixosModules
-        ++ [
-          inputs.home-manager.nixosModules.home-manager
-          {
-            # --- Test user with known password ---
-            users.users.${hostSpecValues.userName} = {
-              hashedPasswordFile = lib.mkForce null;
-              password = lib.mkForce "test";
-            };
-            users.users.root = {
-              hashedPasswordFile = lib.mkForce null;
-              password = lib.mkForce "test";
-            };
-
-            # --- Handle nixpkgs for test nodes ---
-            # nixosTest injects pkgs externally, but our core/nixos.nix sets nixpkgs.config
-            # which triggers an assertion. Override with a pkgs instance that has allowUnfree.
-            nixpkgs.pkgs = lib.mkForce (import inputs.nixpkgs {
-              system = "x86_64-linux";
-              config = {
-                allowUnfree = true;
-                allowBroken = false;
-                allowInsecure = false;
-                allowUnsupportedSystem = true;
-              };
-            });
-            nixpkgs.config = lib.mkForce {};
-            nixpkgs.hostPlatform = lib.mkForce "x86_64-linux";
-
-            # --- HM config for the test user ---
-            home-manager = {
-              useGlobalPkgs = true;
-              useUserPackages = true;
-              users.${hostSpecValues.userName} = {
-                imports =
-                  [hostSpecModule]
-                  ++ hmModules;
-                hostSpec = hostSpecValues;
-                home = {
-                  stateVersion = "21.05";
-                  username = hostSpecValues.userName;
-                  homeDirectory = "/home/${hostSpecValues.userName}";
-                  enableNixpkgsReleaseCheck = false;
-                };
-                systemd.user.startServices = "sd-switch";
-              };
-            };
-          }
-        ]
-        ++ extraModules;
+    mkTestNode = helpers.mkTestNode {
+      inherit inputs;
+      nixosModules = builtins.attrValues config.flake.modules.nixos;
+      hmModules = builtins.attrValues config.flake.modules.homeManager;
+      hostSpecModule = ../_shared/host-spec-module.nix;
     };
 
-    # Default hostSpec values for test nodes
-    defaultTestSpec = {
-      hostName = "testvm";
-      userName = "testuser";
-      githubUser = "test";
-      githubEmail = "test@test.com";
-      organization = "test";
-      isImpermanent = false;
-    };
+    defaultTestSpec = helpers.defaultTestSpec;
   in
     lib.optionalAttrs (system == "x86_64-linux") {
       checks = {
@@ -115,12 +48,6 @@
           '';
         };
 
-        # --- vm-shell-hm — Moved to fleet (HM programs are fleet-specific) ---
-        # vm-shell-hm: starship, nvim, tmux, fzf, eza, rg, bat — all from core/_home/
-
-        # --- vm-graphical — Moved to fleet (scopes are fleet-specific) ---
-        # vm-graphical: greetd, niri, kitty, pipewire, fonts
-
         # --- vm-minimal: negative test (core only, no scopes) ---
         vm-minimal = pkgs.testers.nixosTest {
           name = "vm-minimal";
@@ -129,7 +56,6 @@
               defaultTestSpec
               // {
                 isMinimal = true;
-                # isMinimal implies isGraphical = false, isDev = false
               };
           };
           testScript = ''
