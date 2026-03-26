@@ -37,4 +37,4 @@ The portable shell and terminal wrappers include Catppuccin colors in their conf
 
 ## Further Reading
 
-- [Technical Catppuccin Details](../../src/scopes/catppuccin.md) — module configuration
+- [Technical Catppuccin Details](../../scopes/catppuccin.md) — module configuration

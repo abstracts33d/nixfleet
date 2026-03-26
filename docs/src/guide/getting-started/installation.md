@@ -56,4 +56,4 @@ See [VM Testing](../development/vm-testing.md) for QEMU and UTM setup.
 - **Secrets missing:** Check `~/.keys/id_ed25519` exists (the agenix decryption key)
 - **Build fails:** Run `git add .` — Nix only sees git-tracked files
 
-For technical details on each host configuration, see the [Technical Docs](../../src/hosts/README.md).
+For technical details on each host configuration, see the [Technical Docs](../../hosts/README.md).

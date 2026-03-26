@@ -55,7 +55,7 @@ Compositor flags auto-propagate via `lib.mkDefault`:
 
 ## Adding a New Host
 
-See the [new host guide](../../guide/advanced/new-host.md) for step-by-step instructions. The short version: add an `mkHost` entry to `fleet.nix`, add hardware config in `_hardware/`, and run the installer.
+See the [new host guide](../guide/advanced/new-host.md) for step-by-step instructions. The short version: add an `mkHost` entry to `fleet.nix`, add hardware config in `_hardware/`, and run the installer.
 
 ## Links
 

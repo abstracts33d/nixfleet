@@ -45,5 +45,5 @@ Wrappers use [nix-wrapper-modules](https://github.com/BirdeeHub/nix-wrapper-modu
 
 ## Further Reading
 
-- [Technical Wrapper Details](../../src/wrappers/README.md) — implementation details
+- [Technical Wrapper Details](../../wrappers/README.md) — implementation details
 - [Cross-Platform Design](../advanced/cross-platform.md) — platform considerations

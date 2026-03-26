@@ -45,4 +45,4 @@ Regular security reviews are documented in `.claude/security-reviews/`. The revi
 ## Further Reading
 
 - [Secrets Management](../concepts/secrets.md) — how secrets work
-- [Technical Security Details](../../src/claude/permissions.md) — Claude Code permissions
+- [Technical Security Details](../../claude/permissions.md) — Claude Code permissions

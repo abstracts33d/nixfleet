@@ -136,29 +136,11 @@
           set -euo pipefail
           PATH=${lib.makeBinPath [pkgs.mdbook]}:''$PATH
 
-          echo "Starting technical docs at http://localhost:3000"
+          echo "Starting NixFleet docs at http://localhost:3000"
+          echo "  Sections: Guide | Reference | Business"
           echo "Press Ctrl-C to stop"
           cd "$(git rev-parse --show-toplevel)/docs/src"
           mdbook serve --open
-        '';
-        "docs-guide" = mkScript "docs-guide" ''
-          set -euo pipefail
-          PATH=${lib.makeBinPath [pkgs.mdbook]}:''$PATH
-
-          echo "Starting guide at http://localhost:3001"
-          echo "Press Ctrl-C to stop"
-          cd "$(git rev-parse --show-toplevel)/docs/guide"
-          mdbook serve --open --port 3001
-        '';
-        "site" = mkScript "site" ''
-          set -euo pipefail
-          PATH=${lib.makeBinPath [pkgs.python3]}:''$PATH
-          ROOT="$(git rev-parse --show-toplevel)"
-          echo "Serving NixFleet site at http://localhost:3002"
-          echo "  Rendered docs: docs/nixfleet/rendered/"
-          echo "Press Ctrl-C to stop"
-          cd "''$ROOT/docs/nixfleet/rendered"
-          python3 -m http.server 3002
         '';
         "install" = mkScript "install" ''
           set -euo pipefail
