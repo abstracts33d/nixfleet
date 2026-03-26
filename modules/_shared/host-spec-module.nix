@@ -122,7 +122,7 @@
     };
     isDev = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = false;
       description = "Used to indicate a development host";
     };
     isGraphical = lib.mkOption {
