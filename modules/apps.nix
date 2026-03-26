@@ -187,7 +187,7 @@
           }
 
           HOST=""
-          USERNAME="${USERNAME:-$(whoami)}"
+          USERNAME="''${USERNAME:-$(whoami)}"
           TARGET=""
           SSH_PORT="22"
           FLAKE_DIR=""
