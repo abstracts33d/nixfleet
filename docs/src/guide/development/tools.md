@@ -36,4 +36,4 @@ On macOS, use Docker Desktop or a Lima VM instead (not managed by this config).
 ## Further Reading
 
 - [Claude Code Integration](claude.md) — AI tooling setup
-- [Technical Dev Scope Details](../../src/scopes/dev.md) — packages and options
+- [Technical Dev Scope Details](../../scopes/dev.md) — packages and options

@@ -41,5 +41,5 @@ Project rules in `.claude/rules/` encode hard-won lessons:
 
 ## Further Reading
 
-- [Technical Claude Details](../../src/claude/README.md) — full agent/skill/MCP reference
+- [Technical Claude Details](../../claude/README.md) — full agent/skill/MCP reference
 - [Security Model](../advanced/security.md) — the 3-level permissions model

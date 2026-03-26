@@ -58,6 +58,7 @@ in {
     ../../scopes/display/greetd.nix
     ../../scopes/display/gdm.nix
     ../../scopes/hardware/bluetooth.nix
+    ../../scopes/hardware/secure-boot.nix
     ../../scopes/darwin/homebrew.nix
     ../../scopes/darwin/karabiner.nix
     ../../scopes/darwin/aerospace.nix

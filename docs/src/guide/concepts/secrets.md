@@ -49,5 +49,5 @@ nix run .#build-switch
 
 ## Further Reading
 
-- [Technical Secrets Details](../../src/secrets/README.md) — paths, keys, bootstrap
+- [Technical Secrets Details](../../secrets/README.md) — paths, keys, bootstrap
 - [Installation](../getting-started/installation.md) — how keys are provisioned

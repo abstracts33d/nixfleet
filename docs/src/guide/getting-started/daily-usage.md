@@ -17,8 +17,7 @@ Your daily workflow after installation.
 | `nix run .#validate` | Run all checks (format, eval, builds) |
 | `nix run .#validate -- --vm` | Include slow VM integration tests |
 | `nix fmt` | Format all Nix files |
-| `nix run .#docs` | Serve technical docs locally |
-| `nix run .#docs-guide` | Serve this guide locally |
+| `nix run .#docs` | Serve documentation locally (guide + reference + business) |
 
 ## Updating Inputs
 
