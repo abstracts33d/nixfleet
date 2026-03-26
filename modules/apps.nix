@@ -826,9 +826,12 @@
             -bios ${pkgs.OVMF.fd}/FV/OVMF.fd
         '';
         "build-switch" = mkScript "build-switch" ''
-          PATH=${pkgs.git}/bin:$PATH
-          echo "Running build-switch for ${system}"
-          exec ${inputs.self}/apps/${system}/build-switch "$@"
+          set -e
+          PATH=${lib.makeBinPath (with pkgs; [git hostname])}:$PATH
+          HOST=$(hostname)
+          echo -e '\033[1;33mStarting...\033[0m'
+          sudo SSH_AUTH_SOCK=$SSH_AUTH_SOCK /run/current-system/sw/bin/nixos-rebuild switch --flake .#$HOST "$@"
+          echo -e '\033[1;32mSwitch to new generation complete!\033[0m'
         '';
       }
       // lib.optionalAttrs isDarwin {
@@ -941,14 +944,33 @@
           esac
         '';
         "build-switch" = mkScript "build-switch" ''
-          PATH=${pkgs.git}/bin:$PATH
-          echo "Running build-switch for ${system}"
-          exec ${inputs.self}/apps/${system}/build-switch "$@"
+          set -e
+          PATH=${lib.makeBinPath (with pkgs; [git hostname])}:$PATH
+          HOST=$(hostname)
+          FLAKE_SYSTEM="darwinConfigurations.''${HOST}.system"
+          export NIXPKGS_ALLOW_UNFREE=1
+          echo -e '\033[1;33mStarting build...\033[0m'
+          nix --extra-experimental-features 'nix-command flakes' build .#$FLAKE_SYSTEM "$@"
+          echo -e '\033[1;33mSwitching to new generation...\033[0m'
+          sudo ./result/sw/bin/darwin-rebuild switch --flake .#''${HOST} "$@"
+          unlink ./result
+          echo -e '\033[1;32mSwitch to new generation complete!\033[0m'
         '';
         "rollback" = mkScript "rollback" ''
-          PATH=${pkgs.git}/bin:$PATH
-          echo "Running rollback for ${system}"
-          exec ${inputs.self}/apps/${system}/rollback "$@"
+          set -e
+          PATH=${lib.makeBinPath (with pkgs; [hostname])}:$PATH
+          FLAKE=$(hostname)
+          echo -e '\033[1;33mAvailable generations:\033[0m'
+          /run/current-system/sw/bin/darwin-rebuild --list-generations
+          echo -e '\033[1;33mEnter the generation number for rollback:\033[0m'
+          read GEN_NUM
+          if [ -z "$GEN_NUM" ]; then
+            echo -e '\033[1;31mNo generation number entered. Aborting.\033[0m'
+            exit 1
+          fi
+          echo -e '\033[1;33mRolling back to generation '"$GEN_NUM"'...\033[0m'
+          /run/current-system/sw/bin/darwin-rebuild switch --flake .#$FLAKE --switch-generation $GEN_NUM
+          echo -e '\033[1;32mRollback to generation '"$GEN_NUM"' complete!\033[0m'
         '';
       };
   };
