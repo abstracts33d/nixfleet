@@ -1,0 +1,11 @@
+[book]
+title = "nixos-config Guide"
+authors = ["abstracts33d"]
+language = "en"
+src = "."
+
+[build]
+build-dir = "../../result-guide"
+
+[output.html]
+git-repository-url = "https://github.com/abstracts33d/nixos-config"
