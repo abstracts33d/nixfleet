@@ -6,14 +6,14 @@ Get up and running in minutes.
 
 - A machine with [Nix](https://nixos.org/download) installed (NixOS, macOS, or any Linux)
 - An ed25519 SSH key (for secrets decryption)
-- Access to the private `nix-secrets` repository
+- Access to the private `secrets repo` repository
 
 ## Try It Without Installing
 
 The portable shell works on any machine with Nix:
 
 ```sh
-nix run github:abstracts33d/nixos-config#shell
+nix run github:abstracts33d/nixfleet#shell
 ```
 
 This gives you a fully configured zsh with 20+ CLI tools, starship prompt, and git config — no installation required.
@@ -23,8 +23,8 @@ This gives you a fully configured zsh with 20+ CLI tools, starship prompt, and g
 ### macOS
 
 ```sh
-git clone git@github.com:abstracts33d/nixos-config.git ~/nixos-config
-cd ~/nixos-config
+git clone git@github.com:abstracts33d/fleet.git ~/fleet
+cd ~/fleet
 nix run .#install -- -h aether -u s33d
 ```
 

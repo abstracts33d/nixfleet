@@ -23,7 +23,7 @@
 
     # --- nix settings (from hosts/nixos/common/core/nix.nix) ---
     nix = {
-      nixPath = ["nixos-config=${hS.home}/.local/share/src/nixos-config:/etc/nixos"];
+      nixPath = ["fleet=${hS.home}/.local/share/src/fleet:/etc/nixos"];
       settings = {
         allowed-users = ["${hS.userName}"];
         trusted-users =

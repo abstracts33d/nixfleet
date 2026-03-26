@@ -34,7 +34,7 @@ Runs in `boot.initrd.postResumeCommands`:
 
 ### HM module (user-level persistence)
 
-Persisted user directories: Documents, Downloads, Pictures, Videos, `.keys`, `.local/share/src`, `nixos-config`, `.zplug`, `.local/share/zsh`, `.config/gh`, `.local/share/nvim`, `.cache/nvim`, `.cache/tmux`, `.local/share/zoxide`, `.local/share/nix`.
+Persisted user directories: Documents, Downloads, Pictures, Videos, `.keys`, `.local/share/src`, `fleet`, `.zplug`, `.local/share/zsh`, `.config/gh`, `.local/share/nvim`, `.cache/nvim`, `.cache/tmux`, `.local/share/zoxide`, `.local/share/nix`.
 
 Persisted user files: `.zsh_history`, `.ssh/known_hosts`.
 

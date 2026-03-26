@@ -14,7 +14,7 @@ Minimal UTM test VM for Apple Silicon. No graphical environment, no dev tools. U
 |----------|-------|
 | Platform | aarch64-linux |
 | Constructor | `mkFleet` -> `mkVmHost` (internal) |
-| User | s33d |
+| User | <username> |
 | Minimal | Yes |
 | Graphical | No (via isMinimal) |
 | Dev tools | No (via isMinimal) |

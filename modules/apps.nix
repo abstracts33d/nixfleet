@@ -208,12 +208,13 @@
           # Find the flake directory
           if [ -f flake.nix ]; then
             FLAKE_DIR="."
-          elif [ -f "''$HOME/nixos-config/flake.nix" ]; then
-            FLAKE_DIR="''$HOME/nixos-config"
+          elif [ -f "''$HOME/fleet/flake.nix" ]; then
+            FLAKE_DIR="''$HOME/fleet"
           else
-            echo -e "''${YELLOW}Cloning nixos-config...''${NC}"
-            git clone git@github.com:abstracts33d/nixfleet.git "''$HOME/nixos-config"
-            FLAKE_DIR="''$HOME/nixos-config"
+            echo -e "''${YELLOW}Cloning fleet repo...''${NC}"
+            CLONE_URL="''$(git remote get-url origin 2>/dev/null || echo 'git@github.com:abstracts33d/fleet.git')"
+            git clone "''$CLONE_URL" "''$HOME/fleet"
+            FLAKE_DIR="''$HOME/fleet"
           fi
 
           #
@@ -314,7 +315,7 @@
             echo -e "''${YELLOW}Testing GitHub access...''${NC}"
             if ! ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
               echo -e "''${RED}Error: Cannot authenticate to GitHub.''${NC}"
-              echo "Ensure ~/.ssh/id_ed25519 has access to the nix-secrets repo."
+              echo "Ensure ~/.ssh/id_ed25519 has access to the secrets repo."
               exit 1
             fi
             echo -e "''${GREEN}GitHub access OK.''${NC}"

@@ -185,7 +185,7 @@
     wifiNetworks = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [];
-      description = "List of WiFi network secret names to bootstrap (must exist in nix-secrets as wifi-<name>.age)";
+      description = "List of WiFi network secret names to bootstrap (must exist in secrets repo as wifi-<name>.age)";
     };
 
     theme = {

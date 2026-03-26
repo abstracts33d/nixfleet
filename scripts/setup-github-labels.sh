@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# setup-github-labels.sh — Create/update GitHub labels for abstracts33d/fleet
+# setup-github-labels.sh — Create/update GitHub labels
 # Idempotent: uses --force to update existing labels, creates missing ones.
 # Usage: bash scripts/setup-github-labels.sh
 
 set -euo pipefail
 
-REPO="abstracts33d/fleet"
+REPO="${GH_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo abstracts33d/nixfleet)}"
 
 echo "Setting up GitHub labels for ${REPO}..."
 

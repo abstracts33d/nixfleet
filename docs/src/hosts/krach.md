@@ -16,7 +16,7 @@ Main workstation running NixOS with the Niri scrollable-tiling Wayland composito
 |----------|-------|
 | Platform | x86_64-linux |
 | Constructor | `mkFleet` -> `mkNixosHost` (internal) |
-| User | s33d |
+| User | <username> |
 | Network interface | enp6s0 |
 | Compositor | Niri + Noctalia Shell |
 | Display manager | greetd (tuigreet) |

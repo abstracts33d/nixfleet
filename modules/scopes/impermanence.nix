@@ -81,7 +81,7 @@
 
           # Source code
           ".local/share/src"
-          "nixos-config"
+          "fleet"
 
           # Shell
           ".zplug"

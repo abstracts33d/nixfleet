@@ -13,7 +13,7 @@ System configs need secrets: SSH keys, passwords, WiFi credentials. But Nix stor
 This config uses [agenix](https://github.com/ryantm/agenix) for secrets:
 
 1. Secrets are encrypted with age using SSH public keys
-2. Encrypted files live in a private `nix-secrets` repository
+2. Encrypted files live in a private `secrets repo` repository
 3. At boot, agenix decrypts secrets using `~/.keys/id_ed25519`
 4. Decrypted secrets are placed in ephemeral locations (`~/.ssh/`, etc.)
 
@@ -40,7 +40,7 @@ Secrets work naturally with ephemeral roots:
 
 ## Updating Secrets
 
-When the nix-secrets repo changes:
+When the secrets repo repo changes:
 
 ```sh
 nix flake update secrets

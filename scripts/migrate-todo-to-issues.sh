@@ -166,7 +166,7 @@ gh_create_issue \
   "Share Claude Code project memories across machines" \
   '## Context
 
-Project memories live in `~/.claude/projects/<path-encoded>/memory/`. The path encoding differs between machines (`-mnt-dev-fleet` vs `-Users-s33d-.local-share-src-fleet`), so memories are not shared.
+Project memories live in `~/.claude/projects/<path-encoded>/memory/`. The path encoding differs between machines (`-mnt-dev-fleet` vs `-Users-<username>-.local-share-src-fleet`), so memories are not shared.
 
 ## Problem
 

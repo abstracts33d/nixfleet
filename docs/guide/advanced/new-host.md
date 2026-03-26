@@ -9,7 +9,7 @@ Open `modules/fleet.nix` and add an `mkHost` entry to the `hosts` list:
 ```nix
 (mkHost {
   hostName = "my-host";
-  org = abstracts33d;          # organization (sets shared defaults)
+  org = abstract<username>;          # organization (sets shared defaults)
   platform = "x86_64-linux";   # or "aarch64-linux", "aarch64-darwin"
   hardwareModules = [
     ./_hardware/my-host/hardware-configuration.nix
@@ -29,7 +29,7 @@ For VMs, set `isVm = true` and omit `hardwareModules` (defaults are provided by 
 ```nix
 (mkHost {
   hostName = "my-vm";
-  org = abstracts33d;
+  org = abstract<username>;
   platform = "x86_64-linux";
   isVm = true;
   hostSpecValues = {
@@ -59,7 +59,7 @@ Org defaults (username, GitHub credentials, timezone, locale, theme, SSH keys, G
 
 ## 4. Add Secrets
 
-In the `nix-secrets` repo:
+In the `secrets repo` repo:
 1. Add the host's public key to `secrets.nix`
 2. Re-encrypt secrets: `agenix -r`
 3. Update: `nix flake update secrets`

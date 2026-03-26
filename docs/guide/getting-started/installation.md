@@ -11,7 +11,7 @@ nix run .#install -- -h <hostname> -u <username>
 ```
 
 **What happens:**
-1. SSH key is verified (needed for nix-secrets)
+1. SSH key is verified (needed for secrets repo)
 2. Hostname is set via `scutil`
 3. nix-darwin configuration is built and activated
 4. Home Manager configures your user environment

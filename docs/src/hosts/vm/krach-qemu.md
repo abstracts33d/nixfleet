@@ -14,7 +14,7 @@ QEMU/KVM virtual machine mirroring the krach workstation desktop (Niri + greetd)
 |----------|-------|
 | Platform | x86_64-linux |
 | Constructor | `mkFleet` -> `mkVmHost` (internal) |
-| User | s33d |
+| User | <username> |
 | Compositor | Niri |
 | Display manager | greetd |
 | Impermanent | Yes |

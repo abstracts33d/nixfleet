@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Age-encrypted secrets managed via agenix. Encrypted secrets live in a private repo (`nix-secrets`), referenced as a non-flake input. Secrets are decrypted at boot and symlinked to their target paths.
+Age-encrypted secrets managed via agenix. Encrypted secrets live in a private repo (`secrets repo`), referenced as a non-flake input. Secrets are decrypted at boot and symlinked to their target paths.
 
 > **Framework note:** NixFleet is secrets-agnostic. Agenix is the `abstracts33d` org's implementation choice, wired in via org modules (`fleet.nix` nixosModules and darwinModules). A different org could use sops-nix or Vault instead.
 
@@ -14,7 +14,7 @@ Age-encrypted secrets managed via agenix. Encrypted secrets live in a private re
 ## Architecture
 
 ```
-nix-secrets repo (private, git+ssh)
+secrets repo repo (private, git+ssh)
   |-- github-ssh-key.age
   |-- github-signing-key.age
   |-- <user>-hashed-password-file

@@ -15,7 +15,7 @@ Headless NixOS server. No graphical environment, no dev tools. Runs core service
 |----------|-------|
 | Platform | x86_64-linux |
 | Constructor | `mkFleet` -> `mkNixosHost` (internal) |
-| User | s33d |
+| User | <username> |
 | Network interface | enp0s1 |
 | Server mode | Yes |
 | Impermanent | Yes |

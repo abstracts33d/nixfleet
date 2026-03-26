@@ -26,7 +26,7 @@ nix run .#install -- --target root@localhost -p 2222 -h qemu
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-h` | (required) | Target hostname (must match flake host) |
-| `-u` | s33d | Username |
+| `-u` | <username> | Username |
 | `--target` | -- | SSH target for NixOS remote install |
 | `-p` | 22 | SSH port |
 

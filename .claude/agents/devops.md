@@ -27,7 +27,7 @@ You maintain the build, test, and deployment pipeline.
 - **Validate (eval tests)**: builds each `eval-*` check individually (avoids Darwin eval on Linux runner)
 - Triggered on PRs to `main`
 - Uses `DeterminateSystems/nix-installer-action` + `magic-nix-cache-action`
-- Known limitation: `nix-secrets` (private SSH input) not accessible in CI
+- Known limitation: `secrets repo` (private SSH input) not accessible in CI
 
 ### Git Hooks (`.githooks/`)
 - **pre-commit**: `nix fmt` + all eval tests + `cargo test` (if agent exists)

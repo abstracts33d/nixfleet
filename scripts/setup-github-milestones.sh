@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-REPO="abstracts33d/fleet"
+REPO="${GH_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo abstracts33d/nixfleet)}"
 
 declare -A MILESTONES
 MILESTONES["S0: Foundation"]="Pre-NixFleet config work (scopes, testing, desktop, secrets)"

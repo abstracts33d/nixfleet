@@ -14,7 +14,7 @@ Minimal QEMU/KVM test VM. No graphical environment, no dev tools. Used for quick
 |----------|-------|
 | Platform | x86_64-linux |
 | Constructor | `mkFleet` -> `mkVmHost` (internal) |
-| User | s33d |
+| User | <username> |
 | Minimal | Yes |
 | Graphical | No (via isMinimal) |
 | Dev tools | No (via isMinimal) |

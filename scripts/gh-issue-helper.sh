@@ -6,8 +6,10 @@
 # Requires: gh CLI authenticated with project scope
 # Project: NixFleet (#1)
 
-REPO="abstracts33d/fleet"
-PROJECT_NUM="1"
+# Derive repo from git remote, fallback to nixfleet
+REPO="${GH_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo abstracts33d/nixfleet)}"
+OWNER="${REPO%%/*}"
+PROJECT_NUM="${GH_PROJECT_NUM:-1}"
 
 # Cache for project metadata (avoids repeated GraphQL calls — saves rate limit)
 _GH_PROJECT_ID=""
@@ -17,13 +19,13 @@ declare -A _GH_STATUS_OPTIONS 2>/dev/null || true # bash associative array
 _gh_ensure_cache() {
   if [[ -n $_GH_PROJECT_ID ]]; then return; fi
   # 2 GraphQL calls total to populate the entire cache
-  _GH_PROJECT_ID=$(gh project view "$PROJECT_NUM" --owner abstracts33d --format json --jq '.id' 2>/dev/null) || return 1
+  _GH_PROJECT_ID=$(gh project view "$PROJECT_NUM" --owner "$OWNER" --format json --jq '.id' 2>/dev/null) || return 1
   # Get field ID + all option name:id pairs in one call
-  _GH_STATUS_FIELD_ID=$(gh project field-list "$PROJECT_NUM" --owner abstracts33d --format json --jq '.fields[] | select(.name=="Status") | .id' 2>/dev/null) || return 1
+  _GH_STATUS_FIELD_ID=$(gh project field-list "$PROJECT_NUM" --owner "$OWNER" --format json --jq '.fields[] | select(.name=="Status") | .id' 2>/dev/null) || return 1
   # Parse options: "name\tid" per line
   while IFS=$'\t' read -r opt_name opt_id; do
     [[ -n $opt_name ]] && _GH_STATUS_OPTIONS["$opt_name"]="$opt_id"
-  done < <(gh project field-list "$PROJECT_NUM" --owner abstracts33d --format json --jq '.fields[] | select(.name=="Status") | .options[] | [.name, .id] | @tsv' 2>/dev/null)
+  done < <(gh project field-list "$PROJECT_NUM" --owner "$OWNER" --format json --jq '.fields[] | select(.name=="Status") | .options[] | [.name, .id] | @tsv' 2>/dev/null)
 }
 
 # Create an issue with labels and optional milestone
@@ -53,7 +55,7 @@ gh_create_issue() {
   issue_num=$(echo "$issue_url" | grep -o '[0-9]*$')
 
   # Add to NixFleet project and set to Backlog
-  gh project item-add "$PROJECT_NUM" --owner abstracts33d --url "$issue_url" 2>/dev/null || true
+  gh project item-add "$PROJECT_NUM" --owner "$OWNER" --url "$issue_url" 2>/dev/null || true
   gh_move_issue "$issue_num" "Backlog" 2>/dev/null || true
 
   echo "$issue_num"
@@ -73,7 +75,7 @@ gh_move_issue() {
 
   local issue_url="https://github.com/$REPO/issues/$issue_num"
   local item_id
-  item_id=$(gh project item-list "$PROJECT_NUM" --owner abstracts33d --format json --jq ".items[] | select(.content.url == \"$issue_url\") | .id" 2>/dev/null) || true
+  item_id=$(gh project item-list "$PROJECT_NUM" --owner "$OWNER" --format json --jq ".items[] | select(.content.url == \"$issue_url\") | .id" 2>/dev/null) || true
 
   if [[ -z $item_id ]]; then
     echo "Warning: Issue #$issue_num not found in project" >&2

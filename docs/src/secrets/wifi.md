@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provision WiFi connections from agenix secrets on first boot. Each network maps to a `wifi-<name>.age` file in nix-secrets containing a NetworkManager `.nmconnection` file.
+Provision WiFi connections from agenix secrets on first boot. Each network maps to a `wifi-<name>.age` file in secrets repo containing a NetworkManager `.nmconnection` file.
 
 ## Location
 
@@ -35,13 +35,13 @@ sudo cat /etc/NetworkManager/system-connections/<name>.nmconnection > wifi-home.
 # Encrypt with age
 age -R ~/.ssh/id_ed25519.pub -o wifi-home.age wifi-home.nmconnection
 
-# Add to nix-secrets repo, commit, update
+# Add to secrets repo repo, commit, update
 nix flake update secrets
 ```
 
 ## Current State
 
-The `wifiNetworks` option is implemented but secrets have not yet been created in nix-secrets (see TODO.md).
+The `wifiNetworks` option is implemented but secrets have not yet been created in secrets repo (see TODO.md).
 
 ## Dependencies
 

@@ -14,7 +14,7 @@ Apple Silicon Mac running nix-darwin. Full dev environment with Homebrew casks, 
 |----------|-------|
 | Platform | aarch64-darwin |
 | Constructor | `mkFleet` -> `mkDarwinHost` (internal) |
-| User | s33d |
+| User | <username> |
 | AeroSpace WM | Disabled |
 | Dev tools | Yes (default) |
 | Graphical | Yes (default) |

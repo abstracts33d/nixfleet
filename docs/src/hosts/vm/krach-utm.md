@@ -14,7 +14,7 @@ UTM virtual machine mirroring the krach desktop on Apple Silicon. Uses aarch64-l
 |----------|-------|
 | Platform | aarch64-linux |
 | Constructor | `mkFleet` -> `mkVmHost` (internal) |
-| User | s33d |
+| User | <username> |
 | Compositor | Niri |
 | Display manager | greetd |
 | Impermanent | Yes |

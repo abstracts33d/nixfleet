@@ -2,7 +2,7 @@
 
 ## Issue Tracking
 
-All work items are tracked as [GitHub Issues](https://github.com/abstracts33d/nixos-config/issues) on the NixFleet project board.
+All work items are tracked as [GitHub Issues](https://github.com/abstracts33d/nixfleet/issues) on the NixFleet project board.
 
 ### Labels
 
@@ -17,7 +17,7 @@ Issues are categorized with labels:
 
 ```bash
 # Quick create
-gh issue create -R abstracts33d/nixos-config
+gh issue create -R abstracts33d/nixfleet
 
 # Using the helper
 source scripts/gh-issue-helper.sh
