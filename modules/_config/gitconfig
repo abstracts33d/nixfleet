@@ -1,13 +1,5 @@
+# Framework default gitconfig — override in your fleet's _config/gitconfig
 [init]
   defaultBranch = main
 [core]
   editor = nvim
-  autocrlf = input
-[color]
-  ui = true
-[pull]
-  rebase = true
-[push]
-  autoSetupRemote = true
-[rebase]
-  autoStash = true
