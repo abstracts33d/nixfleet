@@ -50,4 +50,4 @@ When a cross-platform approach adds too much complexity, make it platform-specif
 ## Further Reading
 
 - [Portable Environments](../concepts/portable.md) — wrappers in detail
-- [Technical Architecture](../../src/architecture.md) — module structure
+- [Technical Architecture](../../architecture.md) — module structure

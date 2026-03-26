@@ -57,4 +57,4 @@ These tests use `nixosTest` to boot minimal VMs and verify specific behaviors. S
 ## Further Reading
 
 - [Testing](testing.md) — the full test pyramid
-- [Technical VM Host Details](../../src/hosts/vm/README.md) — VM host configuration
+- [Technical VM Host Details](../../hosts/vm/README.md) — VM host configuration

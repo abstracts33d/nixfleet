@@ -2,7 +2,7 @@
 
 Manage your NixOS fleet declaratively — organizations, roles, and hosts defined as code.
 
-This guide explains NixFleet concepts, architecture, and workflows. For technical reference, see the [Technical Docs](../src/README.md). For the API, see [mkFleet API](../nixfleet/specs/mk-fleet-api.md).
+This guide explains NixFleet concepts, architecture, and workflows. For technical reference, see the [Reference](../architecture.md) section. For the API, see [mkFleet API](../business/specs/mk-fleet-api.md).
 
 ## What is NixFleet?
 
@@ -12,7 +12,7 @@ The **reference fleet** (`abstracts33d` organization) demonstrates all features 
 - **4 physical machines** — krach, ohm, lab (NixOS) + aether (macOS)
 - **4 test VMs** — QEMU + UTM mirrors
 - **3 batch hosts** — simulated edge fleet via `mkBatchHosts`
-- **3 test matrix hosts** — role × platform CI validation via `mkTestMatrix`
+- **3 test matrix hosts** — role x platform CI validation via `mkTestMatrix`
 
 All managed declaratively via `mkFleet` — define your org, assign roles, rebuild, done.
 
@@ -46,6 +46,6 @@ nix run .#shell
 # Run all validations
 nix run .#validate
 
-# Serve this guide locally
-nix run .#docs-guide
+# Serve documentation locally
+nix run .#docs
 ```

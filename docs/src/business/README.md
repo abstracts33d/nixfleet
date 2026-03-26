@@ -1,13 +1,13 @@
-# NixFleet
+# NixFleet Business
 
 **Declarative NixOS fleet management for European enterprises.**
 
-This repository IS NixFleet — the open-core framework (`modules/_shared/lib/`) plus a reference fleet (`abstracts33d` organization, 16 hosts). The framework will be extracted to its own repo when the API stabilizes.
+This section contains business strategy, API specs, and research documents.
 
 ## Structure
 
 ```
-docs/nixfleet/
+business/
 ├── data/                          # Structured YAML — source of truth
 │   ├── fcs.yaml                   # 6 key success factors
 │   ├── business-model.yaml        # Open-core tiers, pricing, fundraising
@@ -20,7 +20,12 @@ docs/nixfleet/
 │   ├── 02-nixfleet-pitch-v3.pptx  # Investor pitch deck
 │   ├── 03-nixfleet-architecture-v3.html  # Technical architecture
 │   └── 04-nixfleet-manifeste-v3.html     # Founding manifesto
-└── README.md
+├── specs/                         # API specifications
+│   └── mk-fleet-api.md            # mkFleet, mkOrg, mkHost, mkRole API reference
+└── research/                      # Design research and analysis
+    ├── two-repo-split-flake-parts.md
+    ├── framework-vs-overlay-separation.md
+    └── client-needs-per-tier.md
 ```
 
 **YAML files in `data/` are the source of truth.** The rendered documents in `rendered/` are presentation artifacts derived from this data.
@@ -39,8 +44,8 @@ Six equal-weight value propositions:
 
 Open-core (Apache 2.0):
 - **Community** — Free, <10 machines
-- **Pro** — €499-2,999/mo, 10-200 machines, dashboard + RBAC + audit
-- **Enterprise** — €50k-500k/yr, 200+ machines, SSO + SLA + on-prem
+- **Pro** — EUR 499-2,999/mo, 10-200 machines, dashboard + RBAC + audit
+- **Enterprise** — EUR 50k-500k/yr, 200+ machines, SSO + SLA + on-prem
 - **Sovereign** — Custom, air-gapped, ANSSI/BSI certification support
 
 ## Implemented Features (S1+S2 done)

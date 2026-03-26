@@ -60,4 +60,4 @@ Git hooks enforce quality:
 ## Further Reading
 
 - [VM Testing](vm-testing.md) — detailed VM test guide
-- [Technical Test Details](../../src/testing/README.md) — test implementation
+- [Technical Test Details](../../testing/README.md) — test implementation
