@@ -167,6 +167,11 @@
       default = false;
       description = "Used to indicate a host that has bluetooth capabilities";
     };
+    useSecureBoot = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Used to indicate a host that uses Secure Boot (lanzaboote)";
+    };
     hashedPasswordFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -194,6 +199,38 @@
         default = "lavender";
         description = "Catppuccin accent color.";
       };
+    };
+
+    # Enterprise Features
+    useVpn = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Corporate VPN client (WireGuard/OpenVPN)";
+    };
+    useFilesharing = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Samba/CIFS file sharing and network drives";
+    };
+    useLdap = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "LDAP/AD authentication (sssd/PAM)";
+    };
+    usePrinting = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Network printing (CUPS + auto-discovery)";
+    };
+    useCorporateCerts = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Corporate CA trust and client certificate management";
+    };
+    useProxy = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "System-wide HTTP/HTTPS proxy configuration";
     };
   };
 }
