@@ -212,7 +212,7 @@
             FLAKE_DIR="''$HOME/nixos-config"
           else
             echo -e "''${YELLOW}Cloning nixos-config...''${NC}"
-            git clone git@github.com:abstracts33d/nixos-config.git "''$HOME/nixos-config"
+            git clone git@github.com:abstracts33d/nixfleet.git "''$HOME/nixos-config"
             FLAKE_DIR="''$HOME/nixos-config"
           fi
 
