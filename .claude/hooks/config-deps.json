@@ -1,0 +1,13 @@
+[
+  {"match": "*_config/zsh/*", "message": "Sync: check core/_home/zsh.nix <-> _config/zsh/"},
+  {"match": "*core/_home/zsh.nix", "message": "Sync: check _config/zsh/wrapperrc.zsh"},
+  {"match": "*_config/kitty.conf", "message": "Sync: check core/_home/simple.nix (kitty section)"},
+  {"match": "*core/_home/simple.nix", "message": "Sync: check _config/kitty.conf"},
+  {"match": "*_config/starship.toml", "message": "Sync: check core/_home/starship.nix"},
+  {"match": "*core/_home/starship.nix", "message": "Sync: check _config/starship.toml"},
+  {"match": "*_config/gitconfig", "message": "Sync: check core/_home/git.nix"},
+  {"match": "*core/_home/git.nix", "message": "Sync: check _config/gitconfig"},
+  {"match": "*_shared/host-spec-module.nix", "message": "Sync: update CLAUDE.md hostSpec flags table + README.md"},
+  {"match": "*scopes/dev/home.nix", "message": "Sync: if claude-code settings changed, check ~/.claude/settings.json"},
+  {"match": "*fleet.nix", "message": "Sync: fleet definition changed. Update README.md if hosts/orgs changed."}
+]

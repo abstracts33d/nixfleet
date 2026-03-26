@@ -1,0 +1,69 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nix *)",
+      "Bash(git *)",
+      "Bash(alejandra *)",
+      "Bash(deadnix *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(cargo *)",
+      "Bash(curl *)",
+      "Bash(gh *)",
+      "Bash(jq *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/format-nix.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-config-deps.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-docs-tree.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre-git-commit.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre-git-push.sh",
+            "timeout": 600,
+            "statusMessage": "Running full validation..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/guard-destructive.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-context.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": []
+  }
+}
