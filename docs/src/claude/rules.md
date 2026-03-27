@@ -13,23 +13,33 @@
 | Rule | File | Domain |
 |------|------|--------|
 | Config Dependencies | `config-dependencies.md` | What to update when changing linked configs |
-| Nix Gotchas | `nix-gotchas.md` | 12 pitfalls learned in this repo |
+| Git Workflow | `git-workflow.md` | Branch strategy, PR workflow, shipping convention |
+| Multi-Repo | `multi-repo.md` | Multi-repo coordination (fleet, nixfleet, secrets) |
 | Nix Style | `nix-style.md` | Code formatting and conventions |
 | Platform Design | `platform-design.md` | Cross-platform compatibility guards |
-| Wrapper Boundary | `wrapper-boundary.md` | What goes in wrappers vs HM vs scopes |
 | Security Review | `security-review.md` | Security audit process and findings |
 | Testing | `testing.md` | Test pyramid and how to add tests |
-| Multi-Repo | `multi-repo.md` | Multi-repo coordination |
+| Wrapper Boundary | `wrapper-boundary.md` | What goes in wrappers vs HM vs scopes |
+
+Note: `superpowers-enforcement.md` has been dissolved — its enforcement logic is now distributed across CLAUDE.md principles and individual agent prompts.
 
 ## Key Rules Summary
 
 **Config Dependencies:** Bidirectional dependency chains between `_config/`, `core/_home/`, `wrappers/`, and `_shared/`. Change one, check the other.
 
-**Nix Gotchas:** `perSystem` pkgs don't inherit `allowUnfree`, catppuccin has no darwinModules, don't persist `.ssh`/`.gnupg`, `home.persistence` needs `optionalAttrs` on Darwin.
+**Git Workflow:** Feature branches required, PRs for all changes to main, squash-merge only. Never push directly to main or merge PRs automatically.
 
-**Wrapper Boundary:** Individual tools -> HM. Portable composites -> wrappers. GPU-dependent -> NixOS scopes.
+**Multi-Repo:** Three repos (nixfleet, fleet, fleet-secrets). Secrets must be committed in fleet-secrets first, then `nix flake update secrets`.
+
+**Nix Style:** Format with alejandra, use `lib.mkIf`/`lib.mkDefault`, no `with pkgs;` in module-level let bindings.
+
+**Platform Design:** Guards for Darwin, impermanence, network interfaces. Don't over-engineer cross-platform — note ambitious ideas as TODOs.
+
+**Security Review:** Monthly audits with timestamped reports. 3-level permissions model (org deny, project allow, user mode).
 
 **Testing:** Eval tests for config correctness, VM tests for runtime behavior. Add both when creating new scopes.
+
+**Wrapper Boundary:** Individual tools -> HM. Portable composites -> wrappers. GPU-dependent -> NixOS scopes.
 
 ## Links
 

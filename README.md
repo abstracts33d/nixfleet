@@ -105,16 +105,15 @@ Built on [flake-parts](https://flake.parts) + [import-tree](https://github.com/v
 - **Deferred modules** are auto-included by `mkHost`
 - **Scope modules** self-activate with `lib.mkIf` on `hostSpec` flags
 
-See [TECHNICAL.md](TECHNICAL.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for details.
+See [TECHNICAL.md](TECHNICAL.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [CLAUDE.md](CLAUDE.md) for details.
 
 ## Related Repos
 
 | Repo | Content |
 |------|---------|
-| [claude-defaults](https://github.com/abstracts33d/claude-defaults) | Claude Code plugin (base agents, skills, rules) |
-| [claude](https://github.com/abstracts33d/claude) | Shared knowledge (Nix, Rust, security) |
 | [fleet](https://github.com/abstracts33d/fleet) | Reference fleet (abstracts33d org config) |
 | [fleet-secrets](https://github.com/abstracts33d/fleet-secrets) | Encrypted secrets (agenix) |
+| [claude-defaults](https://github.com/abstracts33d/claude-defaults) | Standalone Claude Code plugin for other Nix projects |
 
 ## License
 

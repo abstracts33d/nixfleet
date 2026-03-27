@@ -65,6 +65,6 @@ nix run github:abstracts33d/fleet#terminal
 - [README.md](README.md) -- Full feature overview, host table, scope table
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- How the pieces fit together
 - [TECHNICAL.md](TECHNICAL.md) -- Design decisions and Nix gotchas
-- [CONTRIBUTING.md](CONTRIBUTING.md) -- How to add hosts, scopes, and agents
+- [CLAUDE.md](CLAUDE.md) -- Framework context, commands, conventions
 - [docs/guide/](docs/guide/) -- Detailed user guide
 - [docs/src/](docs/src/) -- Technical reference

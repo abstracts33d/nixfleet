@@ -47,6 +47,52 @@ The framework provides **mechanism**, not **policy**:
 | `mkBatchHosts` | N identical hosts from a template |
 | `mkTestMatrix` | Cross-product of roles x platforms for CI |
 
+## Rust Workspace
+
+Four crates in a Cargo workspace at the repo root:
+
+| Crate | Binary | Purpose |
+|-------|--------|---------|
+| `agent/` | `nixfleet-agent` | Runs on each managed host. State machine: Idle -> Checking -> Fetching -> Applying -> Verifying -> Reporting |
+| `control-plane/` | `nixfleet-control-plane` | Axum HTTP server. Machine registry, deployment orchestration |
+| `cli/` | `nixfleet` | Operator CLI. Deploy, status, rollback commands |
+| `shared/` | (library) | `nixfleet-types`: shared data types, API contracts |
+
+### Agent <-> Control Plane Communication
+
+```
+Agent (on host)                    Control Plane (central)
+    │                                      │
+    ├── POST /api/v1/machines/{id}/register ────>│  Register with hostname + platform
+    │                                            │
+    ├── GET  /api/v1/machines/{id}/desired-generation ─>│  Poll for desired state
+    │                                            │
+    ├── POST /api/v1/machines/{id}/report ──────>│  Report deploy result
+    │                                      │
+    └── heartbeat loop ──────────────────>│  Liveness signal
+```
+
+### Machine Lifecycle States
+
+Two state models operate at different levels:
+
+**Fleet lifecycle** (`shared/src/lib.rs` — `MachineLifecycle`): Tracks machine status from the control plane's perspective.
+
+```
+Pending -> Provisioning -> Active -> Maintenance -> Decommissioned
+                              │           │
+                              └───────────┘  (bidirectional)
+```
+
+**Agent state machine** (`agent/src/state.rs` — `AgentState`): Tracks what the agent is doing on each host.
+
+```
+Idle -> Checking -> Fetching -> Applying -> Verifying -> Reporting -> Idle
+                       │            │            │
+                       └── Idle     └── RollingBack ──┘
+                     (fetch error)    (switch/health failed)
+```
+
 ## Core Concepts
 
 ### Dendritic Pattern (flake-parts + import-tree)

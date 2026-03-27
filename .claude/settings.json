@@ -1,0 +1,78 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
+      "Bash(dd *)",
+      "Bash(mkfs *)",
+      "Bash(shred *)",
+      "Bash(sudo rm -rf *)",
+      "Bash(git push --force origin main*)",
+      "Bash(git push -f origin main*)",
+      "Bash(git reset --hard origin/main*)",
+      "Bash(nix-store --delete *)",
+      "Bash(nix store delete *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/format-nix.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-config-deps.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-docs-tree.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre-git-commit.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre-git-push.sh",
+            "timeout": 600,
+            "statusMessage": "Running full validation..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/guard-destructive.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-context.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": []
+  }
+}

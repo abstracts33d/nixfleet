@@ -88,11 +88,13 @@ mkFleet {
 
 ### Current fleet
 
-The `abstracts33d` organization in `fleet.nix` contains:
-- 4 physical hosts: `krach`, `ohm`, `lab` (NixOS), `aether` (Darwin)
-- 4 VMs: `krach-qemu`, `qemu` (x86_64), `krach-utm`, `utm` (aarch64)
+The `abstracts33d` organization in `fleet.nix` contains 11 hosts:
+- 3 physical hosts: `krach`, `ohm`, `lab` (NixOS)
+- 2 VMs: `krach-qemu`, `qemu` (x86_64)
 - 3 batch hosts: `edge-01`, `edge-02`, `edge-03` (simulated edge fleet)
 - 3 test matrix hosts: `workstation`, `server`, `minimal` roles on x86_64-linux
+
+Additional hosts (`aether`, `krach-utm`, `utm`) are defined in the [fleet overlay](https://github.com/abstracts33d/fleet).
 
 ## Scope Self-Activation
 
