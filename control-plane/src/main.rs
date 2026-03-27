@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
 
     let fleet_state = Arc::new(RwLock::new(state::FleetState::new()));
     let db = Arc::new(db::Db::new(&cli.db_path)?);
-    db.init()?;
+    db.migrate()?;
 
     // Hydrate in-memory state from DB on startup
     state::hydrate_from_db(&fleet_state, &db).await?;

@@ -26,7 +26,7 @@ async fn spawn_server() -> (String, tempfile::TempDir) {
     let db_path = dir.path().join("test.db").to_string_lossy().into_owned();
 
     let database = Arc::new(db::Db::new(&db_path).expect("db::new"));
-    database.init().expect("db::init");
+    database.migrate().expect("db::migrate");
 
     let fleet_state = Arc::new(RwLock::new(state::FleetState::new()));
     let app = build_app(fleet_state, database);
