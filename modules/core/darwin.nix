@@ -46,7 +46,6 @@
         allowUnsupportedSystem = true;
       };
 
-
       # --- nix (Determinate install compatible) ---
       nix = {
         package = pkgs.nix;

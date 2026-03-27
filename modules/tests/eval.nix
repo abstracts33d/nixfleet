@@ -20,7 +20,6 @@
     # Helper to get a NixOS config by hostname
     nixosCfg = name: self.nixosConfigurations.${name}.config;
     hasHost = name: self.nixosConfigurations ? ${name};
-
     # Only run on x86_64-linux (all test hosts are x86_64-linux)
   in
     lib.optionalAttrs (system == "x86_64-linux") {
