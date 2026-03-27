@@ -10,7 +10,7 @@ Getting started, concepts, desktop setup, development workflow, and advanced top
 
 ## [Reference](architecture.md)
 
-Technical reference for hosts, scopes, core modules, wrappers, apps, testing, Claude Code integration, and secrets management.
+Technical reference for hosts, scopes, core modules, wrappers, apps, testing, Claude Code integration (15 agents, 17 skills, 8 rules), and secrets management.
 
 ## [Business](business/README.md)
 

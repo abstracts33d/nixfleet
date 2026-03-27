@@ -1,0 +1,8 @@
+[
+  {"match": "*_config/zsh/*", "message": "Sync: zsh config changed. Corresponding HM module is in nixfleet (core/_home/zsh.nix)."},
+  {"match": "*_config/kitty.conf", "message": "Sync: kitty config changed. Corresponding HM module is in nixfleet (core/_home/simple.nix)."},
+  {"match": "*_config/starship.toml", "message": "Sync: starship config changed. Corresponding HM module is in nixfleet (core/_home/starship.nix)."},
+  {"match": "*_config/gitconfig", "message": "Sync: git config changed. Corresponding HM module is in nixfleet (core/_home/git.nix)."},
+  {"match": "*fleet.nix", "message": "Sync: fleet definition changed. Update README.md if hosts/orgs changed."},
+  {"match": "*_hardware/*", "message": "Sync: hardware config changed. Verify host still builds."}
+]

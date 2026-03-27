@@ -70,7 +70,7 @@ This separation means an external organization can consume the framework without
 
 ```nix
 {
-  inputs.nixfleet.url = "github:abstracts33d/fleet";
+  inputs.nixfleet.url = "github:abstracts33d/nixfleet";
 
   outputs = { nixfleet, ... }: {
     imports = [ nixfleet.flakeModules.default ];
@@ -110,7 +110,7 @@ Each Rust binary is packaged as a Nix derivation (e.g., `agent/default.nix`) and
 
 | Repo | Content |
 |------|---------|
-| `nixfleet` (this repo) | Framework (lib + core) + test fleet |
+| `nixfleet` (this repo) | Framework (lib + core + Rust workspace) + test fleet |
 | `fleet-secrets` (private) | Age-encrypted secrets (SSH keys, passwords, WiFi) |
 
 Secrets are referenced by path in the public repo. The private repo is a flake input (`inputs.secrets`). Update with `nix flake update secrets`.
