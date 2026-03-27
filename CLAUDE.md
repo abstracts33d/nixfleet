@@ -8,11 +8,10 @@ Declarative NixOS fleet management framework. Nix modules + Rust agent/control-p
 modules/
 ├── _shared/lib/       # Framework API: mkFleet, mkOrg, mkRole, mkHost, mkBatchHosts, mkTestMatrix
 ├── _shared/           # hostSpec options, disk templates
-├── core/              # Core deferred modules (nixos.nix, darwin.nix, home.nix, _home/)
-├── scopes/            # Scope modules (auto-activate via mkIf on hostSpec flags)
-├── wrappers/          # Portable composites (shell, terminal)
+├── core/              # Core deferred modules (nixos.nix, darwin.nix)
+├── scopes/            # Scope modules (base, impermanence, nixfleet/agent, nixfleet/control-plane)
 ├── tests/             # Eval tests, VM tests, integration tests
-├── apps.nix           # Flake apps (install, build-switch, validate, spawn-qemu, ...)
+├── apps.nix           # Flake apps (install, build-switch, validate, docs, spawn-qemu, ...)
 ├── fleet.nix          # Framework test fleet (11 hosts)
 └── flake-module.nix   # flakeModules.default for consumers
 agent/                 # Rust: nixfleet-agent (state machine daemon)
@@ -20,8 +19,7 @@ control-plane/         # Rust: nixfleet-control-plane (Axum HTTP server)
 cli/                   # Rust: nixfleet CLI (deploy, status, rollback)
 shared/                # Rust: nixfleet-types (shared data types)
 docs/
-├── src/               # Technical reference (mdbook)
-├── guide/             # User guide (mdbook)
+├── src/               # Technical reference + user guide (mdbook)
 └── nixfleet/          # Business docs, specs, research
 .claude/               # Agents (15), skills (17), rules (8), knowledge (23), hooks (8)
 ```
@@ -43,7 +41,7 @@ nix run .#test-vm -- -h krach-qemu # VM test cycle
 nix build .#iso                    # custom installer ISO
 
 # Rust
-cargo test --workspace             # all Rust tests (139)
+cargo test --workspace             # all Rust tests
 cargo build --workspace            # build all crates
 cargo clippy --workspace           # lint
 
@@ -63,18 +61,18 @@ gh issue list -R abstracts33d/nixfleet
 | `mkBatchHosts` | N identical hosts from a template |
 | `mkTestMatrix` | Cross-product of roles × platforms for CI |
 
-## Scope Auto-Activation
+## Framework Scopes
 
-| Flag | Scope | What it enables |
-|------|-------|-----------------|
-| `!isMinimal` | catppuccin, base, nix-index | Theming, CLI tools, command-not-found |
-| `isGraphical` | graphical/ | Pipewire, fonts, browsers, editors |
-| `isDev` | dev/ | Docker, direnv, mise, Claude Code |
-| `useNiri` | desktop/niri | Niri compositor + Noctalia Shell |
-| `useGnome` | desktop/gnome | GNOME desktop + GDM |
-| `isImpermanent` | impermanence | Ephemeral root, btrfs wipe |
-| `isDarwin` | darwin/ | Homebrew, karabiner, aerospace |
-| Enterprise | enterprise/ | VPN, filesharing, auth, printing, certs, proxy |
+The framework ships a small set of scopes in `modules/scopes/`. Consuming fleets add their own.
+
+| Scope | Flag / Enable condition | What it provides |
+|-------|------------------------|-----------------|
+| `base` | `!isMinimal` | Universal CLI packages (NixOS + Darwin + HM) |
+| `impermanence` | `isImpermanent` | Btrfs root wipe + system/user persistence paths |
+| `nixfleet-agent` | `services.nixfleet-agent.enable = true` | Fleet agent systemd service |
+| `nixfleet-control-plane` | `services.nixfleet-control-plane.enable = true` | Control plane HTTP server |
+
+Fleet repos add opinionated scopes: `catppuccin`, `nix-index`, `graphical`, `dev`, `desktop/niri`, `desktop/gnome`, `darwin/`, `enterprise/`, etc. Those flags (`isDev`, `isGraphical`, `useNiri`, etc.) are declared by the fleet, not the framework.
 
 ## Testing
 
@@ -99,7 +97,7 @@ Git hooks: pre-commit (`nix fmt`, ~2s), pre-push (format + eval + cargo test, ~1
 Tracked on the [project board](https://github.com/users/abstracts33d/projects/1).
 
 - **S1+S2** Organizations + Roles: Done
-- **S3** Fleet Agent: MVP (Rust, 139 tests)
+- **S3** Fleet Agent: MVP (Rust)
 - **S4** Control Plane: MVP (Axum, machine registry)
 - **S5** Binary Cache: Planned
 - **S6** Air-Gap: Planned
@@ -139,7 +137,7 @@ Code style: Nix → `alejandra`, Rust → `cargo fmt`, Shell → `shfmt`. All vi
 
 ## Critical Rules
 
-- **Wrapper/HM boundary:** Individual tools → HM `programs.*`. Portable composites → wrappers/. Desktop → scopes/. Never wrap GPU-dependent packages.
-- **Keep `_config/` in sync:** Config files are consumed by both HM modules and wrappers. See `.claude/rules/config-dependencies.md`.
+- **Framework vs fleet:** Opinionated modules (scopes like graphical/dev/niri, wrappers, HM tool configs) belong in consuming fleet repos, not this framework. The framework provides lib + core NixOS/Darwin + base/impermanence/nixfleet scopes.
 - **Deferred module pattern:** Modules register via `config.flake.modules.{nixos,darwin,homeManager}.*`. Scopes self-activate with `lib.mkIf hS.<flag>`.
 - **Scope-aware impermanence:** Persist paths live alongside their program definitions, not centralized.
+- **hostSpec extension:** Fleet repos extend `hostSpec` with their own flags (isDev, isGraphical, useNiri, etc.) via deferred modules on `host-spec-module.nix`.

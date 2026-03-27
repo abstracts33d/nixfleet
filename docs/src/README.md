@@ -10,7 +10,7 @@ Getting started, concepts, desktop setup, development workflow, and advanced top
 
 ## [Reference](architecture.md)
 
-Technical reference for hosts, scopes, core modules, wrappers, apps, testing, Claude Code integration (15 agents, 17 skills, 8 rules), and secrets management.
+Technical reference for hosts, scopes, core modules, apps, testing, Claude Code integration (15 agents, 17 skills, 8 hooks, 8 rules, 23 knowledge files), and secrets management.
 
 ## [Business](business/README.md)
 
@@ -21,9 +21,6 @@ Roadmap, API specs, research documents, market analysis, and strategic planning.
 ```sh
 # Rebuild after changes
 nix run .#build-switch
-
-# Portable dev shell on any machine
-nix run .#shell
 
 # Run all validations
 nix run .#validate

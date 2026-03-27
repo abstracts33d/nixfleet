@@ -1,45 +1,29 @@
-# ohm
+# ohm (framework test host)
 
 ## Purpose
 
-Secondary laptop running NixOS with GNOME desktop and GDM. French keyboard layout. No dev tools (used for daily non-development tasks).
+Framework test host for `userName` override tests. Declared in `modules/fleet.nix` as a VM-mode host.
+
+> **Note:** This is the framework's *test* host. The physical `ohm` laptop (with GNOME, French keyboard, etc.) is defined in the [fleet overlay](https://github.com/abstracts33d/fleet).
 
 ## Location
 
 - `modules/fleet.nix` (host entry via `mkHost`)
-- `modules/_hardware/ohm/disk-config.nix`
-- `modules/_hardware/ohm/hardware-configuration.nix`
 
 ## Configuration
 
 | Property | Value |
 |----------|-------|
 | Platform | x86_64-linux |
-| Constructor | `mkFleet` -> `mkNixosHost` (internal) |
-| User | sabrina |
-| Network interface | enp2s0 |
-| Desktop | GNOME |
-| Display manager | GDM (auto via useGnome) |
-| Impermanent | Yes |
-| Dev tools | No |
+| Organization | test-org |
+| Constructor | `mkFleet` → `mkVmHost` (internal) |
+| User | sabrina (overrides org default) |
 
-## Extra Config
+## What it tests
 
-Uses `extraModules` to override keyboard layout:
-- `xserver.xkb.layout = "fr,us"` (French primary, US secondary)
-- `console.keyMap = "fr"`
-
-## Active Scopes
-
-catppuccin, nix-index, base, graphical, gnome, gdm, impermanence.
-
-## Dependencies
-
-- Hardware: `_hardware/ohm/` (disk-config + hardware-configuration)
-- Secrets: `github-ssh-key`, `github-signing-key`, `user-password`, `root-password`
+- `hostSpecValues.userName` override takes precedence over org defaults
+- All other org defaults (timezone, locale, SSH keys) still inherit
 
 ## Links
 
 - [Host Overview](README.md)
-- [GNOME scope](../scopes/desktop/gnome.md)
-- [GDM scope](../scopes/display/gdm.md)

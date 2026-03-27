@@ -28,22 +28,23 @@ NixFleet is an open-core framework for managing fleets of NixOS machines. It pro
 }
 ```
 
-See the [User Guide](docs/guide/README.md) for a full walkthrough.
+See the [User Guide](docs/src/guide/README.md) for a full walkthrough.
 
 ## Layout
 
 ```
 modules/
 ├── _shared/lib/       # Framework API: mkFleet, mkOrg, mkRole, mkHost, mkBatchHosts, mkTestMatrix
-├── _shared/           # hostSpec options, disk templates, keys
+├── _shared/           # hostSpec options, disk templates
 ├── core/              # Core deferred modules (nixos.nix, darwin.nix)
+├── scopes/            # Scope modules (base, impermanence, nixfleet/agent, nixfleet/control-plane)
 ├── tests/             # Eval tests, VM tests, integration tests
-├── apps.nix           # Flake apps (install, validate, spawn-qemu, ...)
+├── apps.nix           # Flake apps (install, validate, docs, spawn-qemu, ...)
 ├── fleet.nix          # Test fleet for framework CI
 └── flake-module.nix   # flakeModules.default for consumers
 docs/
-├── src/               # Technical reference (mdbook)
-├── guide/             # User guide (mdbook)
+├── src/               # Technical reference + user guide (mdbook)
+│   └── guide/         # User guide section
 └── nixfleet/          # Business docs, specs, research
 ```
 
@@ -99,13 +100,13 @@ nix fmt                            # Format (alejandra + shfmt)
 
 Built on [flake-parts](https://flake.parts) + [import-tree](https://github.com/vic/import-tree):
 
-- **`flake.nix`** — minimal: inputs + `mkFlake` + `import-tree ./modules`
+- **`flake.nix`** — minimal: inputs + `mkFleet` + `import-tree ./modules`
 - **Every `.nix`** under `modules/` is auto-imported (except `_`-prefixed dirs)
 - **`fleet.nix`** defines all hosts centrally via `mkFleet`
 - **Deferred modules** are auto-included by `mkHost`
 - **Scope modules** self-activate with `lib.mkIf` on `hostSpec` flags
 
-See [TECHNICAL.md](TECHNICAL.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [CLAUDE.md](CLAUDE.md) for details.
+See [docs/src/architecture.md](docs/src/architecture.md) and [CLAUDE.md](CLAUDE.md) for details.
 
 ## Related Repos
 

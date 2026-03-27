@@ -1,24 +1,30 @@
-# krach-qemu
+# krach-qemu (framework test VM)
 
 ## Purpose
 
-QEMU/KVM virtual machine mirroring the krach workstation desktop (Niri + greetd). Used for testing the graphical desktop environment without touching real hardware. Dev tools disabled to reduce build time.
+Framework test VM for scope activation tests and SSH hardening checks. Uses impermanence. Declared in `modules/fleet.nix` with `isVm = true`.
 
 ## Location
 
 - `modules/fleet.nix` (host entry via `mkHost` with `isVm = true`)
+- `modules/_hardware/qemu/` (QEMU hardware config)
 
 ## Configuration
 
 | Property | Value |
 |----------|-------|
 | Platform | x86_64-linux |
-| Constructor | `mkFleet` -> `mkVmHost` (internal) |
-| User | <username> |
-| Compositor | Niri |
-| Display manager | greetd |
-| Impermanent | Yes |
-| Dev tools | No |
+| Organization | test-org |
+| Constructor | `mkFleet` → `mkVmHost` (internal) |
+| User | testuser (from org defaults) |
+| isImpermanent | true |
+
+## What it tests
+
+- SSH hardening (PermitRootLogin, PasswordAuthentication, firewall)
+- `hostSpec.organization` and `hostSpec.role` options exist
+- `nixfleet.extensions` is empty by default
+- Scope activation (impermanence scope activates via `isImpermanent`)
 
 ## Usage
 
@@ -28,11 +34,6 @@ nix run .#install -- --target root@localhost -p 2222 -h krach-qemu
 nix run .#spawn-qemu                                    # after install
 nix run .#test-vm -- -h krach-qemu                      # automated test
 ```
-
-## Dependencies
-
-- Hardware: default QEMU hardware (provided by `mkVmHost` internally)
-- Mirrors: [krach](../krach.md) (same compositor, different hardware)
 
 ## Links
 

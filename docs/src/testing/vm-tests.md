@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Boot NixOS VMs and assert runtime state: services running, binaries present, configs deployed, negative tests for disabled features. Uses `pkgs.testers.nixosTest`.
+Boot NixOS VMs and assert runtime state: services running, binaries present, configs deployed. Uses `pkgs.testers.nixosTest`.
 
 ## Location
 
@@ -11,38 +11,19 @@ Boot NixOS VMs and assert runtime state: services running, binaries present, con
 ## Test Suites
 
 ### vm-core
-Non-graphical, non-dev node. Tests:
+Non-minimal node. Tests:
 - `multi-user.target` active
-- sshd running
-- NetworkManager running
-- iptables Chain INPUT present (firewall)
-- testuser exists, in wheel group
-- zsh and git available
-
-### vm-shell-hm
-Non-graphical, non-dev node. Tests HM activation:
-- `home-manager-testuser.service` completes
-- `~/.config/starship.toml` exists
-- Binaries: starship, nvim, tmux, fzf, eza, rg, bat
-- `git config user.name` works
-
-### vm-graphical
-Node with `useNiri = true`. Tests:
-- greetd service running
-- `niri` binary available
-- tuigreet in nix store
-- HM activation complete
-- kitty available
-- `~/.config/niri/config.kdl` deployed
-- pipewire unit file exists
-- MesloLG font installed
+- `sshd` running
+- `NetworkManager` running
+- iptables Chain INPUT present (firewall enabled)
+- `testuser` exists and is in wheel group
+- zsh and git available to the test user
 
 ### vm-minimal
-Node with `isMinimal = true`. Negative tests:
-- zsh present (core, always)
-- niri NOT present
-- firefox NOT present (no graphical HM apps)
-- docker NOT running (no dev)
+Node with `isMinimal = true`. Tests:
+- `multi-user.target` active
+- `sshd` running
+- Core services (NetworkManager, firewall) active
 
 ## mkTestNode Helper
 
@@ -55,6 +36,19 @@ Builds nixosTest-compatible node configs with:
 ## Platform
 
 x86_64-linux only (nixosTest requirement).
+
+## Running
+
+```sh
+nix run .#validate -- --vm
+```
+
+Or directly:
+
+```sh
+nix build .#checks.x86_64-linux.vm-core --no-link
+nix build .#checks.x86_64-linux.vm-minimal --no-link
+```
 
 ## Links
 
