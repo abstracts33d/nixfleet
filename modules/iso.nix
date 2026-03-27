@@ -1,7 +1,12 @@
 # Custom NixOS minimal ISO with SSH key pre-configured for automated installs.
 # Available as `packages.iso` on Linux systems only.
 # Fleet sets `nixfleet.isoSshKeys` to bake its SSH keys into the ISO.
-{inputs, config, lib, ...}: {
+{
+  inputs,
+  config,
+  lib,
+  ...
+}: {
   options.nixfleet.isoSshKeys = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [];
