@@ -21,8 +21,6 @@
 | Testing | `testing.md` | Test pyramid and how to add tests |
 | Wrapper Boundary | `wrapper-boundary.md` | What goes in wrappers vs HM vs scopes |
 
-Note: `superpowers-enforcement.md` has been dissolved — its enforcement logic is now distributed across CLAUDE.md principles and individual agent prompts.
-
 ## Key Rules Summary
 
 **Config Dependencies:** Bidirectional dependency chains between `_config/`, `core/_home/`, `wrappers/`, and `_shared/`. Change one, check the other.

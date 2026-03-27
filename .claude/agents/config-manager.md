@@ -53,7 +53,7 @@ You maintain the Claude Code agentic infrastructure for this repository.
 ### 6. Skills Inventory
 - Verify each skill in `.claude/skills/` has accurate trigger conditions
 - Check that skills reference correct agents
-- Verify skill enforcement rules in `rules/superpowers-enforcement.md`
+- Verify skill trigger conditions and agent dispatch targets are accurate
 
 ## When Dispatched
 
