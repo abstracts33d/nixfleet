@@ -104,7 +104,6 @@
           ".local/share/nix"
         ];
         files = [
-          ".zsh_history"
           ".ssh/known_hosts"
         ];
       };
