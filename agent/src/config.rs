@@ -16,6 +16,12 @@ pub struct Config {
     pub db_path: String,
     /// When true, fetch but do not apply generations
     pub dry_run: bool,
+    /// Allow insecure HTTP connections (dev only).
+    pub allow_insecure: bool,
+    /// Path to client certificate PEM file (for mTLS).
+    pub client_cert: Option<String>,
+    /// Path to client private key PEM file (for mTLS).
+    pub client_key: Option<String>,
 }
 
 #[cfg(test)]
@@ -30,6 +36,9 @@ mod tests {
             cache_url: None,
             db_path: "/var/lib/nixfleet/state.db".to_string(),
             dry_run: false,
+            allow_insecure: false,
+            client_cert: None,
+            client_key: None,
         }
     }
 

@@ -13,10 +13,27 @@ pub struct Client {
 impl Client {
     /// Create a new client configured for the control plane.
     pub fn new(config: &Config) -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .context("failed to build HTTP client")?;
+        // Reject http:// unless --allow-insecure is set
+        if !config.allow_insecure && config.control_plane_url.starts_with("http://") {
+            anyhow::bail!(
+                "Refusing insecure HTTP connection to control plane. \
+                 Use HTTPS or set --allow-insecure for development."
+            );
+        }
+
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30));
+
+        // Load client certificate for mTLS if configured
+        if let (Some(cert), Some(key)) = (&config.client_cert, &config.client_key) {
+            let identity = crate::tls::load_client_identity(
+                std::path::Path::new(cert),
+                std::path::Path::new(key),
+            )?;
+            builder = builder.identity(identity);
+        }
+
+        let http = builder.build().context("failed to build HTTP client")?;
 
         Ok(Self {
             http,
@@ -88,6 +105,9 @@ mod tests {
             cache_url: None,
             db_path: ":memory:".to_string(),
             dry_run: false,
+            allow_insecure: true, // Tests use http://
+            client_cert: None,
+            client_key: None,
         }
     }
 
@@ -146,6 +166,30 @@ mod tests {
             assert!(url.starts_with("https://fleet.example.com/api/v1/machines/"));
             assert!(url.ends_with("/desired-generation"));
         }
+    }
+
+    #[test]
+    fn test_reject_http_url_in_production() {
+        let mut config = test_config("http://fleet.example.com");
+        config.allow_insecure = false;
+        let result = Client::new(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_allow_http_url_with_insecure_flag() {
+        let config = test_config("http://fleet.example.com");
+        // allow_insecure is already true in test_config
+        let result = Client::new(&config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_https_url_always_allowed() {
+        let mut config = test_config("https://fleet.example.com");
+        config.allow_insecure = false;
+        let result = Client::new(&config);
+        assert!(result.is_ok());
     }
 
     #[test]
