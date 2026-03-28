@@ -19,10 +19,7 @@ pub async fn run(cp_url: &str, json_output: bool) -> Result<()> {
         );
     }
 
-    let machines: Vec<MachineStatus> = resp
-        .json()
-        .await
-        .context("Failed to parse machine list")?;
+    let machines: Vec<MachineStatus> = resp.json().await.context("Failed to parse machine list")?;
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(&machines)?);
@@ -61,7 +58,12 @@ pub async fn run(cp_url: &str, json_output: bool) -> Result<()> {
 
         println!(
             "{:<20} {:<10} {:<15} {:<45} {:<45} {}",
-            m.machine_id, state_indicator, m.lifecycle.to_string(), current, desired, last_seen
+            m.machine_id,
+            state_indicator,
+            m.lifecycle.to_string(),
+            current,
+            desired,
+            last_seen
         );
     }
 
@@ -75,11 +77,7 @@ pub async fn run(cp_url: &str, json_output: bool) -> Result<()> {
         })
         .count();
 
-    println!(
-        "\n{}/{} hosts in sync",
-        in_sync,
-        machines.len()
-    );
+    println!("\n{}/{} hosts in sync", in_sync, machines.len());
 
     Ok(())
 }

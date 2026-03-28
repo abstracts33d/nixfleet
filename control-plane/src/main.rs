@@ -4,7 +4,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[derive(Parser)]
-#[command(name = "nixfleet-control-plane", about = "NixFleet control plane server")]
+#[command(
+    name = "nixfleet-control-plane",
+    about = "NixFleet control plane server"
+)]
 struct Cli {
     /// Address to listen on
     #[arg(long, default_value = "0.0.0.0:8080", env = "NIXFLEET_CP_LISTEN")]
@@ -58,9 +61,8 @@ async fn main() -> anyhow::Result<()> {
                 std::path::Path::new(key),
                 cli.client_ca.as_ref().map(std::path::Path::new),
             )?;
-            let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(
-                std::sync::Arc::new(config),
-            );
+            let tls_config =
+                axum_server::tls_rustls::RustlsConfig::from_config(std::sync::Arc::new(config));
             tracing::info!("Control plane listening on {} (TLS)", cli.listen);
             axum_server::bind_rustls(cli.listen.parse()?, tls_config)
                 .serve(app.into_make_service())

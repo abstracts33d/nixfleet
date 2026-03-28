@@ -19,12 +19,10 @@ impl Store {
     pub fn new(path: &str) -> Result<Self> {
         // Ensure parent directory exists
         if let Some(parent) = std::path::Path::new(path).parent() {
-            std::fs::create_dir_all(parent)
-                .context("failed to create database directory")?;
+            std::fs::create_dir_all(parent).context("failed to create database directory")?;
         }
 
-        let conn = Connection::open(path)
-            .context("failed to open SQLite database")?;
+        let conn = Connection::open(path).context("failed to open SQLite database")?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -33,7 +31,10 @@ impl Store {
 
     /// Initialize database tables.
     pub fn init(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS events (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,7 +56,10 @@ impl Store {
 
     /// Log a generation check event.
     pub fn log_check(&self, hash: &str, status: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         conn.execute(
             "INSERT INTO events (kind, hash, message) VALUES ('check', ?1, ?2)",
             rusqlite::params![hash, status],
@@ -68,8 +72,12 @@ impl Store {
     ///
     /// Wraps INSERT + UPSERT in a transaction for atomicity.
     pub fn log_deploy(&self, hash: &str, success: bool) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        let tx = conn.unchecked_transaction()
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let tx = conn
+            .unchecked_transaction()
             .context("failed to begin transaction")?;
         let msg = if success { "success" } else { "failed" };
         tx.execute(
@@ -91,7 +99,10 @@ impl Store {
 
     /// Log a rollback event with the reason.
     pub fn log_rollback(&self, reason: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         conn.execute(
             "INSERT INTO events (kind, message) VALUES ('rollback', ?1)",
             rusqlite::params![reason],
@@ -102,7 +113,10 @@ impl Store {
 
     /// Log an error.
     pub fn log_error(&self, message: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         conn.execute(
             "INSERT INTO events (kind, message) VALUES ('error', ?1)",
             rusqlite::params![message],
@@ -114,7 +128,10 @@ impl Store {
     /// Count events of a given kind (used in tests).
     #[cfg(test)]
     fn count_events(&self, kind: &str) -> Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM events WHERE kind = ?1",
             rusqlite::params![kind],
@@ -126,7 +143,10 @@ impl Store {
     /// Read a state value by key (used in tests).
     #[cfg(test)]
     fn get_state(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         let result = conn.query_row(
             "SELECT value FROM state WHERE key = ?1",
             rusqlite::params![key],

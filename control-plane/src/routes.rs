@@ -130,9 +130,7 @@ pub async fn set_desired_generation(
 /// GET /api/v1/machines
 ///
 /// List all known machines with their current status.
-pub async fn list_machines(
-    State((state, _db)): State<AppState>,
-) -> Json<Vec<MachineStatus>> {
+pub async fn list_machines(State((state, _db)): State<AppState>) -> Json<Vec<MachineStatus>> {
     let fleet = state.read().await;
     let machines: Vec<MachineStatus> = fleet
         .machines
@@ -144,10 +142,7 @@ pub async fn list_machines(
                 .as_ref()
                 .map(|r| r.current_generation.clone())
                 .unwrap_or_default(),
-            desired_generation: m
-                .desired_generation
-                .as_ref()
-                .map(|d| d.hash.clone()),
+            desired_generation: m.desired_generation.as_ref().map(|d| d.hash.clone()),
             agent_version: String::new(),
             system_state: m
                 .last_report
@@ -225,12 +220,7 @@ pub async fn register_machine(
     let actor_id = actor
         .map(|Extension(a)| a.identifier())
         .unwrap_or_else(|| "unknown".to_string());
-    let _ = db.insert_audit_event(
-        &actor_id,
-        "register",
-        &id,
-        Some(&lifecycle.to_string()),
-    );
+    let _ = db.insert_audit_event(&actor_id, "register", &id, Some(&lifecycle.to_string()));
 
     tracing::info!(machine_id = %id, lifecycle = %lifecycle, "Machine registered");
     Ok((
@@ -273,10 +263,7 @@ pub async fn update_lifecycle(
     if !machine.lifecycle.can_transition_to(&target) {
         return Err((
             StatusCode::CONFLICT,
-            format!(
-                "invalid transition: {} -> {}",
-                machine.lifecycle, target
-            ),
+            format!("invalid transition: {} -> {}", machine.lifecycle, target),
         ));
     }
 
@@ -329,9 +316,6 @@ mod tests {
         let json = r#"{"hash": "/nix/store/abc123", "cache_url": "https://cache.example.com"}"#;
         let req: SetGenerationRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.hash, "/nix/store/abc123");
-        assert_eq!(
-            req.cache_url,
-            Some("https://cache.example.com".to_string())
-        );
+        assert_eq!(req.cache_url, Some("https://cache.example.com".to_string()));
     }
 }

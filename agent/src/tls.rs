@@ -3,10 +3,7 @@ use std::fs;
 use std::path::Path;
 
 /// Load a client certificate and key for mTLS.
-pub fn load_client_identity(
-    cert_path: &Path,
-    key_path: &Path,
-) -> Result<reqwest::Identity> {
+pub fn load_client_identity(cert_path: &Path, key_path: &Path) -> Result<reqwest::Identity> {
     let cert_pem = fs::read(cert_path)
         .with_context(|| format!("failed to read client cert: {}", cert_path.display()))?;
     let key_pem = fs::read(key_path)

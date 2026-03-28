@@ -38,8 +38,7 @@ pub fn build_server_config(
         let verifier = WebPkiClientVerifier::builder(Arc::new(root_store))
             .build()
             .context("failed to build client verifier")?;
-        ServerConfig::builder()
-            .with_client_cert_verifier(verifier)
+        ServerConfig::builder().with_client_cert_verifier(verifier)
     } else {
         ServerConfig::builder().with_no_client_auth()
     };

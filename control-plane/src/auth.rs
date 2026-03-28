@@ -59,7 +59,9 @@ pub async fn require_api_key(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .unwrap_or_else(|| "unknown".to_string());
 
-    request.extensions_mut().insert(Actor::ApiKey { name, role });
+    request
+        .extensions_mut()
+        .insert(Actor::ApiKey { name, role });
     Ok(next.run(request).await)
 }
 

@@ -122,10 +122,7 @@ async fn push_to_control_plane(cp_url: &str, host: &str, store_path: &str) -> Re
         .json(&serde_json::json!({ "hash": store_path }))
         .send()
         .await
-        .context(format!(
-            "Failed to reach control plane for {}",
-            host
-        ))?;
+        .context(format!("Failed to reach control plane for {}", host))?;
 
     if !resp.status().is_success() {
         bail!(
@@ -316,11 +313,7 @@ mod tests {
 
     #[test]
     fn test_filter_hosts_pattern() {
-        let hosts = vec![
-            "krach".into(),
-            "krach-qemu".into(),
-            "ohm".into(),
-        ];
+        let hosts = vec!["krach".into(), "krach-qemu".into(), "ohm".into()];
         let filtered = filter_hosts(&hosts, "krach*");
         assert_eq!(filtered, vec!["krach", "krach-qemu"]);
     }

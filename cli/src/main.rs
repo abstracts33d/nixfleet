@@ -7,11 +7,7 @@ mod host;
 mod status;
 
 #[derive(Parser)]
-#[command(
-    name = "nixfleet",
-    about = "NixFleet fleet management CLI",
-    version
-)]
+#[command(name = "nixfleet", about = "NixFleet fleet management CLI", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -239,7 +235,10 @@ async fn rollback(cp_url: &str, host: &str, generation: Option<String>, ssh: boo
                 resp.text().await.unwrap_or_default()
             );
         }
-        println!("Desired generation set to {} for {} (agent will pick up on next poll)", store_path, host);
+        println!(
+            "Desired generation set to {} for {} (agent will pick up on next poll)",
+            store_path, host
+        );
     }
 
     Ok(())

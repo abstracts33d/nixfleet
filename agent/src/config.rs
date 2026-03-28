@@ -90,7 +90,10 @@ mod tests {
             cache_url: Some("https://cache.nixos.org".to_string()),
             ..default_config()
         };
-        assert_eq!(config.cache_url, Some("https://cache.nixos.org".to_string()));
+        assert_eq!(
+            config.cache_url,
+            Some("https://cache.nixos.org".to_string())
+        );
     }
 
     #[test]

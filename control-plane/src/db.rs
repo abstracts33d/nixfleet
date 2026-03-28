@@ -20,13 +20,11 @@ impl Db {
     pub fn new(path: &str) -> Result<Self> {
         if let Some(parent) = std::path::Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .context("failed to create database directory")?;
+                std::fs::create_dir_all(parent).context("failed to create database directory")?;
             }
         }
 
-        let conn =
-            Connection::open(path).context("failed to open SQLite database")?;
+        let conn = Connection::open(path).context("failed to open SQLite database")?;
 
         // Enable WAL mode for better concurrent read performance
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -46,11 +44,7 @@ impl Db {
     }
 
     /// Set (upsert) the desired generation for a machine.
-    pub fn set_desired_generation(
-        &self,
-        machine_id: &str,
-        hash: &str,
-    ) -> Result<()> {
+    pub fn set_desired_generation(&self, machine_id: &str, hash: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO generations (machine_id, hash)
@@ -63,10 +57,7 @@ impl Db {
     }
 
     /// Get the desired generation for a machine, if set.
-    pub fn get_desired_generation(
-        &self,
-        machine_id: &str,
-    ) -> Result<Option<String>> {
+    pub fn get_desired_generation(&self, machine_id: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
             "SELECT hash FROM generations WHERE machine_id = ?1",
@@ -83,8 +74,7 @@ impl Db {
     /// List all desired generations (machine_id, hash).
     pub fn list_desired_generations(&self) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT machine_id, hash FROM generations")?;
+        let mut stmt = conn.prepare("SELECT machine_id, hash FROM generations")?;
         let rows = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -110,11 +100,7 @@ impl Db {
     }
 
     /// Register a machine (upsert) with a given lifecycle state.
-    pub fn register_machine(
-        &self,
-        machine_id: &str,
-        lifecycle: &str,
-    ) -> Result<()> {
+    pub fn register_machine(&self, machine_id: &str, lifecycle: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO machines (machine_id, lifecycle)
@@ -127,10 +113,7 @@ impl Db {
     }
 
     /// Get the lifecycle state for a machine.
-    pub fn get_machine_lifecycle(
-        &self,
-        machine_id: &str,
-    ) -> Result<Option<String>> {
+    pub fn get_machine_lifecycle(&self, machine_id: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
             "SELECT lifecycle FROM machines WHERE machine_id = ?1",
@@ -145,17 +128,14 @@ impl Db {
     }
 
     /// Update a machine's lifecycle state.
-    pub fn set_machine_lifecycle(
-        &self,
-        machine_id: &str,
-        lifecycle: &str,
-    ) -> Result<bool> {
+    pub fn set_machine_lifecycle(&self, machine_id: &str, lifecycle: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "UPDATE machines SET lifecycle = ?2 WHERE machine_id = ?1",
-            rusqlite::params![machine_id, lifecycle],
-        )
-        .context("failed to update machine lifecycle")?;
+        let rows = conn
+            .execute(
+                "UPDATE machines SET lifecycle = ?2 WHERE machine_id = ?1",
+                rusqlite::params![machine_id, lifecycle],
+            )
+            .context("failed to update machine lifecycle")?;
         Ok(rows > 0)
     }
 
@@ -203,8 +183,7 @@ impl Db {
     /// List all registered machines.
     pub fn list_machines(&self) -> Result<Vec<MachineRow>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT machine_id, lifecycle, registered_at FROM machines")?;
+        let mut stmt = conn.prepare("SELECT machine_id, lifecycle, registered_at FROM machines")?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(MachineRow {
@@ -287,11 +266,7 @@ impl Db {
     }
 
     /// Get recent reports for a machine (most recent first).
-    pub fn get_recent_reports(
-        &self,
-        machine_id: &str,
-        limit: usize,
-    ) -> Result<Vec<ReportRow>> {
+    pub fn get_recent_reports(&self, machine_id: &str, limit: usize) -> Result<Vec<ReportRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT machine_id, generation, success, message, received_at
@@ -408,13 +383,8 @@ mod tests {
     fn test_reports_limit() {
         let (db, _dir) = make_db();
         for i in 0..5 {
-            db.insert_report(
-                "krach",
-                &format!("/nix/store/gen{i}"),
-                true,
-                "ok",
-            )
-            .unwrap();
+            db.insert_report("krach", &format!("/nix/store/gen{i}"), true, "ok")
+                .unwrap();
         }
         let reports = db.get_recent_reports("krach", 2).unwrap();
         assert_eq!(reports.len(), 2);
@@ -477,7 +447,8 @@ mod tests {
     #[test]
     fn test_insert_and_verify_api_key() {
         let (db, _dir) = make_db();
-        db.insert_api_key("abc123hash", "test-key", "admin").unwrap();
+        db.insert_api_key("abc123hash", "test-key", "admin")
+            .unwrap();
         let role = db.verify_api_key("abc123hash").unwrap();
         assert_eq!(role, Some("admin".to_string()));
     }

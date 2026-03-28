@@ -36,7 +36,11 @@ struct Cli {
     cache_url: Option<String>,
 
     /// SQLite database path
-    #[arg(long, default_value = "/var/lib/nixfleet/state.db", env = "NIXFLEET_DB_PATH")]
+    #[arg(
+        long,
+        default_value = "/var/lib/nixfleet/state.db",
+        env = "NIXFLEET_DB_PATH"
+    )]
     db_path: String,
 
     /// Dry run (check + fetch but don't apply)

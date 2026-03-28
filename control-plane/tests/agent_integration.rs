@@ -206,7 +206,9 @@ async fn test_failed_deploy_reported_correctly() {
 
     // Operator sets generation.
     client
-        .post(format!("{base}/api/v1/machines/{machine_id}/set-generation"))
+        .post(format!(
+            "{base}/api/v1/machines/{machine_id}/set-generation"
+        ))
         .json(&serde_json::json!({ "hash": bad_hash }))
         .send()
         .await
@@ -359,7 +361,10 @@ async fn test_set_generation_upsert() {
         .await
         .unwrap();
     let count = list.iter().filter(|m| m.machine_id == machine_id).count();
-    assert_eq!(count, 1, "upsert must not create duplicate inventory entries");
+    assert_eq!(
+        count, 1,
+        "upsert must not create duplicate inventory entries"
+    );
 }
 
 // ---- Optional cache_url propagation -----------------------------------------

@@ -32,7 +32,7 @@ pub mod api {
 }
 
 /// Machine lifecycle states for fleet management.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineLifecycle {
     /// Pre-registered, no agent report yet.
@@ -40,17 +40,12 @@ pub enum MachineLifecycle {
     /// Install in progress.
     Provisioning,
     /// Agent reporting normally.
+    #[default]
     Active,
     /// Manually paused (skip deploys).
     Maintenance,
     /// Removed from fleet.
     Decommissioned,
-}
-
-impl Default for MachineLifecycle {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 impl fmt::Display for MachineLifecycle {
@@ -190,10 +185,7 @@ mod tests {
         let json = r#"{"hash": "/nix/store/abc123-nixos-system", "cache_url": "https://cache.example.com"}"#;
         let gen: DesiredGeneration = serde_json::from_str(json).unwrap();
         assert_eq!(gen.hash, "/nix/store/abc123-nixos-system");
-        assert_eq!(
-            gen.cache_url,
-            Some("https://cache.example.com".to_string())
-        );
+        assert_eq!(gen.cache_url, Some("https://cache.example.com".to_string()));
     }
 
     #[test]

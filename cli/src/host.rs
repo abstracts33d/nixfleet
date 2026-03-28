@@ -44,8 +44,7 @@ pub async fn add_host(
 async fn fetch_hardware_config(hostname: &str, target: &str) -> Result<()> {
     println!("  Fetching hardware config from {}...", target);
     let dir = format!("modules/_hardware/{}", hostname);
-    std::fs::create_dir_all(&dir)
-        .context(format!("Failed to create directory {}", dir))?;
+    std::fs::create_dir_all(&dir).context(format!("Failed to create directory {}", dir))?;
 
     let output = tokio::process::Command::new("ssh")
         .args([
@@ -71,20 +70,17 @@ async fn fetch_hardware_config(hostname: &str, target: &str) -> Result<()> {
     }
 
     let hw_path = format!("{}/hardware-configuration.nix", dir);
-    std::fs::write(&hw_path, &output.stdout)
-        .context(format!("Failed to write {}", hw_path))?;
+    std::fs::write(&hw_path, &output.stdout).context(format!("Failed to write {}", hw_path))?;
     println!("  Saved: {}", hw_path);
     Ok(())
 }
 
 fn generate_disk_config(hostname: &str) -> Result<()> {
     let dir = format!("modules/_hardware/{}", hostname);
-    std::fs::create_dir_all(&dir)
-        .context(format!("Failed to create directory {}", dir))?;
+    std::fs::create_dir_all(&dir).context(format!("Failed to create directory {}", dir))?;
     let path = format!("{}/disk-config.nix", dir);
 
-    std::fs::write(&path, DISK_TEMPLATE)
-        .context(format!("Failed to write {}", path))?;
+    std::fs::write(&path, DISK_TEMPLATE).context(format!("Failed to write {}", path))?;
     println!("  Generated: {}", path);
     Ok(())
 }
@@ -203,10 +199,7 @@ pub async fn provision_host(hostname: &str, target: &str, username: &str) -> Res
         .context("Failed to build closure")?;
 
     if !build.status.success() {
-        bail!(
-            "Build failed: {}",
-            String::from_utf8_lossy(&build.stderr)
-        );
+        bail!("Build failed: {}", String::from_utf8_lossy(&build.stderr));
     }
 
     let closure = String::from_utf8(build.stdout)?.trim().to_string();
@@ -298,10 +291,7 @@ pub async fn provision_host(hostname: &str, target: &str, username: &str) -> Res
             hostname
         );
     } else {
-        println!(
-            "\n{} installed but agent may not be running yet",
-            hostname
-        );
+        println!("\n{} installed but agent may not be running yet", hostname);
     }
 
     Ok(())
@@ -333,6 +323,12 @@ mod tests {
     #[test]
     fn test_fleet_snippet_output() {
         // Verify the snippet function doesn't panic
-        print_fleet_snippet("test-001", "acme", "workstation", "x86_64-linux", "http://localhost:8080");
+        print_fleet_snippet(
+            "test-001",
+            "acme",
+            "workstation",
+            "x86_64-linux",
+            "http://localhost:8080",
+        );
     }
 }

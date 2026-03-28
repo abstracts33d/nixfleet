@@ -30,7 +30,10 @@ pub async fn fetch_closure(store_path: &str, cache_url: Option<&str>) -> Result<
             anyhow::bail!("nix copy failed: {stderr}");
         }
     } else {
-        debug!(store_path, "No cache URL — assuming closure is available locally");
+        debug!(
+            store_path,
+            "No cache URL — assuming closure is available locally"
+        );
     }
     Ok(())
 }
@@ -127,7 +130,10 @@ mod tests {
     fn test_switch_bin_path_construction() {
         let store_path = "/nix/store/abc123-nixos-system";
         let switch_bin = format!("{store_path}/bin/switch-to-configuration");
-        assert_eq!(switch_bin, "/nix/store/abc123-nixos-system/bin/switch-to-configuration");
+        assert_eq!(
+            switch_bin,
+            "/nix/store/abc123-nixos-system/bin/switch-to-configuration"
+        );
     }
 
     #[test]

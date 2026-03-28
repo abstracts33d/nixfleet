@@ -21,8 +21,7 @@ impl Client {
             );
         }
 
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30));
+        let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
 
         // Load client certificate for mTLS if configured
         if let (Some(cert), Some(key)) = (&config.client_cert, &config.client_key) {
