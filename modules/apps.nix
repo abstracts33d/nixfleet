@@ -831,7 +831,7 @@
           PATH=${pkgs.git}/bin:$PATH
           HOST=$(${pkgs.hostname}/bin/hostname)
           echo -e '\033[1;33mStarting...\033[0m'
-          sudo SSH_AUTH_SOCK=$SSH_AUTH_SOCK /run/current-system/sw/bin/nixos-rebuild switch --flake .#$HOST "$@"
+          sudo /run/current-system/sw/bin/nixos-rebuild switch --flake .#$HOST "$@"
           echo -e '\033[1;32mSwitch to new generation complete!\033[0m'
         '';
       }
