@@ -96,7 +96,7 @@ Dispatch `doc-writer`:
 - Update README.md hosts/scopes tables if applicable
 - Add/update `docs/src/` page for the feature
 - Add/update `docs/guide/` entry if user-facing
-- Ensure both doc trees are in sync (per `superpowers-enforcement.md`)
+- Ensure both doc trees are in sync (CLAUDE.md, docs/src/, docs/guide/)
 
 ### Stage 10 — Ship
 

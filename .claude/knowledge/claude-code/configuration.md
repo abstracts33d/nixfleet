@@ -21,11 +21,12 @@
 | PreToolUse (Bash) | `pre-git-commit.sh` | Gate git commits |
 | PreToolUse (Bash) | `pre-git-push.sh` | Gate git pushes |
 | PreToolUse (Bash) | `guard-destructive.sh` | Block dangerous commands |
+| SessionStart | `session-context.sh` | Load session context |
 
 ## Knowledge vs Rules
 
 - **Rules** = things that MUST happen (enforcement, blocking)
-  - `config-dependencies.md`, `superpowers-enforcement.md`, `git-workflow.md`
+  - `config-dependencies.md`, `git-workflow.md`, `wrapper-boundary.md`, `testing.md`
 - **Knowledge** = things that help understanding (context, patterns)
   - Everything in `knowledge/` — gotchas, architecture, patterns
 
