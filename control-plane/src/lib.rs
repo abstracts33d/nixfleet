@@ -9,6 +9,7 @@ pub mod auth;
 pub mod db;
 pub mod routes;
 pub mod state;
+pub mod tls;
 
 pub type AppState = (Arc<RwLock<state::FleetState>>, Arc<db::Db>);
 

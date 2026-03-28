@@ -17,6 +17,18 @@ struct Cli {
         env = "NIXFLEET_CP_DB_PATH"
     )]
     db_path: String,
+
+    /// TLS certificate PEM file (enables HTTPS when set)
+    #[arg(long, env = "NIXFLEET_CP_TLS_CERT")]
+    tls_cert: Option<String>,
+
+    /// TLS private key PEM file
+    #[arg(long, env = "NIXFLEET_CP_TLS_KEY")]
+    tls_key: Option<String>,
+
+    /// Client CA PEM file (enables mTLS when set)
+    #[arg(long, env = "NIXFLEET_CP_CLIENT_CA")]
+    client_ca: Option<String>,
 }
 
 #[tokio::main]
@@ -39,8 +51,28 @@ async fn main() -> anyhow::Result<()> {
 
     let app = build_app(fleet_state, db);
 
-    let listener = tokio::net::TcpListener::bind(&cli.listen).await?;
-    tracing::info!("Control plane listening on {}", cli.listen);
-    axum::serve(listener, app).await?;
+    match (&cli.tls_cert, &cli.tls_key) {
+        (Some(cert), Some(key)) => {
+            let config = nixfleet_control_plane::tls::build_server_config(
+                std::path::Path::new(cert),
+                std::path::Path::new(key),
+                cli.client_ca.as_ref().map(std::path::Path::new),
+            )?;
+            let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(
+                std::sync::Arc::new(config),
+            );
+            tracing::info!("Control plane listening on {} (TLS)", cli.listen);
+            axum_server::bind_rustls(cli.listen.parse()?, tls_config)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        (None, None) => {
+            tracing::warn!("Running WITHOUT TLS — not recommended for production");
+            let listener = tokio::net::TcpListener::bind(&cli.listen).await?;
+            tracing::info!("Control plane listening on {}", cli.listen);
+            axum::serve(listener, app).await?;
+        }
+        _ => anyhow::bail!("Both --tls-cert and --tls-key must be set together"),
+    }
     Ok(())
 }
