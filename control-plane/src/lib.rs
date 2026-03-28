@@ -39,6 +39,7 @@ pub fn build_app(fleet_state: Arc<RwLock<state::FleetState>>, db: Arc<db::Db>) -
             patch(routes::update_lifecycle),
         )
         .route("/api/v1/audit", get(audit::list_audit_events))
+        .route("/api/v1/audit/export", get(audit::export_audit_csv))
         .layer(middleware::from_fn(move |headers, request, next| {
             let db = db_for_auth.clone();
             auth::require_api_key(headers, db, request, next)

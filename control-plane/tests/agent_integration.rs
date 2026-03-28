@@ -655,6 +655,33 @@ async fn test_audit_trail_on_set_generation() {
     assert_eq!(events[0]["target"], "krach");
 }
 
+// ---- Audit CSV Export -------------------------------------------------------
+
+#[tokio::test]
+async fn test_audit_csv_export() {
+    let (base, client, _dir) = spawn_server().await;
+
+    // Create an audit event via an action
+    client
+        .post(format!("{base}/api/v1/machines/krach/set-generation"))
+        .json(&serde_json::json!({"hash": "/nix/store/abc123"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{base}/api/v1/audit/export"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body = resp.text().await.unwrap();
+    assert!(body.starts_with("timestamp,actor,action,target,detail"));
+    assert!(body.contains("set_generation"));
+    assert!(body.contains("krach"));
+}
+
 /// Decommissioned machines still appear in inventory but with decommissioned lifecycle.
 #[tokio::test]
 async fn test_decommissioned_machine_in_inventory() {
