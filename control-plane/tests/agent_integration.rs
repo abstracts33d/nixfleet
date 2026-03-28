@@ -628,6 +628,33 @@ async fn test_invalid_lifecycle_transition_rejected() {
     );
 }
 
+// ---- Audit Trail ------------------------------------------------------------
+
+/// Setting a generation must produce an audit event.
+#[tokio::test]
+async fn test_audit_trail_on_set_generation() {
+    let (base, client, _dir) = spawn_server().await;
+
+    client
+        .post(format!("{base}/api/v1/machines/krach/set-generation"))
+        .json(&serde_json::json!({"hash": "/nix/store/abc123"}))
+        .send()
+        .await
+        .unwrap();
+
+    let events: Vec<serde_json::Value> = client
+        .get(format!("{base}/api/v1/audit?action=set_generation"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["action"], "set_generation");
+    assert_eq!(events[0]["target"], "krach");
+}
+
 /// Decommissioned machines still appear in inventory but with decommissioned lifecycle.
 #[tokio::test]
 async fn test_decommissioned_machine_in_inventory() {

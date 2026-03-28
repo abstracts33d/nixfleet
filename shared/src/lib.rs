@@ -26,6 +26,9 @@ pub mod api {
     /// PATCH: Change machine lifecycle state (admin endpoint).
     /// Path parameter: `{id}` = machine ID.
     pub const LIFECYCLE: &str = "/api/v1/machines/{id}/lifecycle";
+
+    /// GET: List audit events with optional filters.
+    pub const AUDIT: &str = "/api/v1/audit";
 }
 
 /// Machine lifecycle states for fleet management.
@@ -123,6 +126,17 @@ pub struct MachineStatus {
     pub uptime_seconds: u64,
     pub last_report: Option<DateTime<Utc>>,
     pub lifecycle: MachineLifecycle,
+}
+
+/// Audit event for compliance reporting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEvent {
+    pub id: i64,
+    pub timestamp: String,
+    pub actor: String,
+    pub action: String,
+    pub target: String,
+    pub detail: Option<String>,
 }
 
 #[cfg(test)]

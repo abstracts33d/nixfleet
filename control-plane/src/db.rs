@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use nixfleet_types::AuditEvent;
 use rusqlite::Connection;
 use std::sync::Mutex;
 
@@ -216,6 +217,75 @@ impl Db {
         Ok(rows)
     }
 
+    /// Insert an audit event.
+    pub fn insert_audit_event(
+        &self,
+        actor: &str,
+        action: &str,
+        target: &str,
+        detail: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO audit_events (actor, action, target, detail) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![actor, action, target, detail],
+        )
+        .context("failed to insert audit event")?;
+        Ok(())
+    }
+
+    /// Query audit events with optional filters, ordered by timestamp DESC.
+    pub fn query_audit_events(
+        &self,
+        actor: Option<&str>,
+        action: Option<&str>,
+        target: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<AuditEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT id, timestamp, actor, action, target, detail FROM audit_events WHERE 1=1",
+        );
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(a) = actor {
+            sql.push_str(&format!(" AND actor = ?{}", params.len() + 1));
+            params.push(Box::new(a.to_string()));
+        }
+        if let Some(a) = action {
+            sql.push_str(&format!(" AND action = ?{}", params.len() + 1));
+            params.push(Box::new(a.to_string()));
+        }
+        if let Some(t) = target {
+            sql.push_str(&format!(" AND target = ?{}", params.len() + 1));
+            params.push(Box::new(t.to_string()));
+        }
+
+        sql.push_str(&format!(
+            " ORDER BY timestamp DESC LIMIT ?{}",
+            params.len() + 1
+        ));
+        params.push(Box::new(limit as i64));
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                Ok(AuditEvent {
+                    id: row.get(0)?,
+                    timestamp: row.get(1)?,
+                    actor: row.get(2)?,
+                    action: row.get(3)?,
+                    target: row.get(4)?,
+                    detail: row.get(5)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Get recent reports for a machine (most recent first).
     pub fn get_recent_reports(
         &self,
@@ -417,6 +487,50 @@ mod tests {
         let (db, _dir) = make_db();
         let role = db.verify_api_key("nonexistent").unwrap();
         assert!(role.is_none());
+    }
+
+    #[test]
+    fn test_insert_and_query_audit_event() {
+        let (db, _dir) = make_db();
+        db.insert_audit_event(
+            "apikey:deploy-key",
+            "set_generation",
+            "krach",
+            Some("hash=/nix/store/abc123"),
+        )
+        .unwrap();
+        let events = db.query_audit_events(None, None, None, 100).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].actor, "apikey:deploy-key");
+        assert_eq!(events[0].action, "set_generation");
+        assert_eq!(events[0].target, "krach");
+    }
+
+    #[test]
+    fn test_query_audit_events_filter_by_actor() {
+        let (db, _dir) = make_db();
+        db.insert_audit_event("apikey:admin", "set_generation", "krach", None)
+            .unwrap();
+        db.insert_audit_event("machine:ohm", "report", "ohm", None)
+            .unwrap();
+        let events = db
+            .query_audit_events(Some("apikey:admin"), None, None, 100)
+            .unwrap();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn test_query_audit_events_filter_by_action() {
+        let (db, _dir) = make_db();
+        db.insert_audit_event("apikey:admin", "set_generation", "krach", None)
+            .unwrap();
+        db.insert_audit_event("apikey:admin", "register", "ohm", None)
+            .unwrap();
+        let events = db
+            .query_audit_events(None, Some("register"), None, 100)
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "register");
     }
 
     #[test]

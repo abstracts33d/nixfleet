@@ -4,6 +4,7 @@ use axum::Router;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+pub mod audit;
 pub mod auth;
 pub mod db;
 pub mod routes;
@@ -36,6 +37,7 @@ pub fn build_app(fleet_state: Arc<RwLock<state::FleetState>>, db: Arc<db::Db>) -
             "/api/v1/machines/{id}/lifecycle",
             patch(routes::update_lifecycle),
         )
+        .route("/api/v1/audit", get(audit::list_audit_events))
         .layer(middleware::from_fn(move |headers, request, next| {
             let db = db_for_auth.clone();
             auth::require_api_key(headers, db, request, next)
