@@ -158,6 +158,47 @@ impl Db {
         Ok(rows > 0)
     }
 
+    /// Insert an API key record.
+    pub fn insert_api_key(&self, key_hash: &str, name: &str, role: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO api_keys (key_hash, name, role) VALUES (?1, ?2, ?3)",
+            rusqlite::params![key_hash, name, role],
+        )
+        .context("failed to insert API key")?;
+        Ok(())
+    }
+
+    /// Verify an API key and return its role if found.
+    pub fn verify_api_key(&self, key_hash: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT role FROM api_keys WHERE key_hash = ?1",
+            rusqlite::params![key_hash],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(role) => Ok(Some(role)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get the name associated with an API key.
+    pub fn get_api_key_name(&self, key_hash: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT name FROM api_keys WHERE key_hash = ?1",
+            rusqlite::params![key_hash],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(name) => Ok(Some(name)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// List all registered machines.
     pub fn list_machines(&self) -> Result<Vec<MachineRow>> {
         let conn = self.conn.lock().unwrap();
@@ -361,6 +402,21 @@ mod tests {
         let (db, _dir) = make_db();
         let updated = db.set_machine_lifecycle("nonexistent", "active").unwrap();
         assert!(!updated);
+    }
+
+    #[test]
+    fn test_insert_and_verify_api_key() {
+        let (db, _dir) = make_db();
+        db.insert_api_key("abc123hash", "test-key", "admin").unwrap();
+        let role = db.verify_api_key("abc123hash").unwrap();
+        assert_eq!(role, Some("admin".to_string()));
+    }
+
+    #[test]
+    fn test_verify_api_key_missing() {
+        let (db, _dir) = make_db();
+        let role = db.verify_api_key("nonexistent").unwrap();
+        assert!(role.is_none());
     }
 
     #[test]
