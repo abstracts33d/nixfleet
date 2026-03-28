@@ -1,37 +1,30 @@
-# lab
+# lab (framework test host)
 
 ## Purpose
 
-Headless NixOS server. No graphical environment, no dev tools. Runs core services only with impermanence.
+Framework test host for server role tests. Declared in `modules/fleet.nix` as a VM-mode host.
+
+> **Note:** This is the framework's *test* host. The physical `lab` server is defined in the [fleet overlay](https://github.com/abstracts33d/fleet).
 
 ## Location
 
 - `modules/fleet.nix` (host entry via `mkHost`)
-- `modules/_hardware/lab/disk-config.nix`
 
 ## Configuration
 
 | Property | Value |
 |----------|-------|
 | Platform | x86_64-linux |
-| Constructor | `mkFleet` -> `mkNixosHost` (internal) |
-| User | <username> |
-| Network interface | enp0s1 |
-| Server mode | Yes |
-| Impermanent | Yes |
-| Dev tools | No |
-| Graphical | No |
+| Organization | test-org |
+| Constructor | `mkFleet` → `mkVmHost` (internal) |
+| User | testuser (from org defaults) |
+| isServer | true |
 
-## Active Scopes
+## What it tests
 
-base (minimal subset), impermanence. No catppuccin/nix-index (server mode).
-
-## Dependencies
-
-- Hardware: `_hardware/lab/disk-config.nix` (no hardware-configuration -- headless)
-- Secrets: `github-ssh-key`, `github-signing-key`, `user-password`, `root-password`
+- Server role flag (`isServer = true`) is set and inherited
+- All org defaults (timezone, locale, SSH keys) apply to server hosts
 
 ## Links
 
 - [Host Overview](README.md)
-- [Impermanence scope](../scopes/impermanence.md)

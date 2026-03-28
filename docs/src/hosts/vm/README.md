@@ -9,19 +9,19 @@ VM hosts are declared in `modules/fleet.nix` with `isVm = true`. The `mkFleet` A
 - `modules/fleet.nix` -- all VM host entries (via `mkHost` with `isVm = true`)
 - `modules/_shared/mk-host.nix` -- `mkVmHost` internal constructor
 
-## VM Table
+## Framework VM Hosts
 
-| Host | Platform | Profile | Launcher |
-|------|----------|---------|----------|
-| [krach-qemu](krach-qemu.md) | x86_64-linux | Niri + greetd | `nix run .#spawn-qemu` |
-| [krach-utm](krach-utm.md) | aarch64-linux | Niri + greetd | `nix run .#spawn-utm` |
-| [qemu](qemu.md) | x86_64-linux | Minimal | `nix run .#spawn-qemu` |
-| [utm](utm.md) | aarch64-linux | Minimal | `nix run .#spawn-utm` |
+| Host | Platform | Flags | Purpose |
+|------|----------|-------|---------|
+| [krach-qemu](krach-qemu.md) | x86_64-linux | `isImpermanent` | Scope activation + SSH hardening tests |
+| [qemu](qemu.md) | x86_64-linux | `isMinimal` | Minimal / VM test suite default host |
+
+> Fleet overlay VM hosts (`krach-utm`, `utm`) for aarch64/UTM are defined in the [fleet repo](https://github.com/abstracts33d/fleet).
 
 ## mkVmHost Defaults (internal)
 
 - Hardware: `_hardware/qemu/disk-config.nix` + `_hardware/qemu/hardware-configuration.nix`
-- Platform: `x86_64-linux` (overridable for UTM/aarch64)
+- Platform: `x86_64-linux` (overridable for aarch64)
 - Extra NixOS modules: SPICE agent, force global DHCP, software rendering, mesa
 
 ## Links

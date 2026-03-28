@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Full validation suite: formatting check, eval tests, host builds, cross-platform eval, package builds, and optional VM integration tests.
+Full validation suite: formatting check, eval tests, host builds, and optional VM integration tests.
 
 ## Location
 
@@ -19,11 +19,9 @@ nix run .#validate -- --fast    # (reserved for future use)
 ## Validation Steps
 
 1. **Formatting** -- `nix fmt --fail-on-change`
-2. **Eval tests** (Linux only) -- 18 checks covering hostspec defaults, scope activation/deactivation, impermanence, SSH hardening, HM programs, dev scope, org defaults, enterprise scope negative, batch hosts, test matrix, role defaults, username inheritance, extensions namespace
-3. **NixOS host builds** -- krach, krach-qemu, qemu, ohm, lab, edge-01..03, test-workstation/server/minimal
-4. **Cross-platform eval** -- utm, krach-utm (eval only, can't build aarch64 on x86_64), aether (Darwin)
-5. **Package builds** -- shell, terminal
-6. **VM integration tests** (with `--vm`) -- vm-core, vm-shell-hm, vm-graphical, vm-minimal
+2. **Eval tests** (Linux only) -- 15 checks covering hostspec defaults, SSH hardening, org fields, org defaults, org across all hosts, secrets path, batch hosts, test matrix, role defaults, username inheritance, locale/timezone, SSH authorized keys, theme defaults, password files, extensions namespace
+3. **NixOS host builds** -- all hosts in `nixosConfigurations` (krach, krach-qemu, qemu, ohm, lab, edge-01..03, test-workstation/server/minimal)
+4. **VM integration tests** (with `--vm`) -- vm-core, vm-minimal
 
 ## Output
 

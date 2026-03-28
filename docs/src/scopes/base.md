@@ -20,7 +20,7 @@ Universal packages for all non-minimal hosts. Provides core CLI tools, file util
 
 ### HM user packages
 - **Core CLI:** coreutils, killall, openssh, wget, age, gnupg, fastfetch, gh
-- **File tools:** ack, colordiff, duf, eza, fd, fzf, jq, procs, ripgrep, tldr, tree, yq
+- **File tools:** duf, eza, fd, fzf, jq, procs, ripgrep, tldr, tree, yq
 - **Nix management:** home-manager, nh
 
 ## Dependencies
@@ -31,4 +31,3 @@ Universal packages for all non-minimal hosts. Provides core CLI tools, file util
 ## Links
 
 - [Scope Overview](README.md)
-- [Dev scope](dev.md) (additional dev-specific packages)

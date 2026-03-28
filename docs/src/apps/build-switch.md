@@ -2,13 +2,11 @@
 
 ## Purpose
 
-Day-to-day rebuild and switch command. Delegates to platform-specific scripts in `apps/<system>/build-switch`.
+Day-to-day rebuild and switch. Detects the current hostname and rebuilds the matching NixOS or Darwin configuration from the flake.
 
 ## Location
 
 - `modules/apps.nix` (the `build-switch` app definition)
-- `apps/x86_64-linux/build-switch` (Linux script)
-- `apps/aarch64-darwin/build-switch` (Darwin script)
 
 ## Usage
 
@@ -18,7 +16,11 @@ nix run .#build-switch
 
 ## How it works
 
-The app is a thin wrapper that execs the platform-specific build-switch script from the `apps/` directory.
+**On Linux (NixOS):** Runs `nixos-rebuild switch --flake .#<hostname>` via sudo, preserving the SSH agent socket for any remote operations.
+
+**On Darwin:** Builds `darwinConfigurations.<hostname>.system` then runs `darwin-rebuild switch --flake .#<hostname>`.
+
+The hostname is determined automatically from the running machine.
 
 ## Links
 

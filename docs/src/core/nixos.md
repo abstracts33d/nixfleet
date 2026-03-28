@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Universal NixOS configuration applied to every NixOS host. Covers boot, networking, user management, security, secrets (agenix), WiFi bootstrap, SSH hardening, and the org-level Claude Code deny list.
+Universal NixOS configuration applied to every NixOS host. Provides Nix settings, boot, networking, user management, SSH hardening, security, and the org-level Claude Code deny list.
 
 ## Location
 
@@ -11,60 +11,68 @@ Universal NixOS configuration applied to every NixOS host. Covers boot, networki
 ## Configuration
 
 ### Nix settings
-- `allowUnfree = true`, `allowBroken = false`
-- Binary caches: nixos cache + nix-community cachix
+- `allowUnfree = true`, `allowBroken = false`, `allowInsecure = false`
+- Binary caches: `cache.nixos.org` + `nix-community.cachix.org`
 - `auto-optimise-store = true` (hardlink deduplication)
-- Weekly gc (`--delete-older-than 7d`)
-- `trusted-users` includes regular user (gated: not on servers)
+- Weekly GC (`--delete-older-than 7d`)
+- `trusted-users` includes regular user (except on servers)
+- `experimental-features = nix-command flakes`
 
 ### Boot
-- systemd-boot with 42 configuration limit
+- systemd-boot with 42-configuration limit
 - Latest kernel (`linuxPackages_latest`)
 - initrd modules: xhci_pci, ahci, nvme, usbhid, usb_storage, sd_mod
 - uinput kernel module
 
+### Localization
+- `time.timeZone` from `hostSpec.timeZone`
+- `i18n.defaultLocale` from `hostSpec.locale`
+- `console.keyMap` from `hostSpec.keyboardLayout`
+
 ### Networking
+- `hostName` from `hostSpec.hostName`
 - NetworkManager enabled
 - Firewall enabled
-- Per-interface DHCP (when `networking.interface` is set)
+- Per-interface DHCP when `hostSpec.networking.interface` is set
+
+### Programs
+- gnupg agent with SSH support
+- dconf, git, zsh (system-level)
 
 ### Security
 - polkit enabled
 - sudo with NOPASSWD reboot for wheel group
-- SSH hardened: `PermitRootLogin = "prohibit-password"`, `PasswordAuthentication = false`
-
-### Secrets (agenix — org-level)
-- Agenix configuration lives in org nixosModules (injected via `fleet.nix`), not in `core/nixos.nix`
-- Identity paths: `~/.keys/id_ed25519` + impermanent fallback at `/persist`
-- Secrets: `github-ssh-key`, `github-signing-key`, `user-password`, `root-password`
-- WiFi secrets: dynamically generated from `hS.wifiNetworks` list
-
-### WiFi bootstrap service
-Systemd oneshot that copies WiFi `.nmconnection` files from agenix secrets to NetworkManager if absent. Runs after agenix, before NetworkManager.
 
 ### Users
 - Primary user: normal user, wheel + optional groups (audio, video, docker, git, networkmanager)
 - Shell: zsh
-- Authorized SSH keys from `hS.sshAuthorizedKeys` (set by org defaults in `fleet.nix`)
-- Hashed password from `hS.hashedPasswordFile` / `hS.rootHashedPasswordFile` (set by org defaults)
+- SSH authorized keys from `hostSpec.sshAuthorizedKeys`
+- Hashed password from `hostSpec.hashedPasswordFile` / `hostSpec.rootHashedPasswordFile` (null = no managed password)
 
-### Claude Code org-level deny list
-Writes `/etc/claude-code/settings.json` with non-overridable deny rules:
-- Destructive: `rm -rf`, `dd`, `mkfs`, `shred`
-- Privilege escalation: `sudo`, `pkexec`, `doas`, `su`
-- Dangerous git: `push --force`, `reset --hard`, `clean -fd`
-- Nix store: `nix-store --delete`, `nix store delete`
+### SSH hardening
+- `PermitRootLogin = "prohibit-password"`
+- `PasswordAuthentication = false`
+- `KbdInteractiveAuthentication = false`
+
+### Hardware
+- `hardware.ledger.enable = true`
 
 ### System packages
-gitFull, inetutils
+`git`, `inetutils`
+
+### Claude Code org-level deny list
+Writes `/etc/claude-code/settings.json` with non-overridable deny rules (inert if Claude Code is not installed):
+- Destructive: `rm -rf`, `rm -r`, `dd`, `mkfs`, `shred`
+- Privilege escalation: `sudo`, `pkexec`, `doas`, `su`
+- Dangerous git: `push --force`, `push -f`, `reset --hard`, `clean -fd`
+- Nix store: `nix-store --delete`, `nix store delete`
 
 ## Dependencies
 
-- Inputs: disko
-- Agenix and secrets are org-level concerns, injected via `mkOrg nixosModules`
+- Inputs: disko (imported for disk partitioning)
+- Agenix and secrets are org-level concerns injected via `mkOrg nixosModules` — not in this module
 
 ## Links
 
 - [Core Overview](README.md)
-- [Secrets](../secrets/README.md)
 - [Claude Permissions](../claude/permissions.md)

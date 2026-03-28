@@ -1,50 +1,34 @@
-# krach
+# krach (framework test host)
 
 ## Purpose
 
-Main workstation running NixOS with the Niri scrollable-tiling Wayland compositor, greetd display manager, and full dev tools. Uses impermanence with btrfs root wipe.
+Framework test host for org defaults, SSH hardening, and impermanence tests. Declared in `modules/fleet.nix` as a VM-mode host for CI eval purposes.
+
+> **Note:** This is the framework's *test* host. The physical `krach` workstation (with Niri, dev tools, etc.) is defined in the [fleet overlay](https://github.com/abstracts33d/fleet).
 
 ## Location
 
 - `modules/fleet.nix` (host entry via `mkHost`)
-- `modules/_hardware/krach/disk-config.nix`
-- `modules/_hardware/krach/hardware-configuration.nix`
+- `modules/_hardware/qemu/` (shared QEMU hardware config)
 
 ## Configuration
 
 | Property | Value |
 |----------|-------|
 | Platform | x86_64-linux |
-| Constructor | `mkFleet` -> `mkNixosHost` (internal) |
-| User | <username> |
-| Network interface | enp6s0 |
-| Compositor | Niri + Noctalia Shell |
-| Display manager | greetd (tuigreet) |
-| Impermanent | Yes (btrfs wipe on boot) |
-| Dev tools | Yes (Docker, direnv, mise, Claude Code) |
-| WiFi networks | home |
+| Organization | test-org |
+| Constructor | `mkFleet` → `mkVmHost` (internal) |
+| User | testuser (from org defaults) |
+| isImpermanent | true |
 
-## Extra Packages
+## What it tests
 
-krach adds host-specific packages via `extraHmModules`:
-- `jetbrains.ruby-mine`
-- `slack`
-
-With impermanence persist paths for JetBrains config/data/cache.
-
-## Active Scopes
-
-Based on flags: catppuccin, nix-index, base, graphical, dev, niri, greetd, impermanence.
-
-## Dependencies
-
-- Hardware: `_hardware/krach/` (disk-config + hardware-configuration)
-- Secrets: `github-ssh-key`, `github-signing-key`, `user-password`, `root-password`, `wifi-home`
-- VM mirror: [krach-qemu](vm/krach-qemu.md) for testing
+- Org defaults are inherited (timezone, locale, SSH keys)
+- `hostSpec.userName` is set from org
+- Impermanence scope activates (btrfs wipe, persist paths)
+- SSH hardening is applied (PermitRootLogin=prohibit-password)
 
 ## Links
 
 - [Host Overview](README.md)
-- [Niri scope](../scopes/desktop/niri.md)
 - [Impermanence scope](../scopes/impermanence.md)
-- [Dev scope](../scopes/dev.md)

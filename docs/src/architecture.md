@@ -1,10 +1,8 @@
 # Architecture
 
-> **Note:** As of the framework/fleet split, opinionated modules (scopes, wrappers, HM programs, config files) have moved to fleet repos. Documentation in `docs/src/scopes/`, `docs/src/wrappers/`, and `docs/src/core/home.md` describes the reference fleet implementation and needs updating to reflect the new split.
-
 ## Purpose
 
-This repository is a multi-platform Nix configuration targeting NixOS (x86_64, aarch64), macOS (aarch64-darwin, x86_64-darwin), and portable environments. It uses a dendritic architecture where modules self-compose based on host flags.
+NixFleet is a framework for declarative NixOS fleet management. It provides the library (`mkFleet`, `mkOrg`, `mkHost`, etc.), core NixOS/Darwin modules, scope infrastructure, Rust agent/control-plane, and a framework test fleet. Opinionated modules (scopes, wrappers, HM programs, config files) belong in consuming fleet repos. This separation keeps the framework generic.
 
 ## Location
 
@@ -35,9 +33,9 @@ Files and directories prefixed with `_` are excluded from import-tree auto-impor
 |-----------|----------|-------------|
 | `_shared/` | `mk-host.nix`, `host-spec-module.nix`, `lib/`, disk templates | `fleet.nix`, host constructors |
 | `_shared/lib/` | `mk-fleet.nix`, `mk-host.nix`, `mk-org.nix`, `mk-role.nix`, `mk-batch-hosts.nix`, `mk-test-matrix.nix` | `fleet.nix` |
-| `_config/` | kitty.conf, starship.toml, zsh/, gitconfig | HM modules + wrappers |
 | `_hardware/` | Per-host disk-config, hardware-configuration | `fleet.nix` host entries |
-| `core/_home/` | HM tool config fragments | `core/home.nix` |
+
+Fleet repos typically add `_config/` (tool configs) and `core/_home/` (HM fragments) — these are outside the framework.
 
 ## Deferred Module Pattern
 
@@ -86,15 +84,17 @@ mkFleet {
 | `mkVmHost` | NixOS VM | Wraps `mkNixosHost` + virtio, SPICE, software rendering, global DHCP |
 | `mkDarwinHost` | macOS | nix-darwin + all deferred modules + HM |
 
-### Current fleet
+### Framework test fleet
 
-The `abstracts33d` organization in `fleet.nix` contains 11 hosts:
-- 3 physical hosts: `krach`, `ohm`, `lab` (NixOS)
-- 2 VMs: `krach-qemu`, `qemu` (x86_64)
-- 3 batch hosts: `edge-01`, `edge-02`, `edge-03` (simulated edge fleet)
-- 3 test matrix hosts: `workstation`, `server`, `minimal` roles on x86_64-linux
+`modules/fleet.nix` contains a minimal test fleet for the framework's own CI. These hosts exist to make eval tests and VM tests pass — they are not a real org fleet:
 
-Additional hosts (`aether`, `krach-utm`, `utm`) are defined in the [fleet overlay](https://github.com/abstracts33d/fleet).
+- 2 individual hosts: `krach` (isImpermanent), `ohm` (userName override)
+- 2 VM hosts: `krach-qemu` (isImpermanent), `qemu` (isMinimal)
+- 1 server host: `lab` (isServer)
+- 3 batch hosts: `edge-01`, `edge-02`, `edge-03` (simulated edge fleet via `mkBatchHosts`)
+- 3 test matrix hosts: `test-workstation-x86_64`, `test-server-x86_64`, `test-minimal-x86_64` (via `mkTestMatrix`)
+
+Consuming fleet repos define their own organizations and hosts. See the [fleet repo](https://github.com/abstracts33d/fleet) for a reference implementation.
 
 ## Scope Self-Activation
 
@@ -109,19 +109,19 @@ Scope modules use `lib.mkIf hS.<flag>` to self-activate. Adding a new scope file
 | nix-darwin | macOS system config |
 | disko | Declarative disk partitioning |
 | impermanence | Ephemeral root filesystem |
-| agenix | Age-encrypted secrets |
-| catppuccin/nix | Theming (200+ apps) |
-| nix-wrapper-modules | Portable composites |
-| nixos-anywhere | Remote NixOS installation |
-| nix-index-database | command-not-found |
-| treefmt-nix | Multi-language formatting |
+| agenix | Age-encrypted secrets (framework-agnostic, wired via hostSpec) |
+| flake-parts | Module system at flake level |
+| import-tree | Auto-import all `.nix` files under `modules/` |
+| nixos-anywhere | Remote NixOS installation (used by `install` app) |
+| nixos-hardware | Hardware configuration modules |
+| lanzaboote | Secure Boot support |
+| treefmt-nix | Multi-language formatting (alejandra + shfmt) |
 
 ## Dependencies
 
 - All modules depend on `module-options.nix` (defines the deferred module option types)
 - Host files depend on `_shared/mk-host.nix` and `_shared/host-spec-module.nix`
-- Wrappers depend on `_config/` shared config files
-- HM modules in `core/_home/` depend on `_config/` shared config files
+- `core/nixos.nix` and `core/darwin.nix` depend on `hostSpec` options from `host-spec-module.nix`
 
 ## Links
 

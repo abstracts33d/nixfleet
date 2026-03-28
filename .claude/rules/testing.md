@@ -11,7 +11,7 @@ Tests follow a 3-tier pyramid:
 - Location: `modules/tests/vm.nix`
 - Runs: before merge (`nix run .#validate -- --vm`)
 - Tests: runtime (services, binaries, symlinks)
-- Suites: `vm-core`, `vm-shell-hm`, `vm-graphical`, `vm-minimal`
+- Suites: `vm-core`, `vm-minimal`
 - Only runs on x86_64-linux (nixosTest requirement)
 
 ## Tier B -- Smoke Tests (top, real hardware)

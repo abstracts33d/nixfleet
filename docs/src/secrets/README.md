@@ -1,49 +1,34 @@
 # Secrets Management
 
-## Purpose
+## Framework Approach
 
-Age-encrypted secrets managed via agenix. Encrypted secrets live in a private repo (`secrets repo`), referenced as a non-flake input. Secrets are decrypted at boot and symlinked to their target paths.
+NixFleet is **secrets-agnostic**. The framework does not bundle agenix configuration or secrets — it provides clean extension points via `mkOrg nixosModules` and `hostSpec.secretsPath` for consuming fleet repos to plug in their secrets management of choice.
 
-> **Framework note:** NixFleet is secrets-agnostic. Agenix is the `abstracts33d` org's implementation choice, wired in via org modules (`fleet.nix` nixosModules and darwinModules). A different org could use sops-nix or Vault instead.
+The framework test fleet has no secrets at all (`hashedPasswordFile = null`).
 
-## Location
+## Extension Points
 
-- `modules/fleet.nix` -- org nixosModules/darwinModules inject agenix config
-- `modules/_shared/keys.nix` -- SSH public keys (org-specific)
+| Mechanism | Location | Purpose |
+|-----------|----------|---------|
+| `mkOrg nixosModules` | `fleet.nix` | Inject org-level NixOS modules (agenix config, etc.) |
+| `hostSpec.secretsPath` | `host-spec-module.nix` | Pass secrets repo path to modules without hardcoding |
+| `hostSpec.hashedPasswordFile` | `host-spec-module.nix` | Wired to `users.users.<name>.hashedPasswordFile` |
+| `hostSpec.rootHashedPasswordFile` | `host-spec-module.nix` | Wired to `users.users.root.hashedPasswordFile` |
 
-## Architecture
+## Reference Implementation
 
-```
-secrets repo repo (private, git+ssh)
-  |-- github-ssh-key.age
-  |-- github-signing-key.age
-  |-- <user>-hashed-password-file
-  |-- shashed-password-file (root)
-  |-- wifi-<name>.age
-```
+The [fleet overlay](https://github.com/abstracts33d/fleet) shows how to integrate agenix:
 
-### Decryption key
-- Located at `~/.keys/id_ed25519`
-- Persisted via impermanence (bind mount from `/persist`)
-- On impermanent hosts, agenix checks both `~/.keys/id_ed25519` and `/persist/home/<user>/.keys/id_ed25519`
+- Encrypted `.age` files in the private [fleet-secrets repo](https://github.com/abstracts33d/fleet-secrets)
+- `mkOrg nixosModules` injects agenix module + secret path definitions
+- Decryption key at `~/.keys/id_ed25519` (persisted via impermanence)
+- Secrets: github SSH/GPG keys, hashed passwords, WiFi credentials
 
-### Secret targets
-- `github-ssh-key` -> `~/.ssh/id_ed25519` (symlink, mode 600)
-- `github-signing-key` -> `~/.ssh/pgp_github.key` (symlink on NixOS, copy on Darwin)
-- `user-password` -> `/run/agenix/user-password` (root-owned, for `hashedPasswordFile`)
-- `root-password` -> `/run/agenix/root-password`
-- `wifi-<name>` -> `/run/agenix/wifi-<name>` (consumed by bootstrap service)
+## `nix flake update secrets`
 
-### Ephemeral design
-`.ssh` and `.gnupg` are **not persisted** -- agenix re-creates them each boot. Only `.ssh/known_hosts` is persisted as a file.
-
-## Managing secrets
+When using a secrets repo as a flake input (e.g. `inputs.secrets`), update it with:
 
 ```sh
-# Edit a secret
-EDITOR="nvim" agenix -e output.age
-
-# Update after changes
 nix flake update secrets
 ```
 
@@ -51,5 +36,4 @@ nix flake update secrets
 
 - [Bootstrap](bootstrap.md)
 - [WiFi](wifi.md)
-- [NixOS core](../core/nixos.md)
-- [Impermanence](../scopes/impermanence.md)
+- [Impermanence scope](../scopes/impermanence.md)

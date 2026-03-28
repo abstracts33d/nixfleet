@@ -44,12 +44,16 @@ Ensures `/persist/home/<user>` and `.keys` have correct ownership (user, not roo
 
 ## Scope-Aware Persist Paths
 
-Other scopes add their own persist paths when `isImpermanent` is true:
-- **graphical:** Chrome, Firefox, Brave, VS Code, Slack, halloy
-- **dev:** Docker, npm, cargo, pip, yarn, mise, direnv, pgcli, .claude
-- **gnome:** dconf, gnome-online-accounts
-- **secure-boot:** `/etc/secureboot`
-- **dev (NixOS):** `/var/lib/docker`, `/var/lib/postgresql`
+Other scopes should add their own persist paths when `isImpermanent` is true, rather than centralizing them here. For example:
+
+```nix
+# In a fleet scope module:
+home.persistence."/persist".directories =
+  lib.mkIf (osConfig.hostSpec.isImpermanent or false)
+  [ ".config/my-app" ];
+```
+
+The NixFleet agent and control plane scopes also auto-persist their state directories when `isImpermanent` is true.
 
 ## Dependencies
 

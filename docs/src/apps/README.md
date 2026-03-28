@@ -12,18 +12,18 @@ Flake apps defined in `modules/apps.nix` as `perSystem` shell scripts. Provide t
 
 | App | Command | Platform | Description |
 |-----|---------|----------|-------------|
-| [install](install.md) | `nix run .#install` | All | macOS local + NixOS remote install |
+| [install](install.md) | `nix run .#install` | All | macOS local + NixOS remote install via nixos-anywhere |
 | [build-switch](build-switch.md) | `nix run .#build-switch` | All | Day-to-day rebuild and switch |
 | [validate](validate.md) | `nix run .#validate` | All | Full validation suite |
+| [docs](docs.md) | `nix run .#docs` | All | Serve documentation locally |
 | [spawn-qemu](spawn-qemu.md) | `nix run .#spawn-qemu` | Linux | QEMU VM launcher |
-| [spawn-utm](spawn-utm.md) | `nix run .#spawn-utm` | Darwin | UTM VM guide |
 | [test-vm](test-vm.md) | `nix run .#test-vm` | Linux | Automated ISO-to-verify cycle |
-| [dashboard](dashboard.md) | `nix run .#dashboard` | All | Unified docs + audits + monitor + graph |
-| rollback | `nix run .#rollback` | Darwin | macOS rollback |
+| [spawn-utm](spawn-utm.md) | `nix run .#spawn-utm` | Darwin | UTM VM setup guide |
+| [rollback](rollback.md) | `nix run .#rollback` | Darwin | macOS generation rollback |
 
 ## DevShell
 
-`apps.nix` also defines the default devShell with:
+`apps.nix` also defines the default devShell (`nix develop`) with:
 - `bashInteractive`, `git`, `age`
 - shellHook: sets `EDITOR=vim` and activates git hooks (`.githooks/`)
 

@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Comprehensive Claude Code AI assistant integration, declaratively managed by Nix. Includes a 3-scope instruction system, 3-level permissions model, 15 agents, 17 skills, 8 rules, 8 hooks, MCP servers, and 23 knowledge files.
+Comprehensive Claude Code AI assistant integration, declaratively managed by Nix. Includes a 3-scope instruction system, 3-level permissions model, 15 agents, 17 skills, 8 rules, 8 hooks, 2 MCP servers, and 23 knowledge files.
 
 ## Location
 
 - `.claude/` — project-level Claude configuration (agents, skills, rules, knowledge, hooks)
 - `modules/scopes/dev/home.nix` — user-level Claude settings via HM (in fleet overlay)
-- `modules/core/nixos.nix` — org-level deny list (in fleet overlay)
+- `modules/core/nixos.nix` — org-level deny list
 - `.mcp.json` — project MCP servers
 
 ## Components
@@ -22,7 +22,7 @@ Comprehensive Claude Code AI assistant integration, declaratively managed by Nix
 | [Hooks](hooks.md) | 8 | Automation triggers |
 | [MCP](mcp.md) | 2 servers | External tool integrations (nixos, rust-analyzer) |
 | [Rules](rules.md) | 8 | Project behavior rules |
-| Knowledge | 22 files | Contextual knowledge across 7 domains |
+| Knowledge | 23 files | Contextual knowledge across 7 domains |
 
 ## Architecture
 
@@ -40,5 +40,4 @@ Claude Code configuration is **declaratively managed by Nix** across three layer
 
 ## Links
 
-- [Dev scope](../scopes/dev.md) (where Claude Code HM config lives)
 - [NixOS core](../core/nixos.md) (where org deny list lives)
