@@ -58,10 +58,7 @@ mod tests {
         let json = r#"{"hash": "/nix/store/abc123-nixos-system", "cache_url": "https://cache.example.com"}"#;
         let gen: DesiredGeneration = serde_json::from_str(json).unwrap();
         assert_eq!(gen.hash, "/nix/store/abc123-nixos-system");
-        assert_eq!(
-            gen.cache_url,
-            Some("https://cache.example.com".to_string())
-        );
+        assert_eq!(gen.cache_url, Some("https://cache.example.com".to_string()));
     }
 
     #[test]

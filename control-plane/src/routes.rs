@@ -1,9 +1,10 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
+use axum::{Extension, Json};
 use nixfleet_types::{DesiredGeneration, MachineLifecycle, MachineStatus, Report};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::Actor;
 use crate::AppState;
 
 /// GET /api/v1/machines/{id}/desired-generation
@@ -27,9 +28,12 @@ pub async fn get_desired_generation(
 /// Receives a status report from an agent.
 pub async fn post_report(
     State((state, db)): State<AppState>,
+    actor: Option<Extension<Actor>>,
     Path(id): Path<String>,
     Json(report): Json<Report>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    let report_success = report.success;
+
     // Persist to database
     db.insert_report(
         &id,
@@ -61,6 +65,12 @@ pub async fn post_report(
         tracing::info!(machine_id = %id, "Auto-activated on first report");
     }
 
+    let actor_id = actor
+        .map(|Extension(a)| a.identifier())
+        .unwrap_or_else(|| format!("machine:{id}"));
+    let detail = if report_success { "success" } else { "failure" };
+    let _ = db.insert_audit_event(&actor_id, "report", &id, Some(detail));
+
     tracing::info!(machine_id = %id, "Report received");
     Ok(StatusCode::OK)
 }
@@ -78,6 +88,7 @@ pub struct SetGenerationRequest {
 /// Admin endpoint to set the desired generation for a machine.
 pub async fn set_desired_generation(
     State((state, db)): State<AppState>,
+    actor: Option<Extension<Actor>>,
     Path(id): Path<String>,
     Json(req): Json<SetGenerationRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -98,6 +109,16 @@ pub async fn set_desired_generation(
         cache_url: req.cache_url,
     });
 
+    let actor_id = actor
+        .map(|Extension(a)| a.identifier())
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = db.insert_audit_event(
+        &actor_id,
+        "set_generation",
+        &id,
+        Some(&format!("hash={}", req.hash)),
+    );
+
     tracing::info!(
         machine_id = %id,
         hash = %req.hash,
@@ -109,9 +130,7 @@ pub async fn set_desired_generation(
 /// GET /api/v1/machines
 ///
 /// List all known machines with their current status.
-pub async fn list_machines(
-    State((state, _db)): State<AppState>,
-) -> Json<Vec<MachineStatus>> {
+pub async fn list_machines(State((state, _db)): State<AppState>) -> Json<Vec<MachineStatus>> {
     let fleet = state.read().await;
     let machines: Vec<MachineStatus> = fleet
         .machines
@@ -123,10 +142,7 @@ pub async fn list_machines(
                 .as_ref()
                 .map(|r| r.current_generation.clone())
                 .unwrap_or_default(),
-            desired_generation: m
-                .desired_generation
-                .as_ref()
-                .map(|d| d.hash.clone()),
+            desired_generation: m.desired_generation.as_ref().map(|d| d.hash.clone()),
             agent_version: String::new(),
             system_state: m
                 .last_report
@@ -172,6 +188,7 @@ pub struct RegisterMachineResponse {
 /// Pre-register a machine in the fleet (admin endpoint).
 pub async fn register_machine(
     State((state, db)): State<AppState>,
+    actor: Option<Extension<Actor>>,
     Path(id): Path<String>,
     Json(req): Json<RegisterMachineRequest>,
 ) -> Result<(StatusCode, Json<RegisterMachineResponse>), (StatusCode, String)> {
@@ -200,6 +217,11 @@ pub async fn register_machine(
         machine.registered_at = Some(chrono::Utc::now());
     }
 
+    let actor_id = actor
+        .map(|Extension(a)| a.identifier())
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = db.insert_audit_event(&actor_id, "register", &id, Some(&lifecycle.to_string()));
+
     tracing::info!(machine_id = %id, lifecycle = %lifecycle, "Machine registered");
     Ok((
         StatusCode::CREATED,
@@ -221,6 +243,7 @@ pub struct UpdateLifecycleRequest {
 /// Change a machine's lifecycle state (admin endpoint).
 pub async fn update_lifecycle(
     State((state, db)): State<AppState>,
+    actor: Option<Extension<Actor>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateLifecycleRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -240,10 +263,7 @@ pub async fn update_lifecycle(
     if !machine.lifecycle.can_transition_to(&target) {
         return Err((
             StatusCode::CONFLICT,
-            format!(
-                "invalid transition: {} -> {}",
-                machine.lifecycle, target
-            ),
+            format!("invalid transition: {} -> {}", machine.lifecycle, target),
         ));
     }
 
@@ -259,6 +279,16 @@ pub async fn update_lifecycle(
 
     let from = machine.lifecycle.to_string();
     machine.lifecycle = target.clone();
+
+    let actor_id = actor
+        .map(|Extension(a)| a.identifier())
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = db.insert_audit_event(
+        &actor_id,
+        "update_lifecycle",
+        &id,
+        Some(&format!("{from} -> {target}")),
+    );
 
     tracing::info!(
         machine_id = %id,
@@ -286,9 +316,6 @@ mod tests {
         let json = r#"{"hash": "/nix/store/abc123", "cache_url": "https://cache.example.com"}"#;
         let req: SetGenerationRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.hash, "/nix/store/abc123");
-        assert_eq!(
-            req.cache_url,
-            Some("https://cache.example.com".to_string())
-        );
+        assert_eq!(req.cache_url, Some("https://cache.example.com".to_string()));
     }
 }

@@ -28,7 +28,9 @@ mod store_integration {
                 std::fs::create_dir_all(parent)?;
             }
             let conn = Connection::open(path)?;
-            Ok(Self { conn: Mutex::new(conn) })
+            Ok(Self {
+                conn: Mutex::new(conn),
+            })
         }
 
         fn init(&self) -> anyhow::Result<()> {
@@ -166,7 +168,9 @@ mod store_integration {
 
         store.log_error("check failed: connection refused").unwrap();
         store.log_error("fetch failed: nix copy timed out").unwrap();
-        store.log_error("rollback failed: no previous generation").unwrap();
+        store
+            .log_error("rollback failed: no previous generation")
+            .unwrap();
 
         assert_eq!(store.count_events("error").unwrap(), 3);
     }
@@ -279,10 +283,7 @@ mod url_integration {
         let base = "https://fleet.example.com";
         let machine_id = "ohm";
         let url = format!("{}/api/v1/machines/{}/report", base, machine_id);
-        assert_eq!(
-            url,
-            "https://fleet.example.com/api/v1/machines/ohm/report"
-        );
+        assert_eq!(url, "https://fleet.example.com/api/v1/machines/ohm/report");
     }
 
     #[test]
@@ -290,7 +291,10 @@ mod url_integration {
         let raw = "https://fleet.example.com/";
         let normalized = raw.trim_end_matches('/');
         assert_eq!(normalized, "https://fleet.example.com");
-        let url = format!("{}/api/v1/machines/{}/desired-generation", normalized, "krach");
+        let url = format!(
+            "{}/api/v1/machines/{}/desired-generation",
+            normalized, "krach"
+        );
         assert!(!url.contains("//api"));
     }
 

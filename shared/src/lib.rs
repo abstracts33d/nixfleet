@@ -26,10 +26,13 @@ pub mod api {
     /// PATCH: Change machine lifecycle state (admin endpoint).
     /// Path parameter: `{id}` = machine ID.
     pub const LIFECYCLE: &str = "/api/v1/machines/{id}/lifecycle";
+
+    /// GET: List audit events with optional filters.
+    pub const AUDIT: &str = "/api/v1/audit";
 }
 
 /// Machine lifecycle states for fleet management.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineLifecycle {
     /// Pre-registered, no agent report yet.
@@ -37,17 +40,12 @@ pub enum MachineLifecycle {
     /// Install in progress.
     Provisioning,
     /// Agent reporting normally.
+    #[default]
     Active,
     /// Manually paused (skip deploys).
     Maintenance,
     /// Removed from fleet.
     Decommissioned,
-}
-
-impl Default for MachineLifecycle {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 impl fmt::Display for MachineLifecycle {
@@ -125,6 +123,17 @@ pub struct MachineStatus {
     pub lifecycle: MachineLifecycle,
 }
 
+/// Audit event for compliance reporting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEvent {
+    pub id: i64,
+    pub timestamp: String,
+    pub actor: String,
+    pub action: String,
+    pub target: String,
+    pub detail: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,10 +185,7 @@ mod tests {
         let json = r#"{"hash": "/nix/store/abc123-nixos-system", "cache_url": "https://cache.example.com"}"#;
         let gen: DesiredGeneration = serde_json::from_str(json).unwrap();
         assert_eq!(gen.hash, "/nix/store/abc123-nixos-system");
-        assert_eq!(
-            gen.cache_url,
-            Some("https://cache.example.com".to_string())
-        );
+        assert_eq!(gen.cache_url, Some("https://cache.example.com".to_string()));
     }
 
     #[test]

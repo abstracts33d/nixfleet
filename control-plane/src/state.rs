@@ -63,9 +63,7 @@ impl FleetState {
 
     /// Get or create a machine entry.
     pub fn get_or_create(&mut self, machine_id: &str) -> &mut MachineState {
-        self.machines
-            .entry(machine_id.to_string())
-            .or_default()
+        self.machines.entry(machine_id.to_string()).or_default()
     }
 }
 

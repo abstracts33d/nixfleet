@@ -24,30 +24,19 @@ pub enum AgentState {
     Checking,
 
     /// Downloading the closure from the binary cache.
-    Fetching {
-        desired: DesiredGeneration,
-    },
+    Fetching { desired: DesiredGeneration },
 
     /// Running `switch-to-configuration switch`.
-    Applying {
-        desired: DesiredGeneration,
-    },
+    Applying { desired: DesiredGeneration },
 
     /// Running health checks after a successful apply.
-    Verifying {
-        desired: DesiredGeneration,
-    },
+    Verifying { desired: DesiredGeneration },
 
     /// Switching back to the previous generation after a failure.
-    RollingBack {
-        reason: String,
-    },
+    RollingBack { reason: String },
 
     /// Sending a status report to the control plane.
-    Reporting {
-        success: bool,
-        message: String,
-    },
+    Reporting { success: bool, message: String },
 }
 
 #[cfg(test)]

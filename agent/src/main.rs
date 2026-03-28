@@ -9,6 +9,7 @@ mod health;
 mod nix;
 mod state;
 mod store;
+mod tls;
 mod types;
 
 use config::Config;
@@ -35,12 +36,28 @@ struct Cli {
     cache_url: Option<String>,
 
     /// SQLite database path
-    #[arg(long, default_value = "/var/lib/nixfleet/state.db", env = "NIXFLEET_DB_PATH")]
+    #[arg(
+        long,
+        default_value = "/var/lib/nixfleet/state.db",
+        env = "NIXFLEET_DB_PATH"
+    )]
     db_path: String,
 
     /// Dry run (check + fetch but don't apply)
     #[arg(long)]
     dry_run: bool,
+
+    /// Allow insecure HTTP connections (dev only)
+    #[arg(long, env = "NIXFLEET_ALLOW_INSECURE", default_value = "false")]
+    allow_insecure: bool,
+
+    /// Path to client certificate PEM file (for mTLS)
+    #[arg(long, env = "NIXFLEET_CLIENT_CERT")]
+    client_cert: Option<String>,
+
+    /// Path to client private key PEM file (for mTLS)
+    #[arg(long, env = "NIXFLEET_CLIENT_KEY")]
+    client_key: Option<String>,
 }
 
 #[tokio::main]
@@ -63,6 +80,9 @@ async fn main() -> anyhow::Result<()> {
         cache_url: cli.cache_url,
         db_path: cli.db_path.clone(),
         dry_run: cli.dry_run,
+        allow_insecure: cli.allow_insecure,
+        client_cert: cli.client_cert,
+        client_key: cli.client_key,
     };
 
     info!(
