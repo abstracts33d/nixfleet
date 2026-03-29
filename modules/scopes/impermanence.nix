@@ -59,15 +59,15 @@
     };
   };
 
-  # --- HM module: user-level persistence ---
-  flake.modules.homeManager.impermanence = {
+  # --- HM module: user-level persistence (Linux only) ---
+  flake.modules.hmLinux.impermanence = {
     lib,
     osConfig,
     ...
   }: let
     hS = osConfig.hostSpec;
   in {
-    config = lib.mkIf hS.isImpermanent (lib.optionalAttrs (!hS.isDarwin) {
+    config = lib.mkIf hS.isImpermanent {
       home.persistence."/persist" = {
         hideMounts = true;
         directories = [
@@ -102,6 +102,6 @@
           ".ssh/known_hosts"
         ];
       };
-    });
+    };
   };
 }
