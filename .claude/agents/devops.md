@@ -12,9 +12,7 @@ tools:
 permissionMode: bypassPermissions
 memory: project
 knowledge:
-  - knowledge/claude-code/
   - knowledge/nix/flake-ecosystem.md
-  - knowledge/languages/bash.md
 ---
 
 # DevOps

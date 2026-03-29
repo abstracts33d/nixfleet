@@ -9,7 +9,6 @@ tools:
 permissionMode: plan
 memory: project
 knowledge:
-  - claude-code/workflow.md
   - nixfleet/product.md
 ---
 
