@@ -13,7 +13,6 @@ knowledge:
   - knowledge/nix/
   - knowledge/languages/rust.md
   - knowledge/security/
-  - knowledge/claude-code/
 ---
 
 # Architect

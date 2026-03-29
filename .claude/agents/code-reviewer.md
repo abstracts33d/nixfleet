@@ -13,7 +13,6 @@ knowledge:
   - nix/module-system.md
   - nix/gotchas.md
   - languages/*
-  - claude-code/workflow.md
 ---
 
 # Code Reviewer

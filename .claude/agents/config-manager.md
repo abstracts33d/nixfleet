@@ -11,7 +11,6 @@ tools:
 permissionMode: bypassPermissions
 memory: project
 knowledge:
-  - knowledge/claude-code/
   - knowledge/nixfleet/framework.md
 ---
 

@@ -10,8 +10,6 @@ tools:
   - Write
 permissionMode: bypassPermissions
 memory: project
-knowledge:
-  - claude-code/workflow.md
 ---
 
 # Doc Writer
