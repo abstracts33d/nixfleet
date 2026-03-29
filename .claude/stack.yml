@@ -1,0 +1,5 @@
+# Stack declaration for conditional knowledge loading.
+# Agents use this to decide which domain-specific knowledge to load.
+nix: true
+rust: true
+nixfleet: true
