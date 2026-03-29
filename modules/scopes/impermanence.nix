@@ -76,7 +76,6 @@
 
           # Source code
           ".local/share/src"
-          "fleet"
 
           # Shell
           ".zplug"
