@@ -1,6 +1,6 @@
-# Home Manager
+# Home Manager (nixfleet specifics)
 
-Knowledge about Home Manager configuration patterns in this repository.
+Extends generic HM patterns from the claude-core plugin.
 
 ## HM Module Organization
 
@@ -43,10 +43,3 @@ All HM-managed tools get catppuccin theming automatically via the `catppuccin.ni
 HM programs with state need persist paths added in the same scope module using `home.persistence."/persist"`. This is the HM impermanence module (not the NixOS one), which creates dirs with correct user ownership.
 
 Guard persistence with `lib.optionalAttrs (!hS.isDarwin)` -- not just `lib.mkIf`, because `home.persistence` option type does not exist on Darwin and `mkIf` still evaluates the type.
-
-## Adding a New Tool
-
-1. Add to HM `programs.*` in the appropriate `_home/*.nix` file
-2. Catppuccin theming applies automatically if the tool has a catppuccin module
-3. If the tool has state, add `home.persistence` in the same file (with Darwin guard)
-4. Never wrap the tool separately -- that would conflict with HM and break theming
