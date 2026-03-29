@@ -2,7 +2,7 @@
 
 ## Purpose
 
-15 specialized agents for different tasks, each with a defined model, role, and memory scope. Agents are dispatched by skills or by the orchestration layer.
+16 specialized agents for different tasks, each with a defined model, role, and memory scope. Agents are dispatched by skills or by the orchestration layer.
 
 ## Location
 
@@ -21,6 +21,7 @@
 | `fleet-ops` | inherit | Day-2 operations (deploy, rollback, secrets) | Read, Grep, Glob, Bash |
 | `integration-tester` | inherit | End-to-end NixFleet workflows | Read, Grep, Glob, Bash |
 | `nix-expert` | inherit | Nix build errors, module wiring, architecture | Read, Grep, Glob, Bash, Edit, Write |
+| `plan-reviewer` | inherit | Validate plan coherence against spec | Read, Grep, Glob, Write, Edit |
 | `plan-writer` | inherit | Implementation plans from specs | Read, Grep, Glob, Edit, Write |
 | `product-analyst` | sonnet | Market research, client needs, feature priorities | Read, Grep, Glob, WebSearch, WebFetch |
 | `rust-expert` | inherit | Rust compilation, async patterns, agent/CP arch | Read, Grep, Glob, Bash, Edit, Write |

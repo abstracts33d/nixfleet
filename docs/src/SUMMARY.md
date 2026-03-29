@@ -82,6 +82,7 @@
   - [validate](apps/validate.md)
   - [docs](apps/docs.md)
   - [spawn-qemu](apps/spawn-qemu.md)
+  - [launch-vm](apps/launch-vm.md)
   - [spawn-utm](apps/spawn-utm.md)
   - [test-vm](apps/test-vm.md)
   - [rollback](apps/rollback.md)

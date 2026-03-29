@@ -2,7 +2,7 @@
 
 ## Purpose
 
-8 automation hooks that run at specific lifecycle points. Defined in `.claude/settings.json` and implemented as shell scripts in `.claude/hooks/`.
+7 automation hooks that run at specific lifecycle points. Defined in `.claude/settings.json` and implemented as shell scripts in `.claude/hooks/`.
 
 ## Location
 
@@ -20,7 +20,6 @@
 | pre-git-push | PreToolUse (Bash) | `pre-git-push.sh` | Gate git push with full validation (600s timeout) |
 | guard-destructive | PreToolUse (Bash) | `guard-destructive.sh` | Block destructive commands |
 | session-context | SessionStart | `session-context.sh` | Load context at session start |
-| doc-sync-check | Stop | `doc-sync-check.sh` | Check docs are in sync before session ends |
 
 ## Lifecycle
 
@@ -36,8 +35,6 @@ PreToolUse (Bash) -> pre-git-commit.sh, pre-git-push.sh, guard-destructive.sh
   v
 PostToolUse (Edit/Write) -> format-nix.sh, check-config-deps.sh, check-docs-tree.sh
   |
-  v
-Stop -> doc-sync-check.sh
 ```
 
 ## Links

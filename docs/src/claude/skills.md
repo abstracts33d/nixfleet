@@ -2,7 +2,7 @@
 
 ## Purpose
 
-14 active orchestration skills that compose agents into workflows. Invoked via slash commands (e.g., `/ship`, `/review`). 3 additional skills exist but are deprecated.
+17 orchestration skills that compose agents into workflows. Invoked via slash commands (e.g., `/ship`, `/review`).
 
 ## Location
 

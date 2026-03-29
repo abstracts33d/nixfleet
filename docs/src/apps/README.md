@@ -16,7 +16,8 @@ Flake apps defined in `modules/apps.nix` as `perSystem` shell scripts. Provide t
 | [build-switch](build-switch.md) | `nix run .#build-switch` | All | Day-to-day rebuild and switch |
 | [validate](validate.md) | `nix run .#validate` | All | Full validation suite |
 | [docs](docs.md) | `nix run .#docs` | All | Serve documentation locally |
-| [spawn-qemu](spawn-qemu.md) | `nix run .#spawn-qemu` | Linux | QEMU VM launcher |
+| [spawn-qemu](spawn-qemu.md) | `nix run .#spawn-qemu` | Linux | QEMU VM launcher (headless) |
+| [launch-vm](launch-vm.md) | `nix run .#launch-vm` | Linux | Graphical VM with SPICE display |
 | [test-vm](test-vm.md) | `nix run .#test-vm` | Linux | Automated ISO-to-verify cycle |
 | [spawn-utm](spawn-utm.md) | `nix run .#spawn-utm` | Darwin | UTM VM setup guide |
 | [rollback](rollback.md) | `nix run .#rollback` | Darwin | macOS generation rollback |

@@ -19,8 +19,9 @@ control-plane/         # Rust: nixfleet-control-plane (Axum HTTP server)
 cli/                   # Rust: nixfleet CLI (deploy, status, rollback)
 shared/                # Rust: nixfleet-types (shared data types)
 docs/
-├── src/               # Technical reference + user guide (mdbook)
-└── nixfleet/          # Business docs, specs, research
+└── src/               # Technical reference + user guide (mdbook)
+    ├── guide/         # User guide section
+    └── business/      # Business docs, specs, research
 .claude/               # Agents (16), skills (17), rules (7), knowledge (17), hooks (7)
 ```
 
@@ -36,7 +37,8 @@ nix run .#validate -- --vm         # include VM tests (slow)
 nix run .#install -- -h <host> -u <user>                    # macOS local
 nix run .#install -- --target root@<ip> -h <host> -u <user> # NixOS remote
 nix run .#build-switch             # rebuild and switch
-nix run .#spawn-qemu               # QEMU VM
+nix run .#spawn-qemu               # QEMU VM (headless)
+nix run .#launch-vm                # QEMU VM (graphical SPICE)
 nix run .#test-vm -- -h krach-qemu # VM test cycle
 nix build .#iso                    # custom installer ISO
 
@@ -90,7 +92,7 @@ Git hooks: pre-commit (`nix fmt`, ~2s), pre-push (format + eval + cargo test, ~1
 | **nixfleet** (this repo) | Framework, Rust crates, tests, docs, Claude Code config |
 | [fleet](https://github.com/abstracts33d/fleet) | Reference fleet (abstracts33d org config, hardware, dotfiles) |
 | [fleet-secrets](https://github.com/abstracts33d/fleet-secrets) | Encrypted secrets (agenix) |
-| [claude-core](https://github.com/abstracts33d/claude-core) | Standalone Claude Code plugin for other Nix projects |
+| [claude-defaults](https://github.com/abstracts33d/claude-defaults) | Standalone Claude Code plugin for other Nix projects |
 
 ## Phase Status
 

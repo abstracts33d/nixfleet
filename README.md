@@ -43,9 +43,9 @@ modules/
 ├── fleet.nix          # Test fleet for framework CI
 └── flake-module.nix   # flakeModules.default for consumers
 docs/
-├── src/               # Technical reference + user guide (mdbook)
-│   └── guide/         # User guide section
-└── nixfleet/          # Business docs, specs, research
+└── src/               # Technical reference + user guide (mdbook)
+    ├── guide/         # User guide section
+    └── business/      # Business docs, specs, research
 ```
 
 > **Note:** Opinionated modules (scopes, wrappers, HM programs, config files) live in your fleet repo, not in the framework. NixFleet provides the lib + base NixOS/Darwin core. Your fleet adds the opinions.
