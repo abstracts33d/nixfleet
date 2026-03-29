@@ -69,13 +69,8 @@
   in {
     config = lib.mkIf hS.isImpermanent (lib.optionalAttrs (!hS.isDarwin) {
       home.persistence."/persist" = {
+        hideMounts = true;
         directories = [
-          # User data
-          "Documents"
-          "Downloads"
-          "Pictures"
-          "Videos"
-
           # Keys (agenix-managed, not .ssh or .gnupg — those are ephemeral)
           ".keys"
 
