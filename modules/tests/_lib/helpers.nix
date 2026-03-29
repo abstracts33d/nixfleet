@@ -27,15 +27,17 @@
   #
   # Parameters:
   #   inputs       — flake inputs (needs home-manager, nixpkgs)
-  #   nixosModules — deferred NixOS modules (builtins.attrValues config.flake.modules.nixos)
-  #   hmModules    — deferred HM modules (builtins.attrValues config.flake.modules.homeManager)
-  #   hostSpecModule — path to the hostSpec module
-  #   hostSpecValues — hostSpec attrset for this test node
-  #   extraModules   — additional NixOS modules (default [])
+  #   nixosModules    — deferred NixOS modules (builtins.attrValues config.flake.modules.nixos)
+  #   hmModules       — deferred HM modules (builtins.attrValues config.flake.modules.homeManager)
+  #   hmLinuxModules  — Linux-only HM modules (builtins.attrValues config.flake.modules.hmLinux, default [])
+  #   hostSpecModule  — path to the hostSpec module
+  #   hostSpecValues  — hostSpec attrset for this test node
+  #   extraModules    — additional NixOS modules (default [])
   mkTestNode = {
     inputs,
     nixosModules,
     hmModules,
+    hmLinuxModules ? [],
     hostSpecModule,
   }: {
     hostSpecValues,
@@ -82,7 +84,8 @@
             users.${hostSpecValues.userName} = {
               imports =
                 [hostSpecModule]
-                ++ hmModules;
+                ++ hmModules
+                ++ hmLinuxModules;
               hostSpec = hostSpecValues;
               home = {
                 stateVersion = "24.11";

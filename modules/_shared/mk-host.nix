@@ -7,6 +7,8 @@
   nixosModules = config.flake.modules.nixos;
   darwinModules = config.flake.modules.darwin;
   hmModules = config.flake.modules.homeManager;
+  hmLinuxModules = config.flake.modules.hmLinux;
+  hmDarwinModules = config.flake.modules.hmDarwin;
   hostSpecModule = ./host-spec-module.nix;
   backupCmd = ''mv {} {}.nbkp.$(date +%Y%m%d%H%M%S) && ls -t {}.nbkp.* 2>/dev/null | tail -n +6 | xargs -r rm -f'';
   self = {
@@ -39,6 +41,7 @@
                   imports =
                     [hostSpecModule]
                     ++ (builtins.attrValues hmModules)
+                    ++ (builtins.attrValues hmLinuxModules)
                     ++ extraHmModules;
                   hostSpec = hostSpecValues;
                   home = {
@@ -111,6 +114,7 @@
                   imports =
                     [hostSpecModule]
                     ++ (builtins.attrValues hmModules)
+                    ++ (builtins.attrValues hmDarwinModules)
                     ++ extraHmModules;
                   hostSpec = hostSpecValues;
                   home = {

@@ -18,6 +18,7 @@
       inherit inputs;
       nixosModules = builtins.attrValues config.flake.modules.nixos;
       hmModules = builtins.attrValues config.flake.modules.homeManager;
+      hmLinuxModules = builtins.attrValues config.flake.modules.hmLinux;
       hostSpecModule = ../_shared/host-spec-module.nix;
     };
 
