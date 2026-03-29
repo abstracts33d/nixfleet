@@ -1,26 +1,25 @@
-# Testing Strategy
+# Testing Strategy (nixfleet specifics)
 
-Tests follow a 3-tier pyramid:
+Extends the generic test pyramid from the claude-core plugin.
 
-## Tier C -- Eval Tests (base, instant)
+## Tier 1: Eval Tests
 - Location: `modules/tests/eval.nix`
-- Runs: every `nix flake check`, pre-commit
+- Command: `nix flake check --no-build`
 - Tests: config correctness (flags, options, scope activation)
 
-## Tier A -- VM Tests (middle, slow) ✓ DONE
+## Tier 2: VM Tests
 - Location: `modules/tests/vm.nix`
-- Runs: before merge (`nix run .#validate -- --vm`)
+- Command: `nix run .#validate -- --vm`
 - Tests: runtime (services, binaries, symlinks)
 - Suites: `vm-core`, `vm-minimal`
 - Only runs on x86_64-linux (nixosTest requirement)
+- VM tests use `mkTestNode` helper which stubs agenix secrets and provides known test passwords
 
-## Tier B -- Smoke Tests (top, real hardware)
-- Location: `modules/tests/smoke.sh` (future)
+## Tier 3: Smoke Tests (future)
+- Location: `modules/tests/smoke.sh`
 - Runs: post build-switch
-- Tests: real-world state (SSH into live host)
 
 ## Adding tests
 When adding a new scope/feature:
 1. Add eval assertions in `modules/tests/eval.nix`
 2. If it has runtime behavior, add VM test in `modules/tests/vm.nix`
-3. VM tests use `mkTestNode` helper which stubs agenix secrets and provides known test passwords

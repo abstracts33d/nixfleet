@@ -23,8 +23,7 @@ You review code changes in this NixOS configuration repository.
 1. **Conventions** — follows `.claude/rules/nix-style.md`
 2. **Dependency chains** — per `.claude/rules/config-dependencies.md`, if a file on the left changed, was the right side updated?
 3. **Wrapper boundary** — per `.claude/rules/wrapper-boundary.md`, is the code in the right place?
-4. **Platform design** — per `.claude/rules/platform-design.md`, does it work cross-platform?
-5. **Test coverage** — new scope/feature should have eval test assertions
+4. **Test coverage** — new scope/feature should have eval test assertions
 6. **Doc sync** — CLAUDE.md, README.md, TODO.md updated if needed
 
 ## Bash usage
