@@ -21,7 +21,7 @@ shared/                # Rust: nixfleet-types (shared data types)
 docs/
 ├── src/               # Technical reference + user guide (mdbook)
 └── nixfleet/          # Business docs, specs, research
-.claude/               # Agents (15), skills (17), rules (8), knowledge (23), hooks (7)
+.claude/               # Agents (16), skills (17), rules (8), knowledge (17), hooks (7)
 ```
 
 ## Commands
