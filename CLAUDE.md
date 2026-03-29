@@ -21,7 +21,7 @@ shared/                # Rust: nixfleet-types (shared data types)
 docs/
 ├── src/               # Technical reference + user guide (mdbook)
 └── nixfleet/          # Business docs, specs, research
-.claude/               # Agents (15), skills (17), rules (8), knowledge (23), hooks (7)
+.claude/               # Agents (15), skills (18), rules (8), knowledge (17), hooks (7)
 ```
 
 ## Commands
@@ -90,7 +90,7 @@ Git hooks: pre-commit (`nix fmt`, ~2s), pre-push (format + eval + cargo test, ~1
 | **nixfleet** (this repo) | Framework, Rust crates, tests, docs, Claude Code config |
 | [fleet](https://github.com/abstracts33d/fleet) | Reference fleet (abstracts33d org config, hardware, dotfiles) |
 | [fleet-secrets](https://github.com/abstracts33d/fleet-secrets) | Encrypted secrets (agenix) |
-| [claude-defaults](https://github.com/abstracts33d/claude-defaults) | Standalone Claude Code plugin for other Nix projects |
+| [claude-defaults](https://github.com/abstracts33d/claude-defaults) | Claude Code plugin: generic agents, skills, rules, knowledge (source of truth) |
 
 ## Phase Status
 
@@ -134,6 +134,19 @@ Code style: Nix → `alejandra`, Rust → `cargo fmt`, Shell → `shfmt`. All vi
 | "add scope X" | `/scope` |
 | "manage secrets" | `/secrets` |
 | "onboard org X" | `/onboard` |
+| "extract learnings" | `/propagate-learnings` |
+
+## Claude Code Architecture
+
+3-layer config with plugin as source of truth for generic content:
+
+| Layer | Location | Content | Auto-loaded? |
+|-------|----------|---------|:---:|
+| Plugin | `claude-defaults` (installed) | Generic agents (10), skills (14), rules (3) | Agents+skills: yes |
+| User | `~/.claude/` (HM-managed) | Rules (3), knowledge (6), CLAUDE.md, settings | Rules: yes, knowledge: no |
+| Project | `.claude/` (this repo) | Domain agents (15 overrides), skills (18), rules (8), knowledge (17), hooks (7) | Rules: yes, knowledge: no |
+
+Project agents override plugin agents of the same name. Knowledge files are read on-demand by agents (not auto-injected).
 
 ## Critical Rules
 
