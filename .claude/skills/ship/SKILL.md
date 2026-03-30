@@ -71,7 +71,7 @@ Dispatch `docs-assessor` agent:
 ### 5.6. Config Health Check
 Dispatch `config-manager` agent:
 - Verify CLAUDE.md counts match reality (agents, skills, hosts)
-- Verify agent knowledge paths are valid
+- Verify agent definitions are valid
 - Verify no stale references to deleted code
 - Fix any issues before pushing
 

@@ -10,9 +10,6 @@ tools:
   - WebFetch
 permissionMode: plan
 memory: project
-knowledge:
-  - knowledge/nixfleet/
-  - knowledge/security/compliance.md
 ---
 
 # Product Analyst
