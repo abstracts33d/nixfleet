@@ -22,7 +22,7 @@ docs/
 └── src/               # Technical reference + user guide (mdbook)
     ├── guide/         # User guide section
     └── business/      # Business docs, specs, research
-.claude/               # Agents (4), skills (16), rules (11), hooks (8)
+.claude/               # Agents (4), skills (4), rules (11), hooks (8)
 ```
 
 ## Commands
