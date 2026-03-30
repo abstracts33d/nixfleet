@@ -9,11 +9,6 @@ tools:
   - Bash
 permissionMode: bypassPermissions
 memory: project
-knowledge:
-  - knowledge/languages/rust.md
-  - knowledge/testing/
-  - knowledge/nixfleet/framework.md
-  - knowledge/nix/
 ---
 
 # Integration Tester

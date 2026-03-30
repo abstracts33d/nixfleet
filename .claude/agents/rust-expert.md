@@ -11,9 +11,6 @@ tools:
   - Write
 permissionMode: bypassPermissions
 memory: project
-knowledge:
-  - knowledge/languages/rust.md
-  - knowledge/nixfleet/framework.md
 ---
 
 # Rust Expert

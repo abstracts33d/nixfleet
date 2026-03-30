@@ -16,7 +16,7 @@ Dispatch `config-manager` with:
 - Check CLAUDE.md, README.md, TODO.md for staleness and drift
 - Verify `.claude/rules/`, `.claude/agents/`, `.claude/skills/` tables match actual files
 - Check `config-dependencies.md` chain completeness
-- Assess knowledge-tree proposals and open design questions
+- Assess rules coverage and open design questions
 - Output: list of config health findings (severity, file, description)
 
 ### Stage 2 — Security Posture (security-reviewer)

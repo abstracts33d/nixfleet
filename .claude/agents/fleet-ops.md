@@ -9,11 +9,6 @@ tools:
   - Bash
 permissionMode: bypassPermissions
 memory: project
-knowledge:
-  - knowledge/nixfleet/
-  - knowledge/security/
-  - knowledge/nix/
-  - knowledge/platform/
 ---
 
 # Fleet Operations

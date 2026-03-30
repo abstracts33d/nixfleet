@@ -17,6 +17,52 @@ Claude Code permissions are layered. Higher levels cannot override lower levels.
 
 The org deny list blocks destructive ops (rm -rf, dd, mkfs, shred), privilege escalation (sudo, pkexec, doas, su), dangerous git (force push, hard reset, clean -fd), and nix store manipulation. This cannot be bypassed even with `bypassPermissions`.
 
+## Secrets Management
+
+The framework is **secrets-agnostic** -- `hostSpec.secretsPath` is an optional hint. The reference fleet uses **agenix**:
+- Encrypted `.age` files in private repo (`nix-secrets`), referenced as `inputs.secrets`
+- Decrypted at activation time to `/run/agenix/`, symlinked to target paths
+- Decryption key at `~/.keys/id_ed25519` (persisted via impermanence)
+- On Darwin, identity path must point to `~/.keys/` not `~/.ssh/` (avoids circular dependency)
+
+Key rules:
+- `.ssh` and `.gnupg` are **ephemeral** -- never persisted. Only `known_hosts` persisted as a file.
+- Agenix re-decrypts on every boot -- no stale secrets
+- `hashedPasswordFile` uses agenix paths under `/run/agenix/` (not nix store)
+- Never output decrypted content
+
+## String Interpolation Safety
+
+Never interpolate NixOS option values directly into shell strings without escaping.
+
+```nix
+# GOOD
+ExecStart = lib.concatStringsSep " " [
+  "${pkg}/bin/cmd"
+  "--url" (lib.escapeShellArg cfg.controlPlaneUrl)
+  "--count" (toString cfg.count)
+];
+
+# BAD -- user-supplied values can break commands
+ExecStart = "... --flag ${cfg.userInput}";
+```
+
+Safe: `lib.escapeShellArg`, `toString intValue`, `${pkg}/bin/name` (store paths).
+
+## SSH Hardening
+
+Applied in `core/nixos.nix`: `PermitRootLogin = "prohibit-password"`, `PasswordAuthentication = false`, `KbdInteractiveAuthentication = false`. Firewall enabled on all hosts, no ports opened by default.
+
+## NIS2 Compliance (S7 -- planned)
+
+EU Directive 2022/2555. NixOS satisfies most obligations by construction:
+- **Traceability**: every config change is a git commit
+- **Incident recovery**: generations are immutable; rollback is atomic (<90s)
+- **Supply chain**: `flake.lock` pins by content hash (SHA-256)
+- **Asset inventory**: `nixosConfigurations` IS the inventory (no CMDB drift)
+
+NixFleet value-add: SBOM generation, vulnerability scanning, incident timeline, compliance score, exportable reports.
+
 ## Process
 1. Review secrets management (agenix paths, permissions, nix store exposure)
 2. Review 3-level permission model (org deny list, project allows, user preferences, hooks)
