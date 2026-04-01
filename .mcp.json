@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "nixos": {
+      "command": "npx",
+      "args": ["-y", "mcp-nixos"]
+    },
+    "rust-analyzer": {
+      "command": "npx",
+      "args": ["-y", "mcp-rust-analyzer"]
+    }
+  }
+}
