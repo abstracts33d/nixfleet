@@ -1,0 +1,120 @@
+# NixFleet
+
+**Declarative NixOS fleet management.** Define your infrastructure as code with reproducible builds, instant rollback, and zero config drift.
+
+## What is NixFleet?
+
+NixFleet is a framework for managing fleets of NixOS and macOS machines. It provides:
+- **`mkHost`** — single function that returns a standard `nixosSystem` or `darwinSystem`
+- **hostSpec** — extensible host configuration flags (fleet repos add their own)
+- **Core modules** — nix settings, boot, SSH hardening, networking, user management
+- **Disko templates** — reusable disk layout configurations
+- **Agent + Control Plane** — Rust-based fleet management (NixOS service modules)
+
+## Quick Start
+
+```nix
+# flake.nix — single machine, no ceremony
+{
+  inputs.nixfleet.url = "github:abstracts33d/nixfleet";
+  inputs.nixpkgs.follows = "nixfleet/nixpkgs";
+
+  outputs = {nixfleet, ...}: {
+    nixosConfigurations.myhost = nixfleet.lib.mkHost {
+      hostName = "myhost";
+      platform = "x86_64-linux";
+      hostSpec = {
+        userName = "alice";
+        timeZone = "US/Eastern";
+        sshAuthorizedKeys = [ "ssh-ed25519 AAAA..." ];
+      };
+      modules = [
+        ./hardware-configuration.nix
+        ./disk-config.nix
+      ];
+    };
+  };
+}
+```
+
+Deploy:
+```sh
+nixos-anywhere --flake .#myhost root@192.168.1.50   # fresh install
+sudo nixos-rebuild switch --flake .#myhost           # rebuild
+```
+
+See `examples/` for more patterns (standalone host, batch hosts, client fleet).
+
+## Layout
+
+```
+modules/
+├── _shared/lib/       # Framework API: mkHost, mkVmApps
+├── _shared/           # hostSpec options, disk templates
+├── core/              # Core NixOS/Darwin modules
+├── scopes/            # Scope modules (base, impermanence, agent, control-plane)
+├── tests/             # Eval tests, VM tests, integration tests
+├── apps.nix           # Flake apps (validate, VM helpers)
+├── fleet.nix          # Test fleet for framework CI
+└── flake-module.nix   # Framework exports
+examples/
+├── standalone-host/   # Single machine in its own repo
+├── batch-hosts/       # 50 edge devices from a template
+└── client-fleet/      # Fleet consuming mkHost via flake-parts
+```
+
+## Scope Pattern
+
+mkHost auto-includes framework scopes. They self-activate based on hostSpec flags:
+
+```nix
+# isImpermanent = true -> impermanence scope activates (btrfs wipe, persistence paths)
+# isMinimal = true -> base scope skips optional packages
+# services.nixfleet-agent.enable = true -> agent service starts
+```
+
+Fleet repos add their own scopes (catppuccin, hyprland, dev tools, etc.) as plain NixOS/HM modules.
+
+## Deployment
+
+Standard NixOS tooling — no custom scripts:
+
+```sh
+nixos-anywhere --flake .#hostname root@ip              # fresh install (formats disks via disko)
+sudo nixos-rebuild switch --flake .#hostname            # local rebuild
+nixos-rebuild switch --flake .#hostname --target-host root@ip  # remote rebuild
+darwin-rebuild switch --flake .#hostname                # macOS
+```
+
+## Virtual Machines
+
+```sh
+nix run .#spawn-qemu -- --iso iso/nixos-x86_64.iso   # first boot from ISO
+nix run .#spawn-qemu                                   # subsequent boots
+nix run .#spawn-qemu -- --persistent -h web-02         # build + install + launch (graphical)
+nix run .#test-vm -- -h web-02                         # full VM test cycle
+```
+
+Fleet repos wire these via `nixfleet.lib.mkVmApps { inherit pkgs; }`.
+
+## Development
+
+```sh
+nix develop                        # dev shell
+nix flake check --no-build         # eval tests (instant)
+nix run .#validate                 # full validation (eval + host builds)
+nix run .#validate -- --vm         # include VM tests
+nix fmt                            # format (alejandra + shfmt)
+cargo test --workspace             # Rust tests
+```
+
+## Related Repos
+
+| Repo | Content |
+|------|---------|
+| [fleet](https://github.com/abstracts33d/fleet) | Reference fleet (abstracts33d org config) |
+| [fleet-secrets](https://github.com/abstracts33d/fleet-secrets) | Encrypted secrets (agenix) |
+
+## License
+
+Apache-2.0
