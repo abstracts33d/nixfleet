@@ -9,7 +9,6 @@ pub enum HealthCheckResult {
     Pass {
         check_name: String,
         duration_ms: u64,
-        message: String,
     },
     Fail {
         check_name: String,
@@ -67,7 +66,6 @@ mod tests {
         let check = HealthCheckResult::Pass {
             check_name: "disk_space".to_string(),
             duration_ms: 42,
-            message: "OK".to_string(),
         };
         let json = serde_json::to_string(&check).unwrap();
         let back: HealthCheckResult = serde_json::from_str(&json).unwrap();
@@ -97,7 +95,6 @@ mod tests {
                 HealthCheckResult::Pass {
                     check_name: "disk_space".to_string(),
                     duration_ms: 10,
-                    message: "OK".to_string(),
                 },
                 HealthCheckResult::Fail {
                     check_name: "memory".to_string(),
@@ -120,7 +117,6 @@ mod tests {
             results: vec![HealthCheckResult::Pass {
                 check_name: "nix_daemon".to_string(),
                 duration_ms: 3,
-                message: "running".to_string(),
             }],
             all_passed: true,
             timestamp: Utc::now(),
@@ -136,7 +132,6 @@ mod tests {
         let pass = HealthCheckResult::Pass {
             check_name: "disk".to_string(),
             duration_ms: 10,
-            message: "ok".to_string(),
         };
         assert_eq!(pass.to_string(), "PASS: disk (10ms)");
 

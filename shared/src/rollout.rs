@@ -128,11 +128,11 @@ impl BatchStatus {
 
 /// Health status of an individual machine during a rollout.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case", tag = "status")]
+#[serde(rename_all = "snake_case")]
 pub enum MachineHealthStatus {
     Pending,
     Healthy,
-    Unhealthy { reason: String },
+    Unhealthy(String),
     TimedOut,
     RolledBack,
 }
@@ -142,7 +142,7 @@ impl fmt::Display for MachineHealthStatus {
         match self {
             Self::Pending => write!(f, "pending"),
             Self::Healthy => write!(f, "healthy"),
-            Self::Unhealthy { reason } => write!(f, "unhealthy: {}", reason),
+            Self::Unhealthy(reason) => write!(f, "unhealthy: {}", reason),
             Self::TimedOut => write!(f, "timed_out"),
             Self::RolledBack => write!(f, "rolled_back"),
         }
@@ -161,16 +161,26 @@ pub enum RolloutTarget {
 // Request / Response types
 // ---------------------------------------------------------------------------
 
+fn default_failure_threshold() -> String {
+    "1".to_string()
+}
+
 /// Request body to create a new rollout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRolloutRequest {
     pub generation_hash: String,
-    pub target: RolloutTarget,
+    #[serde(default)]
+    pub cache_url: Option<String>,
     pub strategy: RolloutStrategy,
+    #[serde(default)]
+    pub batch_sizes: Option<Vec<String>>,
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: String,
     #[serde(default)]
     pub on_failure: OnFailure,
     #[serde(default)]
-    pub health_check_timeout_seconds: Option<u64>,
+    pub health_timeout: Option<u64>,
+    pub target: RolloutTarget,
 }
 
 /// Summary of a single batch returned in the create response.
@@ -185,9 +195,8 @@ pub struct BatchSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRolloutResponse {
     pub rollout_id: String,
-    pub status: RolloutStatus,
     pub batches: Vec<BatchSummary>,
-    pub created_at: DateTime<Utc>,
+    pub total_machines: usize,
 }
 
 /// Detailed view of a single batch (includes per-machine health).
@@ -197,20 +206,24 @@ pub struct BatchDetail {
     pub machine_ids: Vec<String>,
     pub status: BatchStatus,
     pub machine_health: HashMap<String, MachineHealthStatus>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 /// Full detail view of a rollout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RolloutDetail {
-    pub rollout_id: String,
-    pub generation_hash: String,
-    pub target: RolloutTarget,
-    pub strategy: RolloutStrategy,
-    pub on_failure: OnFailure,
+    pub id: String,
     pub status: RolloutStatus,
+    pub strategy: RolloutStrategy,
+    pub generation_hash: String,
+    pub on_failure: OnFailure,
+    pub failure_threshold: String,
+    pub health_timeout: u64,
     pub batches: Vec<BatchDetail>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub created_by: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -356,9 +369,7 @@ mod tests {
         let variants = vec![
             MachineHealthStatus::Pending,
             MachineHealthStatus::Healthy,
-            MachineHealthStatus::Unhealthy {
-                reason: "disk full".to_string(),
-            },
+            MachineHealthStatus::Unhealthy("disk full".to_string()),
             MachineHealthStatus::TimedOut,
             MachineHealthStatus::RolledBack,
         ];
@@ -374,9 +385,7 @@ mod tests {
         assert_eq!(MachineHealthStatus::Pending.to_string(), "pending");
         assert_eq!(MachineHealthStatus::Healthy.to_string(), "healthy");
         assert_eq!(
-            MachineHealthStatus::Unhealthy {
-                reason: "oom".to_string()
-            }
+            MachineHealthStatus::Unhealthy("oom".to_string())
             .to_string(),
             "unhealthy: oom"
         );
@@ -408,17 +417,23 @@ mod tests {
     fn test_create_rollout_request_roundtrip() {
         let request = CreateRolloutRequest {
             generation_hash: "/nix/store/abc123-nixos-system".to_string(),
-            target: RolloutTarget::Tags(vec!["web".to_string()]),
+            cache_url: Some("https://cache.example.com".to_string()),
             strategy: RolloutStrategy::Canary,
+            batch_sizes: Some(vec!["1".to_string(), "50%".to_string()]),
+            failure_threshold: "2".to_string(),
             on_failure: OnFailure::Pause,
-            health_check_timeout_seconds: Some(300),
+            health_timeout: Some(300),
+            target: RolloutTarget::Tags(vec!["web".to_string()]),
         };
         let json = serde_json::to_string(&request).unwrap();
         let back: CreateRolloutRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(back.generation_hash, request.generation_hash);
+        assert_eq!(back.cache_url, Some("https://cache.example.com".to_string()));
         assert_eq!(back.strategy, RolloutStrategy::Canary);
+        assert_eq!(back.batch_sizes, Some(vec!["1".to_string(), "50%".to_string()]));
+        assert_eq!(back.failure_threshold, "2");
         assert_eq!(back.on_failure, OnFailure::Pause);
-        assert_eq!(back.health_check_timeout_seconds, Some(300));
+        assert_eq!(back.health_timeout, Some(300));
     }
 
     #[test]
@@ -430,7 +445,10 @@ mod tests {
         }"#;
         let request: CreateRolloutRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.on_failure, OnFailure::Pause);
-        assert_eq!(request.health_check_timeout_seconds, None);
+        assert_eq!(request.health_timeout, None);
+        assert_eq!(request.cache_url, None);
+        assert_eq!(request.batch_sizes, None);
+        assert_eq!(request.failure_threshold, "1");
     }
 
     // -- CreateRolloutResponse --
@@ -439,18 +457,17 @@ mod tests {
     fn test_create_rollout_response_roundtrip() {
         let response = CreateRolloutResponse {
             rollout_id: "r-001".to_string(),
-            status: RolloutStatus::Created,
             batches: vec![BatchSummary {
                 batch_index: 0,
                 machine_ids: vec!["web-01".to_string()],
                 status: BatchStatus::Pending,
             }],
-            created_at: Utc::now(),
+            total_machines: 1,
         };
         let json = serde_json::to_string(&response).unwrap();
         let back: CreateRolloutResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(back.rollout_id, "r-001");
-        assert_eq!(back.status, RolloutStatus::Created);
+        assert_eq!(back.total_machines, 1);
         assert_eq!(back.batches.len(), 1);
     }
 
@@ -465,33 +482,40 @@ mod tests {
         );
         machine_health.insert(
             "web-02".to_string(),
-            MachineHealthStatus::Unhealthy {
-                reason: "health check timeout".to_string(),
-            },
+            MachineHealthStatus::Unhealthy("health check timeout".to_string()),
         );
 
         let detail = RolloutDetail {
-            rollout_id: "r-002".to_string(),
-            generation_hash: "/nix/store/def456-nixos-system".to_string(),
-            target: RolloutTarget::Hosts(vec!["web-01".to_string(), "web-02".to_string()]),
-            strategy: RolloutStrategy::Staged,
-            on_failure: OnFailure::Revert,
+            id: "r-002".to_string(),
             status: RolloutStatus::Running,
+            strategy: RolloutStrategy::Staged,
+            generation_hash: "/nix/store/def456-nixos-system".to_string(),
+            on_failure: OnFailure::Revert,
+            failure_threshold: "1".to_string(),
+            health_timeout: 300,
             batches: vec![BatchDetail {
                 batch_index: 0,
                 machine_ids: vec!["web-01".to_string(), "web-02".to_string()],
                 status: BatchStatus::WaitingHealth,
                 machine_health,
+                started_at: Some(Utc::now()),
+                completed_at: None,
             }],
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            created_by: "admin".to_string(),
         };
         let json = serde_json::to_string(&detail).unwrap();
         let back: RolloutDetail = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.rollout_id, "r-002");
+        assert_eq!(back.id, "r-002");
         assert_eq!(back.strategy, RolloutStrategy::Staged);
         assert_eq!(back.on_failure, OnFailure::Revert);
+        assert_eq!(back.failure_threshold, "1");
+        assert_eq!(back.health_timeout, 300);
+        assert_eq!(back.created_by, "admin");
         assert_eq!(back.batches.len(), 1);
         assert_eq!(back.batches[0].machine_health.len(), 2);
+        assert!(back.batches[0].started_at.is_some());
+        assert!(back.batches[0].completed_at.is_none());
     }
 }
