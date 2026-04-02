@@ -40,6 +40,7 @@
 # Reference
 
 - [Architecture](architecture.md)
+- [CLI Reference](cli/README.md)
 - [Hosts](hosts/README.md)
 - [Scopes](scopes/README.md)
   - [base](scopes/base.md)

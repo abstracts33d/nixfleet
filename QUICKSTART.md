@@ -83,4 +83,4 @@ nix run .#validate # full validation (format + eval + builds)
 - [TECHNICAL.md](TECHNICAL.md) -- Design decisions and Nix gotchas
 - [CLAUDE.md](CLAUDE.md) -- Framework context, commands, conventions
 - [docs/guide/](docs/guide/) -- Detailed user guide
-- [docs/src/](docs/src/) -- Technical reference
+- [docs/mdbook/](docs/mdbook/) -- Technical reference

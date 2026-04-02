@@ -1,6 +1,6 @@
 # Architecture
 
-High-level overview of NixFleet. For detailed internals, see [TECHNICAL.md](TECHNICAL.md). For full docs, see [docs/src/](docs/src/).
+High-level overview of NixFleet. For detailed internals, see [TECHNICAL.md](TECHNICAL.md). For full docs, see [docs/mdbook/](docs/mdbook/).
 
 ## Overview
 

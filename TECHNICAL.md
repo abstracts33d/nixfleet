@@ -2,7 +2,7 @@
 
 Deep-dive into NixFleet's design decisions, framework internals, and Nix gotchas.
 
-For a high-level overview, see [ARCHITECTURE.md](ARCHITECTURE.md). For getting started, see [QUICKSTART.md](QUICKSTART.md). For full docs, see [docs/src/](docs/src/).
+For a high-level overview, see [ARCHITECTURE.md](ARCHITECTURE.md). For getting started, see [QUICKSTART.md](QUICKSTART.md). For full docs, see [docs/mdbook/](docs/mdbook/).
 
 ## NixFleet Framework
 

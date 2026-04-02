@@ -2,7 +2,15 @@
 
 ## Purpose
 
-Plain NixOS service module that runs the NixFleet control plane as a systemd service. The control plane is an Axum HTTP server that maintains a machine registry and serves generation manifests to agents. Auto-included by `mkHost`.
+Plain NixOS service module that runs the NixFleet control plane as a systemd service. The control plane is an Axum HTTP server that:
+
+- Maintains a **machine registry** (agents register on first poll)
+- Stores **machine tags** for targeted fleet operations
+- Orchestrates **rollouts** with configurable strategies (canary, staged, all-at-once)
+- Tracks **deployment history** and audit events
+- Receives **health check reports** from agents and uses them to determine rollout success
+
+Auto-included by `mkHost`.
 
 ## Location
 
@@ -37,3 +45,4 @@ When `hostSpec.isImpermanent` is true, `/var/lib/nixfleet-cp` is automatically a
 
 - [Scopes Overview](README.md)
 - [Fleet Agent](nixfleet-agent.md)
+- [CLI Reference](../cli/README.md)
