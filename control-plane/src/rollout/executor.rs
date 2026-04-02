@@ -153,30 +153,72 @@ async fn evaluate_batch(
     let mut pending_count = 0usize;
 
     for machine_id in machine_ids {
-        let reports = db.get_health_reports_since(machine_id, started_at)?;
-        if reports.is_empty() {
-            pending_count += 1;
-        } else if reports[0].all_passed {
-            healthy_count += 1;
+        let health_reports = db.get_health_reports_since(machine_id, started_at)?;
+        if !health_reports.is_empty() {
+            if health_reports[0].all_passed {
+                healthy_count += 1;
+            } else {
+                unhealthy_count += 1;
+            }
         } else {
-            unhealthy_count += 1;
+            // No health report — check regular reports for deployment failure/success
+            let recent_reports = db.get_recent_reports(machine_id, 1)?;
+            if let Some(report) = recent_reports.first() {
+                if report.received_at.as_str() >= started_at {
+                    if report.success {
+                        // Deployment succeeded but no health report yet
+                        pending_count += 1;
+                    } else {
+                        // Deployment explicitly failed
+                        unhealthy_count += 1;
+                    }
+                } else {
+                    pending_count += 1;
+                }
+            } else {
+                pending_count += 1;
+            }
         }
     }
 
-    // If any machines haven't reported yet, transition to waiting_health and wait
+    // If any machines haven't reported yet, check health timeout
     if pending_count > 0 {
-        if batch.status == "deploying" {
-            db.update_batch_status(&batch.id, "waiting_health")?;
-            tracing::info!(
+        let timed_out = if let Ok(batch_start) =
+            chrono::NaiveDateTime::parse_from_str(started_at, "%Y-%m-%d %H:%M:%S")
+        {
+            let batch_start_utc = chrono::TimeZone::from_utc_datetime(&chrono::Utc, &batch_start);
+            let elapsed = chrono::Utc::now()
+                .signed_duration_since(batch_start_utc)
+                .num_seconds();
+            elapsed >= rollout.health_timeout
+        } else {
+            false
+        };
+
+        if timed_out {
+            // Treat pending machines as unhealthy
+            unhealthy_count += pending_count;
+            tracing::warn!(
                 rollout_id = %rollout.id,
                 batch_id = %batch.id,
-                healthy = healthy_count,
-                unhealthy = unhealthy_count,
                 pending = pending_count,
-                "Batch waiting for health reports"
+                health_timeout = rollout.health_timeout,
+                "Health timeout elapsed, treating pending machines as unhealthy"
             );
+        } else {
+            if batch.status == "deploying" {
+                db.update_batch_status(&batch.id, "waiting_health")?;
+                tracing::info!(
+                    rollout_id = %rollout.id,
+                    batch_id = %batch.id,
+                    healthy = healthy_count,
+                    unhealthy = unhealthy_count,
+                    pending = pending_count,
+                    "Batch waiting for health reports"
+                );
+            }
+            return Ok(());
         }
-        return Ok(());
     }
 
     // All machines have reported — evaluate

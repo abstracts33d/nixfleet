@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use nixfleet_types::AuditEvent;
 use rusqlite::Connection;
+use serde_json;
 use std::sync::Mutex;
 
 mod embedded {
@@ -620,21 +621,25 @@ impl Db {
     /// Returns the rollout id if found.
     pub fn machine_in_active_rollout(&self, machine_id: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
-        let pattern = format!("%{machine_id}%");
-        let result = conn.query_row(
-            "SELECT r.id FROM rollouts r
+        let mut stmt = conn.prepare(
+            "SELECT r.id, rb.machine_ids FROM rollouts r
              JOIN rollout_batches rb ON rb.rollout_id = r.id
-             WHERE r.status IN ('created', 'running', 'paused')
-             AND rb.machine_ids LIKE ?1
-             LIMIT 1",
-            rusqlite::params![pattern],
-            |row| row.get(0),
-        );
-        match result {
-            Ok(id) => Ok(Some(id)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+             WHERE r.status IN ('created', 'running', 'paused')",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        for (rollout_id, machine_ids_json) in rows {
+            let machine_ids: Vec<String> =
+                serde_json::from_str(&machine_ids_json).unwrap_or_default();
+            if machine_ids.contains(&machine_id.to_string()) {
+                return Ok(Some(rollout_id));
+            }
         }
+        Ok(None)
     }
 }
 

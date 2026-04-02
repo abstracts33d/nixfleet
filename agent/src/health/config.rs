@@ -19,12 +19,12 @@ pub struct SystemdConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct HttpConfig {
     pub url: String,
-    #[serde(default = "default_interval")]
+    #[serde(default = "default_interval", alias = "interval")]
     #[allow(dead_code)]
     pub interval: i64,
-    #[serde(default = "default_timeout")]
+    #[serde(default = "default_timeout", alias = "timeout")]
     pub timeout: i64,
-    #[serde(default = "default_expected_status")]
+    #[serde(default = "default_expected_status", alias = "expectedStatus")]
     pub expected_status: i64,
 }
 
@@ -106,5 +106,17 @@ mod tests {
         let cmd = &cfg.command[0];
         assert_eq!(cmd.interval, 10);
         assert_eq!(cmd.timeout, 5);
+    }
+
+    #[test]
+    fn test_camel_case_from_nix() {
+        let json = r#"{
+            "http": [{"url": "http://localhost/health", "expectedStatus": 201, "timeout": 10, "interval": 15}]
+        }"#;
+        let cfg: HealthConfig = serde_json::from_str(json).unwrap();
+        let http = &cfg.http[0];
+        assert_eq!(http.expected_status, 201);
+        assert_eq!(http.timeout, 10);
+        assert_eq!(http.interval, 15);
     }
 }

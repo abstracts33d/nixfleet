@@ -74,7 +74,7 @@ pub async fn tag(cp_url: &str, api_key: &str, machine_id: &str, tags: &[String])
     let url = format!("{}/api/v1/machines/{}/tags", cp_url, machine_id);
 
     let resp = client
-        .put(&url)
+        .post(&url)
         .json(tags)
         .send()
         .await

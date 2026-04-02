@@ -371,9 +371,16 @@ fn row_to_detail(rollout: &RolloutRow, batch_rows: &[RolloutBatchRow]) -> Rollou
             let batch_status: BatchStatus =
                 serde_json::from_str(&format!("\"{}\"", b.status)).unwrap_or(BatchStatus::Pending);
 
+            let inferred_status = match batch_status {
+                BatchStatus::Succeeded => MachineHealthStatus::Healthy,
+                BatchStatus::Failed => {
+                    MachineHealthStatus::Unhealthy("batch failed".to_string())
+                }
+                _ => MachineHealthStatus::Pending,
+            };
             let machine_health: HashMap<String, MachineHealthStatus> = machine_ids
                 .iter()
-                .map(|id| (id.clone(), MachineHealthStatus::Pending))
+                .map(|id| (id.clone(), inferred_status.clone()))
                 .collect();
 
             BatchDetail {
