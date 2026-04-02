@@ -2,23 +2,20 @@
 
 ## Purpose
 
-Bootstrap WiFi connectivity on first boot using encrypted credentials. The framework provides the `hostSpec.wifiNetworks` option; the consuming fleet wires it to their secrets tool.
+Bootstrap WiFi connectivity on first boot using encrypted credentials. This is a fleet-level concern — the framework does not include a built-in WiFi provisioning mechanism, but provides the patterns for fleet repos to implement it.
 
-## Location
+## Pattern
 
-- `modules/_shared/host-spec-module.nix` (`wifiNetworks` option)
+Fleet repos can implement WiFi provisioning by:
 
-## How It Works
+1. Encrypting WiFi `.nmconnection` files with their secrets tool (agenix, sops, etc.)
+2. Adding a systemd service that copies the decrypted credentials to NetworkManager's directory before it starts
+3. NetworkManager picks up the connection and connects automatically
 
-1. Host declares `wifiNetworks = ["home"];` in hostSpec
-2. The fleet's secrets module decrypts `wifi-<name>` credentials at boot
-3. A systemd service copies the `.nmconnection` file to NetworkManager's directory
-4. NetworkManager picks up the connection and connects automatically
-
-## Fleet Implementation Pattern
+## Example Implementation
 
 ```nix
-# In a fleet secrets module:
+# In a fleet secrets/wifi module:
 age.secrets."wifi-home" = {
   file = "${secretsRepo}/wifi-home.age";
   path = "/run/agenix/wifi-home";
@@ -32,7 +29,20 @@ systemd.services."bootstrap-wifi" = {
 };
 ```
 
-The framework provides the `wifiNetworks` flag; the fleet implements the actual provisioning.
+## Extending hostSpec
+
+Fleet repos that want a declarative WiFi interface can extend `hostSpec` with their own option:
+
+```nix
+# In a fleet module:
+options.hostSpec.wifiNetworks = lib.mkOption {
+  type = lib.types.listOf lib.types.str;
+  default = [];
+  description = "WiFi network names to provision on this host";
+};
+```
+
+This keeps the framework generic while letting each fleet define its own WiFi provisioning strategy.
 
 ## Links
 

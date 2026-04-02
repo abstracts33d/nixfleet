@@ -54,9 +54,6 @@ Universal NixOS configuration applied to every NixOS host. Provides Nix settings
 - `PasswordAuthentication = false`
 - `KbdInteractiveAuthentication = false`
 
-### Hardware
-- `hardware.ledger.enable = true`
-
 ### System packages
 `git`, `inetutils`
 

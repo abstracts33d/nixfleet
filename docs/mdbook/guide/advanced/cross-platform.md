@@ -1,12 +1,11 @@
 # Cross-Platform Design
 
-How one config targets NixOS, macOS, and portable environments.
+How NixFleet targets both NixOS and macOS.
 
-## The Challenge
+## Supported Platforms
 
-NixFleet supports:
-- **NixOS** -- full system control
-- **macOS** -- nix-darwin with Home Manager
+- **NixOS** — full system control (x86_64-linux, aarch64-linux)
+- **macOS** — nix-darwin with Home Manager (aarch64-darwin, x86_64-darwin)
 
 Each platform has different capabilities. The framework handles this with guards and platform-aware modules.
 
@@ -25,22 +24,17 @@ lib.optionalAttrs (!hS.isDarwin) {
 }
 ```
 
-## Three Layers
-
-| Layer | NixOS | macOS | Portable |
-|-------|-------|-------|----------|
-| System config | NixOS modules | nix-darwin modules | N/A |
-| User config | Home Manager | Home Manager | Wrapper configs |
-| Config files | `_config/` | `_config/` | `_config/` |
-
-The `_config/` directory is the shared source of truth. Both Home Manager and wrappers read from it, ensuring the same experience everywhere.
-
 ## What Is Platform-Specific
 
-- **NixOS only:** impermanence, systemd services, Wayland compositors, Docker
-- **macOS only:** Homebrew, Karabiner, AeroSpace, Dock preferences
-- **Both:** shell, editor, git, SSH, dev tools (via Home Manager)
-- **Portable:** shell + terminal wrappers (subset of the full config)
+| | NixOS | macOS |
+|---|-------|-------|
+| System config | NixOS modules | nix-darwin modules |
+| User config | Home Manager | Home Manager |
+| Init system | systemd | launchd |
+| Impermanence | Supported | Not applicable |
+| Services | systemd units | launchd agents |
+
+Fleet repos add platform-specific features on top (e.g., Wayland compositors on NixOS, Homebrew casks on macOS).
 
 ## Design Principle
 
@@ -48,5 +42,5 @@ When a cross-platform approach adds too much complexity, make it platform-specif
 
 ## Further Reading
 
-- [Portable Environments](../concepts/portable.md) — wrappers in detail
+- [Scopes](../concepts/scopes.md) — how features are organized
 - [Technical Architecture](../../architecture.md) — module structure

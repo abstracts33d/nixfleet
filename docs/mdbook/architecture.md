@@ -34,7 +34,7 @@ Files and directories prefixed with `_` are excluded from import-tree auto-impor
 | `_shared/` | `mk-host.nix`, `host-spec-module.nix`, disk templates | `fleet.nix`, mkHost |
 | `_hardware/` | Per-host disk-config, hardware-configuration | mkHost modules |
 
-Fleet repos typically add `_config/` (tool configs) and `core/_home/` (HM fragments) -- these are outside the framework.
+Fleet repos add their own modules on top (tool configs, HM programs, additional scopes) — these are outside the framework.
 
 ## mkHost API
 

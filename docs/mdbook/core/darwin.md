@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Universal Darwin (macOS) configuration. Nix settings compatible with Determinate installer, TouchID sudo, declarative dock management, system defaults, and agenix secrets.
+Universal Darwin (macOS) configuration. Nix settings compatible with Determinate installer, TouchID sudo, system defaults, and user management.
 
 ## Location
 
@@ -24,12 +24,6 @@ Universal Darwin (macOS) configuration. Nix settings compatible with Determinate
 - Primary user with zsh shell
 - Home at `/Users/<userName>`
 
-### Secrets (agenix -- fleet-level)
-- Agenix configuration lives in fleet-level modules (injected via `mkHost` modules), not in `core/darwin.nix`
-- Identity: `~/.ssh/id_ed25519`
-- Secrets: `github-ssh-key` (symlink), `github-signing-key` (copy)
-- Group: `staff` (macOS convention)
-
 ### System defaults
 - **Keyboard:** fast repeat (2), short initial delay (15), press-and-hold disabled
 - **Dock:** autohide, no recents, bottom, 48px tiles
@@ -42,7 +36,7 @@ Activation script compares current dock entries with desired entries (URI-based 
 ## Dependencies
 
 - `hostSpec.isDarwin` set to `true`
-- Agenix is a fleet-level concern, injected via `mkHost` modules
+- Secret management is a fleet-level concern, injected via `mkHost` modules
 
 ## Links
 

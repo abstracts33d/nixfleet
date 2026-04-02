@@ -2,7 +2,7 @@
 
 ## Framework Approach
 
-NixFleet is **secrets-agnostic**. The framework does not bundle any secrets tool -- it provides clean extension points via `hostSpec` options for consuming fleet repos to plug in their secrets management of choice.
+NixFleet is **secrets-agnostic**. The framework does not bundle any secrets tool — it provides clean extension points via `hostSpec` options for fleet repos to plug in their preferred secrets management.
 
 The framework test fleet has no secrets at all (`hashedPasswordFile = null`).
 
@@ -16,29 +16,20 @@ The framework test fleet has no secrets at all (`hashedPasswordFile = null`).
 
 ## Wiring Secrets in a Fleet
 
-Consuming fleet repos import their chosen secrets tool and wire it via `mkHost` modules:
+Fleet repos import their chosen secrets tool and wire it via `mkHost` modules. For example:
 
 ```nix
-# Example: agenix integration in a fleet repo
-fleetModules = [
-  inputs.agenix.nixosModules.default
-  ./modules/org-secrets.nix  # defines secret file paths
-];
+# agenix
+modules = [ inputs.agenix.nixosModules.default ./modules/secrets.nix ];
+
+# sops-nix
+modules = [ inputs.sops-nix.nixosModules.sops ./modules/secrets.nix ];
 ```
 
-The secrets module defines encrypted file paths, decryption identity paths, and output locations. The framework's `hostSpec` options provide the connection points.
-
-## Updating Secrets
-
-When using a secrets repo as a flake input:
-
-```sh
-nix flake update secrets
-sudo nixos-rebuild switch --flake .#<hostname>
-```
+The `secrets.nix` module defines encrypted file paths, decryption identity paths, and output locations. The framework's `hostSpec` options provide the connection points.
 
 ## Links
 
-- [Bootstrap](bootstrap.md)
-- [WiFi](wifi.md)
-- [Impermanence scope](../scopes/impermanence.md)
+- [Bootstrap](bootstrap.md) — provisioning keys during installation
+- [WiFi](wifi.md) — WiFi credential provisioning patterns
+- [Impermanence scope](../scopes/impermanence.md) — how secrets interact with ephemeral roots

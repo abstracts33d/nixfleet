@@ -20,20 +20,20 @@ This means:
 
 ## What Persists
 
-Persist paths are declared alongside the programs that need them:
+The framework persists essential system and user paths (see [impermanence scope](../../scopes/impermanence.md) for the full list). Fleet repos extend persistence with their own paths, declared alongside the programs that need them:
 
-- SSH `known_hosts` (not the full `.ssh` directory — keys come from agenix)
-- Browser profiles
-- Docker data
-- WiFi connections
-- Application state (VS Code, Zed, etc.)
+```nix
+# Example: a fleet scope that adds browser persistence
+home.persistence."/persist".directories =
+  lib.mkIf (osConfig.hostSpec.isImpermanent or false)
+  [ ".config/firefox" ];
+```
 
 ## What Does Not Persist
 
 - `/tmp`, `/var/tmp` — ephemeral by nature
-- `.ssh`, `.gnupg` directories — recreated each boot by agenix and Home Manager
+- Application state not explicitly persisted — recreated or managed by fleet modules
 - Downloaded files outside persisted paths
-- System logs (unless configured otherwise)
 
 ## Opting In
 

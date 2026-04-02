@@ -34,9 +34,13 @@ Runs in `boot.initrd.postResumeCommands`:
 
 ### HM module (user-level persistence)
 
-Persisted user directories: Documents, Downloads, Pictures, Videos, `.keys`, `.local/share/src`, `fleet`, `.zplug`, `.local/share/zsh`, `.config/gh`, `.local/share/nvim`, `.cache/nvim`, `.cache/tmux`, `.local/share/zoxide`, `.local/share/nix`.
+The framework persists a minimal set of user directories and files needed for system operation. Fleet repos extend this with their own persist paths for application state (see Scope-Aware Persist Paths below).
 
-Persisted user files: `.zsh_history`, `.ssh/known_hosts`.
+**Framework-persisted user paths:**
+- Directories: `.keys`, `.local/share/nix`
+- Files: `.ssh/known_hosts`
+
+Fleet repos add their own paths (e.g., shell history, editor state, browser profiles) via scope-aware persistence in their own modules.
 
 ### Activation script
 
