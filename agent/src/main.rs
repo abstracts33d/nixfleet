@@ -13,6 +13,7 @@ mod tls;
 mod types;
 
 use config::Config;
+use health::HealthRunner;
 use state::AgentState;
 use store::Store;
 
@@ -99,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create HTTP client for control plane communication
     let client = comms::Client::new(&config)?;
+    let health_runner = HealthRunner::from_config_path("/etc/nixfleet/health-checks.json");
     let mut agent_state = AgentState::Idle;
 
     // Main poll loop — state machine drives all transitions
@@ -184,29 +186,29 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     },
-                    AgentState::Verifying { desired } => match health::check_system().await {
-                        Ok(healthy) if healthy => {
-                            info!("Health check passed");
+                    AgentState::Verifying { desired } => {
+                        let report = health_runner.run_all().await;
+                        if report.all_passed {
+                            info!("Health checks passed");
                             store.log_deploy(&desired.hash, true)
                                 .unwrap_or_else(|e| warn!("store error: {e}"));
                             AgentState::Reporting {
                                 success: true,
                                 message: "deployed".into(),
                             }
-                        }
-                        Ok(_) => {
-                            warn!("Health check failed after apply");
+                        } else {
+                            let failed: Vec<_> = report
+                                .results
+                                .iter()
+                                .filter(|r| !r.is_pass())
+                                .map(|r| r.to_string())
+                                .collect();
+                            warn!(?failed, "Health checks failed after apply");
                             AgentState::RollingBack {
-                                reason: "health check failed".into(),
+                                reason: format!("health check failed: {}", failed.join(", ")),
                             }
                         }
-                        Err(e) => {
-                            error!("Health check error: {e}");
-                            AgentState::RollingBack {
-                                reason: format!("health check error: {e}"),
-                            }
-                        }
-                    },
+                    }
                     AgentState::RollingBack { reason } => {
                         warn!(reason = %reason, "Rolling back to previous generation");
                         match nix::rollback().await {
