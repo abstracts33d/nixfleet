@@ -265,6 +265,74 @@ impl Db {
         Ok(rows)
     }
 
+    /// Replace all tags for a machine.
+    pub fn set_machine_tags(&self, machine_id: &str, tags: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM machine_tags WHERE machine_id = ?1",
+            rusqlite::params![machine_id],
+        )
+        .context("failed to delete existing machine tags")?;
+        for tag in tags {
+            conn.execute(
+                "INSERT INTO machine_tags (machine_id, tag) VALUES (?1, ?2)",
+                rusqlite::params![machine_id, tag],
+            )
+            .context("failed to insert machine tag")?;
+        }
+        Ok(())
+    }
+
+    /// Get all tags for a machine, ordered by tag name.
+    pub fn get_machine_tags(&self, machine_id: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT tag FROM machine_tags WHERE machine_id = ?1 ORDER BY tag",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![machine_id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Get machine IDs that have ALL given tags (AND logic).
+    pub fn get_machines_by_tags(&self, tags: &[String]) -> Result<Vec<String>> {
+        if tags.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> = (1..=tags.len()).map(|i| format!("?{}", i)).collect();
+        let sql = format!(
+            "SELECT machine_id FROM machine_tags WHERE tag IN ({}) \
+             GROUP BY machine_id HAVING COUNT(DISTINCT tag) = ?{}",
+            placeholders.join(", "),
+            tags.len() + 1
+        );
+        let conn = self.conn.lock().unwrap();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        for tag in tags {
+            params.push(Box::new(tag.clone()));
+        }
+        params.push(Box::new(tags.len() as i64));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |row| row.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Remove a single tag from a machine.
+    pub fn remove_machine_tag(&self, machine_id: &str, tag: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM machine_tags WHERE machine_id = ?1 AND tag = ?2",
+            rusqlite::params![machine_id, tag],
+        )
+        .context("failed to remove machine tag")?;
+        Ok(())
+    }
+
     /// Get recent reports for a machine (most recent first).
     pub fn get_recent_reports(&self, machine_id: &str, limit: usize) -> Result<Vec<ReportRow>> {
         let conn = self.conn.lock().unwrap();
@@ -511,5 +579,74 @@ mod tests {
         db.register_machine("dev-01", "pending").unwrap();
         let machines = db.list_machines().unwrap();
         assert_eq!(machines.len(), 2);
+    }
+
+    #[test]
+    fn test_set_and_get_machine_tags() {
+        let (db, _dir) = make_db();
+        db.register_machine("web-01", "active").unwrap();
+        db.set_machine_tags("web-01", &["production".to_string(), "eu-west".to_string()])
+            .unwrap();
+        let tags = db.get_machine_tags("web-01").unwrap();
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains(&"production".to_string()));
+        assert!(tags.contains(&"eu-west".to_string()));
+    }
+
+    #[test]
+    fn test_set_machine_tags_replaces() {
+        let (db, _dir) = make_db();
+        db.register_machine("web-01", "active").unwrap();
+        db.set_machine_tags("web-01", &["old-tag".to_string()])
+            .unwrap();
+        db.set_machine_tags("web-01", &["new-tag".to_string()])
+            .unwrap();
+        let tags = db.get_machine_tags("web-01").unwrap();
+        assert_eq!(tags, vec!["new-tag".to_string()]);
+    }
+
+    #[test]
+    fn test_get_machines_by_tags_and_logic() {
+        let (db, _dir) = make_db();
+        db.register_machine("web-01", "active").unwrap();
+        db.register_machine("web-02", "active").unwrap();
+        db.register_machine("db-01", "active").unwrap();
+        db.set_machine_tags(
+            "web-01",
+            &["web".to_string(), "production".to_string()],
+        )
+        .unwrap();
+        db.set_machine_tags("web-02", &["web".to_string(), "staging".to_string()])
+            .unwrap();
+        db.set_machine_tags(
+            "db-01",
+            &["db".to_string(), "production".to_string()],
+        )
+        .unwrap();
+        let machines = db
+            .get_machines_by_tags(&["web".to_string(), "production".to_string()])
+            .unwrap();
+        assert_eq!(machines, vec!["web-01".to_string()]);
+    }
+
+    #[test]
+    fn test_remove_machine_tag() {
+        let (db, _dir) = make_db();
+        db.register_machine("web-01", "active").unwrap();
+        db.set_machine_tags(
+            "web-01",
+            &["web".to_string(), "production".to_string()],
+        )
+        .unwrap();
+        db.remove_machine_tag("web-01", "web").unwrap();
+        let tags = db.get_machine_tags("web-01").unwrap();
+        assert_eq!(tags, vec!["production".to_string()]);
+    }
+
+    #[test]
+    fn test_get_machines_by_tags_empty() {
+        let (db, _dir) = make_db();
+        let machines = db.get_machines_by_tags(&[]).unwrap();
+        assert!(machines.is_empty());
     }
 }
