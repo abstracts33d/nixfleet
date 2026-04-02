@@ -43,7 +43,15 @@ nixos-anywhere --flake .#myhost root@192.168.1.50   # fresh install
 sudo nixos-rebuild switch --flake .#myhost           # rebuild
 ```
 
-See `examples/` for more patterns (standalone host, batch hosts, client fleet).
+See `examples/` for more patterns, or use `nix flake init -t nixfleet#fleet` for a multi-host template.
+
+## Documentation
+
+Full documentation: [your-org.github.io/nixfleet](https://your-org.github.io/nixfleet/)
+
+- [Quick Start](https://your-org.github.io/nixfleet/guide/getting-started/quick-start.html) — first host in 15 minutes
+- [Concepts](https://your-org.github.io/nixfleet/guide/concepts/) — architecture, scopes, hostSpec
+- [ADRs](docs/adr/) — architecture decision records
 
 ## Layout
 
