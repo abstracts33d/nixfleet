@@ -12,6 +12,7 @@ pub struct MachineState {
     pub last_seen: Option<DateTime<Utc>>,
     pub lifecycle: MachineLifecycle,
     pub registered_at: Option<DateTime<Utc>>,
+    pub tags: Vec<String>,
 }
 
 impl Default for MachineState {
@@ -28,6 +29,7 @@ impl MachineState {
             last_seen: None,
             lifecycle: MachineLifecycle::Active,
             registered_at: None,
+            tags: vec![],
         }
     }
 
@@ -39,6 +41,7 @@ impl MachineState {
             last_seen: None,
             lifecycle: MachineLifecycle::Pending,
             registered_at: Some(Utc::now()),
+            tags: vec![],
         }
     }
 }
@@ -80,6 +83,13 @@ pub async fn hydrate_from_db(
         if let Some(lc) = MachineLifecycle::from_str_lc(&row.lifecycle) {
             machine.lifecycle = lc;
         }
+    }
+
+    // Load tags for each registered machine
+    for row in &registered {
+        let tags = db.get_machine_tags(&row.machine_id)?;
+        let machine = fleet.get_or_create(&row.machine_id);
+        machine.tags = tags;
     }
 
     // Load desired generations

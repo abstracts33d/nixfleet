@@ -38,6 +38,11 @@ pub fn build_app(fleet_state: Arc<RwLock<state::FleetState>>, db: Arc<db::Db>) -
             "/api/v1/machines/{id}/lifecycle",
             patch(routes::update_lifecycle),
         )
+        .route("/api/v1/machines/{id}/tags", post(routes::set_tags))
+        .route(
+            "/api/v1/machines/{id}/tags/{tag}",
+            axum::routing::delete(routes::remove_tag),
+        )
         .route("/api/v1/audit", get(audit::list_audit_events))
         .route("/api/v1/audit/export", get(audit::export_audit_csv))
         .layer(middleware::from_fn(move |headers, request, next| {

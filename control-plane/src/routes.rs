@@ -49,11 +49,20 @@ pub async fn post_report(
         )
     })?;
 
+    // Extract tags before moving report into state
+    let report_tags = report.tags.clone();
+
     // Update in-memory state
     let mut fleet = state.write().await;
     let machine = fleet.get_or_create(&id);
     machine.last_seen = Some(report.timestamp);
     machine.last_report = Some(report);
+
+    // Sync tags if the report includes them
+    if !report_tags.is_empty() {
+        let _ = db.set_machine_tags(&id, &report_tags);
+        machine.tags = report_tags;
+    }
 
     // Auto-transition Pending/Provisioning -> Active on first report
     if machine.lifecycle == MachineLifecycle::Pending
@@ -92,6 +101,14 @@ pub async fn set_desired_generation(
     Path(id): Path<String>,
     Json(req): Json<SetGenerationRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    // Check for active rollout conflict
+    if let Ok(Some(rollout_id)) = db.machine_in_active_rollout(&id) {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("machine {id} is in active rollout {rollout_id}"),
+        ));
+    }
+
     // Persist to database
     db.set_desired_generation(&id, &req.hash).map_err(|e| {
         tracing::error!(error = %e, machine_id = %id, "Failed to persist generation");
@@ -158,7 +175,7 @@ pub async fn list_machines(State((state, _db)): State<AppState>) -> Json<Vec<Mac
             uptime_seconds: 0,
             last_report: m.last_report.as_ref().map(|r| r.timestamp),
             lifecycle: m.lifecycle.clone(),
-            tags: vec![],
+            tags: m.tags.clone(),
         })
         .collect();
 
@@ -297,6 +314,70 @@ pub async fn update_lifecycle(
         to = %target,
         "Lifecycle state changed"
     );
+    Ok(StatusCode::OK)
+}
+
+/// POST /api/v1/machines/{id}/tags
+///
+/// Set all tags for a machine (replaces existing tags).
+pub async fn set_tags(
+    State((state, db)): State<AppState>,
+    actor: Option<Extension<Actor>>,
+    Path(id): Path<String>,
+    Json(tags): Json<Vec<String>>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    db.set_machine_tags(&id, &tags).map_err(|e| {
+        tracing::error!(error = %e, machine_id = %id, "Failed to set tags");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to set tags".to_string(),
+        )
+    })?;
+
+    let mut fleet = state.write().await;
+    let machine = fleet.get_or_create(&id);
+    machine.tags = tags.clone();
+
+    let actor_id = actor
+        .map(|Extension(a)| a.identifier())
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = db.insert_audit_event(
+        &actor_id,
+        "set_tags",
+        &id,
+        Some(&format!("tags={}", tags.join(","))),
+    );
+
+    tracing::info!(machine_id = %id, tags = ?tags, "Tags set");
+    Ok(StatusCode::OK)
+}
+
+/// DELETE /api/v1/machines/{id}/tags/{tag}
+///
+/// Remove a single tag from a machine.
+pub async fn remove_tag(
+    State((state, db)): State<AppState>,
+    actor: Option<Extension<Actor>>,
+    Path((id, tag)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    db.remove_machine_tag(&id, &tag).map_err(|e| {
+        tracing::error!(error = %e, machine_id = %id, tag = %tag, "Failed to remove tag");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to remove tag".to_string(),
+        )
+    })?;
+
+    let mut fleet = state.write().await;
+    let machine = fleet.get_or_create(&id);
+    machine.tags.retain(|t| t != &tag);
+
+    let actor_id = actor
+        .map(|Extension(a)| a.identifier())
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = db.insert_audit_event(&actor_id, "remove_tag", &id, Some(&tag));
+
+    tracing::info!(machine_id = %id, tag = %tag, "Tag removed");
     Ok(StatusCode::OK)
 }
 
