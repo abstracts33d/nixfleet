@@ -20,6 +20,7 @@ nix build .#checks.x86_64-linux.vm-firewall --no-link
 nix build .#checks.x86_64-linux.vm-monitoring --no-link
 nix build .#checks.x86_64-linux.vm-backup --no-link
 nix build .#checks.x86_64-linux.vm-secrets --no-link
+nix build .#checks.x86_64-linux.vm-fleet --no-link
 ```
 
 ## Requirements
@@ -86,6 +87,21 @@ Four focused tests for the infrastructure scopes:
 **vm-backup** — Enables the backup scope with a dummy `ExecStart` (`true`), verifies the systemd timer is registered, manually triggers the service, and checks that `status.json` is written with `"status": "success"`.
 
 **vm-secrets** — Enables the secrets scope, verifies the SSH host key exists at `/etc/ssh/ssh_host_ed25519_key` with correct permissions (600).
+
+### vm-fleet
+
+Multi-node fleet orchestration test with 4 nodes: 1 control plane, 3 agents (web-01, web-02, db-01).
+
+Tests the complete deployment pipeline with required mTLS and health gates:
+
+1. **TLS setup** — build-time certificate generation (fleet CA + CP server cert + 3 agent client certs)
+2. **Agent registration** — CP bootstrap, all 3 agents registered with tags (`web-01` and `web-02` tagged "web", `db-01` tagged "db")
+3. **Canary rollout** — staged rollout on web agents (1, then 100%); both agents are healthy, rollout completes
+4. **Health gate failure** — all-at-once rollout on db agents with a health check that fails (health check on port 9999 gets no response); rollout pauses on failure
+5. **Resume recovery** — resume the paused rollout and verify it transitions out of paused state
+6. **Metrics verification** — CP metrics endpoint exposes `nixfleet_fleet_size` and `nixfleet_rollouts_total`; agent node exporter on web-01 exposes `node_cpu`
+
+This test validates that mTLS-authenticated connections work, admin clients can present both cert + API key, and the CP correctly orchestrates deployments with health gates.
 
 ## Test node construction
 

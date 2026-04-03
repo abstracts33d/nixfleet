@@ -12,7 +12,7 @@ All options under `services.nixfleet-control-plane`. The module is auto-included
 | `openFirewall` | `bool` | `false` | Open the control plane port in the firewall. The port is parsed from the `listen` value. |
 | `tls.cert` | `nullOr str` | `null` | Path to TLS certificate PEM file. Enables HTTPS when set (requires `tls.key`). Example: `"/run/secrets/cp-cert.pem"`. |
 | `tls.key` | `nullOr str` | `null` | Path to TLS private key PEM file. Example: `"/run/secrets/cp-key.pem"`. |
-| `tls.clientCa` | `nullOr str` | `null` | Path to client CA PEM file. Enables mTLS agent authentication when set. Example: `"/run/secrets/fleet-ca.pem"`. |
+| `tls.clientCa` | `nullOr str` | `null` | Path to client CA PEM file. When set, **all** TLS connections must present a valid client certificate signed by this CA (required mTLS). Admin clients must present both a client cert and an API key. Example: `"/run/secrets/fleet-ca.pem"`. |
 
 ## Prometheus Metrics
 
