@@ -17,6 +17,9 @@
     ];
   };
 in {
+  # Bake the test SSH key into the ISO so build-vm / test-vm can SSH in.
+  nixfleet.isoSshKeys = orgDefaults.sshAuthorizedKeys;
+
   flake.nixosConfigurations = {
     # web-01: default web server, impermanent root
     web-01 = mkHost {

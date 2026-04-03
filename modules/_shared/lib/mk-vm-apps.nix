@@ -162,10 +162,13 @@
     build_iso() {
       echo -e "''${YELLOW}Building custom ISO...''${NC}"
       local iso_path
-      iso_path=$(nix build .#iso --no-link --print-out-paths)
+      if ! iso_path=$(nix build .#iso --no-link --print-out-paths 2>/dev/null); then
+        echo -e "''${RED}No ISO package found. Set nixfleet.isoSshKeys in your fleet config.''${NC}" >&2
+        exit 1
+      fi
       ISO_FILE=$(find "''$iso_path/iso" -name '*.iso' | head -1)
       if [ -z "''$ISO_FILE" ]; then
-        echo -e "''${RED}No ISO found in output''${NC}" >&2
+        echo -e "''${RED}No ISO file found in build output''${NC}" >&2
         exit 1
       fi
       echo -e "''${GREEN}ISO: ''$ISO_FILE''${NC}"
