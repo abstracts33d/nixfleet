@@ -288,6 +288,70 @@ in
     '';
 
     # ── start-vm (Task 3) ──
+    "start-vm" = mkScript "start-vm" "Start an installed VM as a headless daemon" ''
+      set -euo pipefail
+      export PATH="${lib.makeBinPath basePkgs}:$PATH"
+
+      ${sharedHelpers}
+
+      HOST=""
+      ALL=0
+      PORT_OVERRIDE=""
+      RAM=1024
+      CPUS=2
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -h|--host) HOST="$2"; shift 2 ;;
+          --all) ALL=1; shift ;;
+          --ssh-port) PORT_OVERRIDE="$2"; shift 2 ;;
+          --ram) RAM="$2"; shift 2 ;;
+          --cpus) CPUS="$2"; shift 2 ;;
+          *) echo "Unknown argument: $1" >&2; exit 1 ;;
+        esac
+      done
+
+      [[ $ALL -eq 0 && -z "$HOST" ]] && echo -e "''${RED}Specify -h HOST or --all''${NC}" && exit 1
+
+      start_one() {
+        local host="$1"
+        assign_port "$host"
+        local disk="''$VM_DIR/$host.qcow2"
+        local pidfile="''$VM_DIR/$host.pid"
+
+        if [ ! -f "$disk" ]; then
+          echo -e "''${RED}[$host] No disk found. Run build-vm first.''${NC}" >&2
+          return 1
+        fi
+
+        if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+          echo -e "''${YELLOW}[$host] Already running (PID $(cat "$pidfile"))''${NC}"
+          return 0
+        fi
+
+        rm -f "$pidfile"
+        ${qemuBin} \
+          ${qemuAccel} \
+          -m "''$RAM" \
+          -smp "''$CPUS" \
+          -drive file="$disk",format=qcow2,if=virtio \
+          -nic user,model=virtio-net-pci,hostfwd=tcp::''$SSH_PORT-:22 \
+          -display none -serial null \
+          -bios ${pkgs.OVMF.fd}/FV/OVMF.fd \
+          -daemonize -pidfile "$pidfile"
+
+        echo -e "''${GREEN}[$host] Started on port ''$SSH_PORT — ssh -p ''$SSH_PORT root@localhost''${NC}"
+      }
+
+      if [[ $ALL -eq 1 ]]; then
+        while IFS= read -r host; do
+          [[ -n "$host" ]] && [ -f "''$VM_DIR/$host.qcow2" ] && start_one "$host"
+        done <<< "$(all_hosts)"
+      else
+        start_one "$HOST"
+      fi
+    '';
+
     # ── stop-vm (Task 4) ──
     # ── clean-vm (Task 4) ──
     # ── test-vm (Task 5) ──
