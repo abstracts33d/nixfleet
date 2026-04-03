@@ -97,8 +97,8 @@ Scopes are plain NixOS/HM modules auto-included by mkHost. They self-activate vi
 | `secrets` | `nixfleet.secrets.enable = true` | Identity paths, persist, boot ordering, key validation |
 | `backup` | `nixfleet.backup.enable = true` | Systemd timer, hooks, health ping, status reporting |
 | `monitoring` | `nixfleet.monitoring.nodeExporter.enable = true` | Node exporter with fleet-tuned collector defaults |
-| `nixfleet-agent` | `services.nixfleet-agent.enable = true` | Fleet agent systemd service |
-| `nixfleet-control-plane` | `services.nixfleet-control-plane.enable = true` | Control plane HTTP server |
+| `nixfleet-agent` | `services.nixfleet-agent.enable = true` | Fleet agent systemd service; key options: `metricsPort` (Prometheus listener), `metricsOpenFirewall`, `allowInsecure` |
+| `nixfleet-control-plane` | `services.nixfleet-control-plane.enable = true` | Control plane HTTP server; `GET /metrics` always available on listen address; routes split: agent-facing (mTLS, no API key) vs admin (API key required) |
 
 Fleet repos add opinionated scopes (dev tools, desktop environments, theming, etc.) as plain NixOS/HM modules.
 

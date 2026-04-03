@@ -154,7 +154,7 @@
             # 7. Verify /metrics endpoint returns Prometheus text format
             metrics_output = cp.succeed("curl -sf http://localhost:8080/metrics")
             assert "nixfleet_fleet_size" in metrics_output, (
-                f"Expected nixfleet_fleet_size in /metrics output"
+                "Expected nixfleet_fleet_size in /metrics output"
             )
           '';
         };

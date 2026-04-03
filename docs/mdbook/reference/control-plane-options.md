@@ -11,6 +11,29 @@ All options under `services.nixfleet-control-plane`. The module is auto-included
 | `dbPath` | `str` | `"/var/lib/nixfleet-cp/state.db"` | Path to the SQLite state database. |
 | `openFirewall` | `bool` | `false` | Open the control plane port in the firewall. The port is parsed from the `listen` value. |
 
+## Prometheus Metrics
+
+The control plane exposes a `GET /metrics` endpoint on its listen address. No separate port or additional configuration is required — the endpoint is always available when the service is running.
+
+No authentication is required for `/metrics` (same as `/health`). Restrict access at the network level if needed.
+
+Metrics exposed:
+
+| Metric | Description |
+|--------|-------------|
+| `nixfleet_cp_fleet_size` | Total number of registered machines |
+| `nixfleet_cp_machines_by_lifecycle` | Machine count grouped by lifecycle state (label: `state`) |
+| `nixfleet_cp_machine_last_seen_seconds` | Unix timestamp of each machine's last poll (label: `machine_id`) |
+| `nixfleet_cp_http_requests_total` | HTTP request count by method, path, and status code |
+| `nixfleet_cp_http_request_duration_seconds` | HTTP request latency histogram |
+| `nixfleet_cp_rollout_total` | Rollout count by strategy and outcome |
+
+Example:
+
+```sh
+curl http://localhost:8080/metrics
+```
+
 ## Systemd service
 
 | Setting | Value |
