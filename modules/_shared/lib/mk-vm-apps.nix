@@ -72,6 +72,13 @@
     then "-accel hvf"
     else throw "unsupported system: ${system}";
 
+  qemuFirmware = let
+    isAarch64 = builtins.elem system ["aarch64-linux" "aarch64-darwin"];
+  in
+    if isAarch64
+    then "${pkgs.OVMF.fd}/FV/AAVMF_CODE.fd"
+    else "${pkgs.OVMF.fd}/FV/OVMF.fd";
+
   basePkgs = with pkgs; [qemu coreutils openssh nix git];
 
   sharedHelpers = ''
@@ -247,7 +254,7 @@ in
           -drive file="''$disk_path",format=qcow2,if=virtio \
           -nic user,model=virtio-net-pci,hostfwd=tcp::"''$SSH_PORT"-:22 \
           -display none -serial null \
-          -bios ${pkgs.OVMF.fd}/FV/OVMF.fd \
+          -bios ${qemuFirmware} \
           -cdrom "''$ISO_FILE" -boot d \
           -daemonize \
           -pidfile "''$VM_DIR/''${host}.pid"
@@ -337,7 +344,7 @@ in
           -drive file="$disk",format=qcow2,if=virtio \
           -nic user,model=virtio-net-pci,hostfwd=tcp::''$SSH_PORT-:22 \
           -display none -serial null \
-          -bios ${pkgs.OVMF.fd}/FV/OVMF.fd \
+          -bios ${qemuFirmware} \
           -daemonize -pidfile "$pidfile"
 
         echo -e "''${GREEN}[$host] Started on port ''$SSH_PORT — ssh -p ''$SSH_PORT root@localhost''${NC}"
@@ -355,7 +362,7 @@ in
     # ── stop-vm (Task 4) ──
     "stop-vm" = mkScript "stop-vm" "Stop a running VM daemon" ''
       set -euo pipefail
-      export PATH="${lib.makeBinPath (with pkgs; [coreutils])}:$PATH"
+      export PATH="${lib.makeBinPath (with pkgs; [coreutils nix])}:$PATH"
 
       ${sharedHelpers}
 
@@ -403,7 +410,7 @@ in
     # ── clean-vm (Task 4) ──
     "clean-vm" = mkScript "clean-vm" "Delete VM disk, pidfile, and port file" ''
       set -euo pipefail
-      export PATH="${lib.makeBinPath (with pkgs; [coreutils])}:$PATH"
+      export PATH="${lib.makeBinPath (with pkgs; [coreutils nix])}:$PATH"
 
       ${sharedHelpers}
 
@@ -510,7 +517,7 @@ in
         -drive file="''$DISK",format=qcow2,if=virtio \
         -nic user,model=virtio-net-pci,hostfwd=tcp::''${SSH_PORT}-:22 \
         -display none -serial null \
-        -bios ${pkgs.OVMF.fd}/FV/OVMF.fd \
+        -bios ${qemuFirmware} \
         -cdrom "''$ISO_FILE" -boot d \
         -daemonize -pidfile "''$PIDFILE"
 
@@ -537,7 +544,7 @@ in
         -drive file="''$DISK",format=qcow2,if=virtio \
         -nic user,model=virtio-net-pci,hostfwd=tcp::''${SSH_PORT}-:22 \
         -display none -serial null \
-        -bios ${pkgs.OVMF.fd}/FV/OVMF.fd \
+        -bios ${qemuFirmware} \
         -daemonize -pidfile "''$PIDFILE"
 
       wait_ssh "''$SSH_PORT" 180
