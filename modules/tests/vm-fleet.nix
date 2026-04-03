@@ -107,6 +107,7 @@
                 controlPlaneUrl = "https://cp:8080";
                 machineId = hostName;
                 pollInterval = 2;
+                healthInterval = 5;
                 dryRun = true;
                 inherit tags;
                 tls = {
