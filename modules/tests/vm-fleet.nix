@@ -21,6 +21,30 @@
 
     defaultTestSpec = helpers.defaultTestSpec;
 
+    # Shared modules for web agent nodes (nginx health endpoint + node exporter)
+    webAgentModules = [
+      {
+        services.nginx = {
+          enable = true;
+          virtualHosts.default.locations."/health".return = "200 ok";
+        };
+        nixfleet.monitoring.nodeExporter = {
+          enable = true;
+          openFirewall = true;
+        };
+      }
+    ];
+
+    # Shared health check config for web agents
+    webHealthChecks = {
+      http = [
+        {
+          url = "http://localhost:80/health";
+          expectedStatus = 200;
+        }
+      ];
+    };
+
     # Build-time TLS certificates: fleet CA + CP server cert + 3 agent client certs.
     # Deterministic — no runtime setup needed.
     testCerts =
@@ -128,47 +152,15 @@
           nodes.web-01 = mkAgentNode {
             hostName = "web-01";
             tags = ["web"];
-            healthChecks.http = [
-              {
-                url = "http://localhost:80/health";
-                expectedStatus = 200;
-              }
-            ];
-            extraAgentModules = [
-              {
-                services.nginx = {
-                  enable = true;
-                  virtualHosts.default.locations."/health".return = "200 ok";
-                };
-                nixfleet.monitoring.nodeExporter = {
-                  enable = true;
-                  openFirewall = true;
-                };
-              }
-            ];
+            healthChecks = webHealthChecks;
+            extraAgentModules = webAgentModules;
           };
 
           nodes.web-02 = mkAgentNode {
             hostName = "web-02";
             tags = ["web"];
-            healthChecks.http = [
-              {
-                url = "http://localhost:80/health";
-                expectedStatus = 200;
-              }
-            ];
-            extraAgentModules = [
-              {
-                services.nginx = {
-                  enable = true;
-                  virtualHosts.default.locations."/health".return = "200 ok";
-                };
-                nixfleet.monitoring.nodeExporter = {
-                  enable = true;
-                  openFirewall = true;
-                };
-              }
-            ];
+            healthChecks = webHealthChecks;
+            extraAgentModules = webAgentModules;
           };
 
           nodes.db-01 = mkAgentNode {
@@ -288,9 +280,15 @@
                 timeout=60,
             )
 
-            # Resume the paused rollout
+            # Resume the paused rollout and verify it transitions out of paused
             cp.succeed(
                 f"{CURL} -X POST {API}/api/v1/rollouts/{db_rollout_id}/resume {AUTH}"
+            )
+            cp.wait_until_succeeds(
+                f"{CURL} {AUTH} {API}/api/v1/rollouts/{db_rollout_id} "
+                f"| python3 -c \"import sys,json; r=json.load(sys.stdin); "
+                f"assert r['status'] != 'paused', f'Still paused after resume'\"",
+                timeout=30,
             )
           '';
         };
