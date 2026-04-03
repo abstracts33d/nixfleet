@@ -325,6 +325,7 @@ in
       PORT_OVERRIDE=""
       RAM=1024
       CPUS=2
+      VLAN_PORT=""
 
       while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -333,6 +334,7 @@ in
           --ssh-port) PORT_OVERRIDE="$2"; shift 2 ;;
           --ram) RAM="$2"; shift 2 ;;
           --cpus) CPUS="$2"; shift 2 ;;
+          --vlan) VLAN_PORT="$2"; shift 2 ;;
           *) echo "Unknown argument: $1" >&2; exit 1 ;;
         esac
       done
@@ -342,6 +344,7 @@ in
       start_one() {
         local host="$1"
         assign_port "$host"
+        compute_vlan_args
         local disk="''$VM_DIR/$host.qcow2"
         local pidfile="''$VM_DIR/$host.pid"
 
@@ -362,6 +365,7 @@ in
           -smp "''$CPUS" \
           -drive file="$disk",format=qcow2,if=virtio \
           -nic user,model=virtio-net-pci,hostfwd=tcp::''$SSH_PORT-:22 \
+          ''$VLAN_ARGS \
           -display none -serial null \
           -bios ${qemuFirmware} \
           -daemonize -pidfile "$pidfile"
