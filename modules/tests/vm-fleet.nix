@@ -179,7 +179,116 @@
             ];
           };
 
-          testScript = "";
+          testScript = ''
+            import json
+
+            TEST_KEY = "test-admin-key"
+            KEY_HASH = "944650a7cd0f9e14d5c4fb15edbffb7fa45fb9ed36a4fa9be3d7e5476ae51bd9"
+            AUTH = f"-H 'Authorization: Bearer {TEST_KEY}'"
+            CURL = "curl -sf --cacert /etc/nixfleet-tls/ca.pem"
+            API = "https://localhost:8080"
+
+            # --- Phase 1: Start CP, bootstrap API key ---
+            cp.start()
+            cp.wait_for_unit("nixfleet-control-plane.service")
+            cp.wait_for_open_port(8080)
+
+            cp.succeed(
+                f"sqlite3 /var/lib/nixfleet-cp/state.db "
+                f"\"INSERT INTO api_keys (key_hash, name, role) VALUES ('{KEY_HASH}', 'test-admin', 'admin')\""
+            )
+
+            # --- Phase 2: Register all agents with their tags ---
+            for host, tags in [("web-01", ["web"]), ("web-02", ["web"]), ("db-01", ["db"])]:
+                tags_json = json.dumps(tags)
+                cp.succeed(
+                    f"{CURL} -X POST {API}/api/v1/machines/{host}/register "
+                    f"{AUTH} "
+                    f"-H 'Content-Type: application/json' "
+                    f"-d '{{\"tags\": {tags_json}}}'"
+                )
+
+            # --- Phase 3: Start all agents, wait for services ---
+            web_01.start()
+            web_02.start()
+            db_01.start()
+
+            web_01.wait_for_unit("nixfleet-agent.service")
+            web_02.wait_for_unit("nixfleet-agent.service")
+            db_01.wait_for_unit("nixfleet-agent.service")
+
+            # Wait for all 3 agents to report to the CP
+            cp.wait_until_succeeds(
+                f"{CURL} {AUTH} {API}/api/v1/machines "
+                f"| python3 -c \"import sys,json; machines=json.load(sys.stdin); "
+                f"assert len(machines) == 3, f'Expected 3 machines, got {{len(machines)}}'\"",
+                timeout=60,
+            )
+
+            # --- Phase 4: Canary rollout on web tag (should succeed) ---
+            rollout_body = json.dumps({
+                "generation_hash": "/nix/store/fake-web-generation",
+                "strategy": "staged",
+                "batch_sizes": ["1", "100%"],
+                "failure_threshold": "1",
+                "on_failure": "pause",
+                "health_timeout": 30,
+                "target": {"tags": ["web"]}
+            })
+            rollout_resp = cp.succeed(
+                f"{CURL} -X POST {API}/api/v1/rollouts {AUTH} "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{rollout_body}'"
+            )
+            web_rollout = json.loads(rollout_resp)
+            web_rollout_id = web_rollout["rollout_id"]
+
+            # Wait for the web rollout to complete — both agents are healthy
+            cp.wait_until_succeeds(
+                f"{CURL} {AUTH} {API}/api/v1/rollouts/{web_rollout_id} "
+                f"| python3 -c \"import sys,json; r=json.load(sys.stdin); "
+                f"assert r['status'] == 'completed', f'Expected completed, got {{r[\\\"status\\\"]}}' \"",
+                timeout=120,
+            )
+
+            # --- Phase 5: Verify Prometheus metrics ---
+            metrics = cp.succeed(f"{CURL} {API}/metrics")
+            assert "nixfleet_fleet_size" in metrics, "Missing nixfleet_fleet_size in CP metrics"
+            assert "nixfleet_rollouts_total" in metrics, "Missing nixfleet_rollouts_total in CP metrics"
+
+            # Node exporter on web-01 should respond
+            web_01.succeed("curl -sf http://localhost:9100/metrics | grep node_cpu")
+
+            # --- Phase 6: Rollout on db tag — health gate fails, rollout pauses ---
+            db_rollout_body = json.dumps({
+                "generation_hash": "/nix/store/fake-db-generation",
+                "strategy": "all_at_once",
+                "failure_threshold": "0",
+                "on_failure": "pause",
+                "health_timeout": 10,
+                "target": {"tags": ["db"]}
+            })
+            db_rollout_resp = cp.succeed(
+                f"{CURL} -X POST {API}/api/v1/rollouts {AUTH} "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{db_rollout_body}'"
+            )
+            db_rollout = json.loads(db_rollout_resp)
+            db_rollout_id = db_rollout["rollout_id"]
+
+            # Wait for rollout to pause (health check on port 9999 fails — nothing listening)
+            cp.wait_until_succeeds(
+                f"{CURL} {AUTH} {API}/api/v1/rollouts/{db_rollout_id} "
+                f"| python3 -c \"import sys,json; r=json.load(sys.stdin); "
+                f"assert r['status'] == 'paused', f'Expected paused, got {{r[\\\"status\\\"]}}' \"",
+                timeout=60,
+            )
+
+            # Resume the paused rollout
+            cp.succeed(
+                f"{CURL} -X POST {API}/api/v1/rollouts/{db_rollout_id}/resume {AUTH}"
+            )
+          '';
         };
       };
     };
