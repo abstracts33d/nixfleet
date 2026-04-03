@@ -163,6 +163,10 @@
                   enable = true;
                   virtualHosts.default.locations."/health".return = "200 ok";
                 };
+                nixfleet.monitoring.nodeExporter = {
+                  enable = true;
+                  openFirewall = true;
+                };
               }
             ];
           };
