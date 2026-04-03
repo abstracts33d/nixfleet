@@ -98,5 +98,43 @@ in {
         }
       ];
     };
+
+    # secrets-test: exercises secrets scope on a server (host key only)
+    secrets-test = mkHost {
+      hostName = "secrets-test";
+      platform = "x86_64-linux";
+      isVm = true;
+      hostSpec =
+        orgDefaults
+        // {
+          isServer = true;
+        };
+      modules = [
+        {
+          nixfleet.secrets.enable = true;
+        }
+      ];
+    };
+
+    # tier2-test: exercises backup + monitoring scopes
+    tier2-test = mkHost {
+      hostName = "tier2-test";
+      platform = "x86_64-linux";
+      isVm = true;
+      hostSpec = orgDefaults;
+      modules = [
+        {
+          nixfleet.backup = {
+            enable = true;
+            schedule = "*-*-* 03:00:00";
+            healthCheck.onSuccess = "https://hc-ping.com/test-uuid";
+          };
+          nixfleet.monitoring.nodeExporter = {
+            enable = true;
+            openFirewall = true;
+          };
+        }
+      ];
+    };
   };
 }
