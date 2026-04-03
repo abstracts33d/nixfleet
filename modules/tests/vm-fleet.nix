@@ -181,7 +181,7 @@
             TEST_KEY = "test-admin-key"
             KEY_HASH = "944650a7cd0f9e14d5c4fb15edbffb7fa45fb9ed36a4fa9be3d7e5476ae51bd9"
             AUTH = f"-H 'Authorization: Bearer {TEST_KEY}'"
-            CURL = "curl -sf --cacert /etc/nixfleet-tls/ca.pem"
+            CURL = "curl -sf --cacert /etc/nixfleet-tls/ca.pem --cert /etc/nixfleet-tls/cp-cert.pem --key /etc/nixfleet-tls/cp-key.pem"
             API = "https://localhost:8080"
 
             # --- Phase 1: Start CP, bootstrap API key ---
