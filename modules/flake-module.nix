@@ -61,7 +61,7 @@ in {
         imports = [
           ./tests/eval.nix
           ./tests/vm.nix
-          ./tests/vm-tier2.nix
+          ./tests/vm-infra.nix
         ];
       };
       iso = ./iso.nix;

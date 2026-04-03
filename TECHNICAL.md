@@ -32,7 +32,7 @@ SSH public keys and other managed files that should always be overwritten: use `
 
 Don't use `mkDefault` for `networking.useDHCP = false` in core — it conflicts with `hardware-configuration.nix`'s `mkDefault true` (same priority). Use plain value.
 
-## Infrastructure Scopes (Tier 2)
+## Infrastructure Scopes
 
 Four backend-agnostic scopes added as plain NixOS modules:
 

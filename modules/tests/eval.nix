@@ -167,7 +167,7 @@
 
         # --- Secrets: resolved paths on workstation (host key + user key) ---
         eval-secrets-workstation = let
-          cfg = nixosCfg "tier2-test";
+          cfg = nixosCfg "infra-test";
         in
           mkEvalCheck "secrets-workstation" [
             {
@@ -182,12 +182,12 @@
 
         # --- Backup: option defaults ---
         eval-backup-defaults = let
-          cfg = nixosCfg "tier2-test";
+          cfg = nixosCfg "infra-test";
         in
           mkEvalCheck "backup-defaults" [
             {
               check = cfg.nixfleet.backup.enable;
-              msg = "tier2-test should have backup enabled";
+              msg = "infra-test should have backup enabled";
             }
             {
               check = cfg.nixfleet.backup.retention.daily == 7;
@@ -207,18 +207,18 @@
             }
             {
               check = cfg.nixfleet.backup.schedule == "*-*-* 03:00:00";
-              msg = "tier2-test should have custom schedule";
+              msg = "infra-test should have custom schedule";
             }
           ];
 
         # --- Monitoring: collector defaults ---
         eval-monitoring-defaults = let
-          cfg = nixosCfg "tier2-test";
+          cfg = nixosCfg "infra-test";
         in
           mkEvalCheck "monitoring-defaults" [
             {
               check = cfg.nixfleet.monitoring.nodeExporter.enable;
-              msg = "tier2-test should have node exporter enabled";
+              msg = "infra-test should have node exporter enabled";
             }
             {
               check = builtins.elem "systemd" cfg.nixfleet.monitoring.nodeExporter.enabledCollectors;

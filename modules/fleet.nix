@@ -118,9 +118,9 @@ in {
       ];
     };
 
-    # tier2-test: exercises backup + monitoring scopes
-    tier2-test = mkHost {
-      hostName = "tier2-test";
+    # infra-test: exercises backup + monitoring scopes
+    infra-test = mkHost {
+      hostName = "infra-test";
       platform = "x86_64-linux";
       isVm = true;
       hostSpec = orgDefaults;

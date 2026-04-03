@@ -1,4 +1,4 @@
-# Tier A — VM tests for Tier 2 infrastructure scopes.
+# VM tests for infrastructure scopes (firewall, monitoring, backup, secrets).
 # Tests firewall hardening, node exporter, backup timer, and secrets host key generation.
 {inputs, ...}: {
   perSystem = {

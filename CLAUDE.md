@@ -128,7 +128,7 @@ See `examples/` for standalone-host, batch-hosts, and client-fleet patterns.
 3-tier pyramid:
 - **Eval** (`modules/tests/eval.nix`) — config correctness, instant. `nix flake check --no-build`
 - **VM** (`modules/tests/vm.nix`, `vm-nixfleet.nix`) — runtime assertions. `nix run .#validate -- --vm`
-- **VM Tier 2** (`modules/tests/vm-tier2.nix`) — firewall, node exporter, backup timer, secrets key generation. `nix run .#validate -- --vm`
+- **VM Infrastructure** (`modules/tests/vm-infra.nix`) — firewall, node exporter, backup timer, secrets key generation. `nix run .#validate -- --vm`
 - **Integration** (`modules/tests/integration/`) — mock client consumption pattern
 
 ## Multi-Repo
