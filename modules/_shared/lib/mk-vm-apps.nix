@@ -194,7 +194,7 @@ in
       IDENTITY_KEY=""
       RAM=4096
       CPUS=2
-      DISK_SIZE="20G"
+      DISK_SIZE="5G"
 
       while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -222,7 +222,7 @@ in
         echo "  --ssh-port N       Override SSH port (default: auto-assigned)" >&2
         echo "  --ram MB           RAM in MB (default: 4096)" >&2
         echo "  --cpus N           CPU count (default: 2)" >&2
-        echo "  --disk-size S      Disk size (default: 20G)" >&2
+        echo "  --disk-size S      Disk size (default: 5G)" >&2
         exit 1
       fi
 
@@ -510,7 +510,7 @@ in
       build_iso
 
       echo -e "''${YELLOW}[2/6] Creating ephemeral disk...''${NC}"
-      qemu-img create -f qcow2 "''$DISK" 20G
+      qemu-img create -f qcow2 "''$DISK" 5G
 
       echo -e "''${YELLOW}[3/6] Installing ''$HOST...''${NC}"
       ${qemuBin} \
