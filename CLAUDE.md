@@ -36,6 +36,7 @@ nix fmt                            # format (alejandra + shfmt)
 nix flake check --no-build         # eval tests (instant)
 nix run .#validate                 # full validation (eval + host builds)
 nix run .#validate -- --vm         # include VM tests (slow)
+nix build .#checks.x86_64-linux.vm-fleet --no-link  # 4-node fleet test (CP + 3 agents, TLS/mTLS, rollouts)
 nix run .#spawn-qemu               # QEMU VM (headless)
 nix run .#spawn-qemu -- --persistent -h web-02  # persistent VM (graphical SPICE)
 nix run .#test-vm -- -h web-02     # VM test cycle
@@ -98,7 +99,7 @@ Scopes are plain NixOS/HM modules auto-included by mkHost. They self-activate vi
 | `backup` | `nixfleet.backup.enable = true` | Systemd timer, hooks, health ping, status reporting |
 | `monitoring` | `nixfleet.monitoring.nodeExporter.enable = true` | Node exporter with fleet-tuned collector defaults |
 | `nixfleet-agent` | `services.nixfleet-agent.enable = true` | Fleet agent systemd service; key options: `metricsPort` (Prometheus listener), `metricsOpenFirewall`, `allowInsecure` |
-| `nixfleet-control-plane` | `services.nixfleet-control-plane.enable = true` | Control plane HTTP server; `GET /metrics` always available on listen address; routes split: agent-facing (mTLS, no API key) vs admin (API key required) |
+| `nixfleet-control-plane` | `services.nixfleet-control-plane.enable = true` | Control plane HTTP server; `GET /metrics` always available on listen address; routes split: agent-facing (mTLS, no API key) vs admin (API key required); when `tls.clientCa` is set, all connections require a client certificate (defense-in-depth) |
 
 Fleet repos add opinionated scopes (dev tools, desktop environments, theming, etc.) as plain NixOS/HM modules.
 
@@ -129,6 +130,7 @@ See `examples/` for standalone-host, batch-hosts, and client-fleet patterns.
 - **Eval** (`modules/tests/eval.nix`) — config correctness, instant. `nix flake check --no-build`
 - **VM** (`modules/tests/vm.nix`, `vm-nixfleet.nix`) — runtime assertions. `nix run .#validate -- --vm`
 - **VM Infrastructure** (`modules/tests/vm-infra.nix`) — firewall, node exporter, backup timer, secrets key generation. `nix run .#validate -- --vm`
+- **VM Fleet** (`modules/tests/vm-fleet.nix`) — 4-node fleet test (CP + 3 agents) with required mTLS, canary rollout on web tag (passes), all-at-once on db tag (pauses on health gate failure), pause/resume. `nix build .#checks.x86_64-linux.vm-fleet --no-link`
 - **Integration** (`modules/tests/integration/`) — mock client consumption pattern
 
 ## Multi-Repo

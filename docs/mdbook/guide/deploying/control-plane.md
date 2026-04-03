@@ -69,19 +69,32 @@ See [Control Plane Options](../../reference/control-plane-options.md) for the fu
 
 ## Security
 
-The control plane supports TLS and mutual TLS (mTLS) via command-line flags / environment variables:
+The control plane uses two independent auth layers: the TLS layer (authentication) and the API layer (authorization).
+
+| Layer | Mechanism | Who | Purpose |
+|-------|-----------|-----|---------|
+| **TLS** | mTLS client certs | Agents + admin clients | Authenticate the connection |
+| **API** | API keys | Admin clients only | Authorize specific operations |
+
+### Configuration
+
+TLS and mTLS are configured via:
 
 | Flag | Env var | Description |
 |------|---------|-------------|
 | `--tls-cert` | `NIXFLEET_CP_TLS_CERT` | Path to server certificate PEM (enables HTTPS) |
 | `--tls-key` | `NIXFLEET_CP_TLS_KEY` | Path to server private key PEM |
-| `--client-ca` | `NIXFLEET_CP_CLIENT_CA` | Path to client CA PEM (enables mTLS) |
+| `--client-ca` | `NIXFLEET_CP_CLIENT_CA` | Path to client CA PEM (enables required mTLS for all connections) |
 
-Both `--tls-cert` and `--tls-key` must be provided together. When `--client-ca` is also set, only agents presenting a certificate signed by that CA can connect.
+Both `--tls-cert` and `--tls-key` must be provided together to enable HTTPS.
 
-The CLI supports API key authentication via `--api-key` / `NIXFLEET_API_KEY`.
+When `--client-ca` is set, **all** TLS connections must present a client certificate signed by that CA:
+- **Agents** authenticate via their client certificate; no API key needed
+- **Admin clients** (CLI, REST API) must present both a client certificate AND an API key (defense-in-depth)
 
-> **Production recommendation:** Always enable TLS. Use mTLS for agent-to-CP communication and API keys for CLI-to-CP communication.
+API keys are configured in the control plane database and passed via the `Authorization: Bearer <key>` header.
+
+> **Production recommendation:** Always enable TLS. When managing a fleet with agent certificates, set `--client-ca` to require mTLS from all clients. Admin clients must have access to both their client certificate and an API key.
 
 ## Persistence
 
