@@ -58,11 +58,11 @@
           -keyout $out/ca-key.pem -out $out/ca.pem -days 365 -nodes \
           -subj '/CN=nixfleet-test-ca'
 
-        # CP server cert (CN=cp, SAN=cp for hostname verification)
+        # CP server cert (CN=cp, SAN includes cp + localhost for test curl)
         openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
           -keyout $out/cp-key.pem -out $out/cp-csr.pem -nodes \
           -subj '/CN=cp' \
-          -addext 'subjectAltName=DNS:cp'
+          -addext 'subjectAltName=DNS:cp,DNS:localhost'
         openssl x509 -req -in $out/cp-csr.pem -CA $out/ca.pem -CAkey $out/ca-key.pem \
           -CAcreateserial -out $out/cp-cert.pem -days 365 \
           -copy_extensions copyall
