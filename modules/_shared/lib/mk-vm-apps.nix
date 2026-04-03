@@ -205,6 +205,7 @@ in
       RAM=4096
       CPUS=2
       DISK_SIZE="5G"
+      VLAN_PORT=""
 
       while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -216,6 +217,7 @@ in
           --ram) RAM="$2"; shift 2 ;;
           --cpus) CPUS="$2"; shift 2 ;;
           --disk-size) DISK_SIZE="$2"; shift 2 ;;
+          --vlan) VLAN_PORT="$2"; shift 2 ;;
           *) echo "Unknown argument: $1" >&2; exit 1 ;;
         esac
       done
@@ -233,6 +235,7 @@ in
         echo "  --ram MB           RAM in MB (default: 4096)" >&2
         echo "  --cpus N           CPU count (default: 2)" >&2
         echo "  --disk-size S      Disk size (default: 5G)" >&2
+        echo "  --vlan PORT        Enable inter-VM VLAN on multicast port" >&2
         exit 1
       fi
 
@@ -241,6 +244,7 @@ in
         echo -e "''${YELLOW}==> Building VM for host: $host''${NC}"
 
         assign_port "$host"
+        compute_vlan_args
         echo -e "''${GREEN}SSH port: ''$SSH_PORT''${NC}"
 
         local disk_path="''$VM_DIR/''${host}.qcow2"
@@ -266,6 +270,7 @@ in
           -smp "''$CPUS" \
           -drive file="''$disk_path",format=qcow2,if=virtio \
           -nic user,model=virtio-net-pci,hostfwd=tcp::"''$SSH_PORT"-:22 \
+          ''$VLAN_ARGS \
           -display none -serial null \
           -bios ${qemuFirmware} \
           -cdrom "''$ISO_FILE" -boot d \
