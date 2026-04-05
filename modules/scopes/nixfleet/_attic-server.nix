@@ -47,6 +47,11 @@
     [garbage-collection]
     default-retention-period = "${cfg.garbageCollection.keepSinceLastPush}"
 
+    # TODO(#22): revert when upstream Attic merges PR #300 — move token back to CLI flag
+    # booxter/newer-nix removed --token-hs256-secret-base64 CLI arg, expects it in [jwt.signing]
+    [jwt.signing]
+    token-hs256-secret-base64 = "dW51c2VkLXBsYWNlaG9sZGVyLWZvci1hdHRpYy1zZXJ2ZXI="
+
     [chunking]
     nar-size-threshold = 65536
     min-size = 16384
@@ -137,13 +142,9 @@ in {
       after = ["network-online.target"];
       wants = ["network-online.target"];
 
-      environment = {
-        ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64 = "dW51c2VkLXBsYWNlaG9sZGVyLWZvci1hdHRpYy1zZXJ2ZXI=";
-      };
-
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${inputs.attic.packages.${pkgs.system}.attic-server}/bin/atticd --config ${serverToml} --token-hs256-secret-base64 $ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64";
+        ExecStart = "${inputs.attic.packages.${pkgs.system}.attic-server}/bin/atticd --config ${serverToml}";
         Restart = "always";
         RestartSec = 10;
         StateDirectory = "nixfleet-attic";
