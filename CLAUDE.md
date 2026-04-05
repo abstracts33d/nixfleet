@@ -110,12 +110,38 @@ Scopes are plain NixOS/HM modules auto-included by mkHost. They self-activate vi
 
 Fleet repos add opinionated scopes (dev tools, desktop environments, theming, etc.) as plain NixOS/HM modules.
 
+## CLI
+
+```bash
+# Bootstrap first API key
+API_KEY=$(nixfleet bootstrap \
+  --control-plane-url https://cp:8080 \
+  --client-cert cp-cert --client-key cp-key --ca-cert fleet-ca.pem)
+
+# Fleet status
+nixfleet status
+nixfleet machines list --tag web
+
+# Rollout
+nixfleet deploy --tag web --generation /nix/store/... --strategy staged --batch-size 1,100% --wait
+
+# Rollout management
+nixfleet rollout list
+nixfleet rollout resume <ID>
+nixfleet rollout cancel <ID>
+```
+
+mTLS flags (`--client-cert`, `--client-key`, `--ca-cert`) and `--api-key` can be set via env vars: `NIXFLEET_CLIENT_CERT`, `NIXFLEET_CLIENT_KEY`, `NIXFLEET_CA_CERT`, `NIXFLEET_API_KEY`.
+
 ## Control Plane API
 
 ### Bootstrap
 
 ```bash
-# Create first admin API key (only works when no keys exist)
+# Via CLI (recommended)
+API_KEY=$(nixfleet bootstrap --client-cert cp-cert --client-key cp-key --ca-cert fleet-ca.pem)
+
+# Via curl
 curl -X POST https://cp:8080/api/v1/keys/bootstrap \
   --cacert fleet-ca.pem --cert cp-cert --key cp-key \
   -H 'Content-Type: application/json' -d '{"name":"admin"}'

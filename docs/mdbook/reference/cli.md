@@ -8,8 +8,22 @@ Flat reference for all `nixfleet` CLI commands and flags.
 |------|---------|---------|-------------|
 | `--control-plane-url` | `NIXFLEET_CP_URL` | `http://localhost:8080` | Control plane URL |
 | `--api-key` | `NIXFLEET_API_KEY` | `""` | API key for control plane authentication |
+| `--client-cert` | `NIXFLEET_CLIENT_CERT` | `""` | Client certificate for mTLS authentication |
+| `--client-key` | `NIXFLEET_CLIENT_KEY` | `""` | Client key for mTLS authentication |
+| `--ca-cert` | `NIXFLEET_CA_CERT` | `""` | CA certificate for TLS verification (uses system trust store if omitted) |
 
 Logging is controlled via `RUST_LOG` (default: `nixfleet=info`).
+
+**mTLS example:**
+
+```sh
+export NIXFLEET_CP_URL=https://cp-01:8080
+export NIXFLEET_CA_CERT=/etc/nixfleet/fleet-ca.pem
+export NIXFLEET_CLIENT_CERT=/run/agenix/cp-cert
+export NIXFLEET_CLIENT_KEY=/run/agenix/cp-key
+export NIXFLEET_API_KEY=nfk-...
+nixfleet machines list  # no flags needed
+```
 
 ---
 
@@ -163,6 +177,48 @@ nixfleet rollout cancel <ID>
 | Argument | Type | Description |
 |----------|------|-------------|
 | `<ID>` | string | Rollout ID |
+
+---
+
+## bootstrap
+
+Create the first admin API key. Only works when no keys exist in the control plane.
+
+```sh
+nixfleet bootstrap [FLAGS]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--name <NAME>` | string | `admin` | Name for the admin key |
+| `--json` | bool | `false` | Output full JSON instead of human-friendly format |
+
+**Output:** Human-friendly info to stderr, raw key to stdout. Scriptable:
+
+```sh
+API_KEY=$(nixfleet bootstrap)
+```
+
+Returns exit code 1 with an error message if keys already exist (409).
+
+**Note:** No `--api-key` needed (chicken-and-egg). mTLS is still required when the CP has `--client-ca` set.
+
+---
+
+## machines register
+
+Register a machine with the control plane (admin endpoint).
+
+```sh
+nixfleet machines register <ID> [FLAGS]
+```
+
+| Argument/Flag | Type | Description |
+|---------------|------|-------------|
+| `<ID>` | string | Machine ID |
+| `--tag <TAG>` | string (repeatable) | Initial tags |
+
+Agents auto-register on first health report, so manual registration is optional. Use this to pre-register machines before they come online.
 
 ---
 
