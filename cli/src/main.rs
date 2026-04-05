@@ -27,6 +27,18 @@ struct Cli {
     /// API key for control plane authentication
     #[arg(long, global = true, default_value = "", env = "NIXFLEET_API_KEY")]
     api_key: String,
+
+    /// Client certificate for mTLS authentication
+    #[arg(long, global = true, default_value = "", env = "NIXFLEET_CLIENT_CERT")]
+    client_cert: String,
+
+    /// Client key for mTLS authentication
+    #[arg(long, global = true, default_value = "", env = "NIXFLEET_CLIENT_KEY")]
+    client_key: String,
+
+    /// CA certificate for TLS verification (optional, uses system trust store if omitted)
+    #[arg(long, global = true, default_value = "", env = "NIXFLEET_CA_CERT")]
+    ca_cert: String,
 }
 
 #[derive(Subcommand)]
@@ -120,6 +132,17 @@ enum Commands {
     Machines {
         #[command(subcommand)]
         action: MachineAction,
+    },
+
+    /// Bootstrap the first admin API key (only works when no keys exist)
+    Bootstrap {
+        /// Name for the admin key
+        #[arg(long, default_value = "admin")]
+        name: String,
+
+        /// Output raw JSON instead of human-friendly format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -219,6 +242,16 @@ enum MachineAction {
         /// Tag to remove
         tag: String,
     },
+
+    /// Register a machine with the control plane
+    Register {
+        /// Machine ID
+        id: String,
+
+        /// Initial tags
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -231,6 +264,20 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Warn if mTLS certs are set but URL is plaintext HTTP
+    if !cli.client_cert.is_empty() && cli.control_plane_url.starts_with("http://") {
+        eprintln!(
+            "WARNING: --client-cert is set but control plane URL uses http:// (not https://). \
+             Client certificates will not be sent over plaintext connections."
+        );
+    }
+
+    let tls = client::TlsConfig {
+        client_cert: &cli.client_cert,
+        client_key: &cli.client_key,
+        ca_cert: &cli.ca_cert,
+    };
 
     match cli.command {
         Commands::Deploy {
@@ -247,8 +294,17 @@ async fn main() -> Result<()> {
             wait,
             generation,
         } => {
+            let http_client = client::build_client(&tls, &cli.api_key)?;
             if ssh {
-                deploy::run(&cli.control_plane_url, &hosts, &flake, dry_run, true).await
+                deploy::run(
+                    &http_client,
+                    &cli.control_plane_url,
+                    &hosts,
+                    &flake,
+                    dry_run,
+                    true,
+                )
+                .await
             } else if !tags.is_empty() || generation.is_some() {
                 // Rollout deploy mode
                 let generation_hash = match generation {
@@ -260,6 +316,7 @@ async fn main() -> Result<()> {
                     }
                 };
                 deploy::deploy_rollout(
+                    &http_client,
                     &cli.control_plane_url,
                     &cli.api_key,
                     &generation_hash,
@@ -274,15 +331,29 @@ async fn main() -> Result<()> {
                 )
                 .await
             } else {
-                deploy::run(&cli.control_plane_url, &hosts, &flake, dry_run, false).await
+                deploy::run(
+                    &http_client,
+                    &cli.control_plane_url,
+                    &hosts,
+                    &flake,
+                    dry_run,
+                    false,
+                )
+                .await
             }
         }
-        Commands::Status { json } => status::run(&cli.control_plane_url, json).await,
+        Commands::Status { json } => {
+            let http_client = client::build_client(&tls, &cli.api_key)?;
+            status::run(&http_client, &cli.control_plane_url, json).await
+        }
         Commands::Rollback {
             host,
             generation,
             ssh,
-        } => rollback(&cli.control_plane_url, &host, generation, ssh).await,
+        } => {
+            let http_client = client::build_client(&tls, &cli.api_key)?;
+            rollback(&http_client, &cli.control_plane_url, &host, generation, ssh).await
+        }
         Commands::Host { action } => match action {
             HostAction::Add {
                 hostname,
@@ -307,35 +378,55 @@ async fn main() -> Result<()> {
                 username,
             } => host::provision_host(&hostname, &target, &username).await,
         },
-        Commands::Rollout { action } => match action {
-            RolloutAction::List { status } => {
-                rollout::list(&cli.control_plane_url, &cli.api_key, status.as_deref()).await
+        Commands::Rollout { action } => {
+            let http_client = client::build_client(&tls, &cli.api_key)?;
+            match action {
+                RolloutAction::List { status } => {
+                    rollout::list(&http_client, &cli.control_plane_url, status.as_deref()).await
+                }
+                RolloutAction::Status { id } => {
+                    rollout::status(&http_client, &cli.control_plane_url, &id).await
+                }
+                RolloutAction::Resume { id } => {
+                    rollout::resume(&http_client, &cli.control_plane_url, &id).await
+                }
+                RolloutAction::Cancel { id } => {
+                    rollout::cancel(&http_client, &cli.control_plane_url, &id).await
+                }
             }
-            RolloutAction::Status { id } => {
-                rollout::status(&cli.control_plane_url, &cli.api_key, &id).await
+        }
+        Commands::Machines { action } => {
+            let http_client = client::build_client(&tls, &cli.api_key)?;
+            match action {
+                MachineAction::List { tag } => {
+                    machines::list(&http_client, &cli.control_plane_url, tag.as_deref()).await
+                }
+                MachineAction::Tag { id, tags } => {
+                    machines::tag(&http_client, &cli.control_plane_url, &id, &tags).await
+                }
+                MachineAction::Untag { id, tag } => {
+                    machines::untag(&http_client, &cli.control_plane_url, &id, &tag).await
+                }
+                MachineAction::Register { id, tags } => {
+                    machines::register(&http_client, &cli.control_plane_url, &id, &tags).await
+                }
             }
-            RolloutAction::Resume { id } => {
-                rollout::resume(&cli.control_plane_url, &cli.api_key, &id).await
-            }
-            RolloutAction::Cancel { id } => {
-                rollout::cancel(&cli.control_plane_url, &cli.api_key, &id).await
-            }
-        },
-        Commands::Machines { action } => match action {
-            MachineAction::List { tag } => {
-                machines::list(&cli.control_plane_url, &cli.api_key, tag.as_deref()).await
-            }
-            MachineAction::Tag { id, tags } => {
-                machines::tag(&cli.control_plane_url, &cli.api_key, &id, &tags).await
-            }
-            MachineAction::Untag { id, tag } => {
-                machines::untag(&cli.control_plane_url, &cli.api_key, &id, &tag).await
-            }
-        },
+        }
+        Commands::Bootstrap { name, json } => {
+            // Bootstrap does not require an API key, but does use mTLS
+            let http_client = client::build_client(&tls, "")?;
+            bootstrap(&http_client, &cli.control_plane_url, &name, json).await
+        }
     }
 }
 
-async fn rollback(cp_url: &str, host: &str, generation: Option<String>, ssh: bool) -> Result<()> {
+async fn rollback(
+    client: &reqwest::Client,
+    cp_url: &str,
+    host: &str,
+    generation: Option<String>,
+    ssh: bool,
+) -> Result<()> {
     let store_path = match generation {
         Some(path) => path,
         None => {
@@ -389,7 +480,6 @@ async fn rollback(cp_url: &str, host: &str, generation: Option<String>, ssh: boo
         println!("Rollback complete on {}", host);
     } else {
         // Control plane mode: set the desired generation to the rollback target
-        let client = reqwest::Client::new();
         let url = format!("{}/api/v1/machines/{}/set-generation", cp_url, host);
 
         let resp = client
@@ -410,6 +500,54 @@ async fn rollback(cp_url: &str, host: &str, generation: Option<String>, ssh: boo
             "Desired generation set to {} for {} (agent will pick up on next poll)",
             store_path, host
         );
+    }
+
+    Ok(())
+}
+
+async fn bootstrap(
+    client: &reqwest::Client,
+    cp_url: &str,
+    name: &str,
+    json_output: bool,
+) -> Result<()> {
+    let url = format!("{}/api/v1/keys/bootstrap", cp_url);
+    let body = serde_json::json!({ "name": name });
+
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("failed to reach control plane")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 409 {
+            bail!("Bootstrap failed: API keys already exist. Use an existing admin key to create new keys.");
+        }
+        bail!("Control plane returned {}: {}", status, body);
+    }
+
+    let payload: serde_json::Value = resp
+        .json()
+        .await
+        .context("failed to parse bootstrap response")?;
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload)
+                .context("failed to serialize bootstrap response")?
+        );
+    } else {
+        let key = payload["key"]
+            .as_str()
+            .context("response missing 'key' field")?;
+        let role = payload["role"].as_str().unwrap_or("admin");
+        eprintln!("API key created (name: {}, role: {})", name, role);
+        println!("{}", key);
     }
 
     Ok(())

@@ -1,11 +1,12 @@
 use anyhow::{bail, Context, Result};
 use nixfleet_types::rollout::{RolloutDetail, RolloutStatus};
 
-use crate::client::api_client;
-
 /// GET /api/v1/rollouts — list rollouts, optionally filtered by status.
-pub async fn list(cp_url: &str, api_key: &str, status_filter: Option<&str>) -> Result<()> {
-    let client = api_client(api_key);
+pub async fn list(
+    client: &reqwest::Client,
+    cp_url: &str,
+    status_filter: Option<&str>,
+) -> Result<()> {
     let mut url = format!("{}/api/v1/rollouts", cp_url);
     if let Some(status) = status_filter {
         url.push_str(&format!("?status={}", status));
@@ -57,8 +58,7 @@ pub async fn list(cp_url: &str, api_key: &str, status_filter: Option<&str>) -> R
 }
 
 /// GET /api/v1/rollouts/{id} — show rollout detail with batch breakdown.
-pub async fn status(cp_url: &str, api_key: &str, id: &str) -> Result<()> {
-    let client = api_client(api_key);
+pub async fn status(client: &reqwest::Client, cp_url: &str, id: &str) -> Result<()> {
     let url = format!("{}/api/v1/rollouts/{}", cp_url, id);
 
     let resp = client
@@ -84,8 +84,7 @@ pub async fn status(cp_url: &str, api_key: &str, id: &str) -> Result<()> {
 }
 
 /// POST /api/v1/rollouts/{id}/resume — resume a paused rollout.
-pub async fn resume(cp_url: &str, api_key: &str, id: &str) -> Result<()> {
-    let client = api_client(api_key);
+pub async fn resume(client: &reqwest::Client, cp_url: &str, id: &str) -> Result<()> {
     let url = format!("{}/api/v1/rollouts/{}/resume", cp_url, id);
 
     let resp = client
@@ -107,8 +106,7 @@ pub async fn resume(cp_url: &str, api_key: &str, id: &str) -> Result<()> {
 }
 
 /// POST /api/v1/rollouts/{id}/cancel — cancel a rollout.
-pub async fn cancel(cp_url: &str, api_key: &str, id: &str) -> Result<()> {
-    let client = api_client(api_key);
+pub async fn cancel(client: &reqwest::Client, cp_url: &str, id: &str) -> Result<()> {
     let url = format!("{}/api/v1/rollouts/{}/cancel", cp_url, id);
 
     let resp = client
@@ -130,8 +128,11 @@ pub async fn cancel(cp_url: &str, api_key: &str, id: &str) -> Result<()> {
 }
 
 /// Poll a rollout until it reaches a terminal state, printing progress every interval.
-pub async fn wait_for_completion(cp_url: &str, api_key: &str, id: &str) -> Result<()> {
-    let client = api_client(api_key);
+pub async fn wait_for_completion(
+    client: &reqwest::Client,
+    cp_url: &str,
+    id: &str,
+) -> Result<()> {
     let url = format!("{}/api/v1/rollouts/{}", cp_url, id);
 
     loop {
