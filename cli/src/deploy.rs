@@ -284,6 +284,38 @@ pub async fn run(
     Ok(())
 }
 
+/// Parse a strategy string into a RolloutStrategy enum.
+pub fn parse_strategy(strategy: &str) -> Result<RolloutStrategy> {
+    match strategy {
+        "canary" => Ok(RolloutStrategy::Canary),
+        "staged" => Ok(RolloutStrategy::Staged),
+        "all-at-once" | "all_at_once" => Ok(RolloutStrategy::AllAtOnce),
+        other => bail!(
+            "Unknown strategy: {}. Use canary, staged, or all-at-once.",
+            other
+        ),
+    }
+}
+
+/// Parse an on-failure string into an OnFailure enum.
+pub fn parse_on_failure(on_failure: &str) -> Result<OnFailure> {
+    match on_failure {
+        "pause" => Ok(OnFailure::Pause),
+        "revert" => Ok(OnFailure::Revert),
+        other => bail!("Unknown on-failure: {}. Use pause or revert.", other),
+    }
+}
+
+fn resolve_target(tags: &[String], hosts: &[String]) -> Result<RolloutTarget> {
+    if !tags.is_empty() {
+        Ok(RolloutTarget::Tags(tags.to_vec()))
+    } else if !hosts.is_empty() {
+        Ok(RolloutTarget::Hosts(hosts.to_vec()))
+    } else {
+        bail!("Either --tag or --hosts must be specified for rollout deploy")
+    }
+}
+
 /// Deploy via the rollout API instead of direct SSH or per-host control plane push.
 #[allow(clippy::too_many_arguments)]
 pub async fn deploy_rollout(
@@ -299,30 +331,11 @@ pub async fn deploy_rollout(
     on_failure: &str,
     health_timeout: u64,
     wait: bool,
+    policy: Option<&str>,
 ) -> Result<()> {
-    let parsed_strategy = match strategy {
-        "canary" => RolloutStrategy::Canary,
-        "staged" => RolloutStrategy::Staged,
-        "all-at-once" | "all_at_once" => RolloutStrategy::AllAtOnce,
-        other => bail!(
-            "Unknown strategy: {}. Use canary, staged, or all-at-once.",
-            other
-        ),
-    };
-
-    let parsed_on_failure = match on_failure {
-        "pause" => OnFailure::Pause,
-        "revert" => OnFailure::Revert,
-        other => bail!("Unknown on-failure: {}. Use pause or revert.", other),
-    };
-
-    let target = if !tags.is_empty() {
-        RolloutTarget::Tags(tags.to_vec())
-    } else if !hosts.is_empty() {
-        RolloutTarget::Hosts(hosts.to_vec())
-    } else {
-        bail!("Either --tag or --hosts must be specified for rollout deploy");
-    };
+    let parsed_strategy = parse_strategy(strategy)?;
+    let parsed_on_failure = parse_on_failure(on_failure)?;
+    let target = resolve_target(tags, hosts)?;
 
     let request = CreateRolloutRequest {
         generation_hash: generation_hash.to_string(),
@@ -333,6 +346,7 @@ pub async fn deploy_rollout(
         on_failure: parsed_on_failure,
         health_timeout: Some(health_timeout),
         target,
+        policy: policy.map(|s| s.to_string()),
     };
 
     let url = format!("{}/api/v1/rollouts", cp_url);
@@ -381,6 +395,79 @@ pub async fn deploy_rollout(
             created.rollout_id, created.rollout_id,
         );
     }
+
+    Ok(())
+}
+
+/// Schedule a rollout for a future time via the schedule API.
+#[allow(clippy::too_many_arguments)]
+pub async fn deploy_scheduled(
+    client: &reqwest::Client,
+    cp_url: &str,
+    generation_hash: &str,
+    tags: &[String],
+    hosts: &[String],
+    strategy: &str,
+    batch_sizes: Option<Vec<String>>,
+    failure_threshold: &str,
+    on_failure: &str,
+    health_timeout: u64,
+    policy: Option<&str>,
+    schedule_at_str: &str,
+) -> Result<()> {
+    use nixfleet_types::rollout::CreateScheduleRequest;
+
+    let scheduled_at: chrono::DateTime<chrono::Utc> = schedule_at_str
+        .parse()
+        .with_context(|| format!("Invalid --schedule-at format: {schedule_at_str}. Use ISO 8601 (e.g. 2026-04-06T03:00:00Z)"))?;
+
+    let parsed_strategy = Some(parse_strategy(strategy)?);
+    let parsed_on_failure = Some(parse_on_failure(on_failure)?);
+    let target = resolve_target(tags, hosts)?;
+
+    let request = CreateScheduleRequest {
+        scheduled_at,
+        policy: policy.map(|s| s.to_string()),
+        generation_hash: generation_hash.to_string(),
+        cache_url: None,
+        strategy: parsed_strategy,
+        batch_sizes,
+        failure_threshold: Some(failure_threshold.to_string()),
+        on_failure: parsed_on_failure,
+        health_timeout_secs: Some(health_timeout),
+        target,
+    };
+
+    let url = format!("{}/api/v1/schedules", cp_url);
+    let resp = client
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .context("Failed to reach control plane")?;
+
+    if !resp.status().is_success() {
+        bail!(
+            "Control plane returned {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
+    }
+
+    let created: nixfleet_types::rollout::ScheduledRollout = resp
+        .json()
+        .await
+        .context("Failed to parse schedule response")?;
+
+    println!(
+        "Rollout scheduled: {} (at {})",
+        created.id,
+        created.scheduled_at.format("%Y-%m-%d %H:%M:%S UTC"),
+    );
+    println!(
+        "Use `nixfleet schedule list` to check status, or `nixfleet schedule cancel {}` to cancel.",
+        created.id,
+    );
 
     Ok(())
 }

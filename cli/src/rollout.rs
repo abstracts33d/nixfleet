@@ -178,6 +178,9 @@ fn print_rollout_detail(rollout: &RolloutDetail) {
     println!("Fail threshold:{}", rollout.failure_threshold);
     println!("Health timeout:{}s", rollout.health_timeout);
     println!("Created by:    {}", rollout.created_by);
+    if let Some(ref policy_id) = rollout.policy_id {
+        println!("Policy:        {}", policy_id);
+    }
     println!(
         "Created at:    {}",
         rollout.created_at.format("%Y-%m-%d %H:%M:%S UTC")
@@ -211,6 +214,18 @@ fn print_rollout_detail(rollout: &RolloutDetail) {
                 .map(|h| h.to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             println!("    {} -> {}", machine_id, health);
+        }
+    }
+
+    if !rollout.events.is_empty() {
+        println!("\nTimeline:");
+        for event in &rollout.events {
+            println!(
+                "  {}  {:<20} ({})",
+                event.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
+                event.event_type,
+                event.actor,
+            );
         }
     }
 }

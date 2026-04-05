@@ -6,7 +6,9 @@ mod client;
 mod deploy;
 mod host;
 mod machines;
+mod policy;
 mod rollout;
+mod schedule;
 mod status;
 
 #[derive(Parser)]
@@ -92,6 +94,14 @@ enum Commands {
         /// Store path hash for rollout deploy (skips nix build)
         #[arg(long)]
         generation: Option<String>,
+
+        /// Use a named rollout policy (policy values serve as defaults)
+        #[arg(long)]
+        policy: Option<String>,
+
+        /// Schedule the rollout for a future time (ISO 8601, e.g. "2026-04-06T03:00:00Z")
+        #[arg(long)]
+        schedule_at: Option<String>,
     },
 
     /// Show fleet status from the control plane
@@ -132,6 +142,18 @@ enum Commands {
     Machines {
         #[command(subcommand)]
         action: MachineAction,
+    },
+
+    /// Manage rollout policies
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
+
+    /// Manage scheduled rollouts
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
     },
 
     /// Bootstrap the first admin API key (only works when no keys exist)
@@ -216,6 +238,93 @@ enum RolloutAction {
 }
 
 #[derive(Subcommand)]
+enum PolicyAction {
+    /// Create a new rollout policy
+    Create {
+        /// Policy name (unique)
+        #[arg(long)]
+        name: String,
+
+        /// Rollout strategy: canary, staged, or all-at-once
+        #[arg(long, default_value = "all-at-once")]
+        strategy: String,
+
+        /// Batch sizes (comma-separated, e.g. "1,25%,100%")
+        #[arg(long, value_delimiter = ',')]
+        batch_size: Option<Vec<String>>,
+
+        /// Maximum failures before pausing/reverting
+        #[arg(long, default_value = "1")]
+        failure_threshold: String,
+
+        /// Action on failure: pause or revert
+        #[arg(long, default_value = "pause")]
+        on_failure: String,
+
+        /// Health check timeout in seconds
+        #[arg(long, default_value = "300")]
+        health_timeout: u64,
+    },
+
+    /// List all policies
+    List,
+
+    /// Show policy detail
+    Get {
+        /// Policy name
+        name: String,
+    },
+
+    /// Update an existing policy
+    Update {
+        /// Policy name
+        name: String,
+
+        /// Rollout strategy
+        #[arg(long, default_value = "all-at-once")]
+        strategy: String,
+
+        /// Batch sizes (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        batch_size: Option<Vec<String>>,
+
+        /// Maximum failures before pausing/reverting
+        #[arg(long, default_value = "1")]
+        failure_threshold: String,
+
+        /// Action on failure: pause or revert
+        #[arg(long, default_value = "pause")]
+        on_failure: String,
+
+        /// Health check timeout in seconds
+        #[arg(long, default_value = "300")]
+        health_timeout: u64,
+    },
+
+    /// Delete a policy (admin only)
+    Delete {
+        /// Policy name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ScheduleAction {
+    /// List scheduled rollouts
+    List {
+        /// Filter by status (pending, triggered, cancelled)
+        #[arg(long)]
+        status: Option<String>,
+    },
+
+    /// Cancel a scheduled rollout
+    Cancel {
+        /// Schedule ID
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum MachineAction {
     /// List machines
     List {
@@ -293,6 +402,8 @@ async fn main() -> Result<()> {
             health_timeout,
             wait,
             generation,
+            policy,
+            schedule_at,
         } => {
             let http_client = client::build_client(&tls, &cli.api_key)?;
             if ssh {
@@ -315,21 +426,42 @@ async fn main() -> Result<()> {
                         );
                     }
                 };
-                deploy::deploy_rollout(
-                    &http_client,
-                    &cli.control_plane_url,
-                    &cli.api_key,
-                    &generation_hash,
-                    &tags,
-                    &[],
-                    &strategy,
-                    batch_size,
-                    &failure_threshold,
-                    &on_failure,
-                    health_timeout,
-                    wait,
-                )
-                .await
+
+                // Handle scheduled rollouts
+                if let Some(ref schedule_at_str) = schedule_at {
+                    deploy::deploy_scheduled(
+                        &http_client,
+                        &cli.control_plane_url,
+                        &generation_hash,
+                        &tags,
+                        &[],
+                        &strategy,
+                        batch_size,
+                        &failure_threshold,
+                        &on_failure,
+                        health_timeout,
+                        policy.as_deref(),
+                        schedule_at_str,
+                    )
+                    .await
+                } else {
+                    deploy::deploy_rollout(
+                        &http_client,
+                        &cli.control_plane_url,
+                        &cli.api_key,
+                        &generation_hash,
+                        &tags,
+                        &[],
+                        &strategy,
+                        batch_size,
+                        &failure_threshold,
+                        &on_failure,
+                        health_timeout,
+                        wait,
+                        policy.as_deref(),
+                    )
+                    .await
+                }
             } else {
                 deploy::run(
                     &http_client,
@@ -392,6 +524,71 @@ async fn main() -> Result<()> {
                 }
                 RolloutAction::Cancel { id } => {
                     rollout::cancel(&http_client, &cli.control_plane_url, &id).await
+                }
+            }
+        }
+        Commands::Policy { action } => {
+            let http_client = client::build_client(&tls, &cli.api_key)?;
+            match action {
+                PolicyAction::Create {
+                    name,
+                    strategy,
+                    batch_size,
+                    failure_threshold,
+                    on_failure,
+                    health_timeout,
+                } => {
+                    let parsed_strategy = deploy::parse_strategy(&strategy)?;
+                    let parsed_on_failure = deploy::parse_on_failure(&on_failure)?;
+                    let request = nixfleet_types::rollout::PolicyRequest {
+                        name,
+                        strategy: parsed_strategy,
+                        batch_sizes: batch_size.unwrap_or_else(|| vec!["100%".to_string()]),
+                        failure_threshold,
+                        on_failure: parsed_on_failure,
+                        health_timeout_secs: health_timeout,
+                    };
+                    policy::create(&http_client, &cli.control_plane_url, &request).await
+                }
+                PolicyAction::List => {
+                    policy::list(&http_client, &cli.control_plane_url).await
+                }
+                PolicyAction::Get { name } => {
+                    policy::get(&http_client, &cli.control_plane_url, &name).await
+                }
+                PolicyAction::Update {
+                    name,
+                    strategy,
+                    batch_size,
+                    failure_threshold,
+                    on_failure,
+                    health_timeout,
+                } => {
+                    let parsed_strategy = deploy::parse_strategy(&strategy)?;
+                    let parsed_on_failure = deploy::parse_on_failure(&on_failure)?;
+                    let request = nixfleet_types::rollout::PolicyRequest {
+                        name: name.clone(),
+                        strategy: parsed_strategy,
+                        batch_sizes: batch_size.unwrap_or_else(|| vec!["100%".to_string()]),
+                        failure_threshold,
+                        on_failure: parsed_on_failure,
+                        health_timeout_secs: health_timeout,
+                    };
+                    policy::update(&http_client, &cli.control_plane_url, &name, &request).await
+                }
+                PolicyAction::Delete { name } => {
+                    policy::delete(&http_client, &cli.control_plane_url, &name).await
+                }
+            }
+        }
+        Commands::Schedule { action } => {
+            let http_client = client::build_client(&tls, &cli.api_key)?;
+            match action {
+                ScheduleAction::List { status } => {
+                    schedule::list(&http_client, &cli.control_plane_url, status.as_deref()).await
+                }
+                ScheduleAction::Cancel { id } => {
+                    schedule::cancel(&http_client, &cli.control_plane_url, &id).await
                 }
             }
         }
