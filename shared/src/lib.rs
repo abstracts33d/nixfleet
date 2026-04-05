@@ -56,6 +56,24 @@ pub mod api {
     /// DELETE: Remove a specific tag from a machine.
     /// Path parameters: `{id}` = machine ID, `{tag}` = tag name.
     pub const MACHINE_TAG: &str = "/api/v1/machines/{id}/tags/{tag}";
+
+    /// GET: List all policies. POST: Create a new policy.
+    pub const POLICIES: &str = "/api/v1/policies";
+
+    /// GET: Get policy by name. PUT: Update policy. DELETE: Delete policy.
+    /// Path parameter: `{name}` = policy name.
+    pub const POLICY: &str = "/api/v1/policies/{name}";
+
+    /// GET: List scheduled rollouts. POST: Create a scheduled rollout.
+    pub const SCHEDULES: &str = "/api/v1/schedules";
+
+    /// GET: Get scheduled rollout. POST (cancel): Cancel a scheduled rollout.
+    /// Path parameter: `{id}` = scheduled rollout ID.
+    pub const SCHEDULE: &str = "/api/v1/schedules/{id}";
+
+    /// POST: Cancel a scheduled rollout.
+    /// Path parameter: `{id}` = scheduled rollout ID.
+    pub const SCHEDULE_CANCEL: &str = "/api/v1/schedules/{id}/cancel";
 }
 
 /// Machine lifecycle states for fleet management.
