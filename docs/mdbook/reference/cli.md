@@ -49,6 +49,9 @@ nixfleet deploy [FLAGS]
 | `--health-timeout <SECS>` | u64 | `300` | Seconds to wait for health reports per batch |
 | `--wait` | bool | `false` | Stream rollout progress to stdout |
 | `--generation <PATH>` | string | -- | Store path hash (skips nix build, required for rollout mode) |
+| `--policy <NAME>` | string | -- | Use a named rollout policy (policy values serve as defaults; explicit flags override) |
+| `--cache-url <URL>` | string | -- | Binary cache URL for agents to fetch closures from (e.g., `http://cache:8081`) |
+| `--schedule-at <ISO8601>` | string | -- | Schedule the rollout for a future time (e.g., `2026-04-06T03:00:00Z`) |
 
 **Modes:**
 
@@ -177,6 +180,110 @@ nixfleet rollout cancel <ID>
 | Argument | Type | Description |
 |----------|------|-------------|
 | `<ID>` | string | Rollout ID |
+
+---
+
+## policy create
+
+Create a named rollout policy.
+
+```sh
+nixfleet policy create --name <NAME> [FLAGS]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--name <NAME>` | string | -- (required) | Policy name (unique) |
+| `--strategy <STRATEGY>` | string | `all-at-once` | Rollout strategy: `canary`, `staged`, `all-at-once` |
+| `--batch-size <SIZES>` | string (comma-separated) | `100%` | Batch sizes (e.g., `1,25%,100%`) |
+| `--failure-threshold <N>` | string | `1` | Max failures before pausing/reverting |
+| `--on-failure <ACTION>` | string | `pause` | Action on failure: `pause` or `revert` |
+| `--health-timeout <SECS>` | u64 | `300` | Seconds to wait for health reports per batch |
+
+---
+
+## policy list
+
+List all rollout policies.
+
+```sh
+nixfleet policy list
+```
+
+---
+
+## policy get
+
+Show detail for a named policy.
+
+```sh
+nixfleet policy get <NAME>
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `<NAME>` | string | Policy name |
+
+---
+
+## policy update
+
+Update an existing policy. All flags replace the current values.
+
+```sh
+nixfleet policy update <NAME> [FLAGS]
+```
+
+| Argument/Flag | Type | Default | Description |
+|---------------|------|---------|-------------|
+| `<NAME>` | string | -- (required) | Policy name |
+| `--strategy <STRATEGY>` | string | `all-at-once` | Rollout strategy |
+| `--batch-size <SIZES>` | string (comma-separated) | `100%` | Batch sizes |
+| `--failure-threshold <N>` | string | `1` | Max failures before pausing/reverting |
+| `--on-failure <ACTION>` | string | `pause` | Action on failure: `pause` or `revert` |
+| `--health-timeout <SECS>` | u64 | `300` | Seconds to wait for health reports per batch |
+
+---
+
+## policy delete
+
+Delete a policy (admin only).
+
+```sh
+nixfleet policy delete <NAME>
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `<NAME>` | string | Policy name |
+
+---
+
+## schedule list
+
+List scheduled rollouts.
+
+```sh
+nixfleet schedule list [FLAGS]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--status <STATUS>` | string | -- | Filter by status: `pending`, `triggered`, `cancelled` |
+
+---
+
+## schedule cancel
+
+Cancel a scheduled rollout.
+
+```sh
+nixfleet schedule cancel <ID>
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `<ID>` | string | Schedule ID |
 
 ---
 

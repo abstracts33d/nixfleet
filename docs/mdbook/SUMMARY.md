@@ -27,6 +27,7 @@
 - [Control Plane](guide/deploying/control-plane.md)
 - [Agent](guide/deploying/agent.md)
 - [Rollouts](guide/deploying/rollouts.md)
+- [Rollout Policies](guide/deploying/policies.md)
 
 ## Operating
 
