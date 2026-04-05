@@ -1,11 +1,12 @@
 use anyhow::{bail, Context, Result};
 use nixfleet_types::MachineStatus;
 
-use crate::client::api_client;
-
 /// GET /api/v1/machines — list machines, optionally filtered by tag.
-pub async fn list(cp_url: &str, api_key: &str, tag_filter: Option<&str>) -> Result<()> {
-    let client = api_client(api_key);
+pub async fn list(
+    client: &reqwest::Client,
+    cp_url: &str,
+    tag_filter: Option<&str>,
+) -> Result<()> {
     let url = format!("{}/api/v1/machines", cp_url);
 
     let resp = client
@@ -58,8 +59,12 @@ pub async fn list(cp_url: &str, api_key: &str, tag_filter: Option<&str>) -> Resu
 }
 
 /// PUT /api/v1/machines/{id}/tags — set tags on a machine.
-pub async fn tag(cp_url: &str, api_key: &str, machine_id: &str, tags: &[String]) -> Result<()> {
-    let client = api_client(api_key);
+pub async fn tag(
+    client: &reqwest::Client,
+    cp_url: &str,
+    machine_id: &str,
+    tags: &[String],
+) -> Result<()> {
     let url = format!("{}/api/v1/machines/{}/tags", cp_url, machine_id);
 
     let resp = client
@@ -82,8 +87,12 @@ pub async fn tag(cp_url: &str, api_key: &str, machine_id: &str, tags: &[String])
 }
 
 /// DELETE /api/v1/machines/{id}/tags/{tag} — remove a tag from a machine.
-pub async fn untag(cp_url: &str, api_key: &str, machine_id: &str, tag: &str) -> Result<()> {
-    let client = api_client(api_key);
+pub async fn untag(
+    client: &reqwest::Client,
+    cp_url: &str,
+    machine_id: &str,
+    tag: &str,
+) -> Result<()> {
     let url = format!("{}/api/v1/machines/{}/tags/{}", cp_url, machine_id, tag);
 
     let resp = client

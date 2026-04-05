@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use nixfleet_types::MachineStatus;
 
-pub async fn run(cp_url: &str, json_output: bool) -> Result<()> {
-    let client = reqwest::Client::new();
+pub async fn run(client: &reqwest::Client, cp_url: &str, json_output: bool) -> Result<()> {
     let url = format!("{}/api/v1/machines", cp_url);
 
     let resp = client

@@ -116,8 +116,12 @@ async fn build_host(flake: &str, host: &str) -> Result<String> {
 }
 
 /// Push desired generation to the control plane.
-async fn push_to_control_plane(cp_url: &str, host: &str, store_path: &str) -> Result<()> {
-    let client = reqwest::Client::new();
+async fn push_to_control_plane(
+    client: &reqwest::Client,
+    cp_url: &str,
+    host: &str,
+    store_path: &str,
+) -> Result<()> {
     let url = format!("{}/api/v1/machines/{}/set-generation", cp_url, host);
 
     let resp = client
@@ -176,7 +180,14 @@ async fn deploy_via_ssh(host: &str, store_path: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn run(cp_url: &str, pattern: &str, flake: &str, dry_run: bool, ssh: bool) -> Result<()> {
+pub async fn run(
+    client: &reqwest::Client,
+    cp_url: &str,
+    pattern: &str,
+    flake: &str,
+    dry_run: bool,
+    ssh: bool,
+) -> Result<()> {
     println!("Discovering hosts from {}...", flake);
     let all_hosts = discover_hosts(flake).await?;
     let targets = filter_hosts(&all_hosts, pattern);
@@ -245,7 +256,7 @@ pub async fn run(cp_url: &str, pattern: &str, flake: &str, dry_run: bool, ssh: b
                 }
             } else {
                 print!("  Pushing {} to control plane... ", host);
-                match push_to_control_plane(cp_url, host, store_path).await {
+                match push_to_control_plane(client, cp_url, host, store_path).await {
                     Ok(()) => {
                         println!("OK");
                         success_count += 1;
@@ -276,8 +287,9 @@ pub async fn run(cp_url: &str, pattern: &str, flake: &str, dry_run: bool, ssh: b
 /// Deploy via the rollout API instead of direct SSH or per-host control plane push.
 #[allow(clippy::too_many_arguments)]
 pub async fn deploy_rollout(
+    client: &reqwest::Client,
     cp_url: &str,
-    api_key: &str,
+    _api_key: &str,
     generation_hash: &str,
     tags: &[String],
     hosts: &[String],
@@ -323,17 +335,6 @@ pub async fn deploy_rollout(
         target,
     };
 
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::AUTHORIZATION,
-        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-            .expect("invalid API key"),
-    );
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .build()
-        .expect("failed to build HTTP client");
-
     let url = format!("{}/api/v1/rollouts", cp_url);
     let resp = client
         .post(&url)
@@ -373,7 +374,7 @@ pub async fn deploy_rollout(
 
     if wait {
         println!("\nWaiting for rollout to complete...");
-        crate::rollout::wait_for_completion(cp_url, api_key, &created.rollout_id).await?;
+        crate::rollout::wait_for_completion(client, cp_url, &created.rollout_id).await?;
     } else {
         println!(
             "\nRollout {} started. Use `nixfleet rollout status {}` to track progress.",
