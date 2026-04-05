@@ -43,7 +43,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     attic = {
-      url = "github:zhaofengli/attic";
+      # PR #300 (booxter/attic) fixes build against nix 2.31.x (C++23 std::views::zip)
+      # TODO: revert to github:zhaofengli/attic when PR #300 is merged upstream
+      url = "github:booxter/attic/newer-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     microvm = {
