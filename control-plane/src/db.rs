@@ -1732,4 +1732,357 @@ mod tests {
         let result = db.machine_in_active_rollout("dev-99").unwrap();
         assert!(result.is_none());
     }
+
+    // -----------------------------------------------------------------------
+    // Policy CRUD tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_and_get_policy() {
+        let (db, _dir) = make_db();
+        db.create_policy(
+            "pol-1",
+            "canary-web",
+            "staged",
+            "[\"1\",\"100%\"]",
+            "1",
+            "pause",
+            60,
+        )
+        .unwrap();
+        let policy = db.get_policy_by_name("canary-web").unwrap().unwrap();
+        assert_eq!(policy.name, "canary-web");
+        assert_eq!(policy.strategy, "staged");
+        assert_eq!(policy.health_timeout_secs, 60);
+    }
+
+    #[test]
+    fn test_get_policy_by_name_missing() {
+        let (db, _dir) = make_db();
+        let policy = db.get_policy_by_name("nonexistent").unwrap();
+        assert!(policy.is_none());
+    }
+
+    #[test]
+    fn test_list_policies() {
+        let (db, _dir) = make_db();
+        db.create_policy("pol-1", "p1", "staged", "[]", "1", "pause", 30)
+            .unwrap();
+        db.create_policy("pol-2", "p2", "all_at_once", "[]", "0", "revert", 60)
+            .unwrap();
+        let policies = db.list_policies().unwrap();
+        assert_eq!(policies.len(), 2);
+    }
+
+    #[test]
+    fn test_list_policies_empty() {
+        let (db, _dir) = make_db();
+        let policies = db.list_policies().unwrap();
+        assert!(policies.is_empty());
+    }
+
+    #[test]
+    fn test_delete_policy() {
+        let (db, _dir) = make_db();
+        db.create_policy("pol-1", "temp", "staged", "[]", "1", "pause", 30)
+            .unwrap();
+        assert!(db.get_policy_by_name("temp").unwrap().is_some());
+        let deleted = db.delete_policy("temp").unwrap();
+        assert!(deleted);
+        assert!(db.get_policy_by_name("temp").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_policy_missing() {
+        let (db, _dir) = make_db();
+        let deleted = db.delete_policy("nonexistent").unwrap();
+        assert!(!deleted);
+    }
+
+    #[test]
+    fn test_duplicate_policy_name_fails() {
+        let (db, _dir) = make_db();
+        db.create_policy("pol-1", "unique", "staged", "[]", "1", "pause", 30)
+            .unwrap();
+        assert!(
+            db.create_policy("pol-2", "unique", "staged", "[]", "1", "pause", 30)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_update_policy() {
+        let (db, _dir) = make_db();
+        db.create_policy("pol-1", "my-policy", "staged", "[1]", "1", "pause", 30)
+            .unwrap();
+        let updated = db
+            .update_policy("my-policy", "all_at_once", "[]", "0", "revert", 120)
+            .unwrap();
+        assert!(updated);
+        let policy = db.get_policy_by_name("my-policy").unwrap().unwrap();
+        assert_eq!(policy.strategy, "all_at_once");
+        assert_eq!(policy.health_timeout_secs, 120);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rollout events tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_insert_and_get_rollout_events() {
+        let (db, _dir) = make_db();
+        let rollout_id = "r-test-events";
+        db.create_rollout(
+            rollout_id,
+            "/nix/store/abc",
+            None,
+            "staged",
+            "[1]",
+            "1",
+            "pause",
+            60,
+            None,
+            None,
+            None,
+            "executor",
+        )
+        .unwrap();
+        db.insert_rollout_event(
+            rollout_id,
+            "status_change",
+            "{\"from\":\"created\",\"to\":\"running\"}",
+            "executor",
+        )
+        .unwrap();
+        db.insert_rollout_event(
+            rollout_id,
+            "batch_started",
+            "{\"batch_index\":0}",
+            "executor",
+        )
+        .unwrap();
+        let events = db.get_rollout_events(rollout_id).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "status_change");
+        assert_eq!(events[1].event_type, "batch_started");
+    }
+
+    #[test]
+    fn test_get_rollout_events_empty() {
+        let (db, _dir) = make_db();
+        db.create_rollout(
+            "roll-empty",
+            "/nix/store/abc",
+            None,
+            "staged",
+            "[1]",
+            "1",
+            "pause",
+            60,
+            None,
+            None,
+            None,
+            "admin",
+        )
+        .unwrap();
+        let events = db.get_rollout_events("roll-empty").unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_rollout_events_ordered_asc() {
+        let (db, _dir) = make_db();
+        let rollout_id = "r-order-test";
+        db.create_rollout(
+            rollout_id,
+            "/nix/store/abc",
+            None,
+            "staged",
+            "[1]",
+            "1",
+            "pause",
+            60,
+            None,
+            None,
+            None,
+            "executor",
+        )
+        .unwrap();
+        db.insert_rollout_event(rollout_id, "first_event", "{}", "executor")
+            .unwrap();
+        db.insert_rollout_event(rollout_id, "second_event", "{}", "executor")
+            .unwrap();
+        db.insert_rollout_event(rollout_id, "third_event", "{}", "executor")
+            .unwrap();
+        let events = db.get_rollout_events(rollout_id).unwrap();
+        assert_eq!(events.len(), 3);
+        // Events are ordered ASC — IDs should be non-decreasing
+        assert!(events[0].id <= events[1].id);
+        assert!(events[1].id <= events[2].id);
+    }
+
+    // -----------------------------------------------------------------------
+    // Scheduled rollout tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_and_list_schedules() {
+        let (db, _dir) = make_db();
+        db.create_scheduled_rollout(
+            "s-1",
+            "2026-04-06T03:00:00Z",
+            None,
+            "/nix/store/abc",
+            None,
+            Some("staged"),
+            Some("[1]"),
+            Some("1"),
+            Some("pause"),
+            Some(60),
+            Some("[\"web\"]"),
+            None,
+            "admin",
+        )
+        .unwrap();
+        let schedules = db.list_scheduled_rollouts(None, 100).unwrap();
+        assert_eq!(schedules.len(), 1);
+        assert_eq!(schedules[0].status, "pending");
+    }
+
+    #[test]
+    fn test_get_scheduled_rollout() {
+        let (db, _dir) = make_db();
+        db.create_scheduled_rollout(
+            "s-get",
+            "2026-04-06T03:00:00Z",
+            None,
+            "/nix/store/def",
+            None,
+            Some("all_at_once"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "admin",
+        )
+        .unwrap();
+        let schedule = db.get_scheduled_rollout("s-get").unwrap().unwrap();
+        assert_eq!(schedule.id, "s-get");
+        assert_eq!(schedule.generation_hash, "/nix/store/def");
+        assert_eq!(schedule.status, "pending");
+        assert_eq!(schedule.created_by, "admin");
+    }
+
+    #[test]
+    fn test_get_scheduled_rollout_missing() {
+        let (db, _dir) = make_db();
+        let schedule = db.get_scheduled_rollout("nonexistent").unwrap();
+        assert!(schedule.is_none());
+    }
+
+    #[test]
+    fn test_cancel_schedule() {
+        let (db, _dir) = make_db();
+        db.create_scheduled_rollout(
+            "s-cancel",
+            "2026-04-06T03:00:00Z",
+            None,
+            "/nix/store/abc",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "admin",
+        )
+        .unwrap();
+        let updated = db
+            .update_scheduled_rollout_status("s-cancel", "cancelled", None)
+            .unwrap();
+        assert!(updated);
+        let schedule = db.get_scheduled_rollout("s-cancel").unwrap().unwrap();
+        assert_eq!(schedule.status, "cancelled");
+    }
+
+    #[test]
+    fn test_list_scheduled_rollouts_filter_by_status() {
+        let (db, _dir) = make_db();
+        db.create_scheduled_rollout(
+            "s-pending",
+            "2026-04-06T03:00:00Z",
+            None,
+            "/nix/store/abc",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "admin",
+        )
+        .unwrap();
+        db.create_scheduled_rollout(
+            "s-cancelled",
+            "2026-04-07T03:00:00Z",
+            None,
+            "/nix/store/def",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "admin",
+        )
+        .unwrap();
+        db.update_scheduled_rollout_status("s-cancelled", "cancelled", None)
+            .unwrap();
+
+        let pending = db
+            .list_scheduled_rollouts(Some("pending"), 100)
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "s-pending");
+
+        let cancelled = db
+            .list_scheduled_rollouts(Some("cancelled"), 100)
+            .unwrap();
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(cancelled[0].id, "s-cancelled");
+    }
+
+    #[test]
+    fn test_update_scheduled_rollout_status_with_rollout_id() {
+        let (db, _dir) = make_db();
+        db.create_scheduled_rollout(
+            "s-fired",
+            "2026-04-06T03:00:00Z",
+            None,
+            "/nix/store/abc",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "admin",
+        )
+        .unwrap();
+        db.update_scheduled_rollout_status("s-fired", "fired", Some("roll-99"))
+            .unwrap();
+        let schedule = db.get_scheduled_rollout("s-fired").unwrap().unwrap();
+        assert_eq!(schedule.status, "fired");
+        assert_eq!(schedule.rollout_id, Some("roll-99".to_string()));
+    }
 }
