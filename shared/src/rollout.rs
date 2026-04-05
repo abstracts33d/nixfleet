@@ -158,6 +158,128 @@ pub enum RolloutTarget {
 }
 
 // ---------------------------------------------------------------------------
+// Policy types
+// ---------------------------------------------------------------------------
+
+/// A named rollout policy (reusable preset).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolloutPolicy {
+    pub id: String,
+    pub name: String,
+    pub strategy: RolloutStrategy,
+    pub batch_sizes: Vec<String>,
+    pub failure_threshold: String,
+    pub on_failure: OnFailure,
+    pub health_timeout_secs: u64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Request body to create or update a rollout policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyRequest {
+    pub name: String,
+    pub strategy: RolloutStrategy,
+    #[serde(default = "default_batch_sizes")]
+    pub batch_sizes: Vec<String>,
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: String,
+    #[serde(default)]
+    pub on_failure: OnFailure,
+    #[serde(default = "default_health_timeout")]
+    pub health_timeout_secs: u64,
+}
+
+fn default_batch_sizes() -> Vec<String> {
+    vec!["100%".to_string()]
+}
+
+fn default_health_timeout() -> u64 {
+    300
+}
+
+// ---------------------------------------------------------------------------
+// Rollout event types
+// ---------------------------------------------------------------------------
+
+/// A single event in a rollout's timeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolloutEvent {
+    pub id: i64,
+    pub rollout_id: String,
+    pub event_type: String,
+    pub detail: String,
+    pub actor: String,
+    pub created_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled rollout types
+// ---------------------------------------------------------------------------
+
+/// Status of a scheduled rollout.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleStatus {
+    Pending,
+    Triggered,
+    Cancelled,
+}
+
+impl fmt::Display for ScheduleStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Triggered => write!(f, "triggered"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+/// A scheduled rollout (one-shot deferred creation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledRollout {
+    pub id: String,
+    pub scheduled_at: DateTime<Utc>,
+    pub policy_id: Option<String>,
+    pub generation_hash: String,
+    pub cache_url: Option<String>,
+    pub strategy: Option<RolloutStrategy>,
+    pub batch_sizes: Option<Vec<String>>,
+    pub failure_threshold: Option<String>,
+    pub on_failure: Option<OnFailure>,
+    pub health_timeout_secs: Option<u64>,
+    pub target_tags: Option<Vec<String>>,
+    pub target_hosts: Option<Vec<String>>,
+    pub status: ScheduleStatus,
+    pub rollout_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+/// Request body to create a scheduled rollout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateScheduleRequest {
+    pub scheduled_at: DateTime<Utc>,
+    #[serde(default)]
+    pub policy: Option<String>,
+    pub generation_hash: String,
+    #[serde(default)]
+    pub cache_url: Option<String>,
+    #[serde(default)]
+    pub strategy: Option<RolloutStrategy>,
+    #[serde(default)]
+    pub batch_sizes: Option<Vec<String>>,
+    #[serde(default)]
+    pub failure_threshold: Option<String>,
+    #[serde(default)]
+    pub on_failure: Option<OnFailure>,
+    #[serde(default)]
+    pub health_timeout_secs: Option<u64>,
+    pub target: RolloutTarget,
+}
+
+// ---------------------------------------------------------------------------
 // Request / Response types
 // ---------------------------------------------------------------------------
 
@@ -181,6 +303,9 @@ pub struct CreateRolloutRequest {
     #[serde(default)]
     pub health_timeout: Option<u64>,
     pub target: RolloutTarget,
+    /// Optional policy name — if set, policy values are used as defaults.
+    #[serde(default)]
+    pub policy: Option<String>,
 }
 
 /// Summary of a single batch returned in the create response.
@@ -224,6 +349,10 @@ pub struct RolloutDetail {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub created_by: String,
+    #[serde(default)]
+    pub policy_id: Option<String>,
+    #[serde(default)]
+    pub events: Vec<RolloutEvent>,
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +552,7 @@ mod tests {
             on_failure: OnFailure::Pause,
             health_timeout: Some(300),
             target: RolloutTarget::Tags(vec!["web".to_string()]),
+            policy: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         let back: CreateRolloutRequest = serde_json::from_str(&json).unwrap();
@@ -506,6 +636,8 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             created_by: "admin".to_string(),
+            policy_id: None,
+            events: vec![],
         };
         let json = serde_json::to_string(&detail).unwrap();
         let back: RolloutDetail = serde_json::from_str(&json).unwrap();
@@ -519,5 +651,7 @@ mod tests {
         assert_eq!(back.batches[0].machine_health.len(), 2);
         assert!(back.batches[0].started_at.is_some());
         assert!(back.batches[0].completed_at.is_none());
+        assert!(back.policy_id.is_none());
+        assert!(back.events.is_empty());
     }
 }

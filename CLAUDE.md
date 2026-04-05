@@ -127,14 +127,40 @@ nixfleet machines list --tag web
 
 # Rollout
 nixfleet deploy --tag web --generation /nix/store/... --strategy staged --batch-size 1,100% --wait
+nixfleet deploy --tag web --generation /nix/store/... --policy production-canary --wait
 
 # Rollout management
 nixfleet rollout list
+nixfleet rollout status <ID>       # includes events timeline
 nixfleet rollout resume <ID>
 nixfleet rollout cancel <ID>
+
+# Rollout policies (named presets)
+nixfleet policy create --name production-canary --strategy canary --batch-size 1,25%,100% --failure-threshold 30% --health-timeout 600
+nixfleet policy list
+nixfleet policy get production-canary
+nixfleet policy update production-canary --health-timeout 300
+nixfleet policy delete production-canary
+
+# Scheduled rollouts
+nixfleet deploy --tag web --generation /nix/store/... --policy production-canary --schedule-at "2026-04-06T03:00:00Z"
+nixfleet schedule list
+nixfleet schedule cancel <SCHED-ID>
 ```
 
 mTLS flags (`--client-cert`, `--client-key`, `--ca-cert`) and `--api-key` can be set via env vars: `NIXFLEET_CLIENT_CERT`, `NIXFLEET_CLIENT_KEY`, `NIXFLEET_CA_CERT`, `NIXFLEET_API_KEY`.
+
+### Rollout Policies
+
+Policies are named, reusable rollout presets. They define execution parameters (strategy, batch sizes, failure threshold, on_failure, health timeout) without targets. When creating a rollout with `--policy`, the policy values serve as defaults — explicit flags override them. The rollout records which policy was used (`policy_id`) for traceability.
+
+### Rollout Events
+
+Every rollout state transition (created → running → paused → completed, batch started/completed/failed) is recorded as an event in the `rollout_events` table. Events include timestamp, type, detail JSON, and actor. The `rollout status` CLI command shows these as a timeline.
+
+### Scheduled Rollouts
+
+One-shot deferred rollout creation. Use `--schedule-at` with ISO 8601 timestamp. The executor checks for due schedules every 2 seconds and creates the rollout automatically. Schedules can reference a policy.
 
 ## Control Plane API
 
@@ -151,6 +177,22 @@ curl -X POST https://cp:8080/api/v1/keys/bootstrap \
 # Returns: {"key":"nfk-...","name":"admin","role":"admin"}
 # Returns 409 if keys already exist
 ```
+
+### API Endpoints (new)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/policies` | deploy | Create a rollout policy |
+| GET | `/api/v1/policies` | readonly | List all policies |
+| GET | `/api/v1/policies/{name}` | readonly | Get policy by name |
+| PUT | `/api/v1/policies/{name}` | deploy | Update a policy |
+| DELETE | `/api/v1/policies/{name}` | admin | Delete a policy |
+| POST | `/api/v1/schedules` | deploy | Create a scheduled rollout |
+| GET | `/api/v1/schedules` | readonly | List scheduled rollouts |
+| GET | `/api/v1/schedules/{id}` | readonly | Get a scheduled rollout |
+| POST | `/api/v1/schedules/{id}/cancel` | deploy | Cancel a scheduled rollout |
+
+The `POST /api/v1/rollouts` endpoint now accepts an optional `policy` field (policy name) and the `GET /api/v1/rollouts/{id}` response now includes `policy_id` and `events` (timeline).
 
 ### Agent tag sync
 

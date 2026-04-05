@@ -28,6 +28,7 @@
 - [Agent](guide/deploying/agent.md)
 - [Binary Cache (Attic)](guide/deploying/attic.md)
 - [Rollouts](guide/deploying/rollouts.md)
+- [Rollout Policies](guide/deploying/policies.md)
 
 ## Operating
 
