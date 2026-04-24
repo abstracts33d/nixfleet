@@ -17,9 +17,15 @@
     "m": {
       "channel": "stable",
       "closureHash": null,
+      "pubkey": null,
       "system": "x86_64-linux",
       "tags": ["role-a"]
     }
+  },
+  "meta": {
+    "ciCommit": null,
+    "schemaVersion": 1,
+    "signedAt": null
   },
   "rolloutPolicies": {
     "emptyish": {

@@ -42,6 +42,17 @@
         default = [];
       };
       channel = mkOption {type = types.str;};
+      pubkey = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Host SSH ed25519 public key (OpenSSH format). Used by the control
+          plane to verify probe-output signatures and bind the host's mTLS
+          client cert at enrollment. `null` means the host has not been
+          enrolled yet; it appears in the fleet schema but signed artifacts
+          from it cannot be verified.
+        '';
+      };
     };
   };
 
@@ -352,9 +363,14 @@
 
       resolved = {
         schemaVersion = 1;
+        meta = {
+          schemaVersion = 1;
+          signedAt = null;
+          ciCommit = null;
+        };
         hosts =
           lib.mapAttrs (_: h: {
-            inherit (h) system tags channel;
+            inherit (h) system tags channel pubkey;
             closureHash = null; # CI fills this in from h.configuration.config.system.build.toplevel
           })
           cfg.hosts;
@@ -385,7 +401,17 @@
       };
     in
       builtins.seq emittedWarnings resolved;
+
+  withSignature = {
+    signedAt,
+    ciCommit,
+  }: resolved:
+    resolved
+    // {
+      meta = resolved.meta // {inherit signedAt ciCommit;};
+    };
 in {
+  inherit withSignature;
   mkFleet = input: let
     evaluated = lib.evalModules {
       modules = [
