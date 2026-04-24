@@ -75,8 +75,10 @@
         {
           "selector": {
             "all": true,
+            "and": [],
             "channel": null,
             "hosts": [],
+            "not": null,
             "tags": [],
             "tagsAny": []
           },
@@ -96,8 +98,10 @@
         {
           "selector": {
             "all": false,
+            "and": [],
             "channel": null,
             "hosts": [],
+            "not": null,
             "tags": ["workstation"],
             "tagsAny": []
           },
@@ -106,8 +110,10 @@
         {
           "selector": {
             "all": false,
+            "and": [],
             "channel": null,
             "hosts": [],
+            "not": null,
             "tags": ["always-on"],
             "tagsAny": []
           },

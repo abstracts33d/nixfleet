@@ -7,5 +7,5 @@
 in {
   mkHost = import ./mk-host.nix {inherit inputs lib;};
   mkVmApps = import ./mk-vm-apps.nix {inherit inputs;};
-  inherit (mkFleetImpl) mkFleet withSignature;
+  inherit (mkFleetImpl) mkFleet mergeFleets withSignature;
 }

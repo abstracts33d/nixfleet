@@ -8,6 +8,9 @@
   inherit (lib) mkOption types;
 
   # --- Selector algebra (RFC-0001 §3) ---
+  # Variants evaluated in precedence order: `not` > `and` > base OR over
+  # (tags, tagsAny, hosts, channel, all). `not` and `and` are recursive —
+  # selectors compose to arbitrary set algebra.
   selectorType = types.submodule {
     options = {
       tags = mkOption {
@@ -31,6 +34,16 @@
       all = mkOption {
         type = types.bool;
         default = false;
+      };
+      and = mkOption {
+        type = types.listOf selectorType;
+        default = [];
+        description = "Host matches ALL listed sub-selectors (intersection).";
+      };
+      not = mkOption {
+        type = types.nullOr selectorType;
+        default = null;
+        description = "Host matches iff it does NOT match the given sub-selector (negation).";
       };
     };
   };
@@ -240,18 +253,23 @@
     (scan nodes).cycle;
 
   # --- Selector resolution: selector × hosts → [host-name] ---
+  # Variant precedence (RFC-0001 §3): `not` > `and` > base OR composition.
+  # Base OR = host matches iff any of tags/tagsAny/hosts/channel/all matches.
   resolveSelector = sel: hosts: let
     names = lib.attrNames hosts;
-    matches = n: let
-      h = hosts.${n};
-    in
-      sel.all
-      || (sel.hosts != [] && builtins.elem n sel.hosts)
-      || (sel.channel != null && h.channel == sel.channel)
-      || (sel.tags != [] && lib.all (t: builtins.elem t h.tags) sel.tags)
-      || (sel.tagsAny != [] && lib.any (t: builtins.elem t h.tags) sel.tagsAny);
+    matchHost = s: n: h:
+      if s.not != null
+      then !(matchHost s.not n h)
+      else if s.and != []
+      then lib.all (sub: matchHost sub n h) s.and
+      else
+        s.all
+        || (s.hosts != [] && builtins.elem n s.hosts)
+        || (s.channel != null && h.channel == s.channel)
+        || (s.tags != [] && lib.all (t: builtins.elem t h.tags) s.tags)
+        || (s.tagsAny != [] && lib.any (t: builtins.elem t h.tags) s.tagsAny);
   in
-    builtins.filter matches names;
+    builtins.filter (n: matchHost sel n hosts.${n}) names;
 
   # --- Invariant checks (RFC-0001 §4.2) ---
   checkInvariants = cfg: let
@@ -426,8 +444,6 @@
         // {inherit signedAt ciCommit;}
         // lib.optionalAttrs (signatureAlgorithm != null) {inherit signatureAlgorithm;};
     };
-in {
-  inherit withSignature;
   mkFleet = input: let
     evaluated = lib.evalModules {
       modules = [
@@ -472,4 +488,49 @@ in {
     };
   in
     evaluated.config // {resolved = resolveFleet evaluated.config;};
+
+  # --- Composition (RFC-0001 §5) ---
+  # Merge a list of mkFleet-input attrsets into a single fleet value.
+  # Precedence rules:
+  #   - hosts / tags / channels: strict merge — same name across inputs throws.
+  #   - rolloutPolicies: later wins (associative, not commutative per RFC §5).
+  #   - edges / disruptionBudgets: concatenated (no dedup; order preserved).
+  #   - complianceFrameworks: union of whatever each input specified; if no
+  #     input declared any, the mkFleet default list applies.
+  mergeFleets = fleetInputs: let
+    mergeStrict = kind: a: b:
+      lib.foldl' (
+        acc: name:
+          if acc ? ${name}
+          then throw "mergeFleets: ${kind} '${name}' is defined in multiple inputs"
+          else acc // {${name} = b.${name};}
+      )
+      a (lib.attrNames b);
+    step = acc: input: {
+      hosts = mergeStrict "host" acc.hosts (input.hosts or {});
+      tags = mergeStrict "tag" acc.tags (input.tags or {});
+      channels = mergeStrict "channel" acc.channels (input.channels or {});
+      rolloutPolicies = acc.rolloutPolicies // (input.rolloutPolicies or {});
+      edges = acc.edges ++ (input.edges or []);
+      disruptionBudgets = acc.disruptionBudgets ++ (input.disruptionBudgets or []);
+    };
+    empty = {
+      hosts = {};
+      tags = {};
+      channels = {};
+      rolloutPolicies = {};
+      edges = [];
+      disruptionBudgets = [];
+    };
+    merged = lib.foldl' step empty fleetInputs;
+    specifiedFrameworks = lib.concatMap (i: i.complianceFrameworks or []) fleetInputs;
+  in
+    mkFleet (
+      merged
+      // lib.optionalAttrs (specifiedFrameworks != []) {
+        complianceFrameworks = lib.unique specifiedFrameworks;
+      }
+    );
+in {
+  inherit mkFleet mergeFleets withSignature;
 }

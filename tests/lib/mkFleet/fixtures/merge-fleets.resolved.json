@@ -1,5 +1,15 @@
 {
   "channels": {
+    "edge": {
+      "compliance": {
+        "frameworks": [],
+        "strict": true
+      },
+      "freshnessWindow": 240,
+      "reconcileIntervalMinutes": 30,
+      "rolloutPolicy": "all",
+      "signingIntervalMinutes": 60
+    },
     "stable": {
       "compliance": {
         "frameworks": [],
@@ -7,19 +17,37 @@
       },
       "freshnessWindow": 180,
       "reconcileIntervalMinutes": 30,
-      "rolloutPolicy": "emptyish",
+      "rolloutPolicy": "all",
       "signingIntervalMinutes": 60
     }
   },
-  "disruptionBudgets": [],
+  "disruptionBudgets": [
+    {
+      "hosts": ["paris-1"],
+      "maxInFlight": 1,
+      "maxInFlightPct": null
+    },
+    {
+      "hosts": ["lyon-1"],
+      "maxInFlight": 1,
+      "maxInFlightPct": null
+    }
+  ],
   "edges": [],
   "hosts": {
-    "m": {
+    "lyon-1": {
+      "channel": "edge",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": ["lyon", "eu-fr"]
+    },
+    "paris-1": {
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": ["role-a"]
+      "tags": ["paris", "eu-fr"]
     }
   },
   "meta": {
@@ -28,23 +56,11 @@
     "signedAt": null
   },
   "rolloutPolicies": {
-    "emptyish": {
+    "all": {
       "healthGate": {},
       "onHealthFailure": "rollback-and-halt",
-      "strategy": "canary",
+      "strategy": "all-at-once",
       "waves": [
-        {
-          "selector": {
-            "all": false,
-            "and": [],
-            "channel": null,
-            "hosts": [],
-            "not": null,
-            "tags": ["role-b"],
-            "tagsAny": []
-          },
-          "soakMinutes": 10
-        },
         {
           "selector": {
             "all": true,
@@ -62,13 +78,15 @@
   },
   "schemaVersion": 1,
   "waves": {
+    "edge": [
+      {
+        "hosts": ["lyon-1", "paris-1"],
+        "soakMinutes": 0
+      }
+    ],
     "stable": [
       {
-        "hosts": [],
-        "soakMinutes": 10
-      },
-      {
-        "hosts": ["m"],
+        "hosts": ["lyon-1", "paris-1"],
         "soakMinutes": 0
       }
     ]

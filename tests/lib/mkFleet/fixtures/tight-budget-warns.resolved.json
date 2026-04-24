@@ -116,8 +116,10 @@
         {
           "selector": {
             "all": true,
+            "and": [],
             "channel": null,
             "hosts": [],
+            "not": null,
             "tags": [],
             "tagsAny": []
           },
