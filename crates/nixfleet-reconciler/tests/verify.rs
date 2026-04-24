@@ -358,7 +358,11 @@ fn sign_p256(canonical_bytes: &[u8]) -> ([u8; 64], TrustedPubkey) {
     // Encode public key as 64-byte X||Y (no 0x04 tag) per CONTRACTS.md §II #1.
     let tagged = verifying_key.to_encoded_point(false);
     let tagged_bytes = tagged.as_bytes();
-    assert_eq!(tagged_bytes.len(), 65, "uncompressed SEC1 point is 65 bytes");
+    assert_eq!(
+        tagged_bytes.len(),
+        65,
+        "uncompressed SEC1 point is 65 bytes"
+    );
     assert_eq!(tagged_bytes[0], 0x04, "SEC1 uncompressed tag");
     let public_bytes: &[u8] = &tagged_bytes[1..];
     let public_b64 = BASE64_STANDARD.encode(public_bytes);

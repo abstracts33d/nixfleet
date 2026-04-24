@@ -58,8 +58,7 @@ fn invalid_json_is_rejected() {
 /// That failure IS the cross-stream drift alarm working.
 #[test]
 fn stream_b_jcs_golden_round_trips_byte_identical() {
-    const STREAM_B_GOLDEN: &str =
-        include_str!("fixtures/stream-b/jcs-golden.json");
+    const STREAM_B_GOLDEN: &str = include_str!("fixtures/stream-b/jcs-golden.json");
 
     let produced = canonicalize(STREAM_B_GOLDEN).expect("canonicalize Stream B golden");
 

@@ -221,8 +221,7 @@ fn verify_ecdsa_p256(
         }
     })?;
 
-    let sig =
-        P256Signature::from_slice(signature).map_err(|_| VerifyError::BadSignature)?;
+    let sig = P256Signature::from_slice(signature).map_err(|_| VerifyError::BadSignature)?;
 
     // Reject malleable (high-s) signatures.
     if sig.normalize_s().is_some() {
