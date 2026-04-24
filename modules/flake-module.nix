@@ -14,6 +14,8 @@
 }: let
   nixfleetLib = import ./_shared/lib/default.nix {inherit inputs lib;};
 in {
+  imports = [../lib/flake-module.nix];
+
   options.nixfleet.lib = lib.mkOption {
     type = lib.types.attrs;
     default = nixfleetLib;
