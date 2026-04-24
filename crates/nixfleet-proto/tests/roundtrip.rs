@@ -73,3 +73,19 @@ fn stream_b_empty_selector_parses_and_canonicalizes() {
     let canonical = canonicalize(&reserialized).expect("canonicalize");
     assert!(!canonical.is_empty());
 }
+
+#[test]
+fn unknown_fields_at_any_level_are_ignored() {
+    let input = load("every-nullable.json");
+    let mut value: serde_json::Value = serde_json::from_str(&input).unwrap();
+    value["futureTopLevelField"] = serde_json::json!("v2-preview");
+    value["hosts"]["h1"]["unknownPerHostField"] = serde_json::json!(42);
+    value["meta"]["unknownMetaField"] = serde_json::json!(true);
+
+    let injected = serde_json::to_string(&value).unwrap();
+    let parsed: FleetResolved = serde_json::from_str(&injected)
+        .expect("unknown fields must parse (CONTRACTS §V forward compat)");
+
+    assert_eq!(parsed.schema_version, 1);
+    assert_eq!(parsed.hosts.len(), 1);
+}
