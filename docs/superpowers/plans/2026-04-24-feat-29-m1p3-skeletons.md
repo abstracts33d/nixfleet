@@ -235,11 +235,128 @@ already runs x86_64-linux + agenix for secrets. Simplified agent-test
 to the v0.2 surface (controlPlaneUrl + trust declaration)."
 ```
 
-### Task 1.5 — Extend `nixfleet-proto` with `TrustConfig`
+### Task 1.5 — Extend `nixfleet-proto` with `TrustConfig` + patch `Channel` freshness-window unit
 
-**Files:** modify `crates/nixfleet-proto/src/lib.rs`, `crates/nixfleet-proto/src/trust.rs`; create `crates/nixfleet-proto/tests/trust_config.rs`.
+**Files:** modify `crates/nixfleet-proto/src/lib.rs`, `crates/nixfleet-proto/src/trust.rs`, `crates/nixfleet-proto/src/fleet_resolved.rs`; create `crates/nixfleet-proto/tests/trust_config.rs`; extend `crates/nixfleet-proto/tests/roundtrip.rs`.
 
-- [ ] **Step 1: Write the failing test for `TrustConfig` round-trip**
+**Latent unit landmine being fixed.** `crates/nixfleet-proto/src/fleet_resolved.rs:44` declares `pub freshness_window: u32` with no unit suffix. Sibling fields `signing_interval_minutes` and `reconcile_interval_minutes` are explicit. `lib/mkFleet.nix:120–127` docstring says "Minutes"; homelab fixture uses `180` (3 h) and `20160` (2 w). A reader who passes `chan.freshness_window` to `Duration::from_secs(_ as u64)` gets a 60× smaller window silently. Fix below adds a `Channel::freshness_window_duration()` helper and a doc comment so no caller trips. Lands in the same commit as `TrustConfig` (single-touch proto rule).
+
+- [ ] **Step 1a: Write the failing test for `Channel::freshness_window_duration()` (unit landmine)**
+
+Append to `crates/nixfleet-proto/tests/roundtrip.rs`:
+
+```rust
+#[test]
+fn channel_freshness_window_duration_converts_minutes_to_seconds() {
+    use std::time::Duration;
+    // homelab 'stable' channel: 180-minute window = 3 hours = 10_800 seconds.
+    let bytes = include_str!("fixtures/homelab-fleet-resolved.json");
+    let fleet: nixfleet_proto::FleetResolved = serde_json::from_str(bytes).unwrap();
+    let stable = fleet.channels.get("stable").expect("stable channel");
+    assert_eq!(stable.freshness_window, 180, "fixture invariant");
+    assert_eq!(
+        stable.freshness_window_duration(),
+        Duration::from_secs(10_800),
+        "180 minutes converted to seconds"
+    );
+    // 'edge-slow': 20_160 minutes = 2 weeks.
+    let edge = fleet.channels.get("edge-slow").expect("edge-slow channel");
+    assert_eq!(
+        edge.freshness_window_duration(),
+        Duration::from_secs(20_160 * 60)
+    );
+}
+```
+
+If `crates/nixfleet-proto/tests/fixtures/homelab-fleet-resolved.json` does not exist, find the nearest existing fixture with these channels (likely created by PR #17/#19) and adjust the path. If none exists, create a minimal fixture inline in the test:
+
+```rust
+#[test]
+fn channel_freshness_window_duration_converts_minutes_to_seconds() {
+    use std::time::Duration;
+    let json = r#"{
+        "schemaVersion": 1,
+        "meta": { "signedAt": null, "ciCommit": null, "signatureAlgorithm": null },
+        "channels": {
+            "stable": {
+                "rolloutPolicy": "canary",
+                "reconcileIntervalMinutes": 30,
+                "freshnessWindow": 180,
+                "signingIntervalMinutes": 60,
+                "compliance": { "strict": true, "frameworks": [] }
+            }
+        },
+        "hosts": {},
+        "rolloutPolicies": {},
+        "edges": [],
+        "disruptionBudgets": {},
+        "trust": {}
+    }"#;
+    let fleet: nixfleet_proto::FleetResolved = serde_json::from_str(json).unwrap();
+    let stable = fleet.channels.get("stable").unwrap();
+    assert_eq!(stable.freshness_window_duration(), Duration::from_secs(10_800));
+}
+```
+
+Pick whichever shape matches the crate's existing fixtures — peek at `crates/nixfleet-proto/tests/` to decide.
+
+- [ ] **Step 1b: Run test — expect compile failure on the missing helper**
+
+```bash
+cargo test -p nixfleet-proto --test roundtrip channel_freshness_window_duration 2>&1 | tail -10
+```
+
+Expected: compile error — `freshness_window_duration` does not exist.
+
+- [ ] **Step 1c: Add doc comment + helper to `Channel`**
+
+In `crates/nixfleet-proto/src/fleet_resolved.rs`, replace the `Channel` struct's `freshness_window` field declaration:
+
+```rust
+pub struct Channel {
+    pub rollout_policy: String,
+    pub reconcile_interval_minutes: u32,
+
+    /// Minutes a signed `fleet.resolved` is accepted by consumers after
+    /// `meta.signedAt`. Matches `lib/mkFleet.nix`'s declarative unit (the
+    /// sibling `*_interval_minutes` fields make this pattern explicit
+    /// there; the name here predates that convention and is kept for
+    /// wire-compat — convert via [`Channel::freshness_window_duration`]).
+    ///
+    /// `lib/mkFleet.nix` enforces `freshness_window ≥ 2 × signing_interval_minutes`
+    /// at eval time, so a value of `0` cannot reach the wire.
+    pub freshness_window: u32,
+
+    pub signing_interval_minutes: u32,
+    pub compliance: Compliance,
+}
+```
+
+And add an impl block just below the struct:
+
+```rust
+impl Channel {
+    /// Returns `freshness_window` as a [`std::time::Duration`].
+    ///
+    /// The underlying field carries MINUTES (see the field doc); passing
+    /// it directly to `Duration::from_secs` would silently shrink the
+    /// window by 60×. Call this helper at the seam between proto and any
+    /// `Duration`-consuming API (`verify_artifact`, tick handlers, …).
+    pub fn freshness_window_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.freshness_window as u64 * 60)
+    }
+}
+```
+
+- [ ] **Step 1d: Run tests — confirm the unit helper passes + all existing round-trip tests stay green**
+
+```bash
+cargo test -p nixfleet-proto 2>&1 | tail -10
+```
+
+Expected: pre-existing roundtrip tests + the new unit test pass.
+
+- [ ] **Step 2: Write the failing test for `TrustConfig` round-trip**
 
 Create `crates/nixfleet-proto/tests/trust_config.rs`:
 
@@ -320,7 +437,7 @@ fn trust_config_rejects_missing_schema_version() {
 }
 ```
 
-- [ ] **Step 2: Run tests to confirm they fail**
+- [ ] **Step 3: Run tests to confirm they fail**
 
 ```bash
 cargo test -p nixfleet-proto --test trust_config 2>&1 | tail -20
@@ -328,7 +445,7 @@ cargo test -p nixfleet-proto --test trust_config 2>&1 | tail -20
 
 Expected: compile error on `TrustConfig`, `KeySlot`, `AtticKeySlot` — types don't exist.
 
-- [ ] **Step 3: Implement `TrustConfig`, `KeySlot`, `AtticKeySlot`**
+- [ ] **Step 4: Implement `TrustConfig`, `KeySlot`, `AtticKeySlot`**
 
 Append to `crates/nixfleet-proto/src/trust.rs`:
 
@@ -428,7 +545,7 @@ serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 ```
 
-- [ ] **Step 4: Run tests to confirm pass**
+- [ ] **Step 5: Run tests to confirm pass**
 
 ```bash
 cargo test -p nixfleet-proto --test trust_config 2>&1 | tail -10
@@ -442,21 +559,28 @@ Also run the full proto test suite:
 cargo test -p nixfleet-proto 2>&1 | tail -10
 ```
 
-Expected: all pre-existing proto tests plus these 5 pass.
+Expected: all pre-existing proto tests + the unit-landmine test (Step 1a) + the 5 `TrustConfig` tests all pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add crates/nixfleet-proto
-git commit -m "feat(proto)(#29): add TrustConfig + KeySlot + AtticKeySlot
+git commit -m "feat(proto)(#29): TrustConfig + KeySlot + AtticKeySlot; Channel freshness_window MINUTES helper
 
-Shape per docs/trust-root-flow.md §3.4. schemaVersion is required
-(§7.4) — TrustConfig::CURRENT_SCHEMA_VERSION is the only version this
-crate parses; binaries gate on it at startup.
+TrustConfig shape per docs/trust-root-flow.md §3.4. schemaVersion is
+required (§7.4) — TrustConfig::CURRENT_SCHEMA_VERSION is the only
+version this crate parses; binaries gate on it at startup.
 
 KeySlot::active_keys(&self) takes no 'now' and does not filter on
-rejectBefore (coordinator's delta). rejectBefore enforcement lives in
-verify_artifact (next commit)."
+rejectBefore (coordinator's delta). rejectBefore enforcement lives
+in verify_artifact (next commit).
+
+Latent unit landmine: Channel.freshness_window is declared in MINUTES
+by lib/mkFleet.nix but lacked a _minutes suffix in proto. Added a
+doc-comment on the field and a Channel::freshness_window_duration()
+helper so callers cannot accidentally pass the raw u32 into
+Duration::from_secs. Test asserts 180 minutes → 10_800 seconds via
+the helper; preserves the existing wire field name for compat."
 ```
 
 ### Task 1.6 — Extend `verify_artifact` with `reject_before`
