@@ -27,6 +27,12 @@
       meta.description = "NixFleet fleet management CLI";
     };
 
+    apps.nixfleet-canonicalize = {
+      type = "app";
+      program = "${workspace.packages.nixfleet-canonicalize}/bin/nixfleet-canonicalize";
+      meta.description = "JCS canonicalizer — invoked by CI before signing (CONTRACTS.md §III)";
+    };
+
     devShells.default = craneLib.devShell {
       checks = workspace.checks;
       packages = with pkgs; [
