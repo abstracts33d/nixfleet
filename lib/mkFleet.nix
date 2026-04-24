@@ -178,7 +178,23 @@
       )
       cfg.edges;
 
-    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors;
+    configurationErrors =
+      lib.concatMap (
+        n: let
+          h = cfg.hosts.${n};
+          isValid =
+            builtins.isAttrs h.configuration
+            && h.configuration ? config
+            && h.configuration.config ? system
+            && h.configuration.config.system ? build
+            && h.configuration.config.system.build ? toplevel;
+        in
+          lib.optional (!isValid)
+          "host '${n}' configuration is not a valid nixosConfiguration (missing config.system.build.toplevel)"
+      )
+      hostNames;
+
+    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ configurationErrors;
   in
     if errs == []
     then true
