@@ -54,17 +54,22 @@ outputs = { self, nixpkgs, nixfleet, ... }: {
     # Pinned to a git ref at reconcile time (see issue #3).
     # ------------------------------------------------------------
     channels.stable = {
-      description = "Main production channel.";
-      rolloutPolicy = "canary-conservative";
+      description            = "Main production channel.";
+      rolloutPolicy          = "canary-conservative";
+      signingIntervalMinutes = 60;       # default; listed for clarity
+      freshnessWindow        = 1440;     # 24h in minutes; REQUIRED, no default
+                                          #   — invariant: ≥ 2 × signingIntervalMinutes
       compliance = {
-        strict = true;
+        strict     = true;
         frameworks = [ "anssi-bp028" ];
       };
     };
     channels.edge-slow = {
-      description = "Battery-powered edge nodes; weekly reconcile.";
-      rolloutPolicy = "all-at-once";
-      reconcileIntervalMinutes = 10080;  # 7 days
+      description              = "Battery-powered edge nodes; weekly reconcile.";
+      rolloutPolicy            = "all-at-once";
+      reconcileIntervalMinutes = 10080;  # 7 days in minutes
+      signingIntervalMinutes   = 60;
+      freshnessWindow          = 20160;  # 2 weeks in minutes
     };
 
     # ------------------------------------------------------------
@@ -181,7 +186,7 @@ Shape:
 - **Verification — control plane.** On every fetch, verifies the signature against the pinned CI release public key. Signature mismatch or unknown key → refuse to reconcile the channel; emit an alert.
 - **Verification — agents (optional path).** An agent that fetches `fleet.resolved` directly (rather than receiving targets from the control plane) performs the same verification. Enables the trust-minimized bootstrap in RFC-0003 §4.
 - **Key pinning.** The CI release public key is committed to the flake (`nixfleet.trust.ciReleaseKey`) and embedded in every built closure. Key rotation is a new commit + a grace window during which both keys verify.
-- **Freshness.** Downstream consumers (RFC-0003 §7) enforce `now − meta.signedAt ≤ channel.freshnessWindow` to defend against stale-closure replay by a compromised control plane.
+- **Freshness.** Downstream consumers (RFC-0003 §7) enforce `now − meta.signedAt ≤ channel.freshnessWindow` to defend against stale-closure replay by a compromised control plane. `freshnessWindow` is declared per-channel in minutes (see §2.3); there is no implicit default and the value is part of the signed payload so a compromised control plane cannot widen it.
 
 Canonicalization uses a stable, spec-defined encoding (JCS or deterministic CBOR — final choice tracked as an open question below) so that signatures produced by Nix evaluation are byte-identical to what verifiers reconstruct.
 
