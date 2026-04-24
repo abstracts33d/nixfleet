@@ -31,7 +31,7 @@
     else "ok";
 
   listFixtures = dir:
-    lib.filter (n: lib.hasSuffix ".nix" n) (builtins.attrNames (builtins.readDir dir));
+    lib.filter (n: lib.hasSuffix ".nix" n && !(lib.hasPrefix "_" n)) (builtins.attrNames (builtins.readDir dir));
 
   positives = map (n: runPositive (./fixtures + "/${n}")) (listFixtures ./fixtures);
   negatives = map (n: runNegative (./negative + "/${n}")) (listFixtures ./negative);

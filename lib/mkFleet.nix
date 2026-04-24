@@ -202,39 +202,61 @@
 
   # --- Resolved projection (RFC-0001 §4.1) ---
   resolveFleet = cfg:
-    assert checkInvariants cfg; {
-      schemaVersion = 1;
-      hosts =
-        lib.mapAttrs (_: h: {
-          inherit (h) system tags channel;
-          closureHash = null; # CI fills this in from h.configuration.config.system.build.toplevel
-        })
-        cfg.hosts;
-      channels =
-        lib.mapAttrs (_: c: {
-          inherit (c) rolloutPolicy reconcileIntervalMinutes compliance;
-        })
-        cfg.channels;
-      rolloutPolicies = cfg.rolloutPolicies;
-      waves =
-        lib.mapAttrs (
-          _: c:
-            map (w: {
-              hosts = resolveSelector w.selector cfg.hosts;
-              soakMinutes = w.soakMinutes;
-            })
-            cfg.rolloutPolicies.${c.rolloutPolicy}.waves
+    assert checkInvariants cfg; let
+      emptySelectorWarnings =
+        lib.concatMap (
+          policyName:
+            lib.concatMap (
+              w: let
+                hosts = resolveSelector w.selector cfg.hosts;
+              in
+                lib.optional (hosts == [])
+                "rollout policy '${policyName}' has a wave with a selector that resolves to zero hosts"
+            )
+            cfg.rolloutPolicies.${policyName}.waves
         )
-        cfg.channels;
-      edges = cfg.edges;
-      disruptionBudgets =
-        map (b: {
-          hosts = resolveSelector b.selector cfg.hosts;
-          maxInFlight = b.maxInFlight;
-          maxInFlightPct = b.maxInFlightPct;
-        })
-        cfg.disruptionBudgets;
-    };
+        (lib.attrNames cfg.rolloutPolicies);
+
+      # Force the warnings side effect before returning the resolved value.
+      # `lib.warn` prints to stderr during eval and returns its second arg.
+      emittedWarnings =
+        lib.foldl' (acc: msg: lib.warn msg acc) null emptySelectorWarnings;
+
+      resolved = {
+        schemaVersion = 1;
+        hosts =
+          lib.mapAttrs (_: h: {
+            inherit (h) system tags channel;
+            closureHash = null; # CI fills this in from h.configuration.config.system.build.toplevel
+          })
+          cfg.hosts;
+        channels =
+          lib.mapAttrs (_: c: {
+            inherit (c) rolloutPolicy reconcileIntervalMinutes compliance;
+          })
+          cfg.channels;
+        rolloutPolicies = cfg.rolloutPolicies;
+        waves =
+          lib.mapAttrs (
+            _: c:
+              map (w: {
+                hosts = resolveSelector w.selector cfg.hosts;
+                soakMinutes = w.soakMinutes;
+              })
+              cfg.rolloutPolicies.${c.rolloutPolicy}.waves
+          )
+          cfg.channels;
+        edges = cfg.edges;
+        disruptionBudgets =
+          map (b: {
+            hosts = resolveSelector b.selector cfg.hosts;
+            maxInFlight = b.maxInFlight;
+            maxInFlightPct = b.maxInFlightPct;
+          })
+          cfg.disruptionBudgets;
+      };
+    in
+      builtins.seq emittedWarnings resolved;
 in {
   mkFleet = input: let
     evaluated = lib.evalModules {
