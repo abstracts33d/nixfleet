@@ -11,8 +11,21 @@
     lib,
     ...
   }: let
-    helpers = import ./_lib/helpers.nix {inherit lib pkgs;};
-    mkEvalCheck = helpers.mkEvalCheck pkgs;
+    # Build a runCommand that prints PASS/FAIL for each assertion and
+    # fails on first failure. Inlined from the now-deleted
+    # modules/tests/_lib/helpers.nix — eval.nix is the only remaining
+    # caller after v0.1 VM tests were retired (#29).
+    mkEvalCheck = name: assertions:
+      pkgs.runCommand "eval-test-${name}" {} (
+        lib.concatStringsSep "\n" (
+          map (a:
+            if a.check
+            then ''echo "PASS: ${a.msg}"''
+            else ''echo "FAIL: ${a.msg}" >&2; exit 1'')
+          assertions
+        )
+        + "\ntouch $out\n"
+      );
     nixosCfg = name: self.nixosConfigurations.${name}.config;
     darwinCfg = name: self.darwinConfigurations.${name}.config;
   in
