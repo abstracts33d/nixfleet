@@ -9,7 +9,7 @@
 }: let
   runPositive = path: let
     cfg = import path {inherit lib mkFleet;};
-    expectedPath = lib.replaceStrings [".nix"] [".resolved.json"] path;
+    expectedPath = lib.replaceStrings [".nix"] [".resolved.json"] (toString path);
     expected = builtins.fromJSON (builtins.readFile expectedPath);
     actual = cfg.resolved;
     match = builtins.toJSON actual == builtins.toJSON expected;
