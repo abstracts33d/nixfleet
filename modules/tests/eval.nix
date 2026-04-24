@@ -18,6 +18,28 @@
   in
     lib.optionalAttrs (system == "x86_64-linux") {
       checks = {
+        # --- lib/mkFleet: eval-only harness (positive + negative fixtures) ---
+        # Evaluates every fixture under tests/lib/mkFleet/{fixtures,negative}.
+        # Positive fixtures compare against golden .resolved.json files;
+        # negative fixtures are expected to throw. Each entry in `results`
+        # must be the literal string "ok" - anything else fails the check.
+        mkFleet-eval-tests = let
+          harness = import ../../tests/lib/mkFleet {inherit lib;};
+          results = harness.results;
+          allOk = lib.all (r: r == "ok") results;
+        in
+          pkgs.runCommand "mkFleet-eval-tests" {} (
+            if allOk
+            then ''
+              echo "PASS: mkFleet harness — ${toString (builtins.length results)} fixtures ok"
+              printf '%s\n' ${lib.concatMapStringsSep " " (r: ''"${r}"'') results} > $out
+            ''
+            else ''
+              echo "FAIL: mkFleet harness produced non-ok results: ${builtins.toJSON results}" >&2
+              exit 1
+            ''
+          );
+
         # --- SSH hardening (core/nixos.nix) ---
         eval-ssh-hardening = let
           cfg = nixosCfg "web-02";
