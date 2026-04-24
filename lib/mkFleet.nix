@@ -194,7 +194,17 @@
       )
       hostNames;
 
-    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ configurationErrors;
+    complianceErrors =
+      lib.concatMap (
+        channelName: let
+          c = cfg.channels.${channelName};
+          bad = lib.filter (f: !(builtins.elem f cfg.complianceFrameworks)) c.compliance.frameworks;
+        in
+          map (f: "channel '${channelName}' references unknown compliance framework '${f}'") bad
+      )
+      (lib.attrNames cfg.channels);
+
+    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ configurationErrors ++ complianceErrors;
   in
     if errs == []
     then true
@@ -286,6 +296,14 @@ in {
             disruptionBudgets = mkOption {
               type = types.listOf budgetType;
               default = [];
+            };
+            complianceFrameworks = mkOption {
+              type = types.listOf types.str;
+              default = ["anssi-bp028" "nis2" "dora" "iso27001"];
+              description = ''
+                Known compliance frameworks accepted by channel.compliance.frameworks.
+                Override only if using an out-of-tree compliance extension.
+              '';
             };
           };
         }
