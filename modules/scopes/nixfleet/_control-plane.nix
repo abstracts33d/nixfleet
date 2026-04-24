@@ -126,11 +126,14 @@ in {
             "--freshness-window-secs"
             (toString (cfg.freshnessWindowMinutes * 60))
           ];
-          StateDirectory = "nixfleet-cp";
-
-          # Read-only against everything except its own state dir;
-          # writes nothing of consequence (output is on the journal).
-          DynamicUser = true;
+          # Phase 2 runs as root and writes nothing — tmpfiles seeds
+          # observed.json once at boot, the runner only reads. DynamicUser
+          # was an earlier draft, but combined with StateDirectory it
+          # forced systemd to migrate the existing /var/lib/nixfleet-cp
+          # into /var/lib/private/nixfleet-cp on first rebuild — that
+          # rename crosses bind-mount boundaries on impermanent hosts and
+          # fails with EXDEV. Phase 3 revisits when SQLite write state
+          # is introduced.
           ProtectSystem = "strict";
           ProtectHome = true;
           PrivateTmp = true;
@@ -142,18 +145,17 @@ in {
           RestrictAddressFamilies = ["AF_UNIX"];
           # Reconciler is pure CPU + file reads — no network.
           PrivateNetwork = true;
-          # Keeps the StateDirectory writable for future Phase 3 use;
-          # Phase 2 itself doesn't need to write there.
-          ReadWritePaths = ["/var/lib/nixfleet-cp"];
         };
       };
 
-      # First-deploy auto-bootstrap of observed.json. tmpfiles `C+ … - <src>`
-      # copies from `<src>` only if `<target>` does not already exist —
-      # subsequent rebuilds leave operator-written content untouched.
+      # First-deploy auto-bootstrap of observed.json. tmpfiles type `C`
+      # (without the `+` modifier) copies from the seed path only if the
+      # target does not already exist — operator edits to observed.json
+      # survive rebuilds. The `d` rule ensures the parent directory
+      # exists before the copy attempts.
       systemd.tmpfiles.rules = [
         "d /var/lib/nixfleet-cp 0755 root root -"
-        "C+ ${cfg.observedPath} 0644 root root - ${initialObservedJson}"
+        "C ${cfg.observedPath} 0644 root root - ${initialObservedJson}"
       ];
 
       systemd.timers.nixfleet-control-plane = {
