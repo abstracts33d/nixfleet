@@ -34,7 +34,7 @@ Streams referenced:
 1. JCS bytes match the canonicalized payload.
 2. `meta.signatureAlgorithm` (default `"ed25519"`) matches the algorithm of the pinned `nixfleet.trust.ciReleaseKey`.
 3. Signature verifies against the pinned `nixfleet.trust.ciReleaseKey` using the declared algorithm.
-4. `(now − meta.signedAt) ≤ channel.freshnessWindow`.
+4. `(now − meta.signedAt) ≤ channel.freshnessWindow` (units: minutes; see RFC-0001 §4.1).
 5. `meta.schemaVersion` is within the consumer's accepted range.
 
 ### 2. Wire protocol (agent ↔ control plane)

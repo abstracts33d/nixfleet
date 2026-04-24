@@ -14,7 +14,7 @@ This RFC specifies its state machines and decision procedure. Implementation lan
 
 **Inputs, read each reconcile tick:**
 
-- `fleet.resolved` — the desired state JSON from RFC-0001. **Signature-verified** against the pinned CI release key (RFC-0001 §4.3) before any field is read. A failed verification aborts the tick and raises an alert; the previously-verified `fleet.resolved` stays authoritative. Signatures that verify but predate `channel.freshnessWindow` are likewise rejected, preventing a compromised control plane from replaying old intent.
+- `fleet.resolved` — the desired state JSON from RFC-0001. **Signature-verified** against the pinned CI release key (RFC-0001 §4.3) before any field is read. A failed verification aborts the tick and raises an alert; the previously-verified `fleet.resolved` stays authoritative. Signatures that verify but predate `channel.freshnessWindow` (minutes, per-channel; RFC-0001 §2.3) are likewise rejected, preventing a compromised control plane from replaying old intent.
 - `channel refs` — current git ref per channel (from issue #3).
 - `observed state` — per-host {current generation hash, last check-in timestamp, last reported health, last compliance probe result, current rollout membership}.
 - `rollout history` — active and recently completed rollouts with their state.
@@ -100,8 +100,9 @@ On each reconcile tick (periodic: default 30s; event-triggered: on agent check-i
 ```
 0.  Fetch fleet.resolved + signature; verify signature against pinned CI
     release key; reject if signature invalid OR
-    (now − meta.signedAt) > channel.freshnessWindow. On rejection: abort
-    tick, keep last-verified snapshot, emit alert.
+    (now − meta.signedAt) > channel.freshnessWindow  (minutes; per-channel,
+    no default — RFC-0001 §2.3). On rejection: abort tick, keep
+    last-verified snapshot, emit alert.
 1.  Load verified fleet.resolved, observed state, active rollouts.
 2.  For each channel c:
       a. If channels[c].ref differs from lastRolledRef[c]:
