@@ -1,0 +1,76 @@
+# tests/harness/nodes/agent.nix
+#
+# Agent microVM node for the harness.
+#
+# Stub behavior: at boot, curl the CP's /fleet.resolved.json over mTLS and
+# log meta.signedAt via systemd. A successful fetch is recorded as a
+# `harness-agent-ok` journal line that the scenario testScript greps for.
+#
+# TODO(5): once the v0.2 agent skeleton lands, replace the curl+jq unit
+# with `services.nixfleet-agent` pointing at the harness CP. The mTLS
+# wiring, controlPlaneHost/Port args, and the "successful fetch" signal
+# stay the same — only the binary changes.
+#
+# TODO(5): Stream C's p256 signature verify path plugs in right here:
+# once `meta.signatureAlgorithm` is populated, the agent must refuse to
+# apply when the signature does not verify. For now we only log signedAt;
+# the assertion is a placeholder that always passes if the JSON parses.
+{
+  lib,
+  pkgs,
+  testCerts,
+  controlPlaneHost,
+  controlPlanePort,
+  harnessMicrovmDefaults,
+  agentHostName,
+  ...
+}: {
+  microvm = harnessMicrovmDefaults;
+
+  environment.etc = {
+    "nixfleet-harness/ca.pem".source = "${testCerts}/ca.pem";
+    "nixfleet-harness/${agentHostName}-cert.pem".source = "${testCerts}/${agentHostName}-cert.pem";
+    "nixfleet-harness/${agentHostName}-key.pem".source = "${testCerts}/${agentHostName}-key.pem";
+  };
+
+  systemd.services.harness-agent = {
+    description = "Nixfleet harness agent stub (fetches fleet.resolved.json)";
+    wantedBy = ["multi-user.target"];
+    after = ["network.target"];
+    path = [pkgs.curl pkgs.jq pkgs.coreutils];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      # The `harness-agent-ok` marker is what the scenario greps on.
+      # Emit it only when both the curl and the jq parse succeed.
+      ExecStart = pkgs.writeShellScript "harness-agent-fetch" ''
+        set -euo pipefail
+
+        url="https://${controlPlaneHost}:${toString controlPlanePort}/"
+        resp=$(mktemp)
+        trap 'rm -f "$resp"' EXIT
+
+        echo "harness-agent: fetching $url" >&2
+        curl -sf \
+          --cacert /etc/nixfleet-harness/ca.pem \
+          --cert /etc/nixfleet-harness/${agentHostName}-cert.pem \
+          --key /etc/nixfleet-harness/${agentHostName}-key.pem \
+          --resolve "cp:${toString controlPlanePort}:${controlPlaneHost}" \
+          --connect-timeout 30 \
+          --max-time 60 \
+          "$url" > "$resp"
+
+        signed_at=$(jq -r '.meta.signedAt // "null"' < "$resp")
+        algo=$(jq -r '.meta.signatureAlgorithm // "null"' < "$resp")
+        echo "harness-agent-ok: signedAt=$signed_at signatureAlgorithm=$algo" >&2
+
+        # TODO(5): invoke Stream C's p256 verify step here once the meta
+        # signature block is populated. For the scaffold we just log.
+      '';
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+  };
+
+  system.stateVersion = lib.mkDefault "24.11";
+}
