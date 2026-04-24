@@ -57,6 +57,11 @@ pub struct TrustedPubkey {
 ///
 /// Reload model: restart-only (§7.1). No SIGHUP, no inotify.
 ///
+/// Field order here is human-readable (schema first, then the three trust
+/// categories), not JCS-sorted. `trust.json` is a consumer-local file,
+/// never a signed artifact, so serde's declaration-order serialisation
+/// does not need to match `nixfleet_canonicalize` output.
+///
 /// [flow]: ../../../docs/trust-root-flow.md
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,8 +108,15 @@ impl KeySlot {
     /// Returns the active key list for this slot. Both `current` and
     /// `previous` are returned unconditionally when present.
     ///
+    /// Order is `[current, previous]`. First-match callers (including
+    /// `verify_artifact`'s iteration) see the newer key first, which is
+    /// load-bearing for the rotation semantics in
+    /// [`docs/trust-root-flow.md §6`][flow].
+    ///
     /// Signature per coordinator's context update: no `now` parameter;
     /// `reject_before` filtering happens inside `verify_artifact`.
+    ///
+    /// [flow]: ../../../docs/trust-root-flow.md
     pub fn active_keys(&self) -> Vec<TrustedPubkey> {
         let mut keys = Vec::with_capacity(2);
         if let Some(k) = &self.current {
