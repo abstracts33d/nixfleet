@@ -97,6 +97,18 @@
       };
     });
 
+  nixfleet-canonicalize = craneLib.buildPackage (commonArgs
+    // {
+      pname = "nixfleet-canonicalize";
+      cargoExtraArgs = "-p nixfleet-canonicalize";
+      src = fileSetForCrate {crate = ./crates/nixfleet-canonicalize;};
+      meta = {
+        description = "JCS (RFC 8785) canonicalizer pinned per CONTRACTS.md §III";
+        license = lib.licenses.asl20;
+        mainProgram = "nixfleet-canonicalize";
+      };
+    });
+
   # Layer 3: workspace tests - one run covering all crates.
   workspace-tests = craneLib.cargoTest {
     inherit cargoArtifacts;
@@ -106,6 +118,6 @@
     cargoExtraArgs = "--workspace --locked";
   };
 in {
-  packages = {inherit nixfleet-agent nixfleet-control-plane nixfleet-cli;};
+  packages = {inherit nixfleet-agent nixfleet-control-plane nixfleet-cli nixfleet-canonicalize;};
   checks = {inherit workspace-tests;};
 }
