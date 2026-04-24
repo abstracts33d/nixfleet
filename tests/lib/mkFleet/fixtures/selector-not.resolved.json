@@ -7,19 +7,33 @@
       },
       "freshnessWindow": 180,
       "reconcileIntervalMinutes": 30,
-      "rolloutPolicy": "emptyish",
+      "rolloutPolicy": "skip-deprecated",
       "signingIntervalMinutes": 60
     }
   },
   "disruptionBudgets": [],
   "edges": [],
   "hosts": {
-    "m": {
+    "a": {
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": ["role-a"]
+      "tags": ["web"]
+    },
+    "b": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": ["web", "deprecated"]
+    },
+    "c": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": ["web"]
     }
   },
   "meta": {
@@ -28,10 +42,10 @@
     "signedAt": null
   },
   "rolloutPolicies": {
-    "emptyish": {
+    "skip-deprecated": {
       "healthGate": {},
       "onHealthFailure": "rollback-and-halt",
-      "strategy": "canary",
+      "strategy": "all-at-once",
       "waves": [
         {
           "selector": {
@@ -39,19 +53,15 @@
             "and": [],
             "channel": null,
             "hosts": [],
-            "not": null,
-            "tags": ["role-b"],
-            "tagsAny": []
-          },
-          "soakMinutes": 10
-        },
-        {
-          "selector": {
-            "all": true,
-            "and": [],
-            "channel": null,
-            "hosts": [],
-            "not": null,
+            "not": {
+              "all": false,
+              "and": [],
+              "channel": null,
+              "hosts": [],
+              "not": null,
+              "tags": ["deprecated"],
+              "tagsAny": []
+            },
             "tags": [],
             "tagsAny": []
           },
@@ -64,11 +74,7 @@
   "waves": {
     "stable": [
       {
-        "hosts": [],
-        "soakMinutes": 10
-      },
-      {
-        "hosts": ["m"],
+        "hosts": ["a", "c"],
         "soakMinutes": 0
       }
     ]

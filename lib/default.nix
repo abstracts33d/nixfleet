@@ -6,5 +6,5 @@
 {lib}: let
   impl = import ./mkFleet.nix {inherit lib;};
 in {
-  inherit (impl) mkFleet withSignature;
+  inherit (impl) mkFleet mergeFleets withSignature;
 }

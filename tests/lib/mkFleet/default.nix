@@ -5,10 +5,13 @@
 # Each .nix file under ./negative/ is expected to `throw` a specific error.
 {
   lib,
-  mkFleet ? (import ../../../lib/mkFleet.nix {inherit lib;}).mkFleet,
+  impl ? import ../../../lib/mkFleet.nix {inherit lib;},
 }: let
+  inherit (impl) mkFleet mergeFleets;
+  fixtureArgs = {inherit lib mkFleet mergeFleets;};
+
   runPositive = path: let
-    cfg = import path {inherit lib mkFleet;};
+    cfg = import path fixtureArgs;
     expectedPath = lib.replaceStrings [".nix"] [".resolved.json"] (toString path);
     expected = builtins.fromJSON (builtins.readFile expectedPath);
     actual = cfg.resolved;
@@ -24,7 +27,7 @@
       '';
 
   runNegative = path: let
-    result = builtins.tryEval (import path {inherit lib mkFleet;}).resolved;
+    result = builtins.tryEval (import path fixtureArgs).resolved;
   in
     if result.success
     then throw "expected eval failure for ${toString path}, got success"
