@@ -16,7 +16,7 @@ nix develop  # enters the dev shell with Rust toolchain, cargo, rustfmt, clippy
 
 ## Project Structure
 
-See [README.md](README.md#layout) for the directory layout.
+See [README.md](README.md#architecture) for the directory layout.
 
 ## Running Tests
 
