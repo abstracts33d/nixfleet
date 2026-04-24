@@ -77,6 +77,20 @@ pub enum VerifyError {
 /// will decide whether to accept raw r||s (64 bytes) or DER-encoded
 /// (variable) — for now, non-ed25519 algorithms bail with
 /// `UnsupportedAlgorithm`.
+///
+/// # Compromise switch
+///
+/// `reject_before` is the slot-wide compromise kill-switch per
+/// [`docs/trust-root-flow.md §7.2`][flow] / `CONTRACTS.md §II #1`.
+/// When `Some(ts)`, any artifact whose `meta.signedAt < ts` is rejected
+/// with [`VerifyError::RejectedBeforeTimestamp`] regardless of which
+/// trust root matched the signature. `None` disables the gate. The
+/// check fires before the `freshness_window` check so alerts can
+/// distinguish an operator-declared incident response from routine
+/// staleness. The comparison is strict `<` — an artifact signed
+/// exactly at `reject_before` is accepted.
+///
+/// [flow]: ../../../docs/trust-root-flow.md
 pub fn verify_artifact(
     signed_bytes: &[u8],
     signature: &[u8],

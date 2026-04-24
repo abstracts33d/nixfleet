@@ -575,3 +575,54 @@ fn reject_before_none_disables_the_gate() {
     )
     .expect("None means gate disabled");
 }
+
+/// Strict `<` comparison: an artifact signed exactly at `reject_before`
+/// is accepted. Mirrors the precedent set by `verify_at_exact_window_boundary_is_fresh`
+/// on the freshness window. Locks the semantic so any future flip to
+/// non-strict `<=` surfaces as a test failure.
+#[test]
+fn reject_before_exact_equal_is_accepted() {
+    let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_SIGNED);
+    let freshness = Duration::from_secs(86_400);
+    let reject_before = signed_at;
+    let now = signed_at + ChronoDuration::seconds(10);
+
+    let _fleet = verify_artifact(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        freshness,
+        Some(reject_before),
+    )
+    .expect("signed_at == reject_before must be accepted under strict < semantic");
+}
+
+/// `RejectedBeforeTimestamp` wins over `Stale` when both conditions
+/// hold. Makes the alert-class invariant explicit: operators seeing a
+/// compromise-rejected artifact must not be misled into thinking the
+/// artifact is merely expired.
+#[test]
+fn reject_before_takes_precedence_over_stale() {
+    let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_SIGNED);
+    // Freshness = 60s but artifact is 600s old → stale.
+    // reject_before is 300s after signing → also triggers.
+    let window = Duration::from_secs(60);
+    let reject_before = signed_at + ChronoDuration::seconds(300);
+    let now = signed_at + ChronoDuration::seconds(600);
+
+    let err = verify_artifact(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        Some(reject_before),
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, VerifyError::RejectedBeforeTimestamp { .. }),
+        "compromise switch must win over routine staleness, got {err:?}"
+    );
+}
