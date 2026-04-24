@@ -88,9 +88,16 @@ pub struct Selector {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthGate {
-    #[serde(default)]
+    // Stream B emits `"healthGate": {}` when no inner constraints are
+    // set, NOT `{"complianceProbes": null, "systemdFailedUnits": null}`.
+    // Round-trip must preserve the empty-object shape, so these two
+    // fields skip on `None` — the only Options in the crate with this
+    // posture. All other `Option` fields (closureHash, pubkey,
+    // signedAt, ciCommit, selector.channel, maxInFlight*) DO serialize
+    // `None` as explicit `null`, matching Stream B for those.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub systemd_failed_units: Option<SystemdFailedUnits>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compliance_probes: Option<ComplianceProbes>,
 }
 
