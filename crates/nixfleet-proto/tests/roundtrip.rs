@@ -16,8 +16,7 @@ fn every_nullable_roundtrips_byte_for_byte() {
     let input = load("every-nullable.json");
     let golden = load("every-nullable.canonical");
 
-    let parsed: FleetResolved =
-        serde_json::from_str(&input).expect("parse every-nullable.json");
+    let parsed: FleetResolved = serde_json::from_str(&input).expect("parse every-nullable.json");
 
     let reserialized = serde_json::to_string(&parsed).expect("serialize FleetResolved");
     let produced = canonicalize(&reserialized).expect("canonicalize reserialized");
@@ -33,8 +32,7 @@ fn signed_artifact_roundtrips_byte_for_byte() {
     let input = load("signed-artifact.json");
     let golden = load("signed-artifact.canonical");
 
-    let parsed: FleetResolved =
-        serde_json::from_str(&input).expect("parse signed-artifact.json");
+    let parsed: FleetResolved = serde_json::from_str(&input).expect("parse signed-artifact.json");
 
     let reserialized = serde_json::to_string(&parsed).expect("serialize");
     let produced = canonicalize(&reserialized).expect("canonicalize");
@@ -59,8 +57,7 @@ fn signed_artifact_roundtrips_byte_for_byte() {
 fn stream_b_empty_selector_parses_and_canonicalizes() {
     let input = load("stream-b/empty-selector-warns.resolved.json");
 
-    let parsed: FleetResolved =
-        serde_json::from_str(&input).expect("parse Stream B fixture");
+    let parsed: FleetResolved = serde_json::from_str(&input).expect("parse Stream B fixture");
 
     // Spot-check a field that only Stream B's newer schema carries:
     assert!(parsed.channels.contains_key("stable"));

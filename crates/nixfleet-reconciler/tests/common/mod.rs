@@ -14,8 +14,7 @@ pub fn fixture_now() -> DateTime<Utc> {
 }
 
 fn load<T: serde::de::DeserializeOwned>(path: &str) -> T {
-    let text =
-        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {path}: {e}"))
 }
 

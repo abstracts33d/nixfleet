@@ -23,7 +23,14 @@ fn fresh_signing_key() -> SigningKey {
 /// Build a signed fleet.resolved artifact from JSON source.
 ///
 /// Returns (signed_bytes, signature, pubkey, signed_at).
-fn sign_artifact(json: &str) -> (Vec<u8>, [u8; 64], ed25519_dalek::VerifyingKey, DateTime<Utc>) {
+fn sign_artifact(
+    json: &str,
+) -> (
+    Vec<u8>,
+    [u8; 64],
+    ed25519_dalek::VerifyingKey,
+    DateTime<Utc>,
+) {
     let signing_key = fresh_signing_key();
     let pubkey = signing_key.verifying_key();
 
@@ -41,7 +48,8 @@ fn sign_artifact(json: &str) -> (Vec<u8>, [u8; 64], ed25519_dalek::VerifyingKey,
     (canonical.into_bytes(), sig, pubkey, signed_at)
 }
 
-const FIXTURE_SIGNED: &str = include_str!("../../nixfleet-proto/tests/fixtures/signed-artifact.json");
+const FIXTURE_SIGNED: &str =
+    include_str!("../../nixfleet-proto/tests/fixtures/signed-artifact.json");
 
 #[test]
 fn verify_ok_returns_fleet() {
@@ -85,7 +93,10 @@ fn verify_at_exact_window_boundary_is_fresh() {
     let window = Duration::from_secs(window_secs);
 
     let result = verify_artifact(&bytes, &sig, &pubkey, now, window);
-    assert!(result.is_ok(), "age == window must be treated as fresh: {result:?}");
+    assert!(
+        result.is_ok(),
+        "age == window must be treated as fresh: {result:?}"
+    );
 }
 
 #[test]
@@ -114,10 +125,9 @@ fn verify_rejects_malleable_signature() {
 
     // L (little-endian 32 bytes) = 2^252 + 27742317777372353535851937790883648493
     const L_LE: [u8; 32] = [
-        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
-        0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde,
+        0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x10,
     ];
 
     // Add L to s (the low 32 bytes of the 64-byte sig). If s + L overflows
@@ -167,8 +177,8 @@ fn verify_malformed_json() {
     let bytes = b"{not json";
     let sig = [0u8; 64];
 
-    let err = verify_artifact(bytes, &sig, &pubkey, Utc::now(), Duration::from_secs(60))
-        .unwrap_err();
+    let err =
+        verify_artifact(bytes, &sig, &pubkey, Utc::now(), Duration::from_secs(60)).unwrap_err();
     assert!(matches!(err, VerifyError::Parse(_)));
 }
 
