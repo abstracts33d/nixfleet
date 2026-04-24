@@ -300,10 +300,28 @@
         )
         (lib.attrNames cfg.rolloutPolicies);
 
+      budgetWarnings =
+        lib.concatMap (
+          b: let
+            hosts = resolveSelector b.selector cfg.hosts;
+            effectiveMax =
+              if b.maxInFlight != null
+              then b.maxInFlight
+              else if b.maxInFlightPct != null
+              then lib.max 1 ((builtins.length hosts * b.maxInFlightPct) / 100)
+              else builtins.length hosts;
+          in
+            lib.optional (builtins.length hosts >= 10 && effectiveMax == 1)
+            "disruption budget with maxInFlight=1 on ${toString (builtins.length hosts)} hosts will take long to complete"
+        )
+        cfg.disruptionBudgets;
+
+      allWarnings = emptySelectorWarnings ++ budgetWarnings;
+
       # Force the warnings side effect before returning the resolved value.
       # `lib.warn` prints to stderr during eval and returns its second arg.
       emittedWarnings =
-        lib.foldl' (acc: msg: lib.warn msg acc) null emptySelectorWarnings;
+        lib.foldl' (acc: msg: lib.warn msg acc) null allWarnings;
 
       resolved = {
         schemaVersion = 1;
