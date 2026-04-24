@@ -213,10 +213,46 @@ Both PRs are scaffold-plus — they reuse existing landed surfaces (mkFleet, wit
 - Stream A's lab CI becomes the producer of production artifacts consumed by the real agent + CP (post Stream C Milestone 1 Part 3).
 - Stream C's v0.2 agent skeleton inherits the `verify_artifact` call shape already exercised here; no re-validation needed.
 
-## 12. Open questions (decide in PR review)
+## 12. Decisions (locked for the implementation PR)
 
-1. Should the fixture derivation live under `tests/harness/fixtures/signed/` or under `crates/nixfleet-proto/tests/fixtures/`? Former is scenario-local; latter is shared with roundtrip tests. Recommend former.
-2. Ephemeral keypair — fixed seed in the derivation, or generated per build? Fixed seed gives reproducibility; generated-per-build catches non-determinism but makes the fixture sensitive to rebuilds. Recommend fixed.
-3. Signature algorithm for the first wire-up — ed25519 (easy, pure-Nix) or ecdsa-p256 (matches lab's real CI)? Recommend ed25519; the TPM path is out-of-scope for the harness.
-4. Should `nixfleet-verify-artifact` read the trust file or take `--ciReleaseKey-algorithm` + `--ciReleaseKey-public` as flat args? File is cleaner long-term; flat args are easier for the harness. Recommend file (matches the runtime shape).
-5. Do we block Phase 2 PR (a) on `docs/trust-root-flow.md` landing first, or ship them concurrently? Recommend concurrently — the doc is reference material, not a prerequisite.
+### 12.1 Fixture derivation location
+
+**Decision: `tests/harness/fixtures/signed/default.nix`.** Scenario-local. Not under `crates/nixfleet-proto/tests/fixtures/`.
+
+Rationale. The fixture is a Nix derivation (openssl + canonicalize binary); it does not belong under Rust test fixtures. Scenario-local layout means later Checkpoint 2 scenarios (magic rollback, stale refusal, tamper refusal) each get a sibling derivation that copies the pattern with one-input tweaks.
+
+### 12.2 Keypair generation
+
+**Decision: fixed seed.** The fixture derivation derives the ed25519 keypair from a hardcoded 32-byte seed constant.
+
+Rationale. Nix build purity already catches non-determinism via output-hash stability; per-build keypairs add rebuild churn to CI for zero signal. The harness tests cross-stream byte-identity, not keypair entropy. Rotation scenarios later use a second fixed seed — deterministic variation by hand.
+
+Concrete seed: `builtins.substring 0 32 (builtins.hashString "sha256" "nixfleet-harness-test-seed-2026")`. Changing the string forces a new keypair across every consumer of the fixture.
+
+### 12.3 Signature algorithm for the first wire-up
+
+**Decision: ed25519.** Not ecdsa-p256.
+
+Rationale. Both algorithm paths through `verify_artifact` are already unit-tested in Stream C (`verify_p256_ok`, `verify_p256_rejects_high_s`). The harness's purpose is cross-stream wiring (mTLS + canonicalize + verify composition), not algorithm coverage. ed25519 gives the simplest fixture derivation (openssl or ed25519-dalek), no TPM simulation.
+
+Follow-up scenario (not this PR): `fleet-harness-signed-rotation-cross-algo` — pairs ed25519 `current` + ecdsa-p256 `previous` in `trust.json` to exercise cross-algorithm rotation end-to-end.
+
+### 12.4 `nixfleet-verify-artifact` CLI shape
+
+**Decision: `--trust-file <path>`, not flat `--ciReleaseKey-*` args.**
+
+Rationale. Mirrors the production binary shape — CP and agent both read trust from a file per `docs/trust-root-flow.md` §3.2. The harness's job is to exercise production shapes; flat args would create a CLI divergence that breaks when the thin wrapper is retired and the real agent takes over.
+
+Final CLI surface: `nixfleet-verify-artifact --artifact <path> --signature <path> --trust-file <path> --now <rfc3339> --freshness-window-secs <n>`.
+
+### 12.5 Ordering relative to `docs/trust-root-flow.md`
+
+**Decision: concurrent work, sequenced merge.** `docs/trust-root-flow.md` (PR #25) merges before `nixfleet#29` (Stream C M1 P3), which merges before Phase 2 PR (a) [`nixfleet-verify-artifact` CLI + `TrustConfig` + signed-fixture derivation].
+
+Rationale. The doc is docs-only, fast to review. Stream C can code against the doc's current text in parallel; they just hold their merge until the doc is blessed. Phase 2 PR (a) consumes the blessed `TrustConfig` shape — no divergence possible.
+
+Ordering summary:
+1. PR #25 (`docs/trust-root-flow.md`) — merge once §7 decisions are reviewed.
+2. `nixfleet#29` (Stream C M1 P3 — v0.2 agent + CP + CLI skeletons) — merge once PR #25 is in main.
+3. Phase 2 PR (a) — merge once `nixfleet#29` is in main.
+4. Phase 2 PR (b) — merge last, consumes all of the above.
