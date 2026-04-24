@@ -15,6 +15,8 @@ in
     hosts = lib.genAttrs (map (n: "host-${toString n}") (lib.range 1 10)) (_: mkStubHost "etcd");
     channels.stable = {
       rolloutPolicy = "all-at-once";
+      signingIntervalMinutes = 60;
+      freshnessWindow = 180;
     };
     rolloutPolicies.all-at-once = {
       strategy = "all-at-once";

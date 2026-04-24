@@ -5,8 +5,10 @@
         "frameworks": [],
         "strict": true
       },
+      "freshnessWindow": 180,
       "reconcileIntervalMinutes": 30,
-      "rolloutPolicy": "emptyish"
+      "rolloutPolicy": "emptyish",
+      "signingIntervalMinutes": 60
     }
   },
   "disruptionBudgets": [],

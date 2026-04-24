@@ -8,6 +8,8 @@ mkFleet {
   };
   channels.stable = {
     rolloutPolicy = "emptyish";
+    signingIntervalMinutes = 60;
+    freshnessWindow = 180;
   };
   rolloutPolicies.emptyish = {
     strategy = "canary";

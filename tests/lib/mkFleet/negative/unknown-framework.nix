@@ -8,6 +8,8 @@ mkFleet {
   };
   channels.stable = {
     rolloutPolicy = "all-at-once";
+    signingIntervalMinutes = 60;
+    freshnessWindow = 180;
     compliance.frameworks = ["fictional-framework/v99"];
   };
   rolloutPolicies.all-at-once = {

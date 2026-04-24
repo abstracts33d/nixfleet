@@ -91,6 +91,23 @@
         type = types.int;
         default = 30;
       };
+      signingIntervalMinutes = mkOption {
+        type = types.int;
+        default = 60;
+        description = ''
+          How often CI re-signs `fleet.resolved` for this channel.
+          Sets the replay-defense floor: a consumer accepts an artifact for
+          at least this long before refresh is expected.
+        '';
+      };
+      freshnessWindow = mkOption {
+        type = types.int;
+        description = ''
+          Minutes a signed `fleet.resolved` artifact is accepted by agents
+          after `meta.signedAt`. MUST be ≥ 2 × signingIntervalMinutes so a
+          single missed signing run does not strand agents.
+        '';
+      };
       compliance = mkOption {
         type = types.submodule {
           options = {
@@ -277,7 +294,17 @@
 
     cycleErrors = lib.optional (hasCycle cfg.edges) "edges form a cycle; the DAG invariant is violated";
 
-    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ configurationErrors ++ complianceErrors ++ cycleErrors;
+    freshnessErrors =
+      lib.concatMap (
+        channelName: let
+          c = cfg.channels.${channelName};
+        in
+          lib.optional (c.freshnessWindow < 2 * c.signingIntervalMinutes)
+          "channel '${channelName}': freshnessWindow (${toString c.freshnessWindow}) must be ≥ 2 × signingIntervalMinutes (${toString c.signingIntervalMinutes})"
+      )
+      (lib.attrNames cfg.channels);
+
+    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ configurationErrors ++ complianceErrors ++ cycleErrors ++ freshnessErrors;
   in
     if errs == []
     then true
@@ -333,7 +360,7 @@
           cfg.hosts;
         channels =
           lib.mapAttrs (_: c: {
-            inherit (c) rolloutPolicy reconcileIntervalMinutes compliance;
+            inherit (c) rolloutPolicy reconcileIntervalMinutes signingIntervalMinutes freshnessWindow compliance;
           })
           cfg.channels;
         rolloutPolicies = cfg.rolloutPolicies;
