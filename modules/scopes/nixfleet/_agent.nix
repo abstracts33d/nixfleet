@@ -120,8 +120,23 @@ in {
         wants = ["network-online.target"];
         startLimitIntervalSec = 0;
 
-        # Agent shells out to nix (copy, path-info) and switch-to-configuration
-        path = [config.nix.package pkgs.systemd];
+        # Agent shells out to:
+        # - nix-store --realise (Phase 4 closure-hash verify)
+        # - nixos-rebuild switch --system <path> (activation)
+        # - nixos-rebuild --rollback (on activation/verify failure)
+        #
+        # `config.system.build.nixos-rebuild` ties the agent's
+        # nixos-rebuild to the same release as the NixOS system it's
+        # running on, so the binary's expected switch-to-configuration
+        # ABI stays in sync. Without it, activation fails at spawn
+        # with `cannot run nixos-rebuild: No such file or directory`
+        # and main.rs treats it as a non-rollback error (caught on
+        # lab during the first real Phase 4 dispatch round-trip).
+        path = [
+          config.nix.package
+          pkgs.systemd
+          config.system.build.nixos-rebuild
+        ];
 
         environment = {
           # Nix writes its metadata cache (narinfo lookups, eval cache, etc.)
