@@ -21,7 +21,7 @@ Phase 2 made the reconciler real on lab as a oneshot timer reading a hand-writte
 **Not in Phase 3** (deferred to later phases, even though some live in RFC-0003):
 
 - Activation (`nixos-rebuild switch` from agent) — Phase 4.
-- Magic rollback semantics — Phase 4 (only meaningful once activation can fail). `/v1/agent/confirm` is wire-shape-locked as a stub in Phase 3 so no client refactor when Phase 4 lights it up.
+- Magic rollback semantics + `/v1/agent/confirm` — Phase 4 (only meaningful once activation can fail). The endpoint and body shape are intentionally not stubbed in Phase 3: shape risks coupling to a design Phase 4 may need to change, and there's no client code in Phase 3 that needs the URL reserved.
 - Probe execution + signed evidence — Phase 7.
 - Compliance gates as rollout blockers — Phase 6/7.
 - Closure proxy (`/v1/agent/closure/<hash>`) — Phase 4 (only relevant when agents fetch closures).
@@ -110,9 +110,9 @@ curl --cert /run/agenix/agent-krach-cert \
 # {"cn":"krach","issuedAt":"..."}
 ```
 
-### PR-3 — Agent body: first `/v1/agent/checkin` + `/report` + `/confirm` stub
+### PR-3 — Agent body: first `/v1/agent/checkin` + `/report`
 
-**Scope.** Replace the `tracing::info!` skeleton in `nixfleet-agent` with a real poll loop. Send `/v1/agent/checkin` every `pollInterval` seconds with a richer body than RFC-0003 §4.1's minimum (pending generation, last-fetch outcome, agent self-version). CP records check-ins into in-memory state and responds with `target: null` (no rollouts dispatched in Phase 3 — that's Phase 4). Add `/v1/agent/report` (real, in-memory) for fetch/verify failure events and `/v1/agent/confirm` as an accept-and-discard stub to lock the wire shape ahead of Phase 4.
+**Scope.** Replace the `tracing::info!` skeleton in `nixfleet-agent` with a real poll loop. Send `/v1/agent/checkin` every `pollInterval` seconds with a richer body than RFC-0003 §4.1's minimum (pending generation, last-fetch outcome, agent self-version). CP records check-ins into in-memory state and responds with `target: null` (no rollouts dispatched in Phase 3 — that's Phase 4). Add `/v1/agent/report` (real, in-memory) for fetch/verify failure events. `/v1/agent/confirm` deliberately not stubbed in Phase 3 — see §1 and §8 D8 for the reasoning.
 
 **Concrete.**
 
@@ -149,16 +149,12 @@ curl --cert /run/agenix/agent-krach-cert \
   - Body shape per RFC-0003 §4.5 (event reports). Records into the same in-memory state with bounded ring buffer per host (default 32 entries).
   - Surfaced in journal as `report received hostname=<cn> kind=<kind> error=<short>`.
   - No persistence to disk — survives only as long as the CP process. Phase 4 adds SQLite persistence.
-- CP-side `POST /v1/agent/confirm` stub — see §8 D10. Accept-and-discard: parse + validate the body, log it, return `200 OK` with `{"acknowledged": true}`. Body interpretation is intentionally a no-op until Phase 4 wires up activation deadlines.
 - Tests:
   - Cargo integration test: spin up CP in-process (axum), agent in-process, run one check-in with each non-null field combination, assert state captured.
   - `/report` integration test: agent sends a synthetic verify-failure event, CP records, journal shows it.
-  - `/confirm` smoke test: agent posts, CP returns 200, no state mutation observable.
   - Optional: extend the PR #34 harness scenario to make two agent microVMs check in to a host CP — `journalctl -u nixfleet-control-plane | grep checkin` shows both hostnames within 60s. (May land as PR-3.5 if it grows.)
 
 **Deliverable.** `journalctl -u nixfleet-control-plane.service` on lab shows entries like `checkin received hostname=krach closureHash=861d2y2zmssij… pending=null lastFetch=ok`. Each fleet host's `journalctl -u nixfleet-agent` shows successful periodic checkins. A synthetic `nixfleet-cli send-report` (added under §3.5) round-trips a fake fetch-failed event into CP's journal.
-
-**Open decisions.** §8 D10.
 
 ### PR-4 — Live `Observed` projection from check-ins + Forgejo channel-ref poll
 
@@ -240,7 +236,7 @@ curl --cert /run/agenix/agent-krach-cert \
 
 No manual SSH-to-lab-and-copy-cert step. No periodic operator-driven re-enrolment.
 
-**Open decisions.** §8 D5, D6, D11.
+**Open decisions.** §8 D5, D6, D10.
 
 ## 4. Test substrate
 
@@ -248,7 +244,7 @@ The PR #34 signed-roundtrip harness scenario is the substrate. Phase 3 PRs exten
 
 - **PR-1**: cargo integration test only (binary smoke); harness untouched.
 - **PR-2**: cargo integration test for mTLS handshake (rcgen-based cert generation in-test).
-- **PR-3**: extend the harness scenario to make agent microVMs check in to the host CP. Replaces the curl+verify-artifact wrapper with the real agent binary. Adds `/report` event-roundtrip assertion. `/confirm` covered by cargo-only smoke. (May land as PR-3.5 if it grows.)
+- **PR-3**: extend the harness scenario to make agent microVMs check in to the host CP. Replaces the curl+verify-artifact wrapper with the real agent binary. Adds `/report` event-roundtrip assertion. (May land as PR-3.5 if it grows.)
 - **PR-4**: extend the harness assertion to grep for `checkin received` in CP journal across multiple agents. New harness scenario `fleet-harness-forgejo-channel-roll`: stub Forgejo, agent + CP run, push a signed `fleet.resolved.json` update, assert CP picks it up within one poll cycle.
 - **PR-5**: new harness scenario `fleet-harness-enroll-checkin`: agent boots without a cert, has a bootstrap token, enrols, then checks in. Renewal scenario `fleet-harness-renew`: agent boots with a cert that's >50% expired, renews, continues checking in with the new cert.
 
@@ -258,7 +254,7 @@ The PR #34 signed-roundtrip harness scenario is the substrate. Phase 3 PRs exten
 |---|---|---|
 | PR-1 | tokio (full), axum, axum-server (tls-rustls), rustls — re-add | — |
 | PR-2 | x509-parser, rustls-pki-types | — |
-| PR-3 | (no new server-side beyond what `/report` + `/confirm` need — same axum/serde stack) | tokio, reqwest (rustls-tls-native-roots), serde_json |
+| PR-3 | (no new server-side beyond what `/report` needs — same axum/serde stack) | tokio, reqwest (rustls-tls-native-roots), serde_json |
 | PR-4 | reqwest (rustls-tls-native-roots), base64 — for Forgejo poll | — |
 | PR-5 | rcgen, sha2, hex (token signing + cert issuance primitives) | rcgen (CSR generation, both enroll + renew) |
 
@@ -283,13 +279,13 @@ Rough size estimates (after the scope expansion in §1):
 | Prep | — | ~50 | ~1h |
 | PR-1 | ~400 | ~50 | half-day |
 | PR-2 | ~150 | ~20 | few hours |
-| PR-3 | ~700 | ~50 | ~1.5 days (added: richer check-in + `/report` + `/confirm` stub) |
+| PR-3 | ~600 | ~50 | ~1.25 days (added: richer check-in + `/report`) |
 | PR-4 | ~350 | ~30 | ~1 day (added: Forgejo poll) |
 | PR-5 | ~900 | ~100 | ~2 days (added: `/renew` shares issuance code with `/enroll`) |
 
 Total Phase 3: ~5-6 days focused, ~2-3 weeks part-time.
 
-Phase 4 (activation + magic rollback + closure proxy) layers on top — that's where the agent gains `nixos-rebuild switch`, the CP gains dispatch + soak + rollback semantics, `/v1/agent/confirm` gains real semantics (activation deadline), `/v1/agent/closure/<hash>` proxies attic, and `system.autoUpgrade` on workstations (fleet PR #47) gets disabled per-host as the agent supersedes it. Phase 4 is now leaner because `/renew`, `/report`, `/confirm` (wire), and Forgejo polling already shipped in Phase 3.
+Phase 4 (activation + magic rollback + closure proxy) layers on top — that's where the agent gains `nixos-rebuild switch`, the CP gains dispatch + soak + rollback semantics, `/v1/agent/confirm` lands (endpoint + body shape + activation-deadline semantics), `/v1/agent/closure/<hash>` proxies attic, and `system.autoUpgrade` on workstations (fleet PR #47) gets disabled per-host as the agent supersedes it. Phase 4 is leaner than originally because `/renew`, `/report`, and Forgejo polling already shipped in Phase 3.
 
 ## 8. Decisions to lock in before PR-1
 
@@ -337,14 +333,11 @@ Confirm before implementation starts. **Defaults stand if you don't override.**
 
 **Alternative.** mTLS-required like `/v1/*`. Strict default; reachable only from agent-equipped hosts.
 
-### D8 — Phase 3 scope: `/v1/agent/{confirm,report}` (revised)
+### D8 — Phase 3 scope: `/v1/agent/report` (revised)
 
-**Default (revised).** Both endpoints land in PR-3:
+**Default (revised).** `/v1/agent/report` lands in PR-3 — real, in-memory recording (bounded ring buffer per host). Surfaced in journal. Phase 4 adds SQLite persistence + correlation with rollouts. **`/v1/agent/confirm` is deliberately not in Phase 3**: there's no client code that needs it (no activation = no confirms), and stubbing the body would risk locking a wire shape that Phase 4 may need to change. See §1.
 
-- **`/v1/agent/report`** — real, in-memory recording (bounded ring buffer per host). Surfaced in journal. Phase 4 adds SQLite persistence + correlation with rollouts.
-- **`/v1/agent/confirm`** — accept-and-discard stub (200 OK, body parsed + logged + thrown away). Wire shape locked; semantics gain meaning in Phase 4 when activation deadlines exist. See D10.
-
-**Alternative.** Defer both, or stub both with `410 Gone`. (Was the previous default; revised because `/report` has standalone value during Phase 3 — fetch/verify failures are observable now, not only post-activation. `/confirm` as stub is essentially free and avoids a Phase 4 client refactor.)
+**Alternative.** Defer `/report` as well. (Was the previous default; revised because fetch + verify failures are operator-observable in Phase 3 even without activation, and `/report` has no Phase 4 design dependency to lock against.)
 
 ### D9 — Forgejo poll: auth, cadence, failure mode (PR-4)
 
@@ -352,15 +345,7 @@ Confirm before implementation starts. **Defaults stand if you don't override.**
 
 **Alternative.** Push-based webhook from Forgejo to CP. Faster reaction (sub-second) but requires inbound network reachability + webhook auth. Defer to a future polish PR if poll latency becomes a problem.
 
-### D10 — `/v1/agent/confirm` stub semantics (PR-3)
-
-**Default.** Accept-and-discard. Endpoint returns `200 OK` with `{"acknowledged": true}`. Body is parsed against the RFC-0003 §4.4 shape (so the wire is real), validated for well-formedness, logged at `info` level, then discarded. No state mutation observable to the agent or other endpoints.
-
-**Alternatives.**
-- (a) `410 Gone` — explicit "not implemented yet". Cleaner semantics but means Phase 4 needs an agent-side branch (`if status == 410 then proceed else error`). Default avoids this.
-- (b) Accept-and-record — body stored in same in-memory state as `/report`. Slight risk of baking semantics that Phase 4 needs to change.
-
-### D11 — `/v1/agent/renew` authentication and key-rotation policy (PR-5)
+### D10 — `/v1/agent/renew` authentication and key-rotation policy (PR-5)
 
 **Default.** Auth: existing client cert (mTLS), still-valid (not expired). CSR validation:
 - CN matches existing mTLS-verified CN
