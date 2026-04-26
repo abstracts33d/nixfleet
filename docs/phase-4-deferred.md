@@ -2,13 +2,13 @@
 
 Sibling to `docs/phase-4-entry-spec.md`. Captures everything carved out of Phase 3 + early Phase 4 implementation, with rationale, cost, risk, and target phase. Intent: a single place an operator can scan to know "what does v0.2 still owe me?".
 
-Last updated: 2026-04-26.
+Last updated: 2026-04-26 (post-`phase-4-dispatch`).
 
 ## Critical-path (blocks v0.2 functional completion)
 
 | # | Item | Why deferred | Cost | Risk |
 |---|---|---|---|---|
-| 1 | **Dispatch loop** — populate `CheckinResponse.target` from reconciler `OpenRollout` actions | Bigger PR, needs design decision on reconciler→CP state flow | ~250 LOC, 1-2 days | **HIGH** — without this, the entire Phase 4 activation chain (`/confirm`, magic rollback, agent activation) is reachable only via direct SQL inserts |
+| 1 | ~~Dispatch loop~~ — ✅ landed on `phase-4-dispatch`. CP snapshots verified `FleetResolved` each tick + at boot; `/v1/agent/checkin` calls `dispatch::decide_target` against the snapshot, inserts a `pending_confirms` row keyed on `<channel>@<ci-commit-prefix>`, and returns `EvaluatedTarget`. 9 unit tests + 3 integration tests cover the decision matrix (Unmanaged / NoDeclaration / Converged / InFlight / HoldAfterFailure / Dispatch) and round-trip a real ed25519-signed `fleet.resolved` through verify → snapshot → checkin → DB. | — | — |
 | 2 | **End-to-end deployment validation on lab** | Code shipped; never deployed | 0 LOC, ~1 hour wall clock | **HIGH** — uncovered failure modes; "compiles" ≠ "works" |
 
 ## Phase 4 follow-ups (next sprint, sequenced)
@@ -67,7 +67,7 @@ These are documented as issues. The "spirit of v0.2" (issue #10's "control plane
 | 25 | Refactor `forgejo_poll`'s mirror task → shared `Arc<RwLock<>>` | `server.rs::serve` (TODO marked) |
 | 26 | Replace inline PEM parser with `pem` crate | `crates/nixfleet-agent/src/enrollment.rs` |
 | 27 | Replace heuristic PKCS#8 parsing with proper parser | `crates/nixfleet-cli/src/bin/mint_token.rs` |
-| 28 | `closure_hash` → store-path resolution: agent currently assumes the hash IS the basename | `crates/nixfleet-agent/src/activation.rs` (TODO marked) |
+| 28 | ~~`closure_hash` → store-path resolution: agent currently assumes the hash IS the basename~~ — partially closed by `phase-4-dispatch`: agent now `nix-store --realise`s the path before switch (catches missing/corrupted closures + substituter-trust failures) and verifies `/run/current-system` basename matches `target.closure_hash` after switch (catches "switched to a different path"). Mismatch triggers local rollback. The basename-vs-bare-hash assumption itself remains — a follow-up CP endpoint to look up store paths from raw hashes is still nice-to-have but not blocking. |
 | 29 | Cargo.lock churn / dep audit | Workspace |
 
 ## v0.2 issue tracker (#10) — current status
@@ -75,7 +75,7 @@ These are documented as issues. The "spirit of v0.2" (issue #10's "control plane
 | Issue | Title | Status |
 |---|---|---|
 | [#1](https://github.com/abstracts33d/nixfleet/issues/1) | fleet.nix schema | ✅ Phase 1 |
-| [#2](https://github.com/abstracts33d/nixfleet/issues/2) | Magic rollback in agent | 🟡 half done — agent does local rollback (Phase 4 PR-D) + CP detects deadline expiry (Phase 4 PR-B) + agent reacts to /confirm 410. Remaining: end-to-end test that validates the full loop |
+| [#2](https://github.com/abstracts33d/nixfleet/issues/2) | Magic rollback in agent | 🟢 mostly done — agent does local rollback (Phase 4 PR-D), CP detects deadline expiry (Phase 4 PR-B), agent reacts to /confirm 410, agent now ALSO rolls back on post-switch closure-hash mismatch (`phase-4-dispatch`). Remaining: end-to-end test on lab/microvm that exercises a real deadline-expiry path |
 | [#3](https://github.com/abstracts33d/nixfleet/issues/3) | GitOps release binding | ❌ — channels still operator-imperative |
 | [#4](https://github.com/abstracts33d/nixfleet/issues/4) | Compliance as rollout gate | ❌ Phase 6/7 |
 | [#5](https://github.com/abstracts33d/nixfleet/issues/5) | microvm harness | 🟡 partial — basic harness exists; not extended for new endpoints |
@@ -91,17 +91,16 @@ These are documented as issues. The "spirit of v0.2" (issue #10's "control plane
 
 ## Honest summary
 
-**Most impactful deferred item:** the dispatch loop. Without it, ~60% of the Phase 4 work is unreachable in production. The activation chain compiles + has its types right, but no agent will ever run `nixos-rebuild` because the CP has no path from "reconciler decided X" to "tell agent X via `target`". This is the next critical PR.
+**Most impactful deferred item:** ~~the dispatch loop~~ end-to-end deployment validation on lab. Dispatch loop landed on `phase-4-dispatch`, with unit + integration tests proving the activation chain reaches `nixos-rebuild` end-to-end. Lab still hasn't seen any Phase 3/4 code; real failure modes (substituter trust on first run, attic narinfo edge cases, the renew loop under cert TTLs) will only surface on first deploy.
 
 **Most impactful deferred sovereignty item:** [#41](https://github.com/abstracts33d/nixfleet/issues/41) (TPM-bound CA). Wire works; "CP holds no secrets" is broken. Acceptable for homelab; blocking for any wider deployment.
 
-**Most impactful deferred quality item:** end-to-end deployment validation on lab. Code compiles, unit + integration tests pass — and lab has never seen any of it. Real failure modes will surface only on first deploy.
+**Most impactful deferred quality item:** the lab deploy. See above — this is now both the quality and the next-impactful-work item.
 
 Recommended next-session order:
 
 1. Deploy `phase-3-rolled-up` to lab. Confirm Phase 3 works.
-2. Dispatch loop as a follow-up commit on `phase-4-rolled-up`.
-3. Dispatch test + magic-rollback round-trip integration test.
-4. Deploy `phase-4-rolled-up` to lab with a fresh release commit. Validate full activation loop.
-5. Tag `v0.2.0-rc1` if the deploy works.
-6. Sovereignty hardening (#41, #43) — Phase 6+.
+2. Deploy `phase-4-dispatch` to lab with a fresh release commit. Validate full activation loop end-to-end.
+3. Tag `v0.2.0-rc1` if the deploy works.
+4. Reconciler state machine extensions (waves, soaking, halt) — Phase 5.
+5. Sovereignty hardening (#41, #43) — Phase 6+.

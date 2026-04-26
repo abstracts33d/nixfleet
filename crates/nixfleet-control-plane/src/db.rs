@@ -206,6 +206,23 @@ impl Db {
         Ok(guard.last_insert_rowid())
     }
 
+    /// Returns true if the host has any `pending_confirms` row in
+    /// state `'pending'`. Used by the dispatch loop to avoid
+    /// re-dispatching while an activation is in flight (would create
+    /// a duplicate row racing the first).
+    pub fn pending_confirm_exists(&self, hostname: &str) -> Result<bool> {
+        let guard = self.conn()?;
+        let n: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM pending_confirms
+                 WHERE hostname = ?1 AND state = 'pending'",
+                params![hostname],
+                |row| row.get(0),
+            )
+            .context("count pending_confirms")?;
+        Ok(n > 0)
+    }
+
     /// Mark a pending confirmation as confirmed. Called by the
     /// `/v1/agent/confirm` handler. Returns the number of rows
     /// updated — 0 means no matching pending row (could be: rollout

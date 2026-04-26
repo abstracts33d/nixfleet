@@ -26,10 +26,11 @@ use axum::middleware::{self, Next};
 use axum::http::Request as HttpRequest;
 use axum::body::Body;
 use nixfleet_proto::agent_wire::{
-    CheckinRequest, CheckinResponse, ConfirmRequest, ConfirmResponse, ReportRequest,
-    ReportResponse, PROTOCOL_MAJOR_VERSION, PROTOCOL_VERSION_HEADER,
+    CheckinRequest, CheckinResponse, ConfirmRequest, ReportRequest, ReportResponse,
+    PROTOCOL_MAJOR_VERSION, PROTOCOL_VERSION_HEADER,
 };
 use nixfleet_proto::enroll_wire::{EnrollRequest, EnrollResponse, RenewRequest, RenewResponse};
+use nixfleet_proto::FleetResolved;
 use rcgen::PublicKeyData;
 use std::collections::HashSet;
 use serde::Serialize;
@@ -52,6 +53,15 @@ const NEXT_CHECKIN_SECS: u32 = 60;
 /// failed to check in) shows up in the journal within one cycle;
 /// slow enough not to spam.
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Time the dispatch loop gives an agent to fetch + activate +
+/// confirm a target before the magic-rollback timer marks the
+/// pending row as `rolled-back` (which causes the agent's next
+/// `/v1/agent/confirm` post to return 410 Gone, triggering local
+/// rollback). 120s is the spec-D1 default — enough headroom for a
+/// closure download + reboot, short enough that a stuck agent
+/// surfaces in the journal within one rollback-timer tick.
+const CONFIRM_DEADLINE_SECS: i64 = 120;
 
 /// Inputs the `serve` subcommand receives from clap.
 #[derive(Debug, Clone)]
@@ -142,6 +152,13 @@ pub struct AppState {
     pub issuance_paths: RwLock<IssuancePaths>,
     pub db: Option<Arc<crate::db::Db>>,
     pub closure_upstream: Option<ClosureUpstream>,
+    /// Most-recently-verified `fleet.resolved` artifact. The reconcile
+    /// loop writes it on each successful tick; the dispatch path in
+    /// `/v1/agent/checkin` reads it to decide each host's target. A
+    /// transient verify failure leaves the previous snapshot in place
+    /// — the dispatch loop holds steady rather than dropping all hosts
+    /// to `target: null` on a single bad tick.
+    pub verified_fleet: RwLock<Option<Arc<FleetResolved>>>,
 }
 
 impl Default for AppState {
@@ -155,6 +172,7 @@ impl Default for AppState {
             issuance_paths: RwLock::new(IssuancePaths::default()),
             db: None,
             closure_upstream: None,
+            verified_fleet: RwLock::new(None),
         }
     }
 }
@@ -311,8 +329,9 @@ async fn checkin(
         "checkin received"
     );
 
+    let now = Utc::now();
     let record = HostCheckinRecord {
-        last_checkin: Utc::now(),
+        last_checkin: now,
         checkin: req.clone(),
     };
     state
@@ -321,10 +340,105 @@ async fn checkin(
         .await
         .insert(req.hostname.clone(), record);
 
+    let target = dispatch_target_for_checkin(&state, &req, now).await;
+
     Ok(Json(CheckinResponse {
-        target: None,
+        target,
         next_checkin_secs: NEXT_CHECKIN_SECS,
     }))
+}
+
+/// Dispatch loop entry point per `/v1/agent/checkin`.
+///
+/// Reads the latest verified `FleetResolved` snapshot from `AppState`
+/// (populated by the reconcile loop), queries the DB for any pending
+/// confirm row for this host (idempotency guard), and asks
+/// `dispatch::decide_target` for the per-host decision. On `Dispatch`,
+/// inserts a `pending_confirms` row keyed on the deterministic
+/// rollout id and returns the target. All other Decision variants
+/// resolve to `target: None`.
+///
+/// Failures here log + return None — a transient DB hiccup or missing
+/// fleet snapshot should not surface as an HTTP 500 to the agent. The
+/// agent will retry on its next checkin (60s).
+async fn dispatch_target_for_checkin(
+    state: &AppState,
+    req: &CheckinRequest,
+    now: DateTime<Utc>,
+) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
+    let Some(db) = state.db.as_ref() else {
+        return None;
+    };
+    let fleet_snapshot = state.verified_fleet.read().await.clone();
+    let Some(fleet) = fleet_snapshot else {
+        // No verified artifact yet — the reconcile loop hasn't ticked
+        // (or has only seen verify failures). Hold steady, the agent
+        // checks back in 60s.
+        return None;
+    };
+    let pending_for_host = match db.pending_confirm_exists(&req.hostname) {
+        Ok(b) => b,
+        Err(err) => {
+            tracing::error!(
+                hostname = %req.hostname,
+                error = %err,
+                "dispatch: pending_confirm_exists query failed",
+            );
+            return None;
+        }
+    };
+
+    let decision =
+        crate::dispatch::decide_target(&req.hostname, req, &fleet, pending_for_host, now);
+
+    match decision {
+        crate::dispatch::Decision::Dispatch { target, rollout_id } => {
+            // Idempotency: even though pending_confirm_exists already
+            // gated this, a concurrent checkin from the same host
+            // could race. Treat insert errors as "another writer beat
+            // us" and return None — the other dispatch wins, this
+            // call returns no target.
+            let confirm_deadline = now + chrono::Duration::seconds(CONFIRM_DEADLINE_SECS);
+            match db.record_pending_confirm(
+                &req.hostname,
+                &rollout_id,
+                /* wave */ 0,
+                &target.closure_hash,
+                &target.channel_ref,
+                confirm_deadline,
+            ) {
+                Ok(_) => {
+                    tracing::info!(
+                        target: "dispatch",
+                        hostname = %req.hostname,
+                        rollout = %rollout_id,
+                        target_closure = %target.closure_hash,
+                        confirm_deadline = %confirm_deadline.to_rfc3339(),
+                        "dispatch: target issued",
+                    );
+                    Some(target)
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        hostname = %req.hostname,
+                        rollout = %rollout_id,
+                        error = %err,
+                        "dispatch: record_pending_confirm failed; returning no target",
+                    );
+                    None
+                }
+            }
+        }
+        other => {
+            tracing::debug!(
+                target: "dispatch",
+                hostname = %req.hostname,
+                decision = ?other,
+                "dispatch: no target",
+            );
+            None
+        }
+    }
 }
 
 /// `POST /v1/agent/report` — record an out-of-band event report.
@@ -923,6 +1037,33 @@ fn build_router(state: Arc<AppState>) -> Router {
 /// crashes on transient failures.
 fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
     tokio::spawn(async move {
+        // Prime the verified-fleet snapshot synchronously before the
+        // ticker starts. Without this, the first 30s after CP boot
+        // would have no dispatch decisions (the snapshot is None until
+        // the first scheduled tick fires). For agents waking up at the
+        // same time as the CP, that means a wasted checkin cycle.
+        // Cheap — at most one verify_artifact call against the file-
+        // backed inputs. Failures are logged and the loop falls back
+        // to its normal cadence.
+        {
+            let prime_inputs = TickInputs {
+                now: Utc::now(),
+                ..inputs.clone()
+            };
+            if let Some(fleet) = verify_fleet_only(&prime_inputs) {
+                *state.verified_fleet.write().await = Some(Arc::new(fleet));
+                tracing::info!(
+                    target: "reconcile",
+                    "primed verified-fleet snapshot before first tick",
+                );
+            } else {
+                tracing::warn!(
+                    target: "reconcile",
+                    "could not prime verified-fleet snapshot (verify failed); dispatch will block until first tick succeeds",
+                );
+            }
+        }
+
         let mut ticker = tokio::time::interval_at(
             tokio::time::Instant::now() + RECONCILE_INTERVAL,
             RECONCILE_INTERVAL,
@@ -951,11 +1092,20 @@ fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                 now,
                 ..inputs.clone()
             };
-            let result = if checkins.is_empty() && channel_refs.is_empty() {
-                tick(&inputs_now)
+            let (result, verified_fleet) = if checkins.is_empty() && channel_refs.is_empty() {
+                (tick(&inputs_now), verify_fleet_only(&inputs_now))
             } else {
                 run_tick_with_projection(&inputs_now, &checkins, &channel_refs)
             };
+
+            // Snapshot the verified fleet so the dispatch path can
+            // read it. Preserve the previous snapshot on a verify
+            // failure (transient bad-signature/stale tick shouldn't
+            // unblock dispatch — operator fixes the artifact, next
+            // tick repopulates).
+            if let Some(fleet) = verified_fleet {
+                *state.verified_fleet.write().await = Some(Arc::new(fleet));
+            }
 
             match result {
                 Ok(out) => {
@@ -974,25 +1124,38 @@ fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
 /// Run a tick using the in-memory projection rather than reading
 /// `observed.json`. Mirrors `crate::tick` but takes the projected
 /// `Observed` from the caller.
+///
+/// Returns both the tick output (for the journal plan) and the
+/// verified `FleetResolved` (for the dispatch path's snapshot in
+/// `AppState`). The fleet is `None` when the tick failed verify —
+/// the caller preserves whatever snapshot was previously in place.
 fn run_tick_with_projection(
     inputs: &TickInputs,
     checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
-) -> anyhow::Result<crate::TickOutput> {
+) -> (anyhow::Result<crate::TickOutput>, Option<FleetResolved>) {
     use anyhow::Context;
-    let artifact = std::fs::read(&inputs.artifact_path)
-        .with_context(|| format!("read artifact {}", inputs.artifact_path.display()))?;
-    let signature = std::fs::read(&inputs.signature_path)
-        .with_context(|| format!("read signature {}", inputs.signature_path.display()))?;
-    let trust_raw = std::fs::read_to_string(&inputs.trust_path)
-        .with_context(|| format!("read trust {}", inputs.trust_path.display()))?;
-    let trust: nixfleet_proto::TrustConfig =
-        serde_json::from_str(&trust_raw).context("parse trust")?;
+    let read_inputs = || -> anyhow::Result<(Vec<u8>, Vec<u8>, nixfleet_proto::TrustConfig)> {
+        let artifact = std::fs::read(&inputs.artifact_path)
+            .with_context(|| format!("read artifact {}", inputs.artifact_path.display()))?;
+        let signature = std::fs::read(&inputs.signature_path)
+            .with_context(|| format!("read signature {}", inputs.signature_path.display()))?;
+        let trust_raw = std::fs::read_to_string(&inputs.trust_path)
+            .with_context(|| format!("read trust {}", inputs.trust_path.display()))?;
+        let trust: nixfleet_proto::TrustConfig =
+            serde_json::from_str(&trust_raw).context("parse trust")?;
+        Ok((artifact, signature, trust))
+    };
+
+    let (artifact, signature, trust) = match read_inputs() {
+        Ok(t) => t,
+        Err(e) => return (Err(e), None),
+    };
 
     let trusted_keys = trust.ci_release_key.active_keys();
     let reject_before = trust.ci_release_key.reject_before;
 
-    let verify = match nixfleet_reconciler::verify_artifact(
+    let (verify, fleet) = match nixfleet_reconciler::verify_artifact(
         &artifact,
         &signature,
         &trusted_keys,
@@ -1005,22 +1168,52 @@ fn run_tick_with_projection(
             let ci_commit = fleet.meta.ci_commit.clone();
             let observed = crate::observed_projection::project(checkins, channel_refs);
             let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
-            crate::VerifyOutcome::Ok {
-                signed_at,
-                ci_commit,
-                observed,
-                actions,
-            }
+            (
+                crate::VerifyOutcome::Ok {
+                    signed_at,
+                    ci_commit,
+                    observed,
+                    actions,
+                },
+                Some(fleet),
+            )
         }
-        Err(err) => crate::VerifyOutcome::Failed {
-            reason: format!("{:?}", err),
-        },
+        Err(err) => (
+            crate::VerifyOutcome::Failed {
+                reason: format!("{:?}", err),
+            },
+            None,
+        ),
     };
 
-    Ok(crate::TickOutput {
-        now: inputs.now,
-        verify,
-    })
+    (
+        Ok(crate::TickOutput {
+            now: inputs.now,
+            verify,
+        }),
+        fleet,
+    )
+}
+
+/// Verify-only variant for the empty-projection fallback path. The
+/// caller is responsible for running the rest of the tick (via
+/// `crate::tick`) — this just produces the verified fleet snapshot
+/// for `AppState.verified_fleet`. Returns `None` when verify fails;
+/// the caller preserves the prior snapshot.
+fn verify_fleet_only(inputs: &TickInputs) -> Option<FleetResolved> {
+    let artifact = std::fs::read(&inputs.artifact_path).ok()?;
+    let signature = std::fs::read(&inputs.signature_path).ok()?;
+    let trust_raw = std::fs::read_to_string(&inputs.trust_path).ok()?;
+    let trust: nixfleet_proto::TrustConfig = serde_json::from_str(&trust_raw).ok()?;
+    nixfleet_reconciler::verify_artifact(
+        &artifact,
+        &signature,
+        &trust.ci_release_key.active_keys(),
+        inputs.now,
+        inputs.freshness_window,
+        trust.ci_release_key.reject_before,
+    )
+    .ok()
 }
 
 /// Serve until interrupted. Builds the TLS config, starts the

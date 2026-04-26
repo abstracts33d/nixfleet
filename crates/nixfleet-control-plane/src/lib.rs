@@ -16,6 +16,7 @@
 
 pub mod auth_cn;
 pub mod db;
+pub mod dispatch;
 pub mod forgejo_poll;
 pub mod issuance;
 pub mod observed_projection;

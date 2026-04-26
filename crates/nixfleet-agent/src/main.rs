@@ -202,19 +202,21 @@ async fn main() -> anyhow::Result<()> {
             Ok(resp) => {
                 consecutive_failures = 0;
                 if let Some(target) = &resp.target {
-                    // Phase 4: activate the target via nixos-rebuild.
-                    // On rebuild success → POST /v1/agent/confirm.
-                    // 410 from /confirm → CP says rollback. Rebuild
-                    // failure → local rollback regardless.
+                    // Phase 4: realise + switch + verify the target.
+                    // On full Success → POST /v1/agent/confirm. On any
+                    // outcome that left the system in an unexpected
+                    // state (SwitchFailed, VerifyMismatch) → local
+                    // rollback. RealiseFailed left nothing switched —
+                    // skip rollback, retry next tick. CP returning
+                    // 410 from /confirm independently triggers rollback.
+                    use nixfleet_agent::activation::ActivationOutcome;
                     match nixfleet_agent::activation::activate(target).await {
-                        Ok(status) if status.success() => {
+                        Ok(ActivationOutcome::Success) => {
                             let boot_id = nixfleet_agent::checkin_state::boot_id()
                                 .unwrap_or_else(|_| "unknown".to_string());
-                            // Phase 4 dispatch isn't built yet — when
-                            // it lands, target should carry a rollout
-                            // ID. For now use the channel_ref as the
-                            // rollout name. Wave 0 since the wave/
-                            // soak state machine is also deferred.
+                            // Rollout id round-trips via target.channel_ref
+                            // (CP populates it in the dispatch loop).
+                            // Wave 0 — wave/soak staging is deferred.
                             let rollout = &target.channel_ref;
                             let wave: u32 = 0;
                             match nixfleet_agent::activation::confirm_target(
@@ -235,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
                                     {
                                         tracing::error!(
                                             error = %err,
-                                            "rollback after CP-410 also failed"
+                                            "rollback after CP-410 also failed",
                                         );
                                     }
                                 }
@@ -245,22 +247,46 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             }
                         }
-                        Ok(_status) => {
-                            // Activation returned non-zero. Roll back.
+                        Ok(ActivationOutcome::RealiseFailed { reason }) => {
+                            tracing::warn!(
+                                reason = %reason,
+                                "activation: realise failed; nothing switched, retrying next tick",
+                            );
+                        }
+                        Ok(ActivationOutcome::SwitchFailed { exit_status }) => {
+                            tracing::error!(
+                                exit_code = ?exit_status.code(),
+                                "activation: switch failed; rolling back",
+                            );
                             if let Err(err) =
                                 nixfleet_agent::activation::rollback().await
                             {
                                 tracing::error!(
                                     error = %err,
-                                    "rollback after failed activation also failed — manual intervention required"
+                                    "rollback after failed switch also failed — manual intervention required",
+                                );
+                            }
+                        }
+                        Ok(ActivationOutcome::VerifyMismatch { expected, actual }) => {
+                            tracing::error!(
+                                expected = %expected,
+                                actual = %actual,
+                                "activation: post-switch verify mismatch; rolling back to defend against tampered closure",
+                            );
+                            if let Err(err) =
+                                nixfleet_agent::activation::rollback().await
+                            {
+                                tracing::error!(
+                                    error = %err,
+                                    "rollback after verify mismatch also failed — manual intervention required",
                                 );
                             }
                         }
                         Err(err) => {
-                            // Spawn / I/O error — couldn't even run
-                            // nixos-rebuild. Don't roll back (nothing
-                            // to roll back from); log and let next
-                            // tick retry.
+                            // Spawn / I/O error inside activate(). Don't
+                            // roll back (state is unknown — could have
+                            // failed before realise even started); log
+                            // and let next tick retry.
                             tracing::error!(error = %err, "activation spawn failed");
                         }
                     }
