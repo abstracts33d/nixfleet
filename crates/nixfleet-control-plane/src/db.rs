@@ -251,13 +251,24 @@ impl Db {
     /// and should be rolled back.
     ///
     /// Returns (id, hostname, rollout_id, wave, target_closure_hash).
+    ///
+    /// Wraps `confirm_deadline` in `datetime(...)` so SQLite parses the
+    /// stored RFC3339 string (`YYYY-MM-DDTHH:MM:SS+00:00`, written by
+    /// `chrono::DateTime::to_rfc3339`) into the same canonical
+    /// `YYYY-MM-DD HH:MM:SS` shape that `datetime('now')` returns,
+    /// before the `<` comparison. Naked string compare would put `T`
+    /// (0x54) above ` ` (0x20) at position 10, so deadlines would
+    /// always look greater than now — expired rows never matched and
+    /// the rollback timer was a no-op. Caught on lab during the first
+    /// real Phase 4 dispatch (deadline passed by 50s, row still
+    /// `pending`).
     pub fn pending_confirms_expired(&self) -> Result<Vec<(i64, String, String, u32, String)>> {
         let guard = self.conn()?;
         let mut stmt = guard.prepare(
             "SELECT id, hostname, rollout_id, wave, target_closure_hash
              FROM pending_confirms
              WHERE state = 'pending'
-               AND confirm_deadline < datetime('now')",
+               AND datetime(confirm_deadline) < datetime('now')",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -350,6 +361,60 @@ mod tests {
         // Idempotent on re-record.
         db.record_token_nonce("nonce-1", "krach").unwrap();
         assert!(db.token_seen("nonce-1").unwrap());
+    }
+
+    #[test]
+    fn pending_confirms_expired_matches_past_deadline() {
+        // Regression: chrono's `to_rfc3339` writes deadlines as
+        // `YYYY-MM-DDTHH:MM:SS+00:00` (T separator, +offset), but
+        // SQLite's `datetime('now')` returns `YYYY-MM-DD HH:MM:SS`
+        // (space separator, no offset). A naked string compare ranks
+        // 'T' (0x54) above ' ' (0x20), so deadlines look greater than
+        // now forever and `pending_confirms_expired` returns nothing
+        // — the rollback timer was a no-op. The query wraps the
+        // column in `datetime(...)` to normalise. This test fires on
+        // a row whose deadline is firmly in the past.
+        let db = fresh_db();
+        let past_deadline = Utc::now() - chrono::Duration::seconds(60);
+        db.record_pending_confirm(
+            "krach",
+            "stable@abc",
+            0,
+            "decl-system",
+            "stable@abc",
+            past_deadline,
+        )
+        .unwrap();
+
+        let expired = db.pending_confirms_expired().unwrap();
+        assert_eq!(
+            expired.len(),
+            1,
+            "row past deadline should be picked up, got {expired:?}",
+        );
+        let (_, host, rollout, _, target) = &expired[0];
+        assert_eq!(host, "krach");
+        assert_eq!(rollout, "stable@abc");
+        assert_eq!(target, "decl-system");
+    }
+
+    #[test]
+    fn pending_confirms_expired_skips_future_deadline() {
+        // Companion to the regression test above: rows whose deadline
+        // is in the future stay out of the expired set.
+        let db = fresh_db();
+        let future_deadline = Utc::now() + chrono::Duration::seconds(120);
+        db.record_pending_confirm(
+            "krach",
+            "stable@def",
+            0,
+            "decl-system",
+            "stable@def",
+            future_deadline,
+        )
+        .unwrap();
+        let expired = db.pending_confirms_expired().unwrap();
+        assert!(expired.is_empty(), "row in window should not expire: {expired:?}");
     }
 
     #[test]
