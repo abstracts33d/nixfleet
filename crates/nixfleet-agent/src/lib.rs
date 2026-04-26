@@ -15,6 +15,7 @@
 //! See `docs/KICKOFF.md §1 Stream C`, `rfcs/0003-protocol.md §4`,
 //! and `docs/trust-root-flow.md §5`.
 
+pub mod activation;
 pub mod checkin_state;
 pub mod comms;
 pub mod enrollment;

@@ -23,6 +23,13 @@ path = "src/main.rs"
 name = "nixfleet-mint-token"
 path = "src/bin/mint_token.rs"
 
+# Operator-workstation scratch helper: derive base64 ed25519 pubkey
+# from a raw 32-byte private key file. Used once when initialising
+# the org root key for `nixfleet.trust.orgRootKey.current`.
+[[bin]]
+name = "nixfleet-derive-pubkey"
+path = "src/bin/derive_pubkey.rs"
+
 [dependencies]
 nixfleet-proto = { path = "../nixfleet-proto" }
 nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }

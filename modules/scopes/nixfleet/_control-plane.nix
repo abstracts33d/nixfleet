@@ -190,6 +190,37 @@ in {
       '';
     };
 
+    # Phase 4 PR-C: closure proxy upstream. Attic instance the CP
+    # forwards /v1/agent/closure/<hash> requests to. Typically the
+    # local attic on lab. When null, the endpoint returns 501.
+    closureUpstream = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "http://localhost:8085";
+      description = ''
+        Attic upstream URL for closure-proxy forwarding. Phase 4
+        PR-C ships narinfo forwarding (operator can curl
+        `<cp>/v1/agent/closure/<hash>` and get the upstream's
+        narinfo response). Full nar streaming is a follow-up.
+      '';
+    };
+
+    # Phase 4 PR-1: SQLite path. When set, the CP opens + migrates
+    # the DB on startup. Token replay + cert revocations + (Phase 4
+    # PR-2+) pending confirms + rollouts persist across CP restarts.
+    # When null, in-memory state only — fine for dev, not production.
+    dbPath = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = "/var/lib/nixfleet-cp/state.db";
+      description = ''
+        Path to the SQLite database. Default lives under
+        StateDirectory so impermanent hosts can persist via
+        environment.persistence (already declared below). Set to
+        `null` to disable persistence — e.g. for dev/test or until
+        the operator is ready for the full Phase 4 stateful CP.
+      '';
+    };
+
     # PR-4: Forgejo channel-refs poll. When set, the CP polls
     # /api/v1/repos/{owner}/{repo}/contents/{artifactPath} every 60s
     # and refreshes the in-memory channel-refs cache. Phase 4 may
@@ -309,6 +340,14 @@ in {
             ++ [
               "--audit-log"
               (lib.escapeShellArg cfg.auditLogPath)
+            ]
+            ++ lib.optionals (cfg.dbPath != null) [
+              "--db-path"
+              (lib.escapeShellArg cfg.dbPath)
+            ]
+            ++ lib.optionals (cfg.closureUpstream != null) [
+              "--closure-upstream"
+              (lib.escapeShellArg cfg.closureUpstream)
             ]
             ++ lib.optionals
             (

@@ -130,8 +130,33 @@ async fn main() -> anyhow::Result<()> {
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut client_handle = client;
+    // RFC-0003 §5: exponential backoff with jitter on errors. Doubles
+    // each consecutive failure, capped at 8× the base interval (~8min
+    // at 60s default). Reset to 1× on first success. Random jitter
+    // ±20% spreads recovery across the fleet.
+    let mut consecutive_failures: u32 = 0;
 
     loop {
+        // On consecutive failures, sleep extra (in addition to the
+        // ticker's regular cadence). The ticker fires on its own
+        // schedule; backoff is layered.
+        if consecutive_failures > 0 {
+            let multiplier = (1u64 << (consecutive_failures.min(3))) as u64; // 1, 2, 4, 8
+            let base = args.poll_interval.saturating_mul(multiplier);
+            // ±20% jitter.
+            let jitter_pct: f64 = {
+                use rand::Rng;
+                rand::thread_rng().gen_range(-0.2_f64..=0.2_f64)
+            };
+            let jittered = (base as f64 * (1.0 + jitter_pct)) as u64;
+            tracing::debug!(
+                consecutive_failures,
+                backoff_secs = jittered,
+                "agent: backoff sleep"
+            );
+            tokio::time::sleep(Duration::from_secs(jittered)).await;
+        }
+
         ticker.tick().await;
 
         // PR-5: self-paced renewal at 50% of cert validity. Each
@@ -175,19 +200,79 @@ async fn main() -> anyhow::Result<()> {
 
         match send_checkin(&client_handle, &args, started_at).await {
             Ok(resp) => {
+                consecutive_failures = 0;
                 if let Some(target) = &resp.target {
-                    // Phase 3 doesn't activate, but log what the CP
-                    // wants so an operator can sanity-check the
-                    // dispatch loop when Phase 4 turns it on.
-                    tracing::info!(
-                        target_closure = %target.closure_hash,
-                        target_channel = %target.channel_ref,
-                        "would activate (Phase 4 will run nixos-rebuild here)"
-                    );
+                    // Phase 4: activate the target via nixos-rebuild.
+                    // On rebuild success → POST /v1/agent/confirm.
+                    // 410 from /confirm → CP says rollback. Rebuild
+                    // failure → local rollback regardless.
+                    match nixfleet_agent::activation::activate(target).await {
+                        Ok(status) if status.success() => {
+                            let boot_id = nixfleet_agent::checkin_state::boot_id()
+                                .unwrap_or_else(|_| "unknown".to_string());
+                            // Phase 4 dispatch isn't built yet — when
+                            // it lands, target should carry a rollout
+                            // ID. For now use the channel_ref as the
+                            // rollout name. Wave 0 since the wave/
+                            // soak state machine is also deferred.
+                            let rollout = &target.channel_ref;
+                            let wave: u32 = 0;
+                            match nixfleet_agent::activation::confirm_target(
+                                &client_handle,
+                                &args.control_plane_url,
+                                &args.machine_id,
+                                target,
+                                rollout,
+                                wave,
+                                &boot_id,
+                            )
+                            .await
+                            {
+                                Ok(nixfleet_agent::comms::ConfirmOutcome::Cancelled) => {
+                                    // CP says rollback — run it.
+                                    if let Err(err) =
+                                        nixfleet_agent::activation::rollback().await
+                                    {
+                                        tracing::error!(
+                                            error = %err,
+                                            "rollback after CP-410 also failed"
+                                        );
+                                    }
+                                }
+                                Ok(_) => {} // Acknowledged or Other — done.
+                                Err(err) => {
+                                    tracing::warn!(error = %err, "confirm post failed");
+                                }
+                            }
+                        }
+                        Ok(_status) => {
+                            // Activation returned non-zero. Roll back.
+                            if let Err(err) =
+                                nixfleet_agent::activation::rollback().await
+                            {
+                                tracing::error!(
+                                    error = %err,
+                                    "rollback after failed activation also failed — manual intervention required"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            // Spawn / I/O error — couldn't even run
+                            // nixos-rebuild. Don't roll back (nothing
+                            // to roll back from); log and let next
+                            // tick retry.
+                            tracing::error!(error = %err, "activation spawn failed");
+                        }
+                    }
                 }
             }
             Err(err) => {
-                tracing::warn!(error = %err, "checkin failed; will retry next tick");
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                tracing::warn!(
+                    error = %err,
+                    consecutive_failures,
+                    "checkin failed; will retry with backoff"
+                );
             }
         }
     }

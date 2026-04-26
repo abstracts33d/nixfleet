@@ -14,6 +14,19 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Protocol major version (RFC-0003 §6). Sent by the agent in
+/// `X-Nixfleet-Protocol` on every `/v1/agent/*` request; CP checks
+/// and rejects mismatched majors with 426 Upgrade Required.
+///
+/// v1 → v2 is a breaking change. Within a major, fields may be
+/// added; agents and CP MUST ignore unknown fields.
+pub const PROTOCOL_MAJOR_VERSION: u32 = 1;
+
+/// HTTP header carrying the agent's declared protocol major
+/// version. Lowercase per HTTP/2 conventions (axum normalises
+/// regardless).
+pub const PROTOCOL_VERSION_HEADER: &str = "x-nixfleet-protocol";
+
 // =====================================================================
 // /v1/agent/checkin — RFC-0003 §4.1 + Phase 3 expansion
 // =====================================================================
@@ -114,6 +127,47 @@ pub struct CheckinResponse {
     pub target: Option<EvaluatedTarget>,
     pub next_checkin_secs: u32,
 }
+
+// =====================================================================
+// /v1/agent/confirm — RFC-0003 §4.2 (activation confirmation)
+// =====================================================================
+
+/// POST /v1/agent/confirm request body (Phase 4).
+///
+/// Agent posts this exactly once after a new generation has booted
+/// and the agent process has come up healthy. CP records the
+/// confirmation; the magic-rollback timer (separate task) checks
+/// `pending_confirms.confirm_deadline` and transitions expired
+/// records to `rolled-back` if no confirm arrived in the window.
+///
+/// Body shape per RFC-0003 §4.2 — minus probeResults (Phase 7).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmRequest {
+    pub hostname: String,
+    /// Rollout identifier the agent is confirming. Phase 4's
+    /// dispatch loop assigns rollout IDs when populating
+    /// CheckinResponse.target; the agent echoes back what it acted
+    /// on. Format: `<channel>@<ref>` per RFC-0003 examples.
+    pub rollout: String,
+    pub wave: u32,
+    /// What the agent is now running, post-activation. Same shape
+    /// as CheckinRequest.currentGeneration so the CP can
+    /// cross-check that the agent activated the right closure.
+    pub generation: GenerationRef,
+}
+
+/// POST /v1/agent/confirm response.
+///
+/// 204 No Content on acceptance — body is empty. RFC-0003 §4.2:
+/// "204 on acceptance, 410 Gone if the rollout was cancelled or
+/// the wave already failed (agent then triggers local rollback on
+/// its own)." 410 is a status-code-only response; this struct
+/// covers the rare success-with-body case (currently empty —
+/// future Phase 4 PRs may add fields without a major bump).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmResponse {}
 
 // =====================================================================
 // /v1/agent/report — RFC-0003 §4.5 (event reports)

@@ -209,6 +209,8 @@ async fn spawn_server(
         observed_path: observed,
         freshness_window: Duration::from_secs(86400),
         forgejo: None,
+        db_path: None,
+        closure_upstream: None,
     };
     let handle = tokio::spawn(server::serve(args));
     sleep(Duration::from_millis(200)).await;

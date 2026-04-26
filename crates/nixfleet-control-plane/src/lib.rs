@@ -15,9 +15,11 @@
 //! PR-4 introduces the live projection from agent check-ins.
 
 pub mod auth_cn;
+pub mod db;
 pub mod forgejo_poll;
 pub mod issuance;
 pub mod observed_projection;
+pub mod rollback_timer;
 pub mod server;
 pub mod tls;
 
