@@ -10,6 +10,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use nixfleet_proto::agent_wire::{
     CheckinRequest, CheckinResponse, ReportRequest, ReportResponse,
+    PROTOCOL_MAJOR_VERSION, PROTOCOL_VERSION_HEADER,
 };
 use reqwest::{Certificate, Client, Identity};
 
@@ -66,6 +67,7 @@ pub async fn checkin(
     let url = format!("{}/v1/agent/checkin", cp_url.trim_end_matches('/'));
     let resp = client
         .post(&url)
+        .header(PROTOCOL_VERSION_HEADER, PROTOCOL_MAJOR_VERSION.to_string())
         .json(req)
         .send()
         .await
@@ -90,6 +92,7 @@ pub async fn report(
     let url = format!("{}/v1/agent/report", cp_url.trim_end_matches('/'));
     let resp = client
         .post(&url)
+        .header(PROTOCOL_VERSION_HEADER, PROTOCOL_MAJOR_VERSION.to_string())
         .json(req)
         .send()
         .await

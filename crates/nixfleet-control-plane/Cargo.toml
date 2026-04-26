@@ -66,6 +66,14 @@ rcgen = { version = "0.13", features = ["x509-parser"] }
 ed25519-dalek = "2"
 sha2 = "0.10"
 nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }
+# Phase 4 PR-1: SQLite persistence for cross-restart state. v0.1 used
+# the same rusqlite + refinery stack (crates/control-plane on
+# v0.1.1) — same versions, same posture (WAL + FK on at startup).
+# Token-replay + cert-revocation persistence (currently in-memory)
+# follow-up onto this layer; rollout/host state lands in subsequent
+# Phase 4 PRs.
+rusqlite = { version = "0.32", features = ["bundled"] }
+refinery = { version = "0.8", features = ["rusqlite"] }
 
 [dev-dependencies]
 tempfile = "3"

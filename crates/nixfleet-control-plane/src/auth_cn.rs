@@ -100,6 +100,17 @@ impl PeerCertificates {
             .and_then(|attr| attr.as_str().ok().map(String::from));
         cn
     }
+
+    /// Extract the leaf certificate's `notBefore` as UTC. Used by
+    /// the revocation check: a revocation entry says "any cert with
+    /// notBefore < X is bad", so a re-enrolled cert (with
+    /// notBefore > X) re-grants access.
+    pub fn leaf_not_before(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        let leaf = self.leaf()?;
+        let (_, cert) = X509Certificate::from_der(leaf.as_ref()).ok()?;
+        let secs = cert.validity().not_before.timestamp();
+        chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0)
+    }
 }
 
 // =====================================================================

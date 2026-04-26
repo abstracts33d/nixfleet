@@ -39,6 +39,7 @@
   cacheServerModule = ../../scopes/nixfleet/_cache-server.nix;
   cacheModule = ../../scopes/nixfleet/_cache.nix;
   microvmHostModule = ../../scopes/nixfleet/_microvm-host.nix;
+  operatorModule = ../../scopes/nixfleet/_operator.nix;
 
   isDarwinPlatform = platform:
     builtins.elem platform ["aarch64-darwin" "x86_64-darwin"];
@@ -85,6 +86,7 @@ in
         cacheServerModule
         cacheModule
         microvmHostModule
+        operatorModule
       ]
       ++ lib.optionals isVm [
         ../../_hardware/qemu/disk-config.nix
@@ -102,6 +104,12 @@ in
       ];
 
     # Framework Darwin modules injected by mkHost.
+    #
+    # The operator scope is platform-agnostic (just systemPackages +
+    # an env var) so it gets the same module file as NixOS. Same
+    # `enable=false` default means Darwin hosts that don't need
+    # operator tooling aren't impacted; aether enables it via fleet
+    # wiring (see fleet/modules/nixfleet/operator.nix).
     frameworkDarwinModules = [
       {nixpkgs.hostPlatform = platform;}
       hostSpecModule
@@ -110,6 +118,7 @@ in
       {hostSpec.isDarwin = true;}
       coreDarwin
       agentDarwinModule
+      operatorModule
     ];
 
     # Build NixOS system. Framework inputs passed via specialArgs so

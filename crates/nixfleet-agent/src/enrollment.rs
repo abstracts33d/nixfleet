@@ -13,6 +13,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use nixfleet_proto::agent_wire::{PROTOCOL_MAJOR_VERSION, PROTOCOL_VERSION_HEADER};
 use nixfleet_proto::enroll_wire::{
     BootstrapToken, EnrollRequest, EnrollResponse, RenewRequest, RenewResponse,
 };
@@ -61,7 +62,7 @@ pub async fn enroll(
 
     let url = format!("{}/v1/enroll", cp_url.trim_end_matches('/'));
     let req = EnrollRequest { token, csr_pem };
-    let resp = client.post(&url).json(&req).send().await?;
+    let resp = client.post(&url).header(PROTOCOL_VERSION_HEADER, PROTOCOL_MAJOR_VERSION.to_string()).json(&req).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("enroll {}: {}: {}", url, resp.status(), resp.text().await.unwrap_or_default());
     }
@@ -91,7 +92,7 @@ pub async fn renew(
     let (csr_pem, key_pem, _pubkey_der) = generate_csr(hostname)?;
     let url = format!("{}/v1/agent/renew", cp_url.trim_end_matches('/'));
     let req = RenewRequest { csr_pem };
-    let resp = client.post(&url).json(&req).send().await?;
+    let resp = client.post(&url).header(PROTOCOL_VERSION_HEADER, PROTOCOL_MAJOR_VERSION.to_string()).json(&req).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("renew {}: {}: {}", url, resp.status(), resp.text().await.unwrap_or_default());
     }

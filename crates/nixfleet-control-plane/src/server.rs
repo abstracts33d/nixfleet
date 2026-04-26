@@ -15,15 +15,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::{
     routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
+use axum::middleware::{self, Next};
+use axum::http::Request as HttpRequest;
+use axum::body::Body;
 use nixfleet_proto::agent_wire::{
-    CheckinRequest, CheckinResponse, ReportRequest, ReportResponse,
+    CheckinRequest, CheckinResponse, ConfirmRequest, ConfirmResponse, ReportRequest,
+    ReportResponse, PROTOCOL_MAJOR_VERSION, PROTOCOL_VERSION_HEADER,
 };
 use nixfleet_proto::enroll_wire::{EnrollRequest, EnrollResponse, RenewRequest, RenewResponse};
 use rcgen::PublicKeyData;
@@ -78,6 +82,15 @@ pub struct ServeArgs {
     /// PR-4: Forgejo poll config. When `None`, the CP falls back to
     /// reading `--observed` for the channel-refs portion of Observed.
     pub forgejo: Option<crate::forgejo_poll::ForgejoConfig>,
+    /// Phase 4 PR-1: SQLite path. When `Some`, the DB is opened +
+    /// migrated at startup. When `None`, in-memory state is used
+    /// (file-backed deploy + tests fall through to this).
+    pub db_path: Option<PathBuf>,
+    /// Phase 4 PR-C: closure proxy upstream. URL of the attic
+    /// instance the CP forwards `/v1/agent/closure/<hash>` requests
+    /// to. When `None`, the endpoint returns 501. Typical value on
+    /// lab: `http://localhost:8085` (attic on the same host).
+    pub closure_upstream: Option<String>,
 }
 
 /// In-memory record of the most recent checkin per host. Phase 4
@@ -101,12 +114,25 @@ pub struct ReportRecord {
     pub report: ReportRequest,
 }
 
-/// Server-wide shared state. PR-3 adds `host_checkins` and
-/// `host_reports`. PR-4 adds `channel_refs_cache`. PR-5 adds
-/// `seen_token_nonces` (in-memory replay set for /v1/enroll;
-/// Phase 4 promotes to SQLite) and `issuance_paths` (CA cert + key
-/// + audit-log paths read on each issuance).
-#[derive(Debug, Default)]
+/// Closure-proxy upstream client + URL. Captured at serve() time
+/// so each request avoids re-parsing the URL or rebuilding the
+/// reqwest client.
+#[derive(Clone, Debug)]
+pub struct ClosureUpstream {
+    pub base_url: String,
+    pub client: reqwest::Client,
+}
+
+/// Server-wide shared state. Phase 3 fields: `host_checkins`,
+/// `host_reports`, `channel_refs_cache`, `seen_token_nonces`,
+/// `issuance_paths`. Phase 4 PR-1 adds `db` — SQLite-backed
+/// persistence; subsequent Phase 4 PRs migrate `seen_token_nonces`
+/// (currently in-memory HashSet) and add cert revocation, pending
+/// confirmations, etc. on top.
+///
+/// `db` is `Option<Arc<Db>>` so existing tests + the file-backed
+/// PR-1 deploy path can run without standing up SQLite. Production
+/// deploys wire it via `--db-path`.
 pub struct AppState {
     pub last_tick_at: RwLock<Option<DateTime<Utc>>>,
     pub host_checkins: RwLock<HashMap<String, HostCheckinRecord>>,
@@ -114,6 +140,31 @@ pub struct AppState {
     pub channel_refs_cache: RwLock<crate::forgejo_poll::ChannelRefsCache>,
     pub seen_token_nonces: RwLock<HashSet<String>>,
     pub issuance_paths: RwLock<IssuancePaths>,
+    pub db: Option<Arc<crate::db::Db>>,
+    pub closure_upstream: Option<ClosureUpstream>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            last_tick_at: RwLock::new(None),
+            host_checkins: RwLock::new(HashMap::new()),
+            host_reports: RwLock::new(HashMap::new()),
+            channel_refs_cache: RwLock::new(crate::forgejo_poll::ChannelRefsCache::default()),
+            seen_token_nonces: RwLock::new(HashSet::new()),
+            issuance_paths: RwLock::new(IssuancePaths::default()),
+            db: None,
+            closure_upstream: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("db", &self.db.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -161,17 +212,10 @@ struct WhoamiResponse {
 /// intentionally one of the gated routes since there's nothing to
 /// say without a verified peer.
 async fn whoami(
+    State(state): State<Arc<AppState>>,
     Extension(peer_certs): Extension<PeerCertificates>,
 ) -> Result<Json<WhoamiResponse>, StatusCode> {
-    if !peer_certs.is_present() {
-        // mTLS not configured at the server level, or client did not
-        // present a cert. Either way: nothing meaningful to report.
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let cn = peer_certs.leaf_cn().ok_or_else(|| {
-        tracing::warn!("whoami: peer cert has no parseable CN");
-        StatusCode::UNAUTHORIZED
-    })?;
+    let cn = require_cn(&state, &peer_certs).await?;
     Ok(Json(WhoamiResponse {
         cn,
         issued_at: Utc::now().to_rfc3339(),
@@ -179,12 +223,45 @@ async fn whoami(
 }
 
 /// Extract the verified CN from `PeerCertificates`, or return 401.
+/// Also enforces cert revocation when AppState.db is set: a cert
+/// whose notBefore predates the host's revocation entry is rejected
+/// with 401. Re-enrolled certs (notBefore > revoked_before) pass.
+///
 /// Centralised so each /v1/* handler reads the same way.
-fn require_cn(peer_certs: &PeerCertificates) -> Result<String, StatusCode> {
+async fn require_cn(
+    state: &AppState,
+    peer_certs: &PeerCertificates,
+) -> Result<String, StatusCode> {
     if !peer_certs.is_present() {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    peer_certs.leaf_cn().ok_or(StatusCode::UNAUTHORIZED)
+    let cn = peer_certs.leaf_cn().ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if let Some(db) = &state.db {
+        match db.cert_revoked_before(&cn) {
+            Ok(Some(revoked_before)) => {
+                let cert_nbf = peer_certs
+                    .leaf_not_before()
+                    .ok_or(StatusCode::UNAUTHORIZED)?;
+                if cert_nbf < revoked_before {
+                    tracing::warn!(
+                        cn = %cn,
+                        cert_not_before = %cert_nbf.to_rfc3339(),
+                        revoked_before = %revoked_before.to_rfc3339(),
+                        "rejecting revoked cert"
+                    );
+                    return Err(StatusCode::UNAUTHORIZED);
+                }
+            }
+            Ok(None) => {} // not revoked
+            Err(err) => {
+                tracing::error!(error = %err, "db cert_revoked_before failed");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    Ok(cn)
 }
 
 /// `POST /v1/agent/checkin` — record an agent checkin.
@@ -201,7 +278,7 @@ async fn checkin(
     Extension(peer_certs): Extension<PeerCertificates>,
     Json(req): Json<CheckinRequest>,
 ) -> Result<Json<CheckinResponse>, StatusCode> {
-    let cn = require_cn(&peer_certs)?;
+    let cn = require_cn(&state, &peer_certs).await?;
     if cn != req.hostname {
         tracing::warn!(
             cert_cn = %cn,
@@ -261,7 +338,7 @@ async fn report(
     Extension(peer_certs): Extension<PeerCertificates>,
     Json(req): Json<ReportRequest>,
 ) -> Result<Json<ReportResponse>, StatusCode> {
-    let cn = require_cn(&peer_certs)?;
+    let cn = require_cn(&state, &peer_certs).await?;
     if cn != req.hostname {
         tracing::warn!(
             cert_cn = %cn,
@@ -350,15 +427,31 @@ async fn enroll(
 
     // 1. Replay defense — drop the nonce on the floor early so a
     //    flood of replays doesn't pay for parsing + signature work.
-    {
+    //
+    //    DB-backed when state.db is set (Phase 4 PR-1+); in-memory
+    //    HashSet fallback for tests + dev. The two paths produce
+    //    identical observable behaviour (one INSERT per accepted
+    //    token, no insert on rejected). Hold off inserting until
+    //    after signature verification — a forged token's nonce
+    //    shouldn't lock out a real operator-minted retry.
+    if let Some(db) = &state.db {
+        match db.token_seen(&req.token.claims.nonce) {
+            Ok(true) => {
+                tracing::warn!(nonce = %req.token.claims.nonce, "enroll: token replay rejected (db)");
+                return Err(StatusCode::CONFLICT);
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::error!(error = %err, "enroll: db token_seen failed");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    } else {
         let seen = state.seen_token_nonces.read().await;
         if seen.contains(&req.token.claims.nonce) {
-            tracing::warn!(nonce = %req.token.claims.nonce, "enroll: token replay rejected");
+            tracing::warn!(nonce = %req.token.claims.nonce, "enroll: token replay rejected (mem)");
             return Err(StatusCode::CONFLICT);
         }
-        // Hold off inserting until after signature verification —
-        // we don't want a forged token's nonce to lock out a real
-        // operator-minted retry.
     }
 
     // 2. Expiry.
@@ -479,12 +572,24 @@ async fn enroll(
     }
 
     // All checks passed — commit the nonce as seen so a replay of
-    // this exact (verified) token is rejected.
-    state
-        .seen_token_nonces
-        .write()
-        .await
-        .insert(req.token.claims.nonce.clone());
+    // this exact (verified) token is rejected. DB write when
+    // available, in-memory fallback otherwise.
+    if let Some(db) = &state.db {
+        if let Err(err) = db.record_token_nonce(&req.token.claims.nonce, &req.token.claims.hostname) {
+            // Log but don't fail the enroll — the cert is already
+            // about to be issued. A failed replay-record means at
+            // worst a window where the same token could be used
+            // twice; the rest of the validation still rejects
+            // tampering, expiry, and CN/fingerprint mismatches.
+            tracing::warn!(error = %err, "enroll: db record_token_nonce failed; proceeding");
+        }
+    } else {
+        state
+            .seen_token_nonces
+            .write()
+            .await
+            .insert(req.token.claims.nonce.clone());
+    }
 
     // Issue the cert.
     let paths = state.issuance_paths.read().await.clone();
@@ -536,7 +641,7 @@ async fn renew(
     Extension(peer_certs): Extension<PeerCertificates>,
     Json(req): Json<RenewRequest>,
 ) -> Result<Json<RenewResponse>, StatusCode> {
-    let cn = require_cn(&peer_certs)?;
+    let cn = require_cn(&state, &peer_certs).await?;
     let now = chrono::Utc::now();
 
     let paths = state.issuance_paths.read().await.clone();
@@ -579,6 +684,199 @@ async fn renew(
     Ok(Json(RenewResponse { cert_pem, not_after }))
 }
 
+/// `POST /v1/agent/confirm` — agent confirms successful activation
+/// of a target generation. Marks the matching `pending_confirms`
+/// row as confirmed.
+///
+/// Behaviour:
+/// - Rollout exists in `pending_confirms` with `state='pending'`
+///   AND deadline not yet passed: mark confirmed, 204.
+/// - Rollout cancelled OR deadline already passed (state in
+///   `'cancelled' | 'rolled-back' | 'confirmed'`): 410 Gone.
+///   Agent then triggers local rollback per RFC-0003 §4.2.
+/// - No matching rollout (CN/rollout_id mismatch): 404. Catches
+///   bad-rollout-id agent bugs without giving up auth info.
+/// - DB unset: 503 Service Unavailable. The endpoint requires
+///   persistence; in-memory mode doesn't track confirms.
+async fn confirm(
+    State(state): State<Arc<AppState>>,
+    Extension(peer_certs): Extension<PeerCertificates>,
+    Json(req): Json<ConfirmRequest>,
+) -> Result<axum::response::Response, StatusCode> {
+    let cn = require_cn(&state, &peer_certs).await?;
+    if cn != req.hostname {
+        tracing::warn!(
+            cert_cn = %cn,
+            body_hostname = %req.hostname,
+            "confirm rejected: cert CN does not match body hostname"
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let db = state.db.as_ref().ok_or_else(|| {
+        tracing::warn!("confirm: no db configured — endpoint unusable");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    let updated = db.confirm_pending(&req.hostname, &req.rollout).map_err(|err| {
+        tracing::error!(error = %err, "confirm: db update failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if updated == 0 {
+        // Either: no rollout with that ID for this host (rollout
+        // never dispatched, agent confused), or the row exists but
+        // is no longer in 'pending' state (already confirmed,
+        // rolled-back, or cancelled). RFC-0003 §4.2 says 410 Gone
+        // when the rollout was cancelled or the wave already failed
+        // — collapse "not found" and "wrong state" to 410 since the
+        // agent's response is the same in both cases (trigger local
+        // rollback).
+        tracing::info!(
+            hostname = %req.hostname,
+            rollout = %req.rollout,
+            "confirm: no matching pending row — returning 410"
+        );
+        return Ok(axum::response::Response::builder()
+            .status(StatusCode::GONE)
+            .body(axum::body::Body::from(""))
+            .unwrap_or_default());
+    }
+
+    tracing::info!(
+        target: "confirm",
+        hostname = %req.hostname,
+        rollout = %req.rollout,
+        wave = req.wave,
+        closure_hash = %req.generation.closure_hash,
+        "confirm received"
+    );
+    Ok(axum::response::Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(axum::body::Body::from(""))
+        .unwrap_or_default())
+}
+
+/// `GET /v1/agent/closure/{hash}` — closure proxy (Phase 4 PR-C).
+///
+/// Forwards to a configured attic upstream (`AppState.closure_upstream`).
+/// Currently fetches the narinfo for `<hash>.narinfo` from the
+/// upstream and returns the bytes verbatim. Real Nix-cache-protocol
+/// forwarding (full nar streaming + multiple files) is a follow-up
+/// PR — this lands the wire shape + the `closure_upstream` config
+/// path so the operator can deploy the agent-side fallback knowing
+/// the URL exists.
+///
+/// When `closure_upstream` is unset, returns 501 Not Implemented +
+/// a journal info line so the operator sees the gap.
+async fn closure_proxy(
+    State(state): State<Arc<AppState>>,
+    Extension(peer_certs): Extension<PeerCertificates>,
+    Path(closure_hash): Path<String>,
+) -> Result<axum::response::Response, StatusCode> {
+    let cn = require_cn(&state, &peer_certs).await?;
+
+    let upstream = match &state.closure_upstream {
+        Some(u) => u,
+        None => {
+            tracing::info!(
+                target: "closure_proxy",
+                cn = %cn,
+                closure = %closure_hash,
+                "closure proxy hit but no --closure-upstream configured (501)"
+            );
+            let body = serde_json::json!({
+                "error": "closure proxy not configured",
+                "closure": closure_hash,
+                "tracking": "set services.nixfleet-control-plane.closureUpstream",
+            });
+            return Ok(axum::response::Response::builder()
+                .status(StatusCode::NOT_IMPLEMENTED)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap_or_default());
+        }
+    };
+
+    // Forward to the attic narinfo endpoint. Attic's API serves
+    // narinfo at `<base>/<hash>.narinfo` for the configured cache.
+    // Full nar transfer (the actual closure bytes) requires multiple
+    // requests — landing as a follow-up PR. For now this proves the
+    // upstream wire works.
+    let url = format!(
+        "{}/{}.narinfo",
+        upstream.base_url.trim_end_matches('/'),
+        closure_hash
+    );
+    tracing::debug!(target: "closure_proxy", cn = %cn, url = %url, "forwarding");
+
+    let resp = match upstream.client.get(&url).send().await {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(error = %err, "closure proxy: upstream unreachable");
+            return Ok(axum::response::Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(axum::body::Body::from(format!("upstream error: {err}")))
+                .unwrap_or_default());
+        }
+    };
+    let status = resp.status().as_u16();
+    let body = resp.bytes().await.map_err(|err| {
+        tracing::warn!(error = %err, "closure proxy: upstream body read failed");
+        StatusCode::BAD_GATEWAY
+    })?;
+    Ok(axum::response::Response::builder()
+        .status(status)
+        .header("content-type", "text/x-nix-narinfo")
+        .body(axum::body::Body::from(body))
+        .unwrap_or_default())
+}
+
+/// Middleware: enforce `X-Nixfleet-Protocol: <PROTOCOL_MAJOR_VERSION>`
+/// on `/v1/*` requests (RFC-0003 §6).
+///
+/// Forward-compat posture: missing header → log debug + accept. This
+/// lets older agents (Phase 3-deployed before this PR landed) keep
+/// working during the transition. Header present + mismatched major
+/// → 426 Upgrade Required + log warn.
+///
+/// /healthz is not subject to this — it's the operator's status
+/// probe and runs unauthenticated; protocol-versioning the health
+/// check makes the operational debug story worse without buying
+/// anything.
+async fn protocol_version_middleware(
+    req: HttpRequest<Body>,
+    next: Next,
+) -> Result<axum::response::Response, StatusCode> {
+    if let Some(value) = req.headers().get(PROTOCOL_VERSION_HEADER) {
+        match value.to_str().ok().and_then(|s| s.parse::<u32>().ok()) {
+            Some(v) if v == PROTOCOL_MAJOR_VERSION => Ok(next.run(req).await),
+            Some(v) => {
+                tracing::warn!(
+                    sent = v,
+                    expected = PROTOCOL_MAJOR_VERSION,
+                    "rejecting request with mismatched protocol major version"
+                );
+                Err(StatusCode::UPGRADE_REQUIRED)
+            }
+            None => {
+                tracing::warn!(
+                    raw = ?value,
+                    "X-Nixfleet-Protocol header malformed"
+                );
+                Err(StatusCode::BAD_REQUEST)
+            }
+        }
+    } else {
+        // Forward-compat: missing header is currently accepted with a
+        // debug log. Phase 4 may flip this to a warn; v2 may flip to
+        // a hard reject. Keeping it lenient now means agents in the
+        // transition window between PR-3 and this header land keep
+        // working.
+        tracing::debug!("request without X-Nixfleet-Protocol — accepting (forward-compat)");
+        Ok(next.run(req).await)
+    }}
+
 fn build_router(state: Arc<AppState>) -> Router {
     // /healthz remains unauthenticated per spec D7 — operational
     // debuggability outweighs the marginal sovereignty gain of
@@ -593,13 +891,22 @@ fn build_router(state: Arc<AppState>) -> Router {
     // PR-3: + /v1/agent/checkin, /v1/agent/report
     // PR-4: + /v1/admin/observed (proposed) — TBD
     // PR-5: + /v1/enroll, /v1/agent/renew
-    Router::new()
-        .route("/healthz", get(healthz))
+    // /healthz remains outside the /v1 namespace — no protocol-
+    // version enforcement applies. /v1/* routes go through the
+    // version middleware.
+    let v1_routes = Router::new()
         .route("/v1/whoami", get(whoami))
         .route("/v1/agent/checkin", post(checkin))
         .route("/v1/agent/report", post(report))
+        .route("/v1/agent/confirm", post(confirm))
+        .route("/v1/agent/closure/{hash}", get(closure_proxy))
         .route("/v1/enroll", post(enroll))
         .route("/v1/agent/renew", post(renew))
+        .layer(middleware::from_fn(protocol_version_middleware));
+
+    Router::new()
+        .route("/healthz", get(healthz))
+        .merge(v1_routes)
         .with_state(state)
 }
 
@@ -719,7 +1026,38 @@ fn run_tick_with_projection(
 /// Serve until interrupted. Builds the TLS config, starts the
 /// reconcile loop, binds the listener, runs forever.
 pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
-    let state = Arc::new(AppState::default());
+    // Phase 4 PR-1: open + migrate SQLite if a path is configured.
+    // None → in-memory state only (PR-1 file-backed deploy + tests).
+    let db = if let Some(path) = &args.db_path {
+        let db = crate::db::Db::open(path)?;
+        db.migrate()?;
+        tracing::info!(path = %path.display(), "sqlite opened + migrated");
+        Some(Arc::new(db))
+    } else {
+        None
+    };
+
+    let mut app_state = AppState::default();
+    app_state.db = db.clone();
+    if let Some(base_url) = &args.closure_upstream {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| anyhow::anyhow!("build closure proxy client: {e}"))?;
+        app_state.closure_upstream = Some(ClosureUpstream {
+            base_url: base_url.clone(),
+            client,
+        });
+    }
+    let state = Arc::new(app_state);
+
+    // Phase 4 PR-B: magic-rollback timer. Periodic background task
+    // that scans pending_confirms for expired deadlines and marks
+    // them rolled-back. Only runs when DB is configured — without
+    // it, there's no pending_confirms table to query.
+    if let Some(db_arc) = db {
+        crate::rollback_timer::spawn(db_arc);
+    }
 
     // Seed issuance config (PR-5). When fleet-ca-cert/key are unset
     // the /v1/enroll and /v1/agent/renew endpoints return 500 — they

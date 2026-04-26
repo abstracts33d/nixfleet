@@ -140,6 +140,21 @@ struct ServeFlags {
     #[arg(long, default_value = "/var/lib/nixfleet-cp/issuance.log",
           env = "NIXFLEET_CP_AUDIT_LOG")]
     audit_log: PathBuf,
+
+    /// Phase 4 PR-1: SQLite database path. When set, the CP opens
+    /// the DB at startup, runs migrations, and uses it for token
+    /// replay + cert revocation + (Phase 4 PR-2+) pending confirms
+    /// + rollouts. When unset, in-memory state only — fine for
+    /// dev/test, not for production.
+    #[arg(long, env = "NIXFLEET_CP_DB_PATH")]
+    db_path: Option<PathBuf>,
+
+    /// Phase 4 PR-C: closure proxy upstream. Attic instance the CP
+    /// forwards `/v1/agent/closure/<hash>` requests to. Typical
+    /// value on lab: `http://localhost:8085` (attic on the same
+    /// host). When unset, the closure proxy endpoint returns 501.
+    #[arg(long, env = "NIXFLEET_CP_CLOSURE_UPSTREAM")]
+    closure_upstream: Option<String>,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -251,6 +266,8 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         observed_path: flags.observed,
         freshness_window: Duration::from_secs(flags.freshness_window_secs),
         forgejo,
+        db_path: flags.db_path,
+        closure_upstream: flags.closure_upstream,
     })
     .await
 }
