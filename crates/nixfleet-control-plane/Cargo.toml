@@ -48,10 +48,13 @@ x509-parser = "0.16"
 tokio-rustls = "0.26"
 tower-service = "0.3"
 http = "1"
-# PR-4 — Forgejo channel-refs poll. reqwest with rustls-tls so the
-# CP doesn't depend on system OpenSSL; base64 decodes the Forgejo
-# /api/v1/repos/.../contents response shape.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# PR-4 — Forgejo channel-refs poll. reqwest with rustls-tls and
+# native-roots so the CP picks up system trust at runtime — required
+# for Forgejo deployments behind an internal CA (e.g. Caddy's local
+# authority). webpki-roots alone won't trust Caddy-signed certs.
+# `rustls-tls-native-roots` enables `rustls-native-certs`, which
+# reads `/etc/ssl/certs` on Linux at process startup.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
 base64 = "0.22"
 # PR-5 — bootstrap enrollment + cert renewal. rcgen builds + signs
 # the agent certs; ed25519-dalek verifies bootstrap-token signatures
