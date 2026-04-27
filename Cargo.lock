@@ -1533,6 +1533,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nixfleet-release"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "clap",
+ "ed25519-dalek",
+ "nixfleet-canonicalize",
+ "nixfleet-proto",
+ "nixfleet-reconciler",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nixfleet-verify-artifact"
 version = "0.2.0"
 dependencies = [

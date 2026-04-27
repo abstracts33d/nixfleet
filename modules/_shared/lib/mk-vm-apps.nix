@@ -212,7 +212,14 @@
     }
   '';
 in
-  lib.optionalAttrs (isLinux || isDarwin) {
+  # Linux-only. The Darwin path was speculative — aarch64-darwin's
+  # `pkgs.OVMF` is marked broken upstream, and there's no fleet
+  # use-case where a darwin operator workstation is expected to host
+  # a fleet VM (the deployment surface is `nixos-anywhere` against
+  # a remote Linux host). Leaving the qemuAccel/qemuBin Darwin
+  # branches above as dead arms in case a future Darwin VM workflow
+  # appears, but emit no apps on darwin systems for now.
+  lib.optionalAttrs isLinux {
     # ── build-vm ──
     build-vm = mkScript "build-vm" "Install a VM host via nixos-anywhere (ISO boot + disko)" ''
       set -euo pipefail
