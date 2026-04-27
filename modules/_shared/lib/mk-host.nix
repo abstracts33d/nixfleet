@@ -59,6 +59,16 @@ in
     hostSpec ? {},
     modules ? [],
     isVm ? false,
+    # Override the `inputs` attrset injected into NixOS/Darwin
+    # specialArgs. Defaults to the framework's own flake inputs
+    # (sufficient for hosts that consume only nixfleet). Consumer
+    # fleets that want their *own* inputs visible to imported
+    # modules — e.g. so a fleet-side role can do
+    # `imports = [inputs.nixfleet-scopes.scopes.roles.X]` — pass
+    # `extraInputs = inputs` from their flake's outputs lambda.
+    # Merged into the framework inputs so framework-side modules
+    # still see what they need (impermanence, disko, nixpkgs, …).
+    extraInputs ? {},
   }: let
     isDarwin = isDarwinPlatform platform;
 
@@ -132,18 +142,23 @@ in
       operatorModule
     ];
 
-    # Build NixOS system. Framework inputs passed via specialArgs so
-    # consumer-imported modules (including nixfleet-scopes scopes) can
-    # reach inputs.home-manager, inputs.disko, inputs.impermanence, …
+    # specialArgs.inputs visible to all imported modules — framework
+    # inputs (impermanence, disko, nixpkgs, ...) merged with whatever
+    # the consumer passed via `extraInputs`. The consumer's keys win
+    # on collision, so a fleet that needs to override e.g.
+    # `inputs.home-manager` for its own modules can do so cleanly.
+    effectiveInputs = inputs // extraInputs;
+
+    # Build NixOS system.
     buildNixos = inputs.nixpkgs.lib.nixosSystem {
-      specialArgs = {inherit inputs;};
+      specialArgs = {inputs = effectiveInputs;};
       modules = [{system.stateVersion = lib.mkDefault stateVersion;}] ++ frameworkNixosModules ++ modules;
     };
 
     # Build Darwin system. stateVersion is Darwin-specific (integer);
     # consumers set `system.stateVersion` in their host modules.
     buildDarwin = inputs.darwin.lib.darwinSystem {
-      specialArgs = {inherit inputs;};
+      specialArgs = {inputs = effectiveInputs;};
       modules = frameworkDarwinModules ++ modules;
     };
   in
