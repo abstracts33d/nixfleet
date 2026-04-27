@@ -1,0 +1,92 @@
+# Summary
+
+[Introduction](manual/README.md)
+
+# Manual
+
+- [Architecture](manual/architecture.md)
+- [Operator cookbook](manual/operator-cookbook.md)
+- [Troubleshooting](manual/troubleshooting.md)
+
+# Reference (auto-generated)
+
+- nix/
+  - lib/
+    - [lib/default.nix](generated/nix/lib/default.md)
+    - [lib/mkFleet.nix](generated/nix/lib/mkFleet.md)
+  - modules/
+    - [modules/_trust.nix](generated/nix/modules/_trust.md)
+    - _shared/
+      - [modules/_shared/host-spec-module.nix](generated/nix/modules/_shared/host-spec-module.md)
+      - lib/
+        - [modules/_shared/lib/mk-host.nix](generated/nix/modules/_shared/lib/mk-host.md)
+    - scopes/
+      - nixfleet/
+        - [modules/scopes/nixfleet/_agent.nix](generated/nix/modules/scopes/nixfleet/_agent.md)
+        - [modules/scopes/nixfleet/_agent_darwin.nix](generated/nix/modules/scopes/nixfleet/_agent_darwin.md)
+        - [modules/scopes/nixfleet/_cache-server.nix](generated/nix/modules/scopes/nixfleet/_cache-server.md)
+        - [modules/scopes/nixfleet/_cache.nix](generated/nix/modules/scopes/nixfleet/_cache.md)
+        - [modules/scopes/nixfleet/_control-plane.nix](generated/nix/modules/scopes/nixfleet/_control-plane.md)
+        - [modules/scopes/nixfleet/_microvm-host.nix](generated/nix/modules/scopes/nixfleet/_microvm-host.md)
+        - [modules/scopes/nixfleet/_operator.nix](generated/nix/modules/scopes/nixfleet/_operator.md)
+        - [modules/scopes/nixfleet/_trust-json.nix](generated/nix/modules/scopes/nixfleet/_trust-json.md)
+- rfcs/
+  - [RFC-0001: Declarative fleet topology (`fleet.nix`)](generated/rfcs/0001-fleet-nix.md)
+  - [RFC-0002: Rollout execution engine](generated/rfcs/0002-reconciler.md)
+  - [RFC-0003: Agent ↔ control-plane protocol](generated/rfcs/0003-protocol.md)
+- rust/
+  - nixfleet-agent/
+    - [nixfleet_agent::activation](generated/rust/nixfleet-agent/activation.md)
+    - [nixfleet_agent::checkin_state](generated/rust/nixfleet-agent/checkin_state.md)
+    - [nixfleet_agent::comms](generated/rust/nixfleet-agent/comms.md)
+    - [nixfleet_agent::enrollment](generated/rust/nixfleet-agent/enrollment.md)
+    - [nixfleet_agent](generated/rust/nixfleet-agent/index.md)
+    - [nixfleet_agent](generated/rust/nixfleet-agent/main.md)
+  - nixfleet-canonicalize/
+    - [nixfleet_canonicalize](generated/rust/nixfleet-canonicalize/index.md)
+    - [nixfleet_canonicalize](generated/rust/nixfleet-canonicalize/main.md)
+  - nixfleet-cli/
+    - [nixfleet_cli](generated/rust/nixfleet-cli/index.md)
+    - [nixfleet_cli](generated/rust/nixfleet-cli/main.md)
+    - bin/
+      - [nixfleet_cli::bin::derive_pubkey](generated/rust/nixfleet-cli/bin/derive_pubkey.md)
+      - [nixfleet_cli::bin::mint_token](generated/rust/nixfleet-cli/bin/mint_token.md)
+  - nixfleet-control-plane/
+    - [nixfleet_control_plane::auth_cn](generated/rust/nixfleet-control-plane/auth_cn.md)
+    - [nixfleet_control_plane::db](generated/rust/nixfleet-control-plane/db.md)
+    - [nixfleet_control_plane::dispatch](generated/rust/nixfleet-control-plane/dispatch.md)
+    - [nixfleet_control_plane::forgejo_poll](generated/rust/nixfleet-control-plane/forgejo_poll.md)
+    - [nixfleet_control_plane](generated/rust/nixfleet-control-plane/index.md)
+    - [nixfleet_control_plane::issuance](generated/rust/nixfleet-control-plane/issuance.md)
+    - [nixfleet_control_plane](generated/rust/nixfleet-control-plane/main.md)
+    - [nixfleet_control_plane::observed_projection](generated/rust/nixfleet-control-plane/observed_projection.md)
+    - [nixfleet_control_plane::rollback_timer](generated/rust/nixfleet-control-plane/rollback_timer.md)
+    - [nixfleet_control_plane::server](generated/rust/nixfleet-control-plane/server.md)
+      - [nixfleet_control_plane::server::handlers](generated/rust/nixfleet-control-plane/server/handlers.md)
+      - [nixfleet_control_plane::server::middleware](generated/rust/nixfleet-control-plane/server/middleware.md)
+      - [nixfleet_control_plane::server::reconcile](generated/rust/nixfleet-control-plane/server/reconcile.md)
+      - [nixfleet_control_plane::server::state](generated/rust/nixfleet-control-plane/server/state.md)
+    - [nixfleet_control_plane::tls](generated/rust/nixfleet-control-plane/tls.md)
+  - nixfleet-docgen/
+    - [nixfleet_docgen](generated/rust/nixfleet-docgen/main.md)
+    - [nixfleet_docgen::nix_comments](generated/rust/nixfleet-docgen/nix_comments.md)
+    - [nixfleet_docgen::rust_extractor](generated/rust/nixfleet-docgen/rust_extractor.md)
+    - [nixfleet_docgen::summary](generated/rust/nixfleet-docgen/summary.md)
+  - nixfleet-proto/
+    - [nixfleet_proto::agent_wire](generated/rust/nixfleet-proto/agent_wire.md)
+    - [nixfleet_proto::enroll_wire](generated/rust/nixfleet-proto/enroll_wire.md)
+    - [nixfleet_proto::fleet_resolved](generated/rust/nixfleet-proto/fleet_resolved.md)
+    - [nixfleet_proto](generated/rust/nixfleet-proto/index.md)
+    - [nixfleet_proto::trust](generated/rust/nixfleet-proto/trust.md)
+  - nixfleet-reconciler/
+    - [nixfleet_reconciler::action](generated/rust/nixfleet-reconciler/action.md)
+    - [nixfleet_reconciler::budgets](generated/rust/nixfleet-reconciler/budgets.md)
+    - [nixfleet_reconciler::edges](generated/rust/nixfleet-reconciler/edges.md)
+    - [nixfleet_reconciler::host_state](generated/rust/nixfleet-reconciler/host_state.md)
+    - [nixfleet_reconciler](generated/rust/nixfleet-reconciler/index.md)
+    - [nixfleet_reconciler::observed](generated/rust/nixfleet-reconciler/observed.md)
+    - [nixfleet_reconciler::reconcile](generated/rust/nixfleet-reconciler/reconcile.md)
+    - [nixfleet_reconciler::rollout_state](generated/rust/nixfleet-reconciler/rollout_state.md)
+    - [nixfleet_reconciler::verify](generated/rust/nixfleet-reconciler/verify.md)
+  - nixfleet-verify-artifact/
+    - [nixfleet_verify_artifact](generated/rust/nixfleet-verify-artifact/main.md)

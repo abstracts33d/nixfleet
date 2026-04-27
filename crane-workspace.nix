@@ -114,6 +114,23 @@
       };
     });
 
+  # Markdown extractor for the auto-generated parts of the mdbook.
+  # Pure code-walker, no runtime dependency on the rest of the
+  # workspace's crates — uses only `syn` + `walkdir`. Intentionally
+  # not added to the shared `commonCargoSources` chain because it
+  # doesn't need them.
+  nixfleet-docgen = craneLib.buildPackage (commonArgs
+    // {
+      pname = "nixfleet-docgen";
+      cargoExtraArgs = "-p nixfleet-docgen";
+      src = fileSetForCrate {crate = ./crates/nixfleet-docgen;};
+      meta = {
+        description = "Auto-extract Markdown from Rust + Nix sources for mdbook";
+        license = lib.licenses.agpl3Only;
+        mainProgram = "nixfleet-docgen";
+      };
+    });
+
   workspace-tests = craneLib.cargoTest {
     inherit cargoArtifacts;
     src = workspaceSrc;
@@ -122,6 +139,15 @@
     cargoExtraArgs = "--workspace --locked";
   };
 in {
-  packages = {inherit nixfleet-agent nixfleet-control-plane nixfleet-cli nixfleet-canonicalize nixfleet-verify-artifact;};
+  packages = {
+    inherit
+      nixfleet-agent
+      nixfleet-control-plane
+      nixfleet-cli
+      nixfleet-canonicalize
+      nixfleet-verify-artifact
+      nixfleet-docgen
+      ;
+  };
   checks = {inherit workspace-tests;};
 }
