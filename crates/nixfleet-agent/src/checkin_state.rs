@@ -11,9 +11,15 @@ use anyhow::{Context, Result};
 use nixfleet_proto::agent_wire::{GenerationRef, PendingGeneration};
 
 /// Path to the symlink pointing at the currently active system
-/// closure. Reading it as a symlink target gives us the closure
-/// store path; basename trimmed of the `-system-<rev>` suffix is
-/// the closure hash.
+/// closure. Reading it as a symlink target gives us the store
+/// path; the basename of that path IS the closure_hash on the
+/// wire (the same shape the CP populates into `EvaluatedTarget.
+/// closure_hash` and `fleet.resolved.hosts[h].closureHash`). The
+/// agent must report the FULL basename, not the 32-char hash
+/// prefix — `dispatch::decide_target` does string-equality on the
+/// two values; a hash-prefix-vs-full-basename mismatch means
+/// dispatch always returns Decision::Dispatch even when the host
+/// is on the declared closure.
 const CURRENT_SYSTEM: &str = "/run/current-system";
 
 /// Path to the symlink pointing at the system that booted. When
@@ -48,14 +54,23 @@ fn booted_closure_hash() -> Result<String> {
     Ok(closure_hash_from_path(&target))
 }
 
-/// Extract the closure hash from a `/nix/store/<hash>-<name>` path.
+/// Extract the closure-hash identifier from a `/nix/store/<basename>`
+/// path. Returns the full basename (e.g.
+/// `2zlnf66xlf35xwm7150kx05q93cwp8jk-nixos-system-lab-…`), NOT the
+/// 32-char hash prefix. The basename is the wire identifier shared
+/// across the proto: `EvaluatedTarget.closure_hash` (CP → agent),
+/// `fleet.resolved.hosts[h].closureHash` (CI → CP), and
+/// `CheckinRequest.current_generation.closure_hash` (agent → CP)
+/// all carry it in the same shape. `dispatch::decide_target` does
+/// string-equality between them; any normalisation drift here
+/// means converged hosts look diverged forever.
+///
 /// Falls back to the full path string if the shape doesn't match,
 /// so the field is always populated.
 fn closure_hash_from_path(p: &PathBuf) -> String {
     let s = p.to_string_lossy();
     s.rsplit('/')
         .next()
-        .and_then(|leaf| leaf.split('-').next())
         .map(str::to_string)
         .unwrap_or_else(|| s.to_string())
 }
@@ -100,4 +115,38 @@ pub fn pending_generation() -> Result<Option<PendingGeneration>> {
 /// loop starts).
 pub fn uptime_secs(started_at: Instant) -> u64 {
     started_at.elapsed().as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closure_hash_is_full_basename_not_hash_prefix() {
+        // Regression: agent used to strip after the first '-' and
+        // report just the 32-char hash. CP populates
+        // `fleet.resolved.hosts[h].closureHash` with the FULL
+        // basename, so the dispatch comparison was string-not-equal
+        // even on converged hosts → infinite re-dispatch loop on
+        // every checkin (caught on lab when id=14 dispatched the
+        // same target the agent had just confirmed in id=13).
+        let p: PathBuf =
+            "/nix/store/2zlnf66xlf35xwm7150kx05q93cwp8jk-nixos-system-lab-20260427-0810_5176864f_turbo-otter"
+                .into();
+        let got = closure_hash_from_path(&p);
+        assert_eq!(
+            got,
+            "2zlnf66xlf35xwm7150kx05q93cwp8jk-nixos-system-lab-20260427-0810_5176864f_turbo-otter",
+            "closure_hash must be the full /nix/store basename — same shape the CP declares",
+        );
+        // Sanity: prefix-only would have been this 32-char string.
+        assert_ne!(got, "2zlnf66xlf35xwm7150kx05q93cwp8jk");
+    }
+
+    #[test]
+    fn closure_hash_falls_back_to_full_path_for_non_store_shape() {
+        let p: PathBuf = "/some/odd/path".into();
+        let got = closure_hash_from_path(&p);
+        assert_eq!(got, "path", "rsplit/next still returns the leaf");
+    }
 }
