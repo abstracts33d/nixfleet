@@ -147,12 +147,21 @@ in
       operatorModule
     ];
 
-    # specialArgs.inputs visible to all imported modules — framework
-    # inputs (impermanence, disko, nixpkgs, ...) merged with whatever
-    # the consumer passed via `extraInputs`. The consumer's keys win
-    # on collision, so a fleet that needs to override e.g.
-    # `inputs.home-manager` for its own modules can do so cleanly.
-    effectiveInputs = inputs // extraInputs;
+    # specialArgs.inputs visible to all imported modules — consumer's
+    # extra inputs (e.g. `nixfleet-scopes`, fleet-specific flakes)
+    # merged BENEATH the framework's own inputs. Framework wins on
+    # collision so that:
+    #   - `inputs.self` resolves to nixfleet for framework modules
+    #     (which read `inputs.self.packages.<sys>.nixfleet-{agent,
+    #     control-plane,cli}` to find their binaries),
+    #   - common inputs (nixpkgs, home-manager, disko, …) come from
+    #     the framework's pinned versions.
+    # Consumer-only attrs (`nixfleet-scopes`, fleet-specific flakes
+    # the framework doesn't declare) survive the merge unshadowed.
+    # Fleet-side modules that need fleet's own self read it via
+    # closure capture from the `outputs = inputs: …` lambda; that
+    # path is unaffected by specialArgs.
+    effectiveInputs = extraInputs // inputs;
 
     # Build NixOS system.
     buildNixos = inputs.nixpkgs.lib.nixosSystem {
