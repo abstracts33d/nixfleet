@@ -162,10 +162,10 @@ These are self-contained. A fresh session can pick one up cold.
 1. `abstracts33d/nixfleet/ARCHITECTURE.md` — all.
 2. `abstracts33d/nixfleet/rfcs/0001-fleet-nix.md` — all.
 3. `abstracts33d/nixfleet/docs/CONTRACTS.md` — §I #1, #3, #5, §II (declarations), §III (canonicalization), §VII (amendment).
-4. `abstracts33d/nixfleet/spike/` — the running prototype; `lib/mkFleet.nix` promotes to production.
+4. `abstracts33d/nixfleet/spike/` — the running prototype; `lib/mk-fleet.nix` promotes to production.
 
 **Milestone 1 deliverables.**
-1. Promote `spike/lib/mkFleet.nix` → `lib/mkFleet.nix` in production shape. All RFC-0001 §4.2 invariants implemented and fail fast; new invariant: `channel.freshnessWindow ≥ 2 × signingIntervalMinutes` (gap captured in #13).
+1. Promote `spike/lib/mkFleet.nix` → `lib/mk-fleet.nix` in production shape. All RFC-0001 §4.2 invariants implemented and fail fast; new invariant: `channel.freshnessWindow ≥ 2 × signingIntervalMinutes` (gap captured in #13).
 2. `nixfleet.trust.*` option tree in `modules/trust.nix`, with docstrings referencing CONTRACTS.md §II.
 3. `abstracts33d/nixfleet-compliance#1` resolved: typed control migration, schema-versioned probe descriptors, JCS canonicalization contract declared, negative-test fixture per control. At least one `type = "both"` reference control per framework.
 4. Baseline compliance control explicitly exempting the agent's outbound network path from any firewall-lock control — documented as a required baseline so that compliance landing does not cut agents off (CONTRACTS.md §I captures this in the probe registry; implement here).

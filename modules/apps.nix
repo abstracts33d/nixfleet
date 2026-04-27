@@ -1,5 +1,5 @@
 {inputs, ...}: let
-  mkVmApps = import ./_shared/lib/mk-vm-apps.nix {inherit inputs;};
+  mkVmApps = import ../lib/mk-vm-apps.nix {inherit inputs;};
 in {
   perSystem = {
     pkgs,

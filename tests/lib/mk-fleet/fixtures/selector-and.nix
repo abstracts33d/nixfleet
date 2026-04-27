@@ -1,4 +1,4 @@
-# tests/lib/mkFleet/fixtures/selector-and.nix
+# tests/lib/mk-fleet/fixtures/selector-and.nix
 #
 # Exercises RFC-0001 §3 selector intersection (`and`).
 # Fleet: four hosts with mixed tags. The wave selector

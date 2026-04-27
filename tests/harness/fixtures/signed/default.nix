@@ -25,10 +25,10 @@
   lib,
   pkgs,
   nixfleet-canonicalize,
-  # Path to lib/mkFleet.nix — resolved relative to the repo root. Exposed
+  # Path to lib/mk-fleet.nix — resolved relative to the repo root. Exposed
   # as an argument so harness plumbing can swap in a stubbed mkFleet
   # without rebuilding the framework.
-  mkFleetPath ? ../../../../lib/mkFleet.nix,
+  mkFleetPath ? ../../../../lib/mk-fleet.nix,
 }: let
   # 32-byte seed derived from a fixed string per §12.2 of the Phase 2
   # entry spec. Changing the string forces a new keypair across every
@@ -44,7 +44,7 @@
 
   # --- Stub nixosConfiguration: satisfies mkFleet's invariant that
   # each host carries a configuration with `config.system.build.toplevel`.
-  # Reused pattern from `tests/lib/mkFleet/fixtures/_stub-configuration.nix`.
+  # Reused pattern from `tests/lib/mk-fleet/fixtures/_stub-configuration.nix`.
   stubConfiguration = {
     config.system.build.toplevel = {
       outPath = "/nix/store/0000000000000000000000000000000000000000-stub";

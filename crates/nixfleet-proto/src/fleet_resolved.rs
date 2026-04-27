@@ -42,12 +42,12 @@ pub struct Channel {
     pub rollout_policy: String,
     pub reconcile_interval_minutes: u32,
     /// Minutes a signed `fleet.resolved` is accepted by consumers after
-    /// `meta.signedAt`. Matches `lib/mkFleet.nix`'s declarative unit (the
+    /// `meta.signedAt`. Matches `lib/mk-fleet.nix`'s declarative unit (the
     /// sibling `*_interval_minutes` fields make this pattern explicit
     /// there; the name here predates that convention and is kept for
     /// wire-compat — convert via [`Channel::freshness_window_duration`]).
     ///
-    /// `lib/mkFleet.nix` enforces `freshness_window ≥ 2 × signing_interval_minutes`
+    /// `lib/mk-fleet.nix` enforces `freshness_window ≥ 2 × signing_interval_minutes`
     /// at eval time, so a value of `0` cannot reach the wire.
     pub freshness_window: u32,
     pub signing_interval_minutes: u32,

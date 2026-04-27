@@ -12,7 +12,7 @@
   lib,
   ...
 }: let
-  nixfleetLib = import ./_shared/lib/default.nix {inherit inputs lib;};
+  nixfleetLib = import ../lib {inherit inputs lib;};
 in {
   options.nixfleet.lib = lib.mkOption {
     type = lib.types.attrs;

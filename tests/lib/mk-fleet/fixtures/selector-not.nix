@@ -1,4 +1,4 @@
-# tests/lib/mkFleet/fixtures/selector-not.nix
+# tests/lib/mk-fleet/fixtures/selector-not.nix
 #
 # Exercises RFC-0001 §3 selector negation (`not`).
 # Fleet: three hosts, one tagged "deprecated". The wave selector

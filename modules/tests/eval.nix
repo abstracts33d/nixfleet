@@ -17,13 +17,13 @@
   }:
     lib.optionalAttrs (system == "x86_64-linux") {
       checks = {
-        # --- lib/mkFleet: eval-only harness (positive + negative fixtures) ---
-        # Evaluates every fixture under tests/lib/mkFleet/{fixtures,negative}.
+        # --- lib/mk-fleet: eval-only harness (positive + negative fixtures) ---
+        # Evaluates every fixture under tests/lib/mk-fleet/{fixtures,negative}.
         # Positive fixtures compare against golden .resolved.json files;
         # negative fixtures are expected to throw. Each entry in `results`
         # must be the literal string "ok" - anything else fails the check.
         mkFleet-eval-tests = let
-          harness = import ../../tests/lib/mkFleet {inherit lib;};
+          harness = import ../../tests/lib/mk-fleet {inherit lib;};
           results = harness.results;
           allOk = lib.all (r: r == "ok") results;
         in

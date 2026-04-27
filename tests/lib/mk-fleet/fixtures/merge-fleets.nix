@@ -1,4 +1,4 @@
-# tests/lib/mkFleet/fixtures/merge-fleets.nix
+# tests/lib/mk-fleet/fixtures/merge-fleets.nix
 #
 # Exercises RFC-0001 §5 composition via mergeFleets.
 # Two fleet inputs (paris, lyon) with disjoint hosts + tags + channels.

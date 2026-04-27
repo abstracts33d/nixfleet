@@ -184,7 +184,7 @@ nixfleet.trust.ciReleaseKey = {
 
 **JCS (RFC 8785) with a single Rust implementation, byte-identical across all signers and verifiers.**
 
-Producer-side (the Nix layer's `lib/mkFleet.nix`) MUST emit values that round-trip through JCS losslessly: ints only (no floats), deterministic attr order, no JSON-incompatible types. Consumer-side (the Rust runtime's `bin/nixfleet-canonicalize`) pins the library.
+Producer-side (the Nix layer's `lib/mk-fleet.nix`) MUST emit values that round-trip through JCS losslessly: ints only (no floats), deterministic attr order, no JSON-incompatible types. Consumer-side (the Rust runtime's `bin/nixfleet-canonicalize`) pins the library.
 
 - **Library choice.** Pinned to [`serde_jcs`](https://crates.io/crates/serde_jcs) `0.2`, hosted by `crates/nixfleet-canonicalize`. Rationale: direct RFC 8785 implementation over `serde_json::Value`; handles UTF-16 key sorting and ECMAScript number formatting per spec. Any change to this pin is a contract change (§VII) requiring signoff from every layer that signs or verifies artifacts (CI/infra, Nix, Rust).
 - **Golden-file test.** `crates/nixfleet-canonicalize/tests/fixtures/jcs-golden.{json,canonical}` with byte-exact equality asserted in `tests/jcs_golden.rs`. Runs on every push via pre-push `cargo nextest run --workspace`; fails loudly on any drift. The ed25519-signed-bytes extension of this fixture lands alongside the CI release key.

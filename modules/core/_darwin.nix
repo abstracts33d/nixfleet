@@ -118,8 +118,7 @@ in {
       # --- identity pass-through ---
       # `hostSpec.userName` is set either by the consumer directly or
       # by the operators scope (in nixfleet-scopes) when imported.
-      # Framework reads only `hostSpec.*` — see modules/_shared/
-      # host-spec-module.nix.
+      # Framework reads only `hostSpec.*` — see modules/host-spec.nix.
       system.stateVersion = lib.mkDefault 4;
       system.checks.verifyNixPath = false;
       system.primaryUser = "${hS.userName}";

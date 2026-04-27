@@ -1,4 +1,4 @@
-# tests/lib/mkFleet/fixtures/_stub-configuration.nix
+# tests/lib/mk-fleet/fixtures/_stub-configuration.nix
 #
 # Minimal stub that looks like a nixosConfiguration enough to satisfy
 # the `host.configuration` invariant without needing to evaluate NixOS.

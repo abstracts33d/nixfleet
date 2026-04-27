@@ -49,7 +49,7 @@ fn signed_artifact_roundtrips_byte_for_byte() {
 
 /// Sanity check against the Nix evaluator's real output.
 ///
-/// Copied from `tests/lib/mkFleet/fixtures/empty-selector-warns.resolved.json`.
+/// Copied from `tests/lib/mk-fleet/fixtures/empty-selector-warns.resolved.json`.
 /// If the Nix evaluator changes the schema, this test fails and we
 /// re-copy + adjust proto types.
 #[test]
@@ -131,7 +131,7 @@ fn unknown_fields_at_any_level_are_ignored() {
 #[test]
 fn channel_freshness_window_duration_converts_minutes_to_seconds() {
     // Unit landmine: `freshness_window` is declared in MINUTES by
-    // `lib/mkFleet.nix` but the field name has no `_minutes` suffix.
+    // `lib/mk-fleet.nix` but the field name has no `_minutes` suffix.
     // The helper converts via u64 * 60 so callers cannot accidentally
     // pass the raw u32 into `Duration::from_secs` and shrink the
     // window 60×. The `every-nullable.json` and `signed-artifact.json`

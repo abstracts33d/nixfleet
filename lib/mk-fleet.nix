@@ -1,4 +1,4 @@
-# lib/mkFleet.nix
+# lib/mk-fleet.nix
 #
 # Produces `fleet.resolved` per RFC-0001 §4.1 + docs/CONTRACTS.md §I #1.
 # Output is canonicalized to JCS (RFC 8785) by `bin/nixfleet-canonicalize`

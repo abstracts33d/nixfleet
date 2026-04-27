@@ -26,19 +26,19 @@
   inputs,
   lib,
 }: let
-  hostSpecModule = ../host-spec-module.nix;
+  hostSpecModule = ../modules/host-spec.nix;
 
   # Core modules (plain NixOS/Darwin modules)
-  coreNixos = ../../core/_nixos.nix;
-  coreDarwin = ../../core/_darwin.nix;
+  coreNixos = ../modules/core/_nixos.nix;
+  coreDarwin = ../modules/core/_darwin.nix;
 
   # Service modules (auto-included, disabled by default)
-  agentModule = ../../scopes/nixfleet/_agent.nix;
-  agentDarwinModule = ../../scopes/nixfleet/_agent_darwin.nix;
-  controlPlaneModule = ../../scopes/nixfleet/_control-plane.nix;
-  cacheModule = ../../scopes/nixfleet/_cache.nix;
-  microvmHostModule = ../../scopes/nixfleet/_microvm-host.nix;
-  operatorModule = ../../scopes/nixfleet/_operator.nix;
+  agentModule = ../modules/scopes/nixfleet/_agent.nix;
+  agentDarwinModule = ../modules/scopes/nixfleet/_agent-darwin.nix;
+  controlPlaneModule = ../modules/scopes/nixfleet/_control-plane.nix;
+  cacheModule = ../modules/scopes/nixfleet/_cache.nix;
+  microvmHostModule = ../modules/scopes/nixfleet/_microvm-host.nix;
+  operatorModule = ../modules/scopes/nixfleet/_operator.nix;
 
   # Framework-level persistence schema (pure schema, no impl).
   # Auto-imported so nixfleet's service modules can contribute to
@@ -50,7 +50,7 @@
   # nixfleet-scopes/modules/scopes/operators/. The framework reads
   # only `hostSpec.{userName, rootSshKeys}`; the operators scope (when
   # imported) populates those fields from its own option tree.
-  persistenceModule = ../../scopes/nixfleet/_persistence.nix;
+  persistenceModule = ../modules/scopes/nixfleet/_persistence.nix;
 
   isDarwinPlatform = platform:
     builtins.elem platform ["aarch64-darwin" "x86_64-darwin"];
