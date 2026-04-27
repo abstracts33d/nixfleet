@@ -9,3 +9,9 @@ CLAUDE.md
 TODO.md
 .direnv/
 *.local.bak
+
+# Doc pipeline outputs — built fresh by `nix run .#docs`.
+# RFCs in src/rfcs/ are copies of the canonical files under repo `rfcs/`;
+# only index.md is hand-authored and tracked.
+/docs/mdbook/book/
+/docs/mdbook/src/rfcs/0*.md

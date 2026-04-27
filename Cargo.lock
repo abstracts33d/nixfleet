@@ -1505,18 +1505,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nixfleet-docgen"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "clap",
- "proc-macro2",
- "quote",
- "syn",
- "walkdir",
-]
-
-[[package]]
 name = "nixfleet-proto"
 version = "0.2.0"
 dependencies = [

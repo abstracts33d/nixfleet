@@ -5,12 +5,12 @@
 //! `build_router()` — is what `main.rs` calls; everything else lives
 //! in the submodules:
 //!
-//! - [`state`] — shared `AppState`, `ServeArgs`, helper types,
+//! - `state` — shared `AppState`, `ServeArgs`, helper types,
 //!   constants
-//! - [`middleware`] — `require_cn` (mTLS gate) + protocol-version
+//! - `middleware` — `require_cn` (mTLS gate) + protocol-version
 //!   middleware
-//! - [`handlers`] — `/healthz` + `/v1/*` route handlers
-//! - [`reconcile`] — background reconcile loop (verifies the
+//! - `handlers` — `/healthz` + `/v1/*` route handlers
+//! - `reconcile` — background reconcile loop (verifies the
 //!   build-time artifact every 30s, projects checkins → reconciler
 //!   actions, writes the fleet snapshot under a freshness gate)
 //!

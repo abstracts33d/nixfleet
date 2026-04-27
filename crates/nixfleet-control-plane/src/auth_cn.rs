@@ -178,7 +178,7 @@ where
 // PeerCertService — tower::Service wrapper that injects the extension
 // =====================================================================
 
-/// Per-connection [`tower::Service`] wrapper that injects
+/// Per-connection `tower::Service` wrapper that injects
 /// [`PeerCertificates`] into every request's extensions. Constructed
 /// internally by [`MtlsAcceptor::accept`]; not meant to be built by
 /// hand.

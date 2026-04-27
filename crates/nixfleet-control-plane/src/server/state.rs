@@ -91,7 +91,7 @@ pub struct HostCheckinRecord {
 }
 
 /// In-memory record of an event report. Bounded ring buffer per
-/// host (cap = [`REPORT_RING_CAP`]). DB-backed persistence is
+/// host (cap = `REPORT_RING_CAP`). DB-backed persistence is
 /// deferred to Phase 5.
 #[derive(Debug, Clone)]
 pub struct ReportRecord {

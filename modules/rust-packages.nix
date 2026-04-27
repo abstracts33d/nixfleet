@@ -39,87 +39,63 @@
       meta.description = "Phase 2 harness CLI — verify a signed fleet.resolved against a trust.json";
     };
 
-    # Doc generator + drift check + full pipeline. The pipeline is a
-    # tiny shell script that wipes the generated tree, runs each
-    # extractor, and finally rebuilds SUMMARY.md. Determinism comes
-    # from the docgen binary itself (sorted walks, no timestamps);
-    # the wrapper just orchestrates the three subcommands.
-    apps.docgen = {
-      type = "app";
-      program = "${workspace.packages.nixfleet-docgen}/bin/nixfleet-docgen";
-      meta.description = "Markdown extractor for Rust + Nix sources (use `nix run .#docs` for the full pipeline)";
-    };
-
+    # Doc pipeline using STANDARD tooling — `cargo doc` for the
+    # Rust API reference, `mdbook build` for the curated narrative
+    # + RFCs.
+    #
+    # Why standard tools rather than a custom extractor: rustdoc
+    # already gives us type signatures, struct field docs, enum
+    # variant docs, cross-references resolved, source links, search
+    # index, and IDE integration — for zero LOC on our side. The
+    # earlier `nixfleet-docgen` crate tried to build a worse
+    # version and was deleted.
+    #
+    # NixOS module options: deferred. The natural tool is
+    # `nixosOptionsDoc` (used by nixpkgs for the NixOS option
+    # reference) but our scope modules reference `inputs.self.
+    # packages.<system>.…`, so they need a constructed NixOS-like
+    # eval context to render cleanly. Worth doing in a focused
+    # follow-up; for now the option docs live in the modules' own
+    # `description` strings, browsable via the source files
+    # directly.
     apps.docs = {
       type = "app";
       program = let
         script = pkgs.writeShellApplication {
           name = "nixfleet-docs";
-          runtimeInputs = [workspace.packages.nixfleet-docgen pkgs.coreutils];
+          runtimeInputs = [pkgs.cargo pkgs.rustc pkgs.coreutils pkgs.mdbook];
           text = ''
             set -euo pipefail
             repo_root="''${1:-$PWD}"
-            book_src="$repo_root/docs/mdbook/src"
-            generated="$book_src/generated"
-            echo "regenerating docs into $generated"
-            mkdir -p "$generated"
-            nixfleet-docgen rust "$repo_root" "$generated"
-            nixfleet-docgen nix-comments "$repo_root" "$generated"
-            # Copy RFCs verbatim so the book ships them alongside the
-            # auto-generated reference. They're committed Markdown
-            # already; copying preserves the byte-identical guarantee.
-            mkdir -p "$generated/rfcs"
+
+            echo "==> cargo doc --workspace --document-private-items --no-deps"
+            (cd "$repo_root" && \
+              RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" \
+              cargo doc --workspace --document-private-items --no-deps)
+
+            echo "==> copying RFCs into mdbook"
+            mkdir -p "$repo_root/docs/mdbook/src/rfcs"
             for f in "$repo_root"/rfcs/*.md; do
               [ -f "$f" ] || continue
-              cp "$f" "$generated/rfcs/$(basename "$f")"
+              cp -f "$f" "$repo_root/docs/mdbook/src/rfcs/$(basename "$f")"
             done
-            nixfleet-docgen summary "$book_src"
-            echo "done"
+            chmod -R u+w "$repo_root/docs/mdbook/src/rfcs/"
+
+            echo "==> mdbook build docs/mdbook"
+            (cd "$repo_root" && mdbook build docs/mdbook)
+
+            echo "==> copying cargo doc output into the published site"
+            mkdir -p "$repo_root/docs/mdbook/book/api"
+            cp -r "$repo_root/target/doc/." "$repo_root/docs/mdbook/book/api/"
+
+            echo
+            echo "Done. Outputs:"
+            echo "  - docs/mdbook/book/         (mdbook: curated guides + RFCs)"
+            echo "  - docs/mdbook/book/api/     (cargo doc: Rust API reference)"
           '';
         };
       in "${script}/bin/nixfleet-docs";
-      meta.description = "Regenerate all auto-extracted docs in docs/mdbook/src/generated/";
-    };
-
-    apps.docs-check = {
-      type = "app";
-      program = let
-        script = pkgs.writeShellApplication {
-          name = "nixfleet-docs-check";
-          runtimeInputs = [workspace.packages.nixfleet-docgen pkgs.coreutils pkgs.diffutils pkgs.git];
-          text = ''
-            set -euo pipefail
-            repo_root="''${1:-$PWD}"
-            tmp=$(mktemp -d)
-            trap 'rm -rf "$tmp"' EXIT
-            cp -r "$repo_root/docs/mdbook/src" "$tmp/expected"
-
-            book_src="$repo_root/docs/mdbook/src"
-            generated="$book_src/generated"
-            mkdir -p "$generated"
-            nixfleet-docgen rust "$repo_root" "$generated"
-            nixfleet-docgen nix-comments "$repo_root" "$generated"
-            mkdir -p "$generated/rfcs"
-            for f in "$repo_root"/rfcs/*.md; do
-              [ -f "$f" ] || continue
-              cp "$f" "$generated/rfcs/$(basename "$f")"
-            done
-            nixfleet-docgen summary "$book_src"
-
-            if ! diff -ru "$tmp/expected" "$repo_root/docs/mdbook/src" > "$tmp/diff" 2>&1; then
-              echo "doc drift detected — committed docs are stale" >&2
-              cat "$tmp/diff" >&2
-              # Restore the committed tree so a failed check doesn't
-              # leave the working copy modified.
-              rm -rf "$repo_root/docs/mdbook/src"
-              cp -r "$tmp/expected" "$repo_root/docs/mdbook/src"
-              exit 1
-            fi
-            echo "docs in sync with sources"
-          '';
-        };
-      in "${script}/bin/nixfleet-docs-check";
-      meta.description = "Fail with a diff when committed docs/mdbook/src/generated/ is out of sync with the sources";
+      meta.description = "Build docs: cargo doc + mdbook (full publishable site)";
     };
 
     devShells.default = craneLib.devShell {
