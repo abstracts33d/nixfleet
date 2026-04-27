@@ -90,46 +90,31 @@ struct ServeFlags {
     #[arg(long, default_value_t = 86400)]
     freshness_window_secs: u64,
 
-    // Forgejo channel-refs poll. All four flags must be set
-    // together; if any are missing the poll task is not spawned and
-    // the CP falls back to reading channel-refs from the file-backed
-    // observed.json.
-    /// Forgejo base URL (e.g. https://git.lab.internal). When unset,
-    /// channel-refs polling is disabled.
-    #[arg(long, env = "NIXFLEET_CP_FORGEJO_URL")]
-    forgejo_base_url: Option<String>,
+    // Channel-refs poll. The artifact + signature URLs together gate
+    // whether the poll task is spawned — set both to enable, leave
+    // both unset to fall back to file-backed channel-refs from
+    // observed.json. Source-agnostic: any HTTP(S) URL that yields the
+    // raw bytes of the artifact / signature works (Forgejo `raw`
+    // path, GitHub `raw.githubusercontent.com`, GitLab `/-/raw/...`,
+    // a plain file server, etc.). Concrete URL templates for common
+    // forges live in `nixfleet-scopes/modules/scopes/gitops/`.
+    /// URL that yields the raw bytes of the canonical signed
+    /// fleet.resolved.json. When unset, channel-refs polling is
+    /// disabled.
+    #[arg(long, env = "NIXFLEET_CP_CHANNEL_REFS_ARTIFACT_URL")]
+    channel_refs_artifact_url: Option<String>,
 
-    /// Forgejo repo owner for the fleet repo (e.g. abstracts33d).
-    #[arg(long, env = "NIXFLEET_CP_FORGEJO_OWNER")]
-    forgejo_owner: Option<String>,
+    /// URL that yields the raw bytes of the matching signature. When
+    /// unset, channel-refs polling is disabled.
+    #[arg(long, env = "NIXFLEET_CP_CHANNEL_REFS_SIGNATURE_URL")]
+    channel_refs_signature_url: Option<String>,
 
-    /// Forgejo repo name (e.g. fleet).
-    #[arg(long, default_value = "fleet", env = "NIXFLEET_CP_FORGEJO_REPO")]
-    forgejo_repo: String,
-
-    /// Path inside the repo to fleet.resolved.json.
-    #[arg(
-        long,
-        default_value = "releases/fleet.resolved.json",
-        env = "NIXFLEET_CP_FORGEJO_ARTIFACT_PATH"
-    )]
-    forgejo_artifact_path: String,
-
-    /// Path inside the fleet repo to the matching signature.
-    /// Defaults to artifact_path + ".sig". Read by the poll task
-    /// so the verifier can run against the operator's repo bytes
-    /// directly (closing the GitOps loop — push → CI re-sign → poll
-    /// picks up new closureHashes within ~60s, no CP redeploy).
-    #[arg(
-        long,
-        default_value = "releases/fleet.resolved.json.sig",
-        env = "NIXFLEET_CP_FORGEJO_SIGNATURE_PATH"
-    )]
-    forgejo_signature_path: String,
-
-    /// Path to the Forgejo API token file (agenix-mounted, read-only).
-    #[arg(long, env = "NIXFLEET_CP_FORGEJO_TOKEN_FILE")]
-    forgejo_token_file: Option<PathBuf>,
+    /// Path to a file containing the upstream API token (sent as
+    /// `Authorization: Bearer <token>`). Optional — leave unset for
+    /// public sources. Read on each poll so token rotation
+    /// propagates without restart.
+    #[arg(long, env = "NIXFLEET_CP_CHANNEL_REFS_TOKEN_FILE")]
+    channel_refs_token_file: Option<PathBuf>,
 
     // Cert issuance (enroll + renew). The CP holds the fleet CA
     // private key online — see issue #41 for the deferred TPM-bound
@@ -230,23 +215,20 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         .parse()
         .map_err(|e| anyhow::anyhow!("--listen {}: {e}", flags.listen))?;
 
-    // Forgejo poll config: all-or-nothing. Either all the inputs
-    // line up, or the poll is disabled. Partial config is rejected
-    // with a clear error rather than silently falling back to file
-    // mode.
-    let forgejo = match (
-        flags.forgejo_base_url,
-        flags.forgejo_owner,
-        flags.forgejo_token_file,
+    // Channel-refs poll config: artifact + signature URLs gate
+    // whether the poll is enabled. Partial config is rejected with a
+    // clear error rather than silently falling back to file mode.
+    // The token file is independently optional (public sources don't
+    // need auth).
+    let channel_refs = match (
+        flags.channel_refs_artifact_url,
+        flags.channel_refs_signature_url,
     ) {
-        (Some(base_url), Some(owner), Some(token_file)) => {
-            Some(nixfleet_control_plane::forgejo_poll::ForgejoConfig {
-                base_url,
-                owner,
-                repo: flags.forgejo_repo,
-                artifact_path: flags.forgejo_artifact_path,
-                signature_path: flags.forgejo_signature_path,
-                token_file,
+        (Some(artifact_url), Some(signature_url)) => {
+            Some(nixfleet_control_plane::channel_refs_poll::ChannelRefsSource {
+                artifact_url,
+                signature_url,
+                token_file: flags.channel_refs_token_file,
                 // Same trust + freshness as the file-backed reconcile
                 // path. Read fresh on every poll so trust-root rotation
                 // propagates without a CP restart.
@@ -254,11 +236,11 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
                 freshness_window: Duration::from_secs(flags.freshness_window_secs),
             })
         }
-        (None, None, None) => None,
+        (None, None) => None,
         _ => {
             anyhow::bail!(
-                "Forgejo poll config is all-or-nothing — pass --forgejo-base-url, \
-                 --forgejo-owner, and --forgejo-token-file together (or none)."
+                "channel-refs poll: --channel-refs-artifact-url and \
+                 --channel-refs-signature-url must be passed together (or both omitted)."
             );
         }
     };
@@ -276,7 +258,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         trust_path: flags.trust_file,
         observed_path: flags.observed,
         freshness_window: Duration::from_secs(flags.freshness_window_secs),
-        forgejo,
+        channel_refs,
         db_path: flags.db_path,
         closure_upstream: flags.closure_upstream,
     })

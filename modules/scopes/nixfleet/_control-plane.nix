@@ -220,62 +220,51 @@ in {
       '';
     };
 
-    # Forgejo channel-refs poll. When set, the CP polls
-    # /api/v1/repos/{owner}/{repo}/contents/{artifactPath} every 60s
-    # and refreshes the in-memory channel-refs cache. A sibling poll
-    # for the .sig file (verify-on-load) may be added; for now the CP
-    # trusts the authenticated TLS channel to Forgejo + Forgejo's RBAC.
-    forgejo = {
-      baseUrl = lib.mkOption {
+    # Channel-refs poll. When set, the CP polls a configured pair of
+    # URLs every 60s for the signed `fleet.resolved.json` + `.sig`,
+    # verifies, and refreshes the in-memory verified-fleet snapshot.
+    # Implementation-agnostic — the framework only knows how to issue
+    # `GET <url>` with an optional Bearer token. URL templates for
+    # specific git forges (Forgejo `/raw/branch/...`, GitHub
+    # `raw.githubusercontent.com/...`, GitLab `/-/raw/...`) live in
+    # `nixfleet-scopes/modules/scopes/gitops/`; consumers either use
+    # those scope helpers or build the URLs by hand.
+    channelRefsSource = {
+      artifactUrl = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "https://git.lab.internal";
+        example = "https://git.lab.internal/abstracts33d/fleet/raw/branch/main/releases/fleet.resolved.json";
         description = ''
-          Forgejo base URL (no trailing slash). When null, channel-
-          refs polling is disabled and the CP falls back to the
-          file-backed observed.json for channel-refs.
+          Fully-formed URL that yields the raw bytes of the canonical
+          signed fleet.resolved.json. When null, channel-refs polling
+          is disabled and the CP falls back to the file-backed
+          observed.json. Must be set together with `signatureUrl`.
         '';
       };
 
-      owner = lib.mkOption {
+      signatureUrl = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "abstracts33d";
-        description = "Forgejo repo owner for the fleet repo.";
-      };
-
-      repo = lib.mkOption {
-        type = lib.types.str;
-        default = "fleet";
-        description = "Forgejo repo name (default `fleet`).";
-      };
-
-      artifactPath = lib.mkOption {
-        type = lib.types.str;
-        default = "releases/fleet.resolved.json";
-        description = "Path inside the repo to fleet.resolved.json.";
-      };
-
-      signaturePath = lib.mkOption {
-        type = lib.types.str;
-        default = "releases/fleet.resolved.json.sig";
+        example = "https://git.lab.internal/abstracts33d/fleet/raw/branch/main/releases/fleet.resolved.json.sig";
         description = ''
-          Path inside the repo to the matching signature. The poll
-          task fetches both files together and runs verify_artifact —
-          this is what closes the GitOps loop (push → CI re-sign →
-          poll picks up new closureHashes within ~60s, no CP redeploy).
+          Fully-formed URL that yields the raw bytes of the matching
+          signature. The poll task fetches both files together and
+          runs verify_artifact — this is what closes the GitOps loop
+          (push → CI re-sign → poll picks up new closureHashes within
+          ~60s, no CP redeploy).
         '';
       };
 
       tokenFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "/run/agenix/cp-forgejo-token";
+        example = "/run/agenix/cp-channel-refs-token";
         description = ''
-          Path to a file containing a Forgejo API token with read
-          access to the fleet repo. Wired by fleet/modules/secrets/
-          nixos.nix to an agenix-decrypted path. Read on each poll
-          so token rotation propagates without restart.
+          Path to a file containing the upstream API token (sent as
+          `Authorization: Bearer <token>`). Optional — leave null for
+          public sources (e.g. unauthenticated raw URLs on a public
+          forge or a plain HTTPS file server). Read on each poll so
+          token rotation propagates without restart.
         '';
       };
     };
@@ -359,23 +348,20 @@ in {
             ]
             ++ lib.optionals
             (
-              cfg.forgejo.baseUrl != null
-              && cfg.forgejo.owner != null
-              && cfg.forgejo.tokenFile != null
-            ) [
-              "--forgejo-base-url"
-              (lib.escapeShellArg cfg.forgejo.baseUrl)
-              "--forgejo-owner"
-              (lib.escapeShellArg cfg.forgejo.owner)
-              "--forgejo-repo"
-              (lib.escapeShellArg cfg.forgejo.repo)
-              "--forgejo-artifact-path"
-              (lib.escapeShellArg cfg.forgejo.artifactPath)
-              "--forgejo-signature-path"
-              (lib.escapeShellArg cfg.forgejo.signaturePath)
-              "--forgejo-token-file"
-              (lib.escapeShellArg cfg.forgejo.tokenFile)
-            ]
+              cfg.channelRefsSource.artifactUrl != null
+              && cfg.channelRefsSource.signatureUrl != null
+            ) (
+              [
+                "--channel-refs-artifact-url"
+                (lib.escapeShellArg cfg.channelRefsSource.artifactUrl)
+                "--channel-refs-signature-url"
+                (lib.escapeShellArg cfg.channelRefsSource.signatureUrl)
+              ]
+              ++ lib.optionals (cfg.channelRefsSource.tokenFile != null) [
+                "--channel-refs-token-file"
+                (lib.escapeShellArg cfg.channelRefsSource.tokenFile)
+              ]
+            )
           );
           Restart = "always";
           RestartSec = 10;

@@ -63,22 +63,25 @@ pub struct ServeArgs {
     pub trust_path: PathBuf,
     /// File-backed observed-state fallback path. The in-memory
     /// projection from check-ins is preferred; this path is used only
-    /// when no agents have checked in yet AND `forgejo` is None
+    /// when no agents have checked in yet AND `channel_refs` is None
     /// (offline dev/test mode).
     pub observed_path: PathBuf,
     pub freshness_window: Duration,
-    /// GitOps closure: when set, the Forgejo poll fetches
-    /// `releases/fleet.resolved.json` + `.sig` from the operator's
-    /// repo every 60s, verifies, and refreshes `verified_fleet`. When
-    /// `None`, the CP relies on the file-backed `--artifact` path
-    /// alone.
-    pub forgejo: Option<crate::forgejo_poll::ForgejoConfig>,
+    /// GitOps closure: when set, the channel-refs poll fetches the
+    /// signed `fleet.resolved.json` + `.sig` from the configured
+    /// upstream URLs every 60s, verifies, and refreshes
+    /// `verified_fleet`. When `None`, the CP relies on the
+    /// file-backed `--artifact` path alone. The source is
+    /// implementation-agnostic — Forgejo raw URLs, GitHub
+    /// `raw.githubusercontent.com`, GitLab `/-/raw/`, plain HTTP, etc.
+    pub channel_refs: Option<crate::channel_refs_poll::ChannelRefsSource>,
     /// SQLite path. When `Some`, the DB is opened + migrated at
     /// startup. When `None`, in-memory state only.
     pub db_path: Option<PathBuf>,
-    /// Closure proxy upstream. Forwarded URL of the attic instance the
-    /// CP proxies `/v1/agent/closure/<hash>` requests to. `None` →
-    /// endpoint returns 501.
+    /// Closure proxy upstream. Base URL of a nix binary cache
+    /// (harmonia, attic, cachix, etc.) the CP proxies
+    /// `/v1/agent/closure/<hash>` requests to. `None` → endpoint
+    /// returns 501.
     pub closure_upstream: Option<String>,
 }
 
@@ -124,15 +127,15 @@ pub struct IssuancePaths {
 /// `--db-path`.
 ///
 /// `verified_fleet` and `channel_refs_cache` are both `Arc<RwLock<>>`
-/// so the Forgejo poll task can write through them directly without
-/// a mirror task. The reconcile loop's per-tick build-time verify
-/// uses a `signed_at` freshness gate before overwriting, so the
-/// Forgejo-fresh snapshot is preserved.
+/// so the channel-refs poll task can write through them directly
+/// without a mirror task. The reconcile loop's per-tick build-time
+/// verify uses a `signed_at` freshness gate before overwriting, so
+/// the upstream-fresh snapshot is preserved.
 pub struct AppState {
     pub last_tick_at: RwLock<Option<DateTime<Utc>>>,
     pub host_checkins: RwLock<HashMap<String, HostCheckinRecord>>,
     pub host_reports: RwLock<HashMap<String, VecDeque<ReportRecord>>>,
-    pub channel_refs_cache: Arc<RwLock<crate::forgejo_poll::ChannelRefsCache>>,
+    pub channel_refs_cache: Arc<RwLock<crate::channel_refs_poll::ChannelRefsCache>>,
     pub seen_token_nonces: RwLock<HashSet<String>>,
     pub issuance_paths: RwLock<IssuancePaths>,
     pub db: Option<Arc<crate::db::Db>>,
@@ -147,7 +150,7 @@ impl Default for AppState {
             host_checkins: RwLock::new(HashMap::new()),
             host_reports: RwLock::new(HashMap::new()),
             channel_refs_cache: Arc::new(RwLock::new(
-                crate::forgejo_poll::ChannelRefsCache::default(),
+                crate::channel_refs_poll::ChannelRefsCache::default(),
             )),
             seen_token_nonces: RwLock::new(HashSet::new()),
             issuance_paths: RwLock::new(IssuancePaths::default()),

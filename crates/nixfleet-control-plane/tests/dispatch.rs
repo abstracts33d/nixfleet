@@ -238,7 +238,7 @@ async fn spawn_with_signed_fleet(
         // The test clock is real wall-clock; freshness is per-channel
         // (60 minutes) but verify_artifact also takes the global window.
         freshness_window: Duration::from_secs(86400 * 365 * 5),
-        forgejo: None,
+        channel_refs: None,
         db_path: Some(db_path),
         closure_upstream: None,
     };

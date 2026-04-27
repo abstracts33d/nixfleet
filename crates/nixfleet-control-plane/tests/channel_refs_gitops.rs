@@ -1,10 +1,13 @@
-//! GitOps closure: stub Forgejo serves a real signed
-//! `fleet.resolved.json` + `.sig`, the poll task fetches both,
-//! verify_artifact accepts, the shared `verified_fleet` snapshot
-//! flips from `None` to `Some(...)`. This is the end-to-end test
-//! for "operator pushes fleet → CI re-signs → CP picks it up
-//! within one poll cycle without redeploy".
+//! GitOps closure: a stub HTTP server serves raw signed
+//! `fleet.resolved.json` + `.sig` bytes, the channel-refs poll
+//! task fetches both, verify_artifact accepts, the shared
+//! `verified_fleet` snapshot flips from `None` to `Some(...)`.
+//! End-to-end test for "operator pushes fleet → CI re-signs →
+//! CP picks it up within one poll cycle without redeploy".
 //!
+//! Source-agnostic — the stub responds to any GET with the
+//! configured body, mirroring the simplest possible implementation
+//! (Forgejo `raw/branch/...`, GitHub raw URL, plain HTTP, etc.).
 //! Stub uses the same tiny tokio TcpListener pattern as
 //! `closure_proxy.rs` — minimal moving parts, no wiremock dep.
 
@@ -13,7 +16,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
-use nixfleet_control_plane::forgejo_poll::{spawn, ChannelRefsCache, ForgejoConfig};
+use nixfleet_control_plane::channel_refs_poll::{spawn, ChannelRefsCache, ChannelRefsSource};
 use nixfleet_proto::FleetResolved;
 use rand::rngs::OsRng;
 use tempfile::TempDir;
@@ -58,12 +61,9 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
     (raw, canonical.into_bytes())
 }
 
-/// Tiny single-purpose Forgejo Contents-API stub. Listens until the
-/// task is dropped; for each connection, parses the request line,
-/// matches against `artifact_path` / `signature_path`, returns the
-/// matching base64-encoded body wrapped in the Contents-API JSON
-/// shape. Anything else → 404.
-async fn spawn_stub_forgejo(
+/// Tiny single-purpose HTTP stub. Serves raw bytes for whichever of
+/// the two paths the request line matches; 404 otherwise.
+async fn spawn_stub_http(
     artifact_path: &'static str,
     artifact_body: Vec<u8>,
     signature_path: &'static str,
@@ -89,12 +89,7 @@ async fn spawn_stub_forgejo(
                 let req = String::from_utf8_lossy(&buf[..n]).to_string();
                 // Match signature path first because the artifact
                 // path is a prefix of it (`.../fleet.resolved.json`
-                // vs `.../fleet.resolved.json.sig`). Naive
-                // `req.contains(artifact_path)` would swallow the
-                // signature request and serve the artifact body in
-                // its place — verify then trips on a mis-shaped
-                // "signature" with the artifact's BadSignature
-                // surface.
+                // vs `.../fleet.resolved.json.sig`).
                 let target_body = if req.contains(signature_path) {
                     Some(signature_clone)
                 } else if req.contains(artifact_path) {
@@ -103,27 +98,23 @@ async fn spawn_stub_forgejo(
                     None
                 };
 
-                let resp = match target_body {
+                let resp: Vec<u8> = match target_body {
                     Some(body) => {
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&body);
-                        let json = serde_json::json!({
-                            "content": b64,
-                            "encoding": "base64",
-                        })
-                        .to_string();
                         // Connection: close forces reqwest to open a
-                        // fresh TCP connection for each request — the
-                        // stub handles exactly one request per accept,
-                        // so keepalive would deadlock the second GET.
-                        format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-                            json.len(),
-                            json,
+                        // fresh TCP connection per request — the stub
+                        // handles exactly one per accept, so keepalive
+                        // would deadlock the second GET.
+                        let mut header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                            body.len(),
                         )
+                        .into_bytes();
+                        header.extend_from_slice(&body);
+                        header
                     }
-                    None => "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string(),
+                    None => "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".as_bytes().to_vec(),
                 };
-                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.write_all(&resp).await;
                 let _ = socket.flush().await;
             });
         }
@@ -140,7 +131,7 @@ fn init_tracing() {
             .with_test_writer()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,nixfleet_control_plane::forgejo_poll=debug")),
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,nixfleet_control_plane::channel_refs_poll=debug")),
             )
             .try_init();
     });
@@ -151,20 +142,12 @@ async fn poll_refreshes_verified_fleet_snapshot() {
     init_tracing();
     let dir = TempDir::new().unwrap();
 
-    // Mint a CI release key, sign a real artifact + write the
-    // matching trust.json. Same posture the live deployment uses
-    // (only with ed25519 instead of TPM-backed ecdsa-p256 — the
-    // verify_artifact path is shared).
     let signing_key = SigningKey::generate(&mut OsRng);
     let public_b64 = base64::engine::general_purpose::STANDARD.encode(signing_key.verifying_key());
 
     let (raw_json, canonical_bytes) =
         build_fleet_resolved_json("decl0001-nixos-system-krach-26.05", "deadbeef00000000");
     let signature = signing_key.sign(&canonical_bytes);
-
-    // Sanity: re-canonicalize the served raw bytes — the verifier
-    // does the same. If these don't match, sign-then-verify can't
-    // possibly work.
 
     let trust_path = dir.path().join("trust.json");
     let trust = serde_json::json!({
@@ -182,10 +165,12 @@ async fn poll_refreshes_verified_fleet_snapshot() {
     let token_path = dir.path().join("token");
     std::fs::write(&token_path, "fake-token").unwrap();
 
-    let (port, _stub) = spawn_stub_forgejo(
-        "/contents/releases/fleet.resolved.json",
+    let artifact_route = "/raw/branch/main/releases/fleet.resolved.json";
+    let signature_route = "/raw/branch/main/releases/fleet.resolved.json.sig";
+    let (port, _stub) = spawn_stub_http(
+        artifact_route,
         raw_json.into_bytes(),
-        "/contents/releases/fleet.resolved.json.sig",
+        signature_route,
         signature.to_bytes().to_vec(),
     )
     .await;
@@ -193,28 +178,16 @@ async fn poll_refreshes_verified_fleet_snapshot() {
     let cache = Arc::new(RwLock::new(ChannelRefsCache::default()));
     let verified_fleet: Arc<RwLock<Option<Arc<FleetResolved>>>> = Arc::new(RwLock::new(None));
 
-    let cfg = ForgejoConfig {
-        base_url: format!("http://127.0.0.1:{port}"),
-        owner: "abstracts33d".to_string(),
-        repo: "fleet".to_string(),
-        artifact_path: "releases/fleet.resolved.json".to_string(),
-        signature_path: "releases/fleet.resolved.json.sig".to_string(),
-        token_file: token_path,
+    let cfg = ChannelRefsSource {
+        artifact_url: format!("http://127.0.0.1:{port}{artifact_route}"),
+        signature_url: format!("http://127.0.0.1:{port}{signature_route}"),
+        token_file: Some(token_path),
         trust_path,
-        // Far-future window; the artifact's signedAt is fixed at
-        // 2026-04-26T00:00:00Z and we don't want time drift to flake
-        // the test.
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
     let _poll = spawn(cache.clone(), verified_fleet.clone(), cfg);
 
-    // First scheduled tick fires after `POLL_INTERVAL` (60s in
-    // production). Tests can't wait that long — drive forward by
-    // polling the snapshot ourselves with a generous timeout. The
-    // poll task internally uses `tokio::time::interval` which
-    // schedules its first tick immediately by default, so the
-    // refresh should land within a few hundred ms.
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let mut last_snapshot: Option<Arc<FleetResolved>> = None;
     while std::time::Instant::now() < deadline {
@@ -234,21 +207,14 @@ async fn poll_refreshes_verified_fleet_snapshot() {
     );
     assert_eq!(fleet.meta.ci_commit.as_deref(), Some("deadbeef00000000"));
 
-    // Channel refs cache should also have been refreshed.
     let refs = cache.read().await.refs.clone();
     assert!(refs.contains_key("stable"), "channel_refs should include stable: {refs:?}");
 }
 
 #[tokio::test]
 async fn poll_retains_snapshot_on_verify_failure() {
-    // A bad signature must NOT blank out a previously-good snapshot.
-    // Operator pushed something broken; the dispatch path keeps
-    // running against the last-known-good fleet until the next good
-    // poll. Same retain-on-failure posture as `channel_refs`.
     let dir = TempDir::new().unwrap();
 
-    // Real artifact signed by `signing_key`, but trust.json declares
-    // a *different* key — verify_artifact will reject every call.
     let signing_key = SigningKey::generate(&mut OsRng);
     let wrong_key = SigningKey::generate(&mut OsRng);
     let wrong_public_b64 =
@@ -274,16 +240,16 @@ async fn poll_retains_snapshot_on_verify_failure() {
     let token_path = dir.path().join("token");
     std::fs::write(&token_path, "fake-token").unwrap();
 
-    let (port, _stub) = spawn_stub_forgejo(
-        "/contents/releases/fleet.resolved.json",
+    let artifact_route = "/raw/branch/main/releases/fleet.resolved.json";
+    let signature_route = "/raw/branch/main/releases/fleet.resolved.json.sig";
+    let (port, _stub) = spawn_stub_http(
+        artifact_route,
         raw_json.into_bytes(),
-        "/contents/releases/fleet.resolved.json.sig",
+        signature_route,
         signature.to_bytes().to_vec(),
     )
     .await;
 
-    // Pre-seed verified_fleet with a sentinel snapshot — the poll
-    // failure must not overwrite it.
     let sentinel: FleetResolved = serde_json::from_str(&serde_json::json!({
         "schemaVersion": 1,
         "hosts": { "sentinel": { "system": "x86_64-linux", "tags": [], "channel": "stable", "closureHash": "sentinel-hash", "pubkey": null } },
@@ -299,21 +265,16 @@ async fn poll_retains_snapshot_on_verify_failure() {
     let verified_fleet: Arc<RwLock<Option<Arc<FleetResolved>>>> =
         Arc::new(RwLock::new(Some(Arc::new(sentinel))));
 
-    let cfg = ForgejoConfig {
-        base_url: format!("http://127.0.0.1:{port}"),
-        owner: "abstracts33d".to_string(),
-        repo: "fleet".to_string(),
-        artifact_path: "releases/fleet.resolved.json".to_string(),
-        signature_path: "releases/fleet.resolved.json.sig".to_string(),
-        token_file: token_path,
+    let cfg = ChannelRefsSource {
+        artifact_url: format!("http://127.0.0.1:{port}{artifact_route}"),
+        signature_url: format!("http://127.0.0.1:{port}{signature_route}"),
+        token_file: Some(token_path),
         trust_path,
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
     let _poll = spawn(cache.clone(), verified_fleet.clone(), cfg);
 
-    // Wait long enough for the first poll to fire and fail; assert
-    // the sentinel survives.
     tokio::time::sleep(Duration::from_secs(2)).await;
     let snapshot = verified_fleet.read().await.clone();
     let fleet = snapshot.expect("sentinel must be retained on verify failure");

@@ -175,7 +175,7 @@ async fn spawn_server(
         trust_path: trust,
         observed_path: observed,
         freshness_window: Duration::from_secs(86400),
-        forgejo: None,
+        channel_refs: None,
         db_path,
         closure_upstream: None,
     };

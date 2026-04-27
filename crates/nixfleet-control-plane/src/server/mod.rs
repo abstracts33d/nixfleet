@@ -123,14 +123,14 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // first tick, and dispatch issued stair-stepping-backwards
     // targets.
     //
-    // Skip silently when Forgejo isn't configured or the fetch fails
-    // — the reconcile loop's existing build-time prime is the correct
-    // fallback. Cap with a short timeout so a wedged Forgejo can't
-    // block CP boot indefinitely.
-    if let Some(forgejo_config) = args.forgejo.as_ref() {
+    // Skip silently when no channel-refs source is configured or the
+    // fetch fails — the reconcile loop's existing build-time prime is
+    // the correct fallback. Cap with a short timeout so a wedged
+    // upstream can't block CP boot indefinitely.
+    if let Some(channel_refs_source) = args.channel_refs.as_ref() {
         match tokio::time::timeout(
             Duration::from_secs(20),
-            crate::forgejo_poll::prime_once(forgejo_config),
+            crate::channel_refs_poll::prime_once(channel_refs_source),
         )
         .await
         {
@@ -138,18 +138,18 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 *state.verified_fleet.write().await = Some(Arc::new(fleet));
                 tracing::info!(
                     target: "reconcile",
-                    "primed verified-fleet from forgejo before opening listener",
+                    "primed verified-fleet from channel-refs source before opening listener",
                 );
             }
             Ok(Err(err)) => {
                 tracing::warn!(
                     error = %err,
-                    "forgejo prime failed; falling back to build-time artifact",
+                    "channel-refs prime failed; falling back to build-time artifact",
                 );
             }
             Err(_) => {
                 tracing::warn!(
-                    "forgejo prime timed out; falling back to build-time artifact",
+                    "channel-refs prime timed out; falling back to build-time artifact",
                 );
             }
         }
@@ -166,15 +166,15 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     reconcile::spawn_reconcile_loop(state.clone(), tick_inputs);
 
-    // Forgejo poll: refresh `verified_fleet` + `channel_refs_cache`
-    // from the operator's repo bytes (closes the GitOps loop). Both
-    // shared locks live on `AppState` as `Arc<RwLock<...>>`; the
-    // poll task writes through them directly without a mirror task.
-    if let Some(forgejo_config) = args.forgejo.clone() {
-        crate::forgejo_poll::spawn(
+    // Channel-refs poll: refresh `verified_fleet` + `channel_refs_cache`
+    // from the configured upstream URLs (closes the GitOps loop). Both
+    // shared locks live on `AppState` as `Arc<RwLock<...>>`; the poll
+    // task writes through them directly without a mirror task.
+    if let Some(channel_refs_source) = args.channel_refs.clone() {
+        crate::channel_refs_poll::spawn(
             state.channel_refs_cache.clone(),
             state.verified_fleet.clone(),
-            forgejo_config,
+            channel_refs_source,
         );
     }
 

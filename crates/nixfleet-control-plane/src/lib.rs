@@ -12,9 +12,9 @@
 //! live projection from agent check-ins.
 
 pub mod auth_cn;
+pub mod channel_refs_poll;
 pub mod db;
 pub mod dispatch;
-pub mod forgejo_poll;
 pub mod issuance;
 pub mod observed_projection;
 pub mod rollback_timer;
