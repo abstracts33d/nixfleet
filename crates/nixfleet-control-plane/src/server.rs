@@ -1068,29 +1068,38 @@ fn build_router(state: Arc<AppState>) -> Router {
 /// crashes on transient failures.
 fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
     tokio::spawn(async move {
-        // Prime the verified-fleet snapshot synchronously before the
-        // ticker starts. Without this, the first 30s after CP boot
-        // would have no dispatch decisions (the snapshot is None until
-        // the first scheduled tick fires). For agents waking up at the
-        // same time as the CP, that means a wasted checkin cycle.
-        // Cheap — at most one verify_artifact call against the file-
-        // backed inputs. Failures are logged and the loop falls back
-        // to its normal cadence.
+        // Prime the verified-fleet snapshot from the build-time
+        // artifact, IF it isn't already populated. The Forgejo
+        // prime in `serve()` runs first and sets it from the
+        // operator's freshest repo bytes; this fallback only fires
+        // when Forgejo isn't configured or its fetch failed. Either
+        // way we don't overwrite a Forgejo-fresh snapshot with a
+        // stale build-time one — that's exactly the regression that
+        // caused lab to stair-step backwards through deploy history
+        // during the GitOps validation pass.
         {
-            let prime_inputs = TickInputs {
-                now: Utc::now(),
-                ..inputs.clone()
-            };
-            if let Some(fleet) = verify_fleet_only(&prime_inputs) {
-                *state.verified_fleet.write().await = Some(Arc::new(fleet));
-                tracing::info!(
-                    target: "reconcile",
-                    "primed verified-fleet snapshot before first tick",
-                );
+            let already_primed = state.verified_fleet.read().await.is_some();
+            if !already_primed {
+                let prime_inputs = TickInputs {
+                    now: Utc::now(),
+                    ..inputs.clone()
+                };
+                if let Some(fleet) = verify_fleet_only(&prime_inputs) {
+                    *state.verified_fleet.write().await = Some(Arc::new(fleet));
+                    tracing::info!(
+                        target: "reconcile",
+                        "primed verified-fleet snapshot from build-time artifact (Forgejo prime unavailable)",
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "reconcile",
+                        "could not prime verified-fleet snapshot (verify failed); dispatch will block until first tick succeeds",
+                    );
+                }
             } else {
-                tracing::warn!(
+                tracing::debug!(
                     target: "reconcile",
-                    "could not prime verified-fleet snapshot (verify failed); dispatch will block until first tick succeeds",
+                    "verified-fleet snapshot already populated by Forgejo prime; skipping build-time prime",
                 );
             }
         }
@@ -1130,12 +1139,39 @@ fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             };
 
             // Snapshot the verified fleet so the dispatch path can
-            // read it. Preserve the previous snapshot on a verify
-            // failure (transient bad-signature/stale tick shouldn't
-            // unblock dispatch — operator fixes the artifact, next
-            // tick repopulates).
+            // read it. Three preserve rules layered on top:
+            //
+            // 1. Verify-failed tick → preserve previous snapshot.
+            //    Transient bad-signature shouldn't unblock dispatch.
+            //
+            // 2. The build-time artifact path is immutable for the
+            //    CP's lifetime (it's a /nix/store path), so the
+            //    bytes verify_fleet_only re-reads here are the SAME
+            //    every tick. Without a freshness gate, this would
+            //    overwrite a Forgejo-fresh snapshot with the
+            //    deploy-time bytes — exactly the regression that
+            //    made lab stair-step backwards through deploy
+            //    history during the GitOps validation pass.
+            //
+            // 3. Compare `signed_at`: only overwrite if the new
+            //    snapshot is at least as fresh as what's already
+            //    there. Forgejo poll writes the freshest available;
+            //    this loop preserves it.
             if let Some(fleet) = verified_fleet {
-                *state.verified_fleet.write().await = Some(Arc::new(fleet));
+                let mut guard = state.verified_fleet.write().await;
+                let should_overwrite = match guard.as_ref() {
+                    None => true,
+                    Some(existing) => match (existing.meta.signed_at, fleet.meta.signed_at) {
+                        (Some(prev), Some(new)) => new >= prev,
+                        // If either lacks signed_at (shouldn't happen
+                        // for verified artifacts), fall back to
+                        // overwriting — preserves prior behaviour.
+                        _ => true,
+                    },
+                };
+                if should_overwrite {
+                    *guard = Some(Arc::new(fleet));
+                }
             }
 
             match result {
@@ -1292,6 +1328,51 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fleet_ca_key: args.fleet_ca_key.clone(),
         audit_log: args.audit_log_path.clone(),
     };
+
+    // Pre-listener Forgejo prime: fetch the freshest signed artifact
+    // straight from the operator's repo and seed `verified_fleet`
+    // BEFORE the listener accepts the first checkin. Without this,
+    // dispatch falls back to the compile-time `--artifact` path,
+    // which is always an *older* release than what's on Forgejo
+    // (CI commits the [skip ci] release commit AFTER building the
+    // closure — every closure's bundled artifact is the previous
+    // release). Lab caught this empirically during the GitOps
+    // validation pass: agents checked in immediately on CP boot,
+    // before the periodic poll's first tick, and dispatch issued
+    // stair-stepping-backwards targets.
+    //
+    // Skip silently when Forgejo isn't configured or the fetch fails
+    // — the reconcile loop's existing build-time prime is the
+    // correct fallback for those cases. Cap the operation with a
+    // short hard timeout so a wedged Forgejo can't block CP boot
+    // forever.
+    if let Some(forgejo_config) = args.forgejo.as_ref() {
+        match tokio::time::timeout(
+            Duration::from_secs(20),
+            crate::forgejo_poll::prime_once(forgejo_config),
+        )
+        .await
+        {
+            Ok(Ok(fleet)) => {
+                *state.verified_fleet.write().await = Some(Arc::new(fleet));
+                tracing::info!(
+                    target: "reconcile",
+                    "primed verified-fleet from forgejo before opening listener",
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    error = %err,
+                    "forgejo prime failed; falling back to build-time artifact",
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "forgejo prime timed out; falling back to build-time artifact",
+                );
+            }
+        }
+    }
 
     // Reconcile loop runs concurrently with the listener — never gate
     // operator visibility on a TLS handshake completing.

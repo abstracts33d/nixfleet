@@ -161,6 +161,35 @@ pub fn spawn(
     })
 }
 
+/// One-shot synchronous fetch + verify, called once from `serve()`
+/// **before** starting the reconcile loop or accepting connections.
+///
+/// Without this, the CP's first reconcile-loop prime falls back to
+/// the compile-time `--artifact` path — which is always an older
+/// release than what's on Forgejo (CI commits the [skip ci] release
+/// AFTER building the closure, so each closure's bundled artifact
+/// is the previous release). Agents check in immediately on CP
+/// boot, before the periodic poll's first tick, and dispatch
+/// returns a stale target — lab observed stair-stepping backwards
+/// through deploy history during the GitOps validation pass.
+///
+/// Behaviour: this function tries the Forgejo path. On success the
+/// caller stores the verified `FleetResolved` in `verified_fleet`.
+/// On failure (network, verify, anything) the caller falls back to
+/// the build-time artifact prime — same posture as before, just
+/// with Forgejo as the preferred source when configured.
+pub async fn prime_once(
+    config: &ForgejoConfig,
+) -> Result<nixfleet_proto::FleetResolved> {
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .context("build forgejo prime client")?;
+    let (_refs, fleet) = poll_once(&client, config).await?;
+    Ok(fleet)
+}
+
 async fn poll_once(
     client: &reqwest::Client,
     config: &ForgejoConfig,
