@@ -28,32 +28,23 @@ in {
     # For consumers who don't want mkHost (just raw modules)
     nixosModules.nixfleet-core = ./core/_nixos.nix;
 
-    # Re-export nixfleet-scopes so consumers don't need a separate input.
-    # Usage: inputs.nixfleet.scopes.roles.endpoint
-    scopes = inputs.nixfleet-scopes.scopes;
-
-    # Legacy alias (use scopes.disk-templates instead)
-    diskoTemplates = inputs.nixfleet-scopes.scopes.disk-templates;
-
-    # Flake templates - nix flake init -t nixfleet
-    templates = {
-      standalone = {
-        path = ../examples/standalone-host;
-        description = "Single NixOS machine managed by NixFleet";
-      };
-      batch = {
-        path = ../examples/batch-hosts;
-        description = "Batch of identical hosts from a template";
-      };
-      fleet = {
-        path = ../examples/client-fleet;
-        description = "Multi-host fleet with flake-parts";
-      };
-      default = {
-        path = ../examples/standalone-host;
-        description = "Single NixOS machine managed by NixFleet (default)";
-      };
+    # Disk-template data layer absorbed from former nixfleet-scopes.
+    # nixfleet's own QEMU test fixtures (modules/_hardware/qemu/) use
+    # `btrfs-impermanence`; the rest are exposed for fleet consumers
+    # who want a curated starting point.
+    diskoTemplates = {
+      btrfs = ./disk-templates/btrfs-disk.nix;
+      btrfs-bios = ./disk-templates/btrfs-disk-bios.nix;
+      btrfs-impermanence = ./disk-templates/btrfs-impermanence-disk.nix;
+      btrfs-impermanence-bios = ./disk-templates/btrfs-impermanence-disk-bios.nix;
+      ext4 = ./disk-templates/ext4-disk.nix;
+      luks-btrfs-impermanence = ./disk-templates/luks-btrfs-impermanence-disk.nix;
     };
+
+    # DEPRECATED — re-export of nixfleet-scopes. Will be removed once
+    # consumers (currently only abstracts33d/fleet) switch to importing
+    # `nixfleet-scopes` as a direct input. See decoupling plan, phase 3.
+    scopes = inputs.nixfleet-scopes.scopes;
 
     # Transitional flakeModules for fleet repos
     flakeModules = {

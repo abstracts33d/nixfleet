@@ -1,13 +1,14 @@
 # Qemu VM disk layout for nixfleet's test hosts (isVm = true).
-# Uses the btrfs-impermanence disk template from nixfleet-scopes.
-# Imports the disko NixOS module (mk-host no longer auto-injects it).
+# Uses the btrfs-impermanence disk template absorbed into nixfleet's
+# own modules/disk-templates/. Imports the disko NixOS module
+# (mk-host no longer auto-injects it).
 {
   inputs,
   lib,
   ...
 }: let
   diskConfig =
-    import inputs.nixfleet-scopes.scopes.disk-templates.btrfs-impermanence
+    import ../../disk-templates/btrfs-impermanence-disk.nix
     {
       inherit lib;
     };

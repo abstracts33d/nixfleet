@@ -41,6 +41,15 @@
   microvmHostModule = ../../scopes/nixfleet/_microvm-host.nix;
   operatorModule = ../../scopes/nixfleet/_operator.nix;
 
+  # Framework-level scopes absorbed from former nixfleet-scopes.
+  # `_impermanence.nix` declares + wires `nixfleet.impermanence.*` so
+  # nixfleet's own service modules can contribute to environment.persistence.
+  # `_operators.nix` declares the `nixfleet.operators.*` schema referenced
+  # by core/_nixos.nix and host-spec; user creation implementation stays in
+  # nixfleet-scopes for fleets that opt into it.
+  impermanenceModule = ../../scopes/nixfleet/_impermanence.nix;
+  operatorsModule = ../../scopes/nixfleet/_operators.nix;
+
   isDarwinPlatform = platform:
     builtins.elem platform ["aarch64-darwin" "x86_64-darwin"];
 in
@@ -64,14 +73,16 @@ in
     # Mechanism only: core system config + hostSpec + nixfleet service
     # modules. No HM injection, no disko auto-import.
     #
-    # nixfleet-scopes's impermanence scope is auto-imported because
-    # nixfleet's own internal service modules (agent, control-plane,
-    # microvm-host) conditionally contribute to `environment.persistence`,
-    # and the NixOS module system validates option paths even inside
-    # `lib.mkIf false`. The scope declares the option (via the upstream
-    # impermanence module) and is inert until
-    # `nixfleet.impermanence.enable = true`, so the cost is zero and
-    # nixfleet-scopes stays the single declaration site.
+    # `_impermanence.nix` is auto-imported because nixfleet's own
+    # internal service modules (agent, control-plane, microvm-host)
+    # conditionally contribute to `environment.persistence`, and the
+    # NixOS module system validates option paths even inside
+    # `lib.mkIf false`. The module declares the option (via the upstream
+    # `impermanence` flake input) and is inert until
+    # `nixfleet.impermanence.enable = true`, so the cost is zero.
+    # `_operators.nix` is auto-imported for the same reason — core
+    # modules read `config.nixfleet.operators.*` for the primary user
+    # and root SSH keys, so the schema must always exist.
     frameworkNixosModules =
       [
         {nixpkgs.hostPlatform = platform;}
@@ -79,7 +90,8 @@ in
         {hostSpec = lib.mapAttrs (_: v: lib.mkDefault v) effectiveHostSpec;}
         # Override hostName without mkDefault (must match)
         {hostSpec.hostName = hostName;}
-        inputs.nixfleet-scopes.scopes.impermanence
+        impermanenceModule
+        operatorsModule
         coreNixos
         agentModule
         controlPlaneModule
@@ -116,6 +128,7 @@ in
       {hostSpec = lib.mapAttrs (_: v: lib.mkDefault v) effectiveHostSpec;}
       {hostSpec.hostName = hostName;}
       {hostSpec.isDarwin = true;}
+      operatorsModule
       coreDarwin
       agentDarwinModule
       operatorModule
