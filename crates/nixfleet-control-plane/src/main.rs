@@ -118,6 +118,18 @@ struct ServeFlags {
     )]
     forgejo_artifact_path: String,
 
+    /// Path inside the fleet repo to the matching signature.
+    /// Defaults to artifact_path + ".sig". Read by the poll task
+    /// so the verifier can run against the operator's repo bytes
+    /// directly (closing the GitOps loop — push → CI re-sign → poll
+    /// picks up new closureHashes within ~60s, no CP redeploy).
+    #[arg(
+        long,
+        default_value = "releases/fleet.resolved.json.sig",
+        env = "NIXFLEET_CP_FORGEJO_SIGNATURE_PATH"
+    )]
+    forgejo_signature_path: String,
+
     /// Path to the Forgejo API token file (agenix-mounted, read-only).
     #[arg(long, env = "NIXFLEET_CP_FORGEJO_TOKEN_FILE")]
     forgejo_token_file: Option<PathBuf>,
@@ -240,7 +252,13 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
                 owner,
                 repo: flags.forgejo_repo,
                 artifact_path: flags.forgejo_artifact_path,
+                signature_path: flags.forgejo_signature_path,
                 token_file,
+                // Same trust + freshness as the file-backed reconcile
+                // path. Read fresh on every poll so trust-root rotation
+                // propagates without a CP restart.
+                trust_path: flags.trust_file.clone(),
+                freshness_window: Duration::from_secs(flags.freshness_window_secs),
             })
         }
         (None, None, None) => None,

@@ -258,6 +258,17 @@ in {
         description = "Path inside the repo to fleet.resolved.json.";
       };
 
+      signaturePath = lib.mkOption {
+        type = lib.types.str;
+        default = "releases/fleet.resolved.json.sig";
+        description = ''
+          Path inside the repo to the matching signature. The poll
+          task fetches both files together and runs verify_artifact —
+          this is what closes the GitOps loop (push → CI re-sign →
+          poll picks up new closureHashes within ~60s, no CP redeploy).
+        '';
+      };
+
       tokenFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -363,6 +374,8 @@ in {
               (lib.escapeShellArg cfg.forgejo.repo)
               "--forgejo-artifact-path"
               (lib.escapeShellArg cfg.forgejo.artifactPath)
+              "--forgejo-signature-path"
+              (lib.escapeShellArg cfg.forgejo.signaturePath)
               "--forgejo-token-file"
               (lib.escapeShellArg cfg.forgejo.tokenFile)
             ]

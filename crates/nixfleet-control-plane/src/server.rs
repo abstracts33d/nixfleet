@@ -152,13 +152,24 @@ pub struct AppState {
     pub issuance_paths: RwLock<IssuancePaths>,
     pub db: Option<Arc<crate::db::Db>>,
     pub closure_upstream: Option<ClosureUpstream>,
-    /// Most-recently-verified `fleet.resolved` artifact. The reconcile
-    /// loop writes it on each successful tick; the dispatch path in
-    /// `/v1/agent/checkin` reads it to decide each host's target. A
-    /// transient verify failure leaves the previous snapshot in place
-    /// — the dispatch loop holds steady rather than dropping all hosts
-    /// to `target: null` on a single bad tick.
-    pub verified_fleet: RwLock<Option<Arc<FleetResolved>>>,
+    /// Most-recently-verified `fleet.resolved` artifact. The dispatch
+    /// path in `/v1/agent/checkin` reads it to decide each host's
+    /// target. Two writers refresh it in tandem, both keeping the
+    /// most recent successful verify available without blanking out
+    /// on a transient failure:
+    ///
+    /// - The reconcile loop's file-backed verify (PR-1 deploy-time
+    ///   bytes) runs every tick and writes through this lock.
+    /// - The Forgejo poll task fetches `releases/fleet.resolved.json`
+    ///   + `.sig` straight from the operator's repo, runs the same
+    ///   `verify_artifact`, and writes through the same lock —
+    ///   closes the GitOps loop. A `git push` to fleet/main →
+    ///   CI re-signs → next poll (≤60s) refreshes the snapshot →
+    ///   next checkin dispatches against the new closure_hashes.
+    ///
+    /// Wrapped in `Arc<RwLock<...>>` so both writers share access
+    /// without a mirror task.
+    pub verified_fleet: Arc<RwLock<Option<Arc<FleetResolved>>>>,
 }
 
 impl Default for AppState {
@@ -172,7 +183,7 @@ impl Default for AppState {
             issuance_paths: RwLock::new(IssuancePaths::default()),
             db: None,
             closure_upstream: None,
-            verified_fleet: RwLock::new(None),
+            verified_fleet: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -1274,22 +1285,36 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     spawn_reconcile_loop(state.clone(), tick_inputs);
 
-    // PR-4: Forgejo poll task. Updates a shared cache that's
-    // mirrored into AppState's channel_refs_cache. When
-    // `--forgejo-base-url` is unset, the cache stays empty and the
-    // reconcile loop falls through to its file-backed observed.json
-    // fallback.
+    // Forgejo poll task. Two responsibilities:
+    //
+    // 1. Refresh `verified_fleet` directly from
+    //    `releases/fleet.resolved.json` + `.sig` on the operator's
+    //    repo. Closes the GitOps loop — push to fleet/main → CI
+    //    re-signs → poll (≤60s) refreshes the snapshot → next
+    //    checkin dispatches against fresh closureHashes. Without
+    //    this, the CP would only see the deploy-time artifact and
+    //    operator commits would never propagate without a redeploy.
+    //
+    // 2. Refresh the channel_refs cache (telemetry + the
+    //    `Observed.channel_refs` projection feeds the reconciler).
+    //
+    // When `--forgejo-base-url` is unset the poll never runs; the
+    // CP relies on the file-backed `--artifact` path the reconcile
+    // loop primes. Same fallback shape as before.
     //
     // Bridge note: forgejo_poll::spawn takes its own
-    // Arc<RwLock<ChannelRefsCache>>. AppState already owns one
-    // inside `channel_refs_cache` (a RwLock, not an Arc). A short
-    // mirror task copies poll-task → AppState every 30s. Cleaner
-    // refactor (AppState holds an Arc) is a TODO follow-up to
-    // keep this PR's diff focused on the live-projection switch.
+    // Arc<RwLock<ChannelRefsCache>>; AppState owns a plain RwLock.
+    // Short mirror task copies snapshots over every 30s — kept for
+    // the channel-refs cache only, since `verified_fleet` is now
+    // Arc-shareable directly.
     if let Some(forgejo_config) = args.forgejo.clone() {
         let cache_arc: Arc<RwLock<crate::forgejo_poll::ChannelRefsCache>> =
             Arc::new(RwLock::new(crate::forgejo_poll::ChannelRefsCache::default()));
-        crate::forgejo_poll::spawn(cache_arc.clone(), forgejo_config);
+        crate::forgejo_poll::spawn(
+            cache_arc.clone(),
+            state.verified_fleet.clone(),
+            forgejo_config,
+        );
         let state_for_mirror = state.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(30));
