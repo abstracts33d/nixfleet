@@ -8,7 +8,7 @@
   ...
 }: let
   diskConfig =
-    import ../../disk-templates/btrfs-impermanence-disk.nix
+    import ../../../disk-templates/btrfs-impermanence-disk.nix
     {
       inherit lib;
     };

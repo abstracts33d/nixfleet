@@ -32,13 +32,18 @@ in {
     # nixfleet's own QEMU test fixtures (modules/_hardware/qemu/) use
     # `btrfs-impermanence`; the rest are exposed for fleet consumers
     # who want a curated starting point.
+    #
+    # Lives outside `modules/` because `import-tree ./modules` auto-
+    # imports every .nix file there as a flake-parts module — these
+    # are partial functions consumed by NixOS modules at eval time,
+    # not modules themselves.
     diskoTemplates = {
-      btrfs = ./disk-templates/btrfs-disk.nix;
-      btrfs-bios = ./disk-templates/btrfs-disk-bios.nix;
-      btrfs-impermanence = ./disk-templates/btrfs-impermanence-disk.nix;
-      btrfs-impermanence-bios = ./disk-templates/btrfs-impermanence-disk-bios.nix;
-      ext4 = ./disk-templates/ext4-disk.nix;
-      luks-btrfs-impermanence = ./disk-templates/luks-btrfs-impermanence-disk.nix;
+      btrfs = ../disk-templates/btrfs-disk.nix;
+      btrfs-bios = ../disk-templates/btrfs-disk-bios.nix;
+      btrfs-impermanence = ../disk-templates/btrfs-impermanence-disk.nix;
+      btrfs-impermanence-bios = ../disk-templates/btrfs-impermanence-disk-bios.nix;
+      ext4 = ../disk-templates/ext4-disk.nix;
+      luks-btrfs-impermanence = ../disk-templates/luks-btrfs-impermanence-disk.nix;
     };
 
     # DEPRECATED — re-export of nixfleet-scopes. Will be removed once
