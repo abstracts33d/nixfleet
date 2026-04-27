@@ -1,0 +1,66 @@
+# Forgejo equivalent of .github/workflows/docs.yml.
+#
+# Builds the docs site (cargo doc + nixosOptionsDoc + mdbook) via
+# `nix run .#docs` and force-pushes the result to the `pages` branch
+# of this repo, which Forgejo Pages serves.
+#
+# Assumptions (adjust to lab setup if different):
+#   - A Forgejo runner is registered with label `docker`.
+#   - The runner can pull `nixos/nix:latest`.
+#   - Auto-provisioned `secrets.GITEA_TOKEN` (also exposed as
+#     `github.token` for compat) has push to this repo.
+#   - Forgejo Pages is enabled and serves the `pages` branch.
+
+name: Deploy Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/mdbook/**"
+      - "modules/options-doc.nix"
+      - "modules/rust-packages.nix"
+      - "rfcs/**"
+      - "flake.nix"
+      - "flake.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: docker
+    container:
+      image: nixos/nix:latest
+    steps:
+      - name: Enable flakes
+        run: |
+          mkdir -p /etc/nix
+          echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build docs
+        run: nix run .#docs
+
+      - name: Publish to pages branch
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd docs/mdbook/book
+          git init -q -b pages
+          git config user.email "ci@lab.internal"
+          git config user.name "Forgejo CI"
+          git add -A
+          git commit -q -m "deploy: ${SHA:0:8}"
+          host="${SERVER#https://}"
+          git push --force \
+            "https://ci:${TOKEN}@${host}/${REPO}.git" \
+            pages

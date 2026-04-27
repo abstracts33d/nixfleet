@@ -5,6 +5,14 @@ on:
     branches: [main]
     paths:
       - "docs/mdbook/**"
+      - "modules/options-doc.nix"
+      - "modules/rust-packages.nix"
+      - "rfcs/**"
+      - "flake.nix"
+      - "flake.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
   workflow_dispatch:
 
 permissions:
@@ -25,12 +33,12 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
-      - name: Build mdbook
-        run: nix shell nixpkgs#mdbook -c mdbook build docs/mdbook
+      - name: Build docs
+        run: nix run .#docs
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: result-docs
+          path: docs/mdbook/book
 
   deploy:
     needs: build
