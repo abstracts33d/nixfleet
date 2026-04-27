@@ -22,11 +22,11 @@
     };
     userName = lib.mkOption {
       type = lib.types.str;
-      default =
-        if config ? nixfleet.operators._primaryName
-        then config.nixfleet.operators._primaryName
-        else throw "hostSpec.userName: set explicitly or define nixfleet.operators";
-      description = "Primary user name. Auto-derived from nixfleet.operators.primaryUser when operators scope is active.";
+      description = ''
+        Primary user name on this host. Set explicitly, or populated by
+        the operators scope (`nixfleet-scopes.scopes.operators`) from
+        its own `nixfleet.operators.primaryUser` namespace.
+      '';
     };
     home = lib.mkOption {
       type = lib.types.str;
@@ -66,6 +66,18 @@
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Path to hashed password file for root. Null = no managed password.";
+    };
+
+    rootSshKeys = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      description = ''
+        SSH public keys authorized for root login. Empty list = no
+        managed root keys. Populated either by hand on hosts with no
+        operators scope, or automatically by the operators scope
+        (`nixfleet-scopes.scopes.operators`) from
+        `nixfleet.operators.rootSshKeys`.
+      '';
     };
 
     # --- Networking ---

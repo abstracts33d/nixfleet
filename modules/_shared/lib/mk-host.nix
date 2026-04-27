@@ -40,14 +40,14 @@
   microvmHostModule = ../../scopes/nixfleet/_microvm-host.nix;
   operatorModule = ../../scopes/nixfleet/_operator.nix;
 
-  # Framework-level scopes absorbed from former nixfleet-scopes.
+  # Framework-level scope absorbed from former nixfleet-scopes.
   # `_impermanence.nix` declares + wires `nixfleet.impermanence.*` so
   # nixfleet's own service modules can contribute to environment.persistence.
-  # `_operators.nix` declares the `nixfleet.operators.*` schema referenced
-  # by core/_nixos.nix and host-spec; user creation implementation stays in
-  # nixfleet-scopes for fleets that opt into it.
+  # The operators schema is *not* in the framework — it lives in
+  # nixfleet-scopes/modules/scopes/operators/. The framework reads
+  # only `hostSpec.{userName, rootSshKeys}`; the operators scope (when
+  # imported) populates those fields from its own option tree.
   impermanenceModule = ../../scopes/nixfleet/_impermanence.nix;
-  operatorsModule = ../../scopes/nixfleet/_operators.nix;
 
   isDarwinPlatform = platform:
     builtins.elem platform ["aarch64-darwin" "x86_64-darwin"];
@@ -89,9 +89,11 @@ in
     # `lib.mkIf false`. The module declares the option (via the upstream
     # `impermanence` flake input) and is inert until
     # `nixfleet.impermanence.enable = true`, so the cost is zero.
-    # `_operators.nix` is auto-imported for the same reason — core
-    # modules read `config.nixfleet.operators.*` for the primary user
-    # and root SSH keys, so the schema must always exist.
+    #
+    # The framework reads only `hostSpec.{userName, rootSshKeys}` for
+    # primary-user identity and root SSH access. The operators scope
+    # (in nixfleet-scopes) populates those fields when imported; bare
+    # fleets without the scope set them directly.
     frameworkNixosModules =
       [
         {nixpkgs.hostPlatform = platform;}
@@ -100,7 +102,6 @@ in
         # Override hostName without mkDefault (must match)
         {hostSpec.hostName = hostName;}
         impermanenceModule
-        operatorsModule
         coreNixos
         agentModule
         controlPlaneModule
@@ -136,7 +137,6 @@ in
       {hostSpec = lib.mapAttrs (_: v: lib.mkDefault v) effectiveHostSpec;}
       {hostSpec.hostName = hostName;}
       {hostSpec.isDarwin = true;}
-      operatorsModule
       coreDarwin
       agentDarwinModule
       operatorModule

@@ -56,7 +56,7 @@
         file = ./scopes/nixfleet/_control-plane.nix;
       }
       {
-        heading = "Operators — `nixfleet.operators.*`";
+        heading = "Operator workstation tooling — `nixfleet.operator.*`";
         file = ./scopes/nixfleet/_operator.nix;
       }
       {

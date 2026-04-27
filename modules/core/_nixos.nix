@@ -90,15 +90,13 @@ in {
   };
 
   # --- authorized_keys for root (identity-level access for deploys) ---
-  # Root gets keys from `nixfleet.operators.rootSshKeys` - an explicit list
-  # set by the fleet (typically seeded from admin operator keys via
-  # `nixfleet.operators._adminSshKeys` in nixfleet-scopes). When no
-  # operators scope is active (e.g. bare edge hosts), root falls back to
-  # no managed keys - the consuming fleet must wire them directly.
+  # Read from `hostSpec.rootSshKeys` so the framework stays decoupled
+  # from the operators-scope namespace. Fleets that use the operators
+  # scope have it populate `hostSpec.rootSshKeys` from the
+  # `nixfleet.operators.users.<name>` declarations; fleets that wire
+  # root keys directly just set `hostSpec.rootSshKeys` themselves.
   users.users.root = {
-    openssh.authorizedKeys.keys =
-      lib.mkIf (config ? nixfleet.operators.rootSshKeys)
-      config.nixfleet.operators.rootSshKeys;
+    openssh.authorizedKeys.keys = hS.rootSshKeys;
     hashedPasswordFile =
       lib.mkIf (hS.rootHashedPasswordFile != null)
       hS.rootHashedPasswordFile;

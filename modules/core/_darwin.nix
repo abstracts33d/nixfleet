@@ -116,14 +116,10 @@ in {
       '';
 
       # --- identity pass-through ---
-      # hS.userName derives from nixfleet.operators._primaryName when the
-      # operators Darwin scope (nixfleet-scopes.scopes.operatorsDarwin or
-      # nixfleet-scopes.darwinModules.operators) is active. Without it,
-      # consumers must set hostSpec.userName explicitly (as darwin-agent-test
-      # does in fleet.nix). Auto-importing the operators Darwin scope here
-      # is a consumer responsibility - Darwin fleets add it via their mkHost
-      # modules list, unlike NixOS where the impermanence scope is
-      # auto-imported by mkHost for service-module option compatibility.
+      # `hostSpec.userName` is set either by the consumer directly or
+      # by the operators scope (in nixfleet-scopes) when imported.
+      # Framework reads only `hostSpec.*` — see modules/_shared/
+      # host-spec-module.nix.
       system.stateVersion = lib.mkDefault 4;
       system.checks.verifyNixPath = false;
       system.primaryUser = "${hS.userName}";
