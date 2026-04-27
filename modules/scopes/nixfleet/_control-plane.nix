@@ -395,9 +395,10 @@ in {
       networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [listenPort];
     })
 
-    # Impermanence: persist CP state across reboots.
-    (lib.mkIf (cfg.enable && (config.nixfleet.impermanence.enable or false)) {
-      environment.persistence."/persist".directories = ["/var/lib/nixfleet-cp"];
+    # Persistence: contribute the CP state dir to the framework
+    # persistence list. The active implementation reads the list.
+    (lib.mkIf cfg.enable {
+      nixfleet.persistence.directories = ["/var/lib/nixfleet-cp"];
     })
   ];
 }

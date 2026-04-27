@@ -40,14 +40,17 @@
   microvmHostModule = ../../scopes/nixfleet/_microvm-host.nix;
   operatorModule = ../../scopes/nixfleet/_operator.nix;
 
-  # Framework-level scope absorbed from former nixfleet-scopes.
-  # `_impermanence.nix` declares + wires `nixfleet.impermanence.*` so
-  # nixfleet's own service modules can contribute to environment.persistence.
+  # Framework-level persistence schema (pure schema, no impl).
+  # Auto-imported so nixfleet's service modules can contribute to
+  # `nixfleet.persistence.directories` via standard option merging.
+  # The actual persistence implementation (impermanence flake bind-
+  # mounts, ZFS rollback, snapper, …) lives in `nixfleet-scopes/
+  # modules/scopes/persistence/*`; consumer fleets import exactly one.
   # The operators schema is *not* in the framework — it lives in
   # nixfleet-scopes/modules/scopes/operators/. The framework reads
   # only `hostSpec.{userName, rootSshKeys}`; the operators scope (when
   # imported) populates those fields from its own option tree.
-  impermanenceModule = ../../scopes/nixfleet/_impermanence.nix;
+  persistenceModule = ../../scopes/nixfleet/_persistence.nix;
 
   isDarwinPlatform = platform:
     builtins.elem platform ["aarch64-darwin" "x86_64-darwin"];
@@ -82,13 +85,15 @@ in
     # Mechanism only: core system config + hostSpec + nixfleet service
     # modules. No HM injection, no disko auto-import.
     #
-    # `_impermanence.nix` is auto-imported because nixfleet's own
+    # `_persistence.nix` is auto-imported because nixfleet's own
     # internal service modules (agent, control-plane, microvm-host)
-    # conditionally contribute to `environment.persistence`, and the
-    # NixOS module system validates option paths even inside
-    # `lib.mkIf false`. The module declares the option (via the upstream
-    # `impermanence` flake input) and is inert until
-    # `nixfleet.impermanence.enable = true`, so the cost is zero.
+    # conditionally contribute to `nixfleet.persistence.directories`,
+    # and the NixOS module system validates option paths even inside
+    # `lib.mkIf false`. The module declares the schema only — pure
+    # data — so nothing materialises unless the consumer also imports
+    # a persistence implementation (e.g.
+    # `nixfleet-scopes.scopes.persistence.impermanence`) that reads
+    # the schema and applies its mechanism.
     #
     # The framework reads only `hostSpec.{userName, rootSshKeys}` for
     # primary-user identity and root SSH access. The operators scope
@@ -101,7 +106,7 @@ in
         {hostSpec = lib.mapAttrs (_: v: lib.mkDefault v) effectiveHostSpec;}
         # Override hostName without mkDefault (must match)
         {hostSpec.hostName = hostName;}
-        impermanenceModule
+        persistenceModule
         coreNixos
         agentModule
         controlPlaneModule

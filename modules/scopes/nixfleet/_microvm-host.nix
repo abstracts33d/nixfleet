@@ -92,10 +92,10 @@ in {
       };
     })
 
-    # Impermanence: persist microVM state. Outer mkIf so
-    # environment.persistence isn't referenced on non-impermanent hosts.
-    (lib.mkIf (cfg.enable && (config.nixfleet.impermanence.enable or false)) {
-      environment.persistence."/persist".directories = ["/var/lib/microvms"];
+    # Persistence: contribute microVM registry dir to the framework
+    # persistence list. The active implementation reads the list.
+    (lib.mkIf cfg.enable {
+      nixfleet.persistence.directories = ["/var/lib/microvms"];
     })
   ];
 }

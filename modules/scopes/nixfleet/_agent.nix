@@ -196,10 +196,13 @@ in {
       };
     })
 
-    # Impermanence: persist agent state across reboots. Outer mkIf so
-    # environment.persistence isn't referenced on non-impermanent hosts.
-    (lib.mkIf (cfg.enable && (config.nixfleet.impermanence.enable or false)) {
-      environment.persistence."/persist".directories = ["/var/lib/nixfleet"];
+    # Persistence: contribute the agent's state dir to the
+    # framework-level persistence list. The active persistence
+    # implementation (impermanence / ZFS rollback / …) reads
+    # `nixfleet.persistence.directories` and applies its mechanism;
+    # this module just declares the need.
+    (lib.mkIf cfg.enable {
+      nixfleet.persistence.directories = ["/var/lib/nixfleet"];
     })
   ];
 }
