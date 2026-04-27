@@ -39,31 +39,16 @@
       meta.description = "Harness CLI — verify a signed fleet.resolved against a trust.json";
     };
 
-    # Doc pipeline using STANDARD tooling — `cargo doc` for the
-    # Rust API reference, `mdbook build` for the curated narrative
-    # + RFCs.
-    #
-    # Why standard tools rather than a custom extractor: rustdoc
-    # already gives us type signatures, struct field docs, enum
-    # variant docs, cross-references resolved, source links, search
-    # index, and IDE integration — for zero LOC on our side. The
-    # earlier `nixfleet-docgen` crate tried to build a worse
-    # version and was deleted.
-    #
-    # NixOS module options: deferred. The natural tool is
-    # `nixosOptionsDoc` (used by nixpkgs for the NixOS option
-    # reference) but our scope modules reference `inputs.self.
-    # packages.<system>.…`, so they need a constructed NixOS-like
-    # eval context to render cleanly. Worth doing in a focused
-    # follow-up; for now the option docs live in the modules' own
-    # `description` strings, browsable via the source files
-    # directly.
+    # Doc pipeline using STANDARD tooling — `cargo doc` for the Rust
+    # API reference, `nixosOptionsDoc` for the NixOS option reference
+    # (see options-doc.nix), `mdbook build` for the curated narrative
+    # + RFCs. Each tool produces what it natively renders best.
     apps.docs = {
       type = "app";
       program = let
         script = pkgs.writeShellApplication {
           name = "nixfleet-docs";
-          runtimeInputs = [pkgs.cargo pkgs.rustc pkgs.coreutils pkgs.mdbook];
+          runtimeInputs = [pkgs.cargo pkgs.rustc pkgs.coreutils pkgs.mdbook pkgs.nix];
           text = ''
             set -euo pipefail
             repo_root="''${1:-$PWD}"
@@ -72,6 +57,11 @@
             (cd "$repo_root" && \
               RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" \
               cargo doc --workspace --document-private-items --no-deps)
+
+            echo "==> nix build .#options-doc (nixosOptionsDoc → markdown)"
+            options_md=$(cd "$repo_root" && nix build --no-link --print-out-paths .#options-doc)
+            cp -f "$options_md" "$repo_root/docs/mdbook/src/options.md"
+            chmod u+w "$repo_root/docs/mdbook/src/options.md"
 
             echo "==> copying RFCs into mdbook"
             mkdir -p "$repo_root/docs/mdbook/src/rfcs"
@@ -90,12 +80,12 @@
 
             echo
             echo "Done. Outputs:"
-            echo "  - docs/mdbook/book/         (mdbook: curated guides + RFCs)"
+            echo "  - docs/mdbook/book/         (mdbook: curated guides + RFCs + options)"
             echo "  - docs/mdbook/book/api/     (cargo doc: Rust API reference)"
           '';
         };
       in "${script}/bin/nixfleet-docs";
-      meta.description = "Build docs: cargo doc + mdbook (full publishable site)";
+      meta.description = "Build docs: cargo doc + nixosOptionsDoc + mdbook";
     };
 
     devShells.default = craneLib.devShell {

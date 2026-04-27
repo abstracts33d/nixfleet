@@ -11,6 +11,7 @@
 # Reference
 
 - [Rust API (cargo doc)](api.md)
+- [Module options (nixosOptionsDoc)](options.md)
 - [RFCs](rfcs/index.md)
   - [RFC-0001 — Declarative fleet topology](rfcs/0001-fleet-nix.md)
   - [RFC-0002 — Rollout execution engine](rfcs/0002-reconciler.md)

@@ -15,3 +15,4 @@ TODO.md
 # only index.md is hand-authored and tracked.
 /docs/mdbook/book/
 /docs/mdbook/src/rfcs/0*.md
+/docs/mdbook/src/options.md
