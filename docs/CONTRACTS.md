@@ -282,6 +282,8 @@ The following are NOT contracts — they may change without coordination:
 
 If something that should be a contract is drifting, propose it as an addition to this document via PR — do not unilaterally stabilize it in code.
 
+> **Implementation status disclosure.** Some contracts in §I — notably parts of `CheckinResponse.target` (RFC-0003 §4.1) and the soak-timer / rollback-and-halt semantics in the reconciler (RFC-0002 §3.1, §5.1) — are **schema-honored but behavior-partial**. The framework declares the wire shape and the option surface, but specific code paths are deferred. See [`docs/roadmap/0002-v0.2-completeness-gaps.md`](roadmap/0002-v0.2-completeness-gaps.md) for the full audit and remediation cost estimates. This disclosure is not a contract weakening — the listed contracts remain authoritative and additive — but it makes explicit that "passes verification" does not yet mean "exercises every documented field."
+
 ---
 
 ## VIII. Amendment procedure
