@@ -120,20 +120,51 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
     }
 
     // Step 2: switch.
-    let switch_status = Command::new("nixos-rebuild")
-        .arg("switch")
-        .arg("--no-flake")
-        .arg("--system")
+    //
+    // Direct `nix-env --profile … --set` + `<path>/bin/switch-to-
+    // configuration switch`. Earlier shape was `nixos-rebuild switch
+    // --system <path>`, but `nixos-rebuild-ng` (the Python rewrite
+    // shipped with NixOS 26.05) renamed `--system` to `--store-path`
+    // and adds a self-evaluation step that needs `<nixpkgs/nixos>`
+    // on NIX_PATH (the agent doesn't have it). Calling
+    // switch-to-configuration directly skips the wrapper entirely:
+    // no flag-rename surface, no eval of nixpkgs, no implicit
+    // bootloader fallback path. This is what nixos-rebuild itself
+    // calls under the hood — the agent's job is just to point the
+    // system profile at the new closure and run its activation
+    // script. Caught on lab when the agent's first real activation
+    // attempt errored with `unrecognized arguments: --system …`.
+    let set_status = Command::new("nix-env")
+        .arg("--profile")
+        .arg("/nix/var/nix/profiles/system")
+        .arg("--set")
         .arg(&store_path)
         .status()
         .await
-        .with_context(|| "spawn nixos-rebuild switch")?;
+        .with_context(|| "spawn nix-env --set")?;
+
+    if !set_status.success() {
+        tracing::error!(
+            target_closure = %target.closure_hash,
+            exit_code = ?set_status.code(),
+            "agent: nix-env --set failed; not running switch-to-configuration",
+        );
+        return Ok(ActivationOutcome::SwitchFailed {
+            exit_status: set_status,
+        });
+    }
+
+    let switch_status = Command::new(format!("{store_path}/bin/switch-to-configuration"))
+        .arg("switch")
+        .status()
+        .await
+        .with_context(|| format!("spawn {store_path}/bin/switch-to-configuration switch"))?;
 
     if !switch_status.success() {
         tracing::error!(
             target_closure = %target.closure_hash,
             exit_code = ?switch_status.code(),
-            "agent: nixos-rebuild switch failed",
+            "agent: switch-to-configuration failed",
         );
         return Ok(ActivationOutcome::SwitchFailed {
             exit_status: switch_status,
@@ -230,24 +261,50 @@ async fn read_current_system_basename() -> Result<String> {
     Ok(basename)
 }
 
-/// Local rollback: `nixos-rebuild --rollback`. Reverts to the
-/// previous boot generation. Used when:
+/// Local rollback: revert the system profile one generation back and
+/// run the previous closure's `switch-to-configuration switch`.
+/// Used when:
 /// - `activate()` returned a non-success outcome that requires
 ///   rollback (`SwitchFailed`, `VerifyMismatch`).
 /// - The agent's confirm window expired before the CP acknowledged
 ///   the activation (magic rollback, RFC-0003 §4.2).
 ///
+/// `nix-env --rollback` flips the system profile symlink to the
+/// previous generation; `/run/current-system/bin/switch-to-
+/// configuration switch` then re-runs the activation script of the
+/// (now previous) closure. Bypasses `nixos-rebuild` entirely — the
+/// new `nixos-rebuild-ng` (Python rewrite shipped in 26.05) tries
+/// to evaluate `<nixpkgs/nixos>` even on `--rollback`, which fails
+/// in the agent's NIX_PATH-less sandbox.
+///
 /// Idempotent — running rollback twice in a row reverts twice. The
 /// caller is expected to invoke this exactly once per failed
 /// activation.
 pub async fn rollback() -> Result<ExitStatus> {
-    tracing::warn!("agent: triggering local rollback (nixos-rebuild --rollback)");
-    let status = Command::new("nixos-rebuild")
+    tracing::warn!("agent: triggering local rollback (nix-env --rollback + switch-to-configuration)");
+    let env_status = Command::new("nix-env")
+        .arg("--profile")
+        .arg("/nix/var/nix/profiles/system")
         .arg("--rollback")
+        .status()
+        .await
+        .with_context(|| "spawn nix-env --rollback")?;
+    if !env_status.success() {
+        tracing::error!(
+            exit_code = ?env_status.code(),
+            "agent: nix-env --rollback failed; not running switch-to-configuration",
+        );
+        return Ok(env_status);
+    }
+
+    // /run/current-system now points at the rolled-back generation
+    // (nix-env --rollback updated the system profile symlink, and
+    // /run/current-system tracks the profile target).
+    let status = Command::new("/run/current-system/bin/switch-to-configuration")
         .arg("switch")
         .status()
         .await
-        .with_context(|| "spawn nixos-rebuild --rollback switch")?;
+        .with_context(|| "spawn /run/current-system/bin/switch-to-configuration switch")?;
     if status.success() {
         tracing::info!("agent: rollback succeeded");
     } else {

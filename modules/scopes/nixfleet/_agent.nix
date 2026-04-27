@@ -121,22 +121,26 @@ in {
         startLimitIntervalSec = 0;
 
         # Agent shells out to:
-        # - nix-store --realise (Phase 4 closure-hash verify)
-        # - nixos-rebuild switch --system <path> (activation)
-        # - nixos-rebuild --rollback (on activation/verify failure)
+        # - `nix-store --realise <path>` (Phase 4 closure-hash verify
+        #   pre-switch, fetches via attic + checks substituter sigs)
+        # - `nix-env --profile /nix/var/nix/profiles/system --set <path>`
+        #   (point system profile at the new closure)
+        # - `<store-path>/bin/switch-to-configuration switch` (run the
+        #   target closure's own activation script — absolute path, no
+        #   PATH dep)
+        # - `nix-env --profile … --rollback` + the symmetric
+        #   switch-to-configuration on rollback
         #
-        # `config.system.build.nixos-rebuild` ties the agent's
-        # nixos-rebuild to the same release as the NixOS system it's
-        # running on, so the binary's expected switch-to-configuration
-        # ABI stays in sync. Without it, activation fails at spawn
-        # with `cannot run nixos-rebuild: No such file or directory`
-        # and main.rs treats it as a non-rollback error (caught on
-        # lab during the first real Phase 4 dispatch round-trip).
-        path = [
-          config.nix.package
-          pkgs.systemd
-          config.system.build.nixos-rebuild
-        ];
+        # Bypasses `nixos-rebuild` entirely. The agent doesn't need it
+        # because the closure is pre-built (CI built + signed it, the
+        # CP shipped its hash, the agent just realises and activates).
+        # Sidesteps `nixos-rebuild-ng`'s evolving CLI surface — the
+        # 26.05 Python rewrite renamed `--system` to `--store-path` and
+        # tries to evaluate `<nixpkgs/nixos>` on `--rollback`, both of
+        # which broke the agent on lab during the first real Phase 4
+        # dispatch round-trip. switch-to-configuration's contract is
+        # stable across NixOS releases.
+        path = [config.nix.package pkgs.systemd];
 
         environment = {
           # Nix writes its metadata cache (narinfo lookups, eval cache, etc.)
