@@ -121,6 +121,17 @@
     version = "0.2.0";
     cargoExtraArgs = "--workspace --locked";
   };
+
+  # cargo doc HTML for the whole workspace, built sandbox-pure via
+  # crane (shares cargoArtifacts with the binary builds). Consumed by
+  # `packages.docs-site` in modules/rust-packages.nix where it's
+  # composed with the mdbook output and the options reference.
+  cargoDocs = craneLib.cargoDoc (commonArgs
+    // {
+      src = workspaceSrc;
+      pname = "nixfleet-cargo-doc";
+      cargoDocExtraArgs = "--workspace --document-private-items --no-deps";
+    });
 in {
   packages = {
     inherit
@@ -132,4 +143,5 @@ in {
       ;
   };
   checks = {inherit workspace-tests;};
+  inherit cargoDocs;
 }

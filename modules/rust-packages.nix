@@ -2,12 +2,46 @@
   perSystem = {
     pkgs,
     lib,
+    config,
     ...
   }: let
     craneLib = inputs.crane.mkLib pkgs;
     workspace = import ../crane-workspace.nix {inherit lib craneLib;};
   in {
-    inherit (workspace) packages checks;
+    inherit (workspace) checks;
+    packages =
+      workspace.packages
+      // {
+        # Fully-built static site: mdbook (curated guide + RFCs +
+        # nixosOptionsDoc) with the cargo doc Rust API reference
+        # mounted at `api/`. Pure derivation, no source-tree mutation —
+        # consumers (fleet's caddy vhost, GH Pages CI) reference it as
+        # a /nix/store path. Mirrors what `apps.docs` writes into the
+        # working tree, but produces a single immutable output.
+        docs-site = pkgs.runCommand "nixfleet-docs-site" {
+          nativeBuildInputs = [pkgs.mdbook];
+        } ''
+          cp -r ${inputs.self} src
+          chmod -R u+w src
+          cd src
+
+          cp ${config.packages.options-doc} docs/mdbook/src/options.md
+
+          mkdir -p docs/mdbook/src/rfcs
+          cp rfcs/*.md docs/mdbook/src/rfcs/
+
+          mdbook build docs/mdbook
+
+          mkdir -p docs/mdbook/book/api
+          if [ -d ${workspace.cargoDocs}/share/doc ]; then
+            cp -r ${workspace.cargoDocs}/share/doc/. docs/mdbook/book/api/
+          else
+            cp -r ${workspace.cargoDocs}/. docs/mdbook/book/api/
+          fi
+
+          cp -r docs/mdbook/book $out
+        '';
+      };
 
     apps.agent = {
       type = "app";
