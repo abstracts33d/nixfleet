@@ -31,11 +31,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::{FleetResolved, TrustConfig, TrustedPubkey};
+use nixfleet_proto::FleetResolved;
 use tempfile::NamedTempFile;
 
 /// Hosts to release. Resolved against the consumer's flake at
@@ -52,6 +51,21 @@ pub enum HostsSpec {
 
 /// Configuration assembled from CLI flags. The library entry point
 /// `run(&config)` consumes this.
+///
+/// Speculative knobs deliberately not present (each landed during
+/// design, removed during the no-untested-code pass — re-add with
+/// tests when a real fleet exercises them):
+///   - `include_darwin`: orchestrating Darwin closure builds. Lives
+///     in the activation-backend roadmap (docs/roadmap/0001-...).
+///   - `jobs > 1`: parallel `nix build` orchestration via
+///     `std::thread::spawn`. Single-host build is fast enough on
+///     today's fleets; concurrency is tricky and was never run with
+///     N > 1.
+///   - `smoke_verify_pubkey`: full-signature smoke verify with an
+///     operator-supplied pubkey. Structural smoke verify (canonicalize
+///     round-trip + schema parse) covers the framework's invariants;
+///     full-sig is an operator-workflow concern and re-adds a wrapper
+///     around `verify_artifact` that needs its own test surface.
 #[derive(Debug, Clone)]
 pub struct ReleaseConfig {
     /// Path passed to `nix build` / `nix eval`. Defaults to `.`.
@@ -60,7 +74,6 @@ pub struct ReleaseConfig {
     /// `FleetResolved`-shaped JSON. Default `.#fleet.resolved`.
     pub fleet_resolved_attr: String,
     pub hosts: HostsSpec,
-    pub include_darwin: bool,
     /// Shell command run once per built closure. Receives env
     /// `NIXFLEET_HOST`, `NIXFLEET_PATH`, `NIXFLEET_CLOSURE_HASH`.
     pub push_cmd: Option<String>,
@@ -78,12 +91,11 @@ pub struct ReleaseConfig {
     pub commit_template: String,
     pub git_user_name: Option<String>,
     pub git_user_email: Option<String>,
-    pub jobs: usize,
+    /// Toggle the structural smoke verify (canonicalize round-trip
+    /// + schema parse + non-zero signature length). Default on; off
+    /// for offline test scenarios where the just-produced bytes
+    /// don't matter.
     pub smoke_verify: bool,
-    /// Optional file containing the raw public key bytes (algorithm-
-    /// specific encoding). When set, smoke-verify exercises full
-    /// signature verification; when unset, structural-only.
-    pub smoke_verify_pubkey: Option<PathBuf>,
     /// When set and the existing release file's closureHashes match
     /// the just-built hashes, reuse its `signedAt` instead of
     /// stamping a new one. Produces byte-stable releases on no-op
@@ -132,12 +144,11 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
 
     // ── 2. Build ────────────────────────────────────────────────
     let built = build_hosts(config, &hosts)?;
-    let total: usize = built.values().filter(|p| p.is_some()).count();
-    tracing::info!(built = total, total = hosts.len(), "build done");
+    tracing::info!(built = built.len(), total = hosts.len(), "build done");
 
     // ── 3. Push ─────────────────────────────────────────────────
     if let Some(cmd) = &config.push_cmd {
-        for (host, path) in built.iter().filter_map(|(h, p)| p.as_ref().map(|p| (h, p))) {
+        for (host, path) in built.iter() {
             let hash = closure_hash(path);
             push_one(cmd, host, path, &hash)?;
         }
@@ -149,7 +160,7 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
     // ── 5. Inject closureHashes ─────────────────────────────────
     let hashes: BTreeMap<String, String> = built
         .iter()
-        .filter_map(|(h, p)| p.as_ref().map(|p| (h.clone(), closure_hash(p))))
+        .map(|(h, p)| (h.clone(), closure_hash(p)))
         .collect();
     inject_closure_hashes(&mut resolved, &hashes);
 
@@ -181,7 +192,7 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
 
     // ── 9. Smoke verify ─────────────────────────────────────────
     if config.smoke_verify {
-        smoke_verify(canonical.as_bytes(), &sig_bytes, config.smoke_verify_pubkey.as_deref(), &config.signature_algorithm)?;
+        smoke_verify(canonical.as_bytes(), &sig_bytes)?;
     }
 
     // ── 10. Write release dir ───────────────────────────────────
@@ -229,28 +240,19 @@ fn validate_config(c: &ReleaseConfig) -> Result<()> {
     if c.sign_cmd.trim().is_empty() {
         bail!("--sign-cmd is required and cannot be empty");
     }
-    if c.jobs == 0 {
-        bail!("--jobs must be >= 1");
-    }
     Ok(())
 }
 
 // ─────────────────────────── enumerate ────────────────────────────
 
 fn enumerate_hosts(config: &ReleaseConfig) -> Result<Vec<String>> {
-    let nixos = list_attr(&config.flake_dir, "nixosConfigurations")?;
-    let darwin = if config.include_darwin {
-        list_attr(&config.flake_dir, "darwinConfigurations").unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let mut all: Vec<String> = nixos.into_iter().chain(darwin.into_iter()).collect();
-    all.sort();
-    all.dedup();
+    let mut nixos = list_attr(&config.flake_dir, "nixosConfigurations")?;
+    nixos.sort();
+    nixos.dedup();
 
     Ok(match &config.hosts {
-        HostsSpec::Auto => all,
-        HostsSpec::AutoExclude(exclude) => all
+        HostsSpec::Auto => nixos,
+        HostsSpec::AutoExclude(exclude) => nixos
             .into_iter()
             .filter(|h| !exclude.iter().any(|e| e == h))
             .collect(),
@@ -284,63 +286,21 @@ fn list_attr(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> {
 
 // ─────────────────────────── build ────────────────────────────────
 
-/// Returns map of host → built store path (None when build was
-/// attempted-but-not-applicable, e.g. Darwin host on Linux runner
-/// with `--include-darwin` set).
-fn build_hosts(config: &ReleaseConfig, hosts: &[String]) -> Result<BTreeMap<String, Option<PathBuf>>> {
+/// Sequential build. Each host's `nixosConfigurations.<host>.config.
+/// system.build.toplevel` is built and the resulting store path is
+/// captured. Failures abort the run before any push.
+///
+/// Parallel builds (`--jobs > 1`) and Darwin orchestration were
+/// dropped during the no-untested-code pass — re-add with tests
+/// when a real fleet needs them.
+fn build_hosts(config: &ReleaseConfig, hosts: &[String]) -> Result<BTreeMap<String, PathBuf>> {
     let mut out = BTreeMap::new();
-
-    // Determine which attr-set each host belongs to.
-    let nixos_set: Vec<String> = list_attr(&config.flake_dir, "nixosConfigurations").unwrap_or_default();
-
-    if config.jobs > 1 {
-        // Bounded parallel via std::thread + crossbeam-channel-style
-        // semaphore. Kept simple: a chunked join_all.
-        let chunks = hosts.chunks(config.jobs);
-        for chunk in chunks {
-            let mut handles = Vec::with_capacity(chunk.len());
-            for host in chunk {
-                let host = host.clone();
-                let attr = if nixos_set.contains(&host) {
-                    format!(".#nixosConfigurations.{host}.config.system.build.toplevel")
-                } else {
-                    format!(".#darwinConfigurations.{host}.config.system.build.toplevel")
-                };
-                let dir = config.flake_dir.clone();
-                handles.push(std::thread::spawn(move || -> (String, Result<PathBuf>) {
-                    let p = build_one(&dir, &attr).map(PathBuf::from);
-                    (host, p)
-                }));
-            }
-            for h in handles {
-                let (host, res) = h.join().map_err(|e| anyhow!("build thread panic: {e:?}"))?;
-                let path = res.with_context(|| format!("build host {host}"))?;
-                tracing::info!(host = %host, path = %path.display(), "built");
-                out.insert(host, Some(path));
-            }
-        }
-    } else {
-        for host in hosts {
-            let attr = if nixos_set.contains(host) {
-                format!(".#nixosConfigurations.{host}.config.system.build.toplevel")
-            } else {
-                format!(".#darwinConfigurations.{host}.config.system.build.toplevel")
-            };
-            match build_one(&config.flake_dir, &attr) {
-                Ok(path) => {
-                    tracing::info!(host = %host, path, "built");
-                    out.insert(host.clone(), Some(PathBuf::from(path)));
-                }
-                Err(err) if !nixos_set.contains(host) => {
-                    // Darwin host that can't build on this runner —
-                    // proceed with closureHash=null (matches the
-                    // legacy YAML behaviour for cross-platform hosts).
-                    tracing::warn!(host = %host, error = %err, "darwin host build skipped");
-                    out.insert(host.clone(), None);
-                }
-                Err(err) => return Err(err).with_context(|| format!("build host {host}")),
-            }
-        }
+    for host in hosts {
+        let attr = format!(".#nixosConfigurations.{host}.config.system.build.toplevel");
+        let path = build_one(&config.flake_dir, &attr)
+            .with_context(|| format!("build host {host}"))?;
+        tracing::info!(host = %host, path, "built");
+        out.insert(host.clone(), PathBuf::from(path));
     }
     Ok(out)
 }
@@ -533,13 +493,19 @@ fn sign(cmd: &str, canonical: &[u8]) -> Result<Vec<u8>> {
 
 // ─────────────────────────── smoke verify ─────────────────────────
 
-fn smoke_verify(
-    canonical: &[u8],
-    signature: &[u8],
-    pubkey_path: Option<&Path>,
-    signature_algorithm: &str,
-) -> Result<()> {
-    // Structural-only first: serde round-trip + canonicalize-stable.
+/// Structural smoke verify: confirm the produced (canonical, sig)
+/// pair are at least *shape-correct* before publishing — parse the
+/// canonical bytes back into `FleetResolved`, canonicalize again, and
+/// require byte-stable round-trip. Catches schema drift, JCS bugs,
+/// and zero-byte signatures.
+///
+/// Cryptographic verification with a real pubkey was a flag here
+/// (`--smoke-verify-pubkey`); dropped during the no-untested-code
+/// pass. The underlying `verify_artifact` in `nixfleet_reconciler`
+/// is heavily tested already; if an operator wants to spot-check
+/// signatures they invoke `nixfleet-verify-artifact` directly
+/// post-release.
+fn smoke_verify(canonical: &[u8], signature: &[u8]) -> Result<()> {
     let parsed: FleetResolved = serde_json::from_slice(canonical)
         .context("smoke verify: canonical bytes don't parse as FleetResolved")?;
     let recanonical = canonicalize_resolved(&parsed)
@@ -551,38 +517,8 @@ fn smoke_verify(
         bail!("smoke verify: empty signature");
     }
 
-    if let Some(pubkey_path) = pubkey_path {
-        let pubkey =
-            std::fs::read_to_string(pubkey_path).context("read smoke-verify pubkey")?;
-        let trust = TrustConfig {
-            schema_version: 1,
-            ci_release_key: nixfleet_proto::KeySlot {
-                current: Some(TrustedPubkey {
-                    algorithm: signature_algorithm.to_string(),
-                    public: pubkey.trim().to_string(),
-                }),
-                previous: None,
-                reject_before: None,
-            },
-            cache_keys: vec![],
-            org_root_key: None,
-        };
-        let trusted_keys = trust.ci_release_key.active_keys();
-        nixfleet_reconciler::verify_artifact(
-            canonical,
-            signature,
-            &trusted_keys,
-            Utc::now(),
-            Duration::from_secs(60 * 60 * 24 * 365 * 10), // generous freshness for smoke
-            None,
-        )
-        .map_err(|e| anyhow!("smoke verify (with pubkey) rejected: {e:?}"))?;
-    }
-
     tracing::info!(
         sig_len = signature.len(),
-        algorithm = %signature_algorithm,
-        full_check = pubkey_path.is_some(),
         "smoke verify ok"
     );
     Ok(())
@@ -855,7 +791,6 @@ mod tests {
             flake_dir: PathBuf::from("."),
             fleet_resolved_attr: ".#fleet.resolved".into(),
             hosts: HostsSpec::Auto,
-            include_darwin: false,
             push_cmd: None,
             sign_cmd: "true".into(),
             signature_algorithm: "ed25519".into(),
@@ -866,9 +801,7 @@ mod tests {
             commit_template: "release {sha:0:8}".into(),
             git_user_name: None,
             git_user_email: None,
-            jobs: 1,
             smoke_verify: true,
-            smoke_verify_pubkey: None,
             reuse_unchanged_signature: false,
         }
     }

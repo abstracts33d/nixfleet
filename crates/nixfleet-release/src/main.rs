@@ -32,11 +32,6 @@ struct Cli {
     #[arg(long, default_value = "auto")]
     hosts: String,
 
-    /// Also build `darwinConfigurations.*` hosts. Default off
-    /// because Linux runners can't cross-build Darwin.
-    #[arg(long, env = "NIXFLEET_INCLUDE_DARWIN")]
-    include_darwin: bool,
-
     /// Path to the consumer flake. Defaults to cwd.
     #[arg(long, default_value = ".")]
     build_flake: PathBuf,
@@ -101,23 +96,12 @@ struct Cli {
     #[arg(long, env = "NIXFLEET_GIT_USER_EMAIL")]
     git_user_email: Option<String>,
 
-    /// Build parallelism (cross-host). Default 1 — the nix daemon
-    /// already parallelizes within a build.
-    #[arg(long, default_value_t = 1)]
-    jobs: usize,
-
     /// Smoke-verify the (artifact, signature) pair before
     /// publishing. Catches "we just signed bytes the verifier
-    /// rejects." Default on.
+    /// rejects." Structural only — re-canonicalize round-trip +
+    /// schema parse + non-zero signature length. Default on.
     #[arg(long = "smoke-verify", default_value_t = true, action = clap::ArgAction::Set)]
     smoke_verify: bool,
-
-    /// Optional file containing the raw public key bytes
-    /// (algorithm-specific encoding). When set, smoke-verify
-    /// performs full signature verification; otherwise structural
-    /// only.
-    #[arg(long)]
-    smoke_verify_pubkey: Option<PathBuf>,
 
     /// When the existing release file's closureHashes match the
     /// just-built ones, reuse its `meta.signedAt` instead of
@@ -199,7 +183,6 @@ fn main() -> ExitCode {
         flake_dir: cli.build_flake,
         fleet_resolved_attr: cli.fleet_resolved_attr,
         hosts,
-        include_darwin: cli.include_darwin,
         push_cmd: cli.push_cmd,
         sign_cmd: cli.sign_cmd,
         signature_algorithm: cli.signature_algorithm,
@@ -210,9 +193,7 @@ fn main() -> ExitCode {
         commit_template: cli.commit_template,
         git_user_name: cli.git_user_name,
         git_user_email: cli.git_user_email,
-        jobs: cli.jobs,
         smoke_verify: cli.smoke_verify,
-        smoke_verify_pubkey: cli.smoke_verify_pubkey,
         reuse_unchanged_signature: cli.reuse_unchanged_signature,
     };
 
