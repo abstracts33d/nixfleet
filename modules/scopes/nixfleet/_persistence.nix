@@ -47,7 +47,7 @@ in {
     };
 
     directories = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
+      type = lib.types.listOf (lib.types.either lib.types.str (lib.types.attrsOf lib.types.anything));
       default = [];
       description = ''
         Directories that must survive across reboots. Framework
@@ -56,18 +56,29 @@ in {
         scopes append app-specific paths. The active persistence
         implementation reads this list and applies its mechanism
         (impermanence bind-mounts, ZFS subvol layout, etc.).
+
+        Entries may be plain strings (just the path) or attrsets
+        carrying additional metadata the impl can use:
+
+            { directory = "/var/lib/forgejo"; user = "forgejo";
+              group = "forgejo"; mode = "0750"; }
+
+        Plain strings are the common case. The impl scope is
+        responsible for understanding any richer shape; the
+        framework forwards the list opaquely.
       '';
       example = ["/var/lib/nixfleet" "/etc/nixos"];
     };
 
     files = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
+      type = lib.types.listOf (lib.types.either lib.types.str (lib.types.attrsOf lib.types.anything));
       default = [];
       description = ''
         Individual files that must survive across reboots.
         Counterpart to `directories` for impl mechanisms (notably
         impermanence) that distinguish file-level from
-        directory-level persistence.
+        directory-level persistence. Same string-or-attrset
+        shape as `directories`.
       '';
       example = ["/etc/machine-id"];
     };
