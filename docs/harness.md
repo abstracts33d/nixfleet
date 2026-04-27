@@ -85,11 +85,11 @@ default 256 MB per guest, a 16GB machine can host fleet-20 comfortably
   Swap once the v0.2 CP skeleton lands.
 - **Stub agent**: `nodes/agent.nix` is a oneshot curl + jq that emits
   `harness-agent-ok`. It does not yet use `services.nixfleet-agent` or
-  invoke Stream C's p256 verify path. Swap once the v0.2 agent skeleton
+  invoke the Rust runtime's p256 verify path. Swap once the v0.2 agent skeleton
   and signature-verify code land.
 - **No signature verification yet**: the fixture has
-  `meta.signatureAlgorithm: null`. Once Stream B signs artifacts and
-  Stream C verifies them, the agent stub becomes the wire-up point —
+  `meta.signatureAlgorithm: null`. Once the Nix layer signs artifacts and
+  the Rust runtime verifies them, the agent stub becomes the wire-up point —
   search for `TODO(5)` markers in `nodes/agent.nix`.
 - **Only `fleet-harness-smoke` is registered**: no canary, no rollback,
   no compliance, no freshness scenarios yet. Those are Checkpoint 2
@@ -99,13 +99,13 @@ default 256 MB per guest, a 16GB machine can host fleet-20 comfortably
 
 ## Where this plugs into the v0.2 cycle
 
-Stream A signs `fleet.resolved.json` in lab CI; Stream C's reconciler
+Lab CI signs `fleet.resolved.json`; the Rust runtime's reconciler
 verifies the signature. The first real Checkpoint 2 end-to-end test
 looks like:
 
-1. Stream A's sign job writes a signed artifact matching the shape in
+1. The CI sign job writes a signed artifact matching the shape in
    `tests/harness/fixtures/fleet-resolved.json`.
-2. Stream C's agent skeleton replaces `tests/harness/nodes/agent.nix`'s
+2. The agent skeleton replaces `tests/harness/nodes/agent.nix`'s
    curl + jq with a real reconciler that calls the p256 verify path.
 3. The `fleet-harness-smoke` scenario asserts the agent accepts the
    signed artifact; a twin scenario asserts it refuses a tampered one.

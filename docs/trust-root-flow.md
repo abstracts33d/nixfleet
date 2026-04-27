@@ -1,6 +1,6 @@
 # Trust-root data flow: `fleet.nix` → CP `verify_artifact`
 
-Describes how Stream B's declarative `nixfleet.trust.*` declarations travel from `fleet.nix` to Stream C's `verify_artifact` call site at the control-plane runtime. Load-bearing Phase 2 design — this wiring is what makes CI-signed `fleet.resolved` actually get verified.
+Describes how the Nix layer's declarative `nixfleet.trust.*` declarations travel from `fleet.nix` to the Rust runtime's `verify_artifact` call site at the control-plane runtime. Load-bearing Phase 2 design — this wiring is what makes CI-signed `fleet.resolved` actually get verified.
 
 Status: **proposed**, not yet implemented. Lands with the Phase 2 CP integration work.
 
@@ -9,7 +9,7 @@ Cross-references: ARCHITECTURE.md §1.4 (control plane role), CONTRACTS.md §II 
 ## 1. Flow at a glance
 
 ```
-fleet.nix  (Stream B — declarative)
+fleet.nix  (Nix layer — declarative)
   nixfleet.trust.ciReleaseKey.current = { algorithm = "ecdsa-p256"; public = "<base64>"; };
   nixfleet.trust.ciReleaseKey.previous = null;        # 30-day rotation grace
   nixfleet.trust.ciReleaseKey.rejectBefore = null;    # compromise switch
@@ -29,7 +29,7 @@ CP-host NixOS config  (applied via mkHost on the CP host)
        │
        │  systemd launches the binary with the flag
        ▼
-CP binary  (Stream C — crates/control-plane)
+CP binary  (Rust runtime — crates/control-plane)
   Cli::parse() → args.trust_file: PathBuf
   main() reads /etc/nixfleet/cp/trust.json, deserializes (serde_json) into
     proto::TrustConfig { ci_release_key: KeySlot, attic_cache_key: KeySlot, org_root_key: KeySlot }
@@ -46,7 +46,7 @@ Three invariants drive the design.
 
 **(b) Zero-knowledge CP (CONTRACTS.md §IV, RFC-0003 §7).** The CP MUST be reconstructible from git + agent check-ins. The trust config is derivable from `fleet.nix` — rebuilding the CP host from an empty state regenerates `/etc/nixfleet/cp/trust.json` on activation. No state is lost, no state needs to persist across teardowns.
 
-**(c) Rotation without redeploy.** `KeySlot.current` + `KeySlot.previous` both present means both keys are active. The CP's `active_keys(now)` returns both until `rejectBefore` is exceeded or `previous` is cleared. This lets Stream A rotate the CI release key by:
+**(c) Rotation without redeploy.** `KeySlot.current` + `KeySlot.previous` both present means both keys are active. The CP's `active_keys(now)` returns both until `rejectBefore` is exceeded or `previous` is cleared. This lets lab CI rotate the CI release key by:
 1. Generating a new key (may be a different algorithm).
 2. Setting `current = <new>`, `previous = <old>` in `fleet.nix`.
 3. CI starts signing with the new key.
@@ -219,7 +219,7 @@ Starting state: `ciReleaseKey.current = { algorithm = "ecdsa-p256"; public = "K1
 
 Operator rotates to a new ed25519 key:
 
-1. Stream A generates the new keypair (e.g. new YubiKey, or software-held ed25519 since M70q's TPM constraint only affects HSM-backed signing).
+1. Operator infra generates the new keypair (e.g. new YubiKey, or software-held ed25519 since M70q's TPM constraint only affects HSM-backed signing).
 2. Operator edits `fleet.nix`:
    ```nix
    nixfleet.trust.ciReleaseKey = {
@@ -239,7 +239,7 @@ Operator rotates to a new ed25519 key:
    ```
 7. Deploy. K1-signed artifacts are now rejected as unknown-key.
 
-Cross-algorithm rotation is supported end-to-end — Stream C's `verify_artifact` already iterates the slice and matches on each entry's `algorithm` tag (PR #20).
+Cross-algorithm rotation is supported end-to-end — the Rust runtime's `verify_artifact` already iterates the slice and matches on each entry's `algorithm` tag (PR #20).
 
 ## 7. Decisions (locked for the implementation PR)
 

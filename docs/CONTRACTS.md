@@ -1,17 +1,17 @@
 # Boundary contracts
 
-The single authoritative reference for every artifact, key, and format that crosses a stream boundary during v0.2. If it is not listed here, it is not a contract — it is implementation detail that can change without coordination.
+The single authoritative reference for every artifact, key, and format that crosses a layer boundary during v0.2. If it is not listed here, it is not a contract — it is implementation detail that can change without coordination.
 
 Every entry declares:
-- **Producer** — the stream/component that emits the artifact.
-- **Consumer(s)** — streams/components that read it.
+- **Producer** — the layer/component that emits the artifact.
+- **Consumer(s)** — layers/components that read it.
 - **Schema/version** — current version and the discipline for evolving it.
 - **Verification** — what a consumer must check before trusting the content.
 
-Streams referenced:
-- **Stream A** — infra (M70q coordinator, out of tree; lives in `fleet` repo).
-- **Stream B** — Nix (this repo's `lib/`, `modules/`, + `nixfleet-compliance`).
-- **Stream C** — Rust (this repo's `crates/`).
+Boundaries cross between three layers:
+- **CI / infra** — M70q coordinator, out of tree; lives in `fleet` repo.
+- **Nix declarative** — this repo's `lib/`, `modules/`, + `nixfleet-compliance`.
+- **Rust runtime** — this repo's `crates/` (agent + control plane).
 
 ---
 
@@ -21,7 +21,7 @@ Streams referenced:
 
 | | |
 |---|---|
-| **Producer** | CI (Stream A invokes Stream B's Nix eval) |
+| **Producer** | CI (lab CI invokes the Nix layer's eval) |
 | **Consumer** | Control plane, agents (fallback direct fetch) |
 | **Schema** | v1 — shape defined in RFC-0001 §4.1 |
 | **Canonicalization** | JCS (RFC 8785), see §IV |
@@ -41,7 +41,7 @@ Streams referenced:
 
 | | |
 |---|---|
-| **Producer/Consumer** | Both agent and CP (Stream C) |
+| **Producer/Consumer** | Both agent and CP (Rust runtime) |
 | **Schema** | v1 — RFC-0003 §4 |
 | **Transport** | HTTP/2 over TLS 1.3, mTLS mandatory |
 | **Version header** | `X-Nixfleet-Protocol: 1` |
@@ -52,8 +52,8 @@ Streams referenced:
 
 | | |
 |---|---|
-| **Producer** | `nixfleet-compliance` (Stream B) |
-| **Consumer** | Agent (Stream C) at runtime |
+| **Producer** | `nixfleet-compliance` (Nix layer) |
+| **Consumer** | Agent (Rust runtime) at runtime |
 | **Schema** | Per-control `schema = "<framework>/<version>"` field (e.g. `"anssi-bp028/v1"`) |
 | **Payload** | `{ command, args, timeoutSecs, expect, schema }` |
 
@@ -75,7 +75,7 @@ Streams referenced:
 
 | | |
 |---|---|
-| **Producer** | `fleet.nix` (Stream B) |
+| **Producer** | `fleet.nix` (Nix layer) |
 | **Consumer** | agenix encryption tooling at commit time; agent at activation |
 | **Schema** | agenix-native, pinned by `flake.lock` |
 
@@ -101,13 +101,13 @@ Four keys. Everything else is derived. For each: **who holds the private key, wh
 
 | | |
 |---|---|
-| **Private** | HSM / TPM-backed keyslot on M70q (Stream A) |
-| **Public (declared)** | `nixfleet.trust.ciReleaseKey` in `fleet.nix` (Stream B) |
+| **Private** | HSM / TPM-backed keyslot on M70q (operator infra) |
+| **Public (declared)** | `nixfleet.trust.ciReleaseKey` in `fleet.nix` (Nix layer) |
 | **Verified by** | CP (on `fleet.resolved` load), optionally agents |
 | **Algorithm** | `ed25519` **or** `ecdsa-p256` — declared alongside the public key; the signature's algorithm (§I #1 `meta.signatureAlgorithm`) must match |
 | **Rotation grace** | `nixfleet.trust.ciReleaseKey.previous` valid for 30 days after rotation |
 
-**Algorithm rationale.** ed25519 is the preferred default for HSMs, YubiKeys, cloud KMS, and software-held keys. ECDSA P-256 exists as a second-class citizen because commodity TPM2 hardware (Intel PTT, AMD fTPM, most discrete TPMs) exposes RSA + NIST P-256 but not the ed25519 curve (TPM2_ECC_CURVE_ED25519 = 0x0040 is rare). Both algorithms produce 64-byte signatures and have comparable security margins (~128-bit). Producers (Stream A's CI) pick one at install time based on hardware; the trust-root declaration tells consumers which verifier to use.
+**Algorithm rationale.** ed25519 is the preferred default for HSMs, YubiKeys, cloud KMS, and software-held keys. ECDSA P-256 exists as a second-class citizen because commodity TPM2 hardware (Intel PTT, AMD fTPM, most discrete TPMs) exposes RSA + NIST P-256 but not the ed25519 curve (TPM2_ECC_CURVE_ED25519 = 0x0040 is rare). Both algorithms produce 64-byte signatures and have comparable security margins (~128-bit). Producers (lab CI) pick one at install time based on hardware; the trust-root declaration tells consumers which verifier to use.
 
 **Public-key encoding.**
 - `ed25519` — raw 32-byte public key, base64-encoded in `fleet.nix` (matches the format used by `ssh-keygen`, agenix, minisign).
@@ -125,7 +125,7 @@ nixfleet.trust.ciReleaseKey = {
 **Signature encoding.** Raw 64 bytes for both algorithms — `R ‖ S` for ECDSA, standard `R ‖ S` for ed25519. No DER wrapping, no PGP armour. Put next to the canonical payload as `fleet.resolved.json.sig`.
 
 **Rotation procedure.**
-1. Generate new keypair (Stream A) — may differ in algorithm from the outgoing one.
+1. Generate new keypair (operator infra) — may differ in algorithm from the outgoing one.
 2. Commit: set `ciReleaseKey = <new>`, `ciReleaseKey.previous = <old>` in `fleet.nix`. Consumers that pin both must accept signatures under either algorithm during the overlap.
 3. CI starts signing with new key on next build.
 4. After 30 days, remove `previous` from `fleet.nix`; old-key-signed artifacts rejected.
@@ -136,8 +136,8 @@ nixfleet.trust.ciReleaseKey = {
 
 | | |
 |---|---|
-| **Private** | Attic systemd service on M70q (Stream A) |
-| **Public (declared)** | `nixfleet.trust.atticCacheKey` (Stream B) |
+| **Private** | Attic systemd service on M70q (operator infra) |
+| **Public (declared)** | `nixfleet.trust.atticCacheKey` (Nix layer) |
 | **Verified by** | Agents, before every closure activation |
 | **Algorithm** | ed25519 (attic's native format) |
 | **Rotation grace** | Re-sign history when possible; otherwise 30-day dual-accept window |
@@ -149,7 +149,7 @@ nixfleet.trust.ciReleaseKey = {
 | | |
 |---|---|
 | **Private** | Offline hardware (Yubikey) held by operator |
-| **Public (declared)** | `nixfleet.trust.orgRootKey` (Stream B) |
+| **Public (declared)** | `nixfleet.trust.orgRootKey` (Nix layer) |
 | **Verified by** | CP, when validating enrollment tokens |
 | **Algorithm** | ed25519 |
 | **Rotation grace** | 90 days; effectively never under normal operation |
@@ -163,7 +163,7 @@ nixfleet.trust.ciReleaseKey = {
 | | |
 |---|---|
 | **Private** | Per-host `/etc/ssh/ssh_host_ed25519_key` (generated at provision) |
-| **Public (declared)** | `fleet.nix` host entry (`hosts.<n>.pubkey`) (Stream B) |
+| **Public (declared)** | `fleet.nix` host entry (`hosts.<n>.pubkey`) (Nix layer) |
 | **Verified by** | Auditor (probe output signatures), CP (mTLS cert binding at enrollment) |
 | **Algorithm** | ed25519 (OpenSSH-compatible) |
 | **Rotation grace** | Host key change = re-enrollment; no grace |
@@ -176,13 +176,13 @@ nixfleet.trust.ciReleaseKey = {
 
 **JCS (RFC 8785) with a single Rust implementation, byte-identical across all signers and verifiers.**
 
-Producer-side (Stream B's `lib/mkFleet.nix`) MUST emit values that round-trip through JCS losslessly: ints only (no floats), deterministic attr order, no JSON-incompatible types. Consumer-side (Stream C's `bin/nixfleet-canonicalize`) pins the library.
+Producer-side (the Nix layer's `lib/mkFleet.nix`) MUST emit values that round-trip through JCS losslessly: ints only (no floats), deterministic attr order, no JSON-incompatible types. Consumer-side (the Rust runtime's `bin/nixfleet-canonicalize`) pins the library.
 
-- **Library choice.** Pinned to [`serde_jcs`](https://crates.io/crates/serde_jcs) `0.2`, hosted by `crates/nixfleet-canonicalize`. Rationale: direct RFC 8785 implementation over `serde_json::Value`; handles UTF-16 key sorting and ECMAScript number formatting per spec. Any change to this pin is a contract change (§VII) requiring signoff from every stream that signs or verifies artifacts (A, B, C).
+- **Library choice.** Pinned to [`serde_jcs`](https://crates.io/crates/serde_jcs) `0.2`, hosted by `crates/nixfleet-canonicalize`. Rationale: direct RFC 8785 implementation over `serde_json::Value`; handles UTF-16 key sorting and ECMAScript number formatting per spec. Any change to this pin is a contract change (§VII) requiring signoff from every layer that signs or verifies artifacts (CI/infra, Nix, Rust).
 - **Golden-file test.** `crates/nixfleet-canonicalize/tests/fixtures/jcs-golden.{json,canonical}` with byte-exact equality asserted in `tests/jcs_golden.rs`. Runs on every push via pre-push `cargo nextest run --workspace`; fails loudly on any drift. The ed25519-signed-bytes extension of this fixture lands alongside the CI release key.
 - **Usage.** Every signed artifact (fleet.resolved, probe output) is canonicalized via this single library before signing and before verification. No ad-hoc serializers in Nix, shell, or other crates.
 
-When Stream B needs to produce a JCS-canonical artifact (e.g. CI signing fleet.resolved), it invokes the same Rust canonicalizer via a small shell tool (`nixfleet-canonicalize`). Do not reimplement in Nix or shell.
+When the Nix layer needs to produce a JCS-canonical artifact (e.g. CI signing fleet.resolved), it invokes the same Rust canonicalizer via a small shell tool (`nixfleet-canonicalize`). Do not reimplement in Nix or shell.
 
 ---
 
@@ -244,5 +244,5 @@ If something that should be a contract is drifting, propose it as an addition to
 
 1. Open a PR that modifies this document.
 2. Label it `contract-change`.
-3. Review requires a signoff from each stream whose code implements the contract.
+3. Review requires a signoff from each layer whose code implements the contract.
 4. Merge only after the code change that implements the new contract is ready in the same PR (or a linked follow-up that must land within the same spine milestone).
