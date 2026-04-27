@@ -73,6 +73,12 @@
       meta.description = "Harness CLI — verify a signed fleet.resolved against a trust.json";
     };
 
+    apps.nixfleet-release = {
+      type = "app";
+      program = "${workspace.packages.nixfleet-release}/bin/nixfleet-release";
+      meta.description = "Producer for fleet.resolved.json — build → inject closureHash → canonicalize → sign → release (CONTRACTS §I #1)";
+    };
+
     # Doc pipeline using STANDARD tooling — `cargo doc` for the Rust
     # API reference, `nixosOptionsDoc` for the NixOS option reference
     # (see options-doc.nix), `mdbook build` for the curated narrative

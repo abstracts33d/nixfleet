@@ -37,6 +37,14 @@ Boundaries cross between three layers:
 4. `(now − meta.signedAt) ≤ channel.freshnessWindow` (units: minutes; see RFC-0001 §4.1).
 5. `meta.schemaVersion` is within the consumer's accepted range.
 
+**Producer pipeline (`nixfleet-release`).** The framework ships one orchestrator binary that produces this artifact: build host closures → inject `closureHash = basename(toplevel)` → stamp `meta.{signedAt, ciCommit, signatureAlgorithm}` → canonicalize via `nixfleet_canonicalize` → invoke a sign hook → write `releases/fleet.resolved.json{,.sig}`. The orchestration is a contract; the cache-push and signing tools it shells out to are not.
+
+**Producer hook contract (binding):**
+- `--push-cmd` (optional) is invoked once per built closure with `cwd` = invocation cwd and these env vars set: `NIXFLEET_HOST` (host name), `NIXFLEET_PATH` (absolute store path), `NIXFLEET_CLOSURE_HASH` (basename of the path). Non-zero exit aborts the run.
+- `--sign-cmd` (required) is invoked once with `NIXFLEET_INPUT` (path to a tempfile containing the canonical bytes) and `NIXFLEET_OUTPUT` (path the hook MUST write the raw signature bytes to). Non-zero exit, missing output file, or 0-byte output aborts the run.
+
+These env-var names are part of the contract — renaming them is a §VIII amendment. The shell command strings themselves and any tools they shell out to (attic, nix copy, tpm-sign, cosign, GPG, ssh-keygen -Y, …) are operator-supplied and not framework concerns.
+
 ### 2. Wire protocol (agent ↔ control plane)
 
 | | |
