@@ -252,6 +252,21 @@ The framework promises *mechanism*, not *implementation*. The following are expl
 
 **What this means for nixfleet maintainers.** New tech-specific impls land as scopes (in `nixfleet-scopes` or out-of-tree), not as framework features. If something tech-specific *must* enter the framework — e.g. a new wire-protocol participant — it's a contract change governed by §VII below.
 
+### Irreducible technology assumptions
+
+A small set of technology choices are **load-bearing** for the framework — they're not implementation choices a fleet can swap. Replacing one of these means building a different framework.
+
+| Assumption | Why load-bearing | Replacing means |
+|---|---|---|
+| **Nix + flakes** | The whole declarative side (mkHost, mkFleet, the option system, hostSpec contract, fleet.resolved evaluation) is built on Nix evaluator semantics; the framework has no non-Nix front-end. | Re-implementing the declarative layer in another DSL — different framework. |
+| **NixOS** (system layer) | The Linux agent's activation pipeline assumes NixOS' generation model: `/run/current-system` resolves to the active toplevel, `nixos-rebuild switch --system <path>` is the activation primitive, post-switch verification reads `basename(realpath /run/current-system)`. The §I #1 contract refers to "closure hash"; that concept is meaningful in NixOS terms. | A separate activation backend abstraction — see roadmap. Until that lands, non-NixOS Linux is out of scope. |
+| **systemd** | Every framework NixOS module declares `systemd.services.nixfleet-*`. Hardening, restart policy, credential plumbing, dependency ordering all use systemd primitives. | Rewriting the system-service layer for runit/s6/launchd — same scope as a non-NixOS port. |
+| **mTLS over HTTP/1.1** | Agent ↔ control-plane authentication identity is the client cert CN; authorisation is per-route. The CP's rustls config is the trust boundary the agent verifies; replacing TLS means a different wire protocol. | A different wire protocol (Noise, Tailscale ACL, mutual auth over WireGuard). Different framework. |
+
+**TPM is *not* on this list.** TPM hardware is a *fleet's choice* of signing keyslot, not a framework requirement. The `tpm-keyslot` scope lives in `nixfleet-scopes`; the framework runtime never links a TPM library. A fleet using a YubiKey, software key, HSM, or KMS for the CI release key is fully framework-supported — see §I #1's hook contract. The current fleet happens to use TPM-backed ECDSA P-256; that's deployment opinion.
+
+**Why call these out.** Phases 1–9 of the agnosticism work made it easy to add new tech-specific impls as scopes. The four assumptions above cannot be captured by the same pattern — there is no scope a fleet can import to replace systemd. Documenting them here prevents the framework from drifting into pretending they're substitutable, and gives future maintainers a clear test: *if it's listed below the agnosticism table, scope-side; if it's listed in this irreducible-assumptions table, framework-side and out of scope to abstract.*
+
 ---
 
 ## VII. Non-contracts (explicit)
