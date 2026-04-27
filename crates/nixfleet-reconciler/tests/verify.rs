@@ -430,10 +430,18 @@ fn verify_p256_ok() {
 }
 
 #[test]
-fn verify_p256_rejects_high_s() {
-    // Canonical p256 signatures have s <= n/2. The twin (r, n-s) is
-    // mathematically valid but rejected as malleable (ECDSA
-    // malleability on Weierstrass curves).
+fn verify_p256_accepts_high_s() {
+    // ECDSA signatures are malleable: both `(r, s)` and `(r, n-s)`
+    // are valid for the same message. Earlier strict-rejection
+    // posture was Bitcoin-style defence-in-depth, but TPM2_Sign does
+    // not normalise s on its own (~50% of TPM-emitted sigs are
+    // high-s). The verifier now normalises both forms to the
+    // canonical low-s representation before ECDSA-verifying. These
+    // artifacts are signed by a single TPM, fetched once, verified
+    // once, never re-emitted — the malleability protection isn't
+    // load-bearing for our wire. Caught on lab when a CI run
+    // produced a high-s sig after the previous ones happened to be
+    // low-s by chance.
     let value: serde_json::Value = serde_json::from_str(FIXTURE_SIGNED).unwrap();
     let signed_at: DateTime<Utc> = value["meta"]["signedAt"].as_str().unwrap().parse().unwrap();
     let canonical = canonicalize(&value.to_string()).unwrap();
@@ -457,8 +465,8 @@ fn verify_p256_rejects_high_s() {
         None,
     );
     assert!(
-        matches!(result, Err(VerifyError::BadSignature)),
-        "high-s must be rejected for malleability: got {result:?}"
+        result.is_ok(),
+        "high-s must verify (normalised internally): got {result:?}"
     );
 }
 

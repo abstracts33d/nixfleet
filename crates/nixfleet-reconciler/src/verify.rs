@@ -246,10 +246,20 @@ fn verify_ecdsa_p256(
 
     let sig = P256Signature::from_slice(signature).map_err(|_| VerifyError::BadSignature)?;
 
-    // Reject malleable (high-s) signatures.
-    if sig.normalize_s().is_some() {
-        return Err(VerifyError::BadSignature);
-    }
+    // Normalise to low-s before verifying. ECDSA signatures are
+    // malleable — both `(r, s)` and `(r, n-s)` are valid for the
+    // same message — and TPM2_Sign does not normalise on its own
+    // (the underlying random `k` produces ~50% high-s outputs). The
+    // earlier strict-rejection posture (Bitcoin-style) bit a real
+    // CI run on lab where the TPM emitted a high-s signature: the
+    // body was canonical, the trust pubkey matched, yet verify
+    // returned BadSignature. Strict low-s isn't load-bearing for
+    // our wire — these artifacts are signed by a single TPM, fetched
+    // once, verified once, never re-emitted; there is no third-party
+    // consumer that might mis-treat the alternate form. Normalise
+    // both forms to the canonical low-s representation before
+    // ECDSA-verifying.
+    let sig = sig.normalize_s().unwrap_or(sig);
 
     verifying_key
         .verify(canonical_bytes, &sig)
