@@ -287,7 +287,7 @@ async fn report_records_event_and_returns_event_id() {
         rollout: Some("stable@abc12345".to_string()),
         event: ReportEvent::RealiseFailed {
             closure_hash: "abc123".to_string(),
-            reason: "attic 503 — upstream unavailable".to_string(),
+            reason: "substituter 503 — upstream unavailable".to_string(),
         },
     };
 

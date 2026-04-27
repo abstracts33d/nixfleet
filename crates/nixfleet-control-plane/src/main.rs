@@ -142,10 +142,11 @@ struct ServeFlags {
     #[arg(long, env = "NIXFLEET_CP_DB_PATH")]
     db_path: Option<PathBuf>,
 
-    /// Closure proxy upstream. Attic instance the CP forwards
-    /// `/v1/agent/closure/<hash>` requests to. Typical value on lab:
-    /// `http://localhost:8085` (attic on the same host). When unset,
-    /// the closure proxy endpoint returns 501.
+    /// Closure proxy upstream — base URL of any nix-cache-protocol
+    /// server (harmonia, attic, cachix, nix-serve, …) the CP
+    /// forwards `/v1/agent/closure/<hash>` requests to. Typical
+    /// value on lab: `http://localhost:8081` (lab's local cache).
+    /// When unset, the closure proxy endpoint returns 501.
     #[arg(long, env = "NIXFLEET_CP_CLOSURE_UPSTREAM")]
     closure_upstream: Option<String>,
 }

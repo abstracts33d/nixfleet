@@ -7,14 +7,16 @@
 //! around `nixos-rebuild switch`:
 //!
 //! 1. **Pre-realise**: `nix-store --realise <path>` forces nix to
-//!    fetch from the configured substituter (attic) and validate its
-//!    signature *before* we commit to switching. If the closure isn't
-//!    locally available and substituter trust is misconfigured, this
-//!    fails closed — we never call `nixos-rebuild` against an
-//!    unverifiable path. Also catches "closure-proxy returned a
-//!    valid-looking narinfo for a path that doesn't actually exist
-//!    upstream" (the proxy-fallback path is fundamentally less
-//!    audited than direct attic).
+//!    fetch from the configured substituter (any nix-cache-protocol
+//!    backend the fleet wires — harmonia, attic, cachix, etc.) and
+//!    validate its signature *before* we commit to switching. If the
+//!    closure isn't locally available and substituter trust is
+//!    misconfigured, this fails closed — we never call
+//!    `nixos-rebuild` against an unverifiable path. Also catches
+//!    "closure-proxy returned a valid-looking narinfo for a path
+//!    that doesn't actually exist upstream" (the proxy-fallback
+//!    path is fundamentally less audited than direct substituter
+//!    fetch).
 //! 2. **Switch**: `nixos-rebuild switch --system <verified-path>`.
 //!    nix's own substituter signature checks fire here too; the
 //!    pre-realise is belt-and-suspenders.

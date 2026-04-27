@@ -132,17 +132,17 @@ nixfleet.trust.ciReleaseKey = {
 
 **Compromise response.** Immediate: remove compromised key from `fleet.nix`, set `rejectBefore = <timestamp>` (all artifacts signed before that are refused regardless of key). Rebuild CI environment. Sign a fresh fleet.resolved from known-clean CI. Document in `SECURITY.md`.
 
-### 2. Attic cache key
+### 2. Cache trust keys
 
 | | |
 |---|---|
-| **Private** | Attic systemd service on M70q (operator infra) |
-| **Public (declared)** | `nixfleet.trust.atticCacheKey` (Nix layer) |
-| **Verified by** | Agents, before every closure activation |
-| **Algorithm** | ed25519 (attic's native format) |
-| **Rotation grace** | Re-sign history when possible; otherwise 30-day dual-accept window |
+| **Private** | Each cache implementation's own keystore (harmonia signing key file, attic signing key, cachix authtoken-derived, etc.) |
+| **Public (declared)** | `nixfleet.trust.cacheKeys` (Nix layer) — flat list of opaque strings |
+| **Verified by** | nix's substituter (via `nix.settings.trusted-public-keys`) before every closure activation |
+| **Format** | Implementation-defined string. Stock `<name>:<base64>` (harmonia, nix-serve, cachix) and attic's `attic:<host>:<base64>` are both accepted by nix and may be mixed in one list. |
+| **Rotation grace** | Add the new key alongside the old in the list; remove the old once all hosts have switched. |
 
-**Rotation procedure.** Regenerate attic key; re-sign cached closures with new key (attic tooling supports this); commit new pubkey + grace window.
+**Framework agnosticism.** The framework forwards these strings opaquely — it does not parse, dispatch on, or otherwise discriminate between cache implementations. Choosing harmonia, attic, cachix, plain `nix-serve`, or a custom HTTP cache is a fleet-side decision; the framework's only requirement is that the chosen impl serves the standard nix-cache HTTP protocol so that `services.nixfleet-cache.cacheUrl` works.
 
 ### 3. Org root key
 
@@ -225,7 +225,28 @@ The control plane's SQLite database exists to cache operational state. Every col
 
 ---
 
-## VI. Non-contracts (explicit)
+## VI. Implementation agnosticism
+
+The framework promises *mechanism*, not *implementation*. The following are explicit non-commitments — the framework runtime contains no code that depends on these choices, and a fleet may freely substitute any conforming alternative without forking nixfleet.
+
+| Concern | Framework requires | Fleet picks |
+|---|---|---|
+| **GitOps source** for the channel-refs poll | An HTTPS URL pair (artifact + signature) that returns the raw signed bytes when GET'd, optionally with `Authorization: Bearer <token>`. Configured via `services.nixfleet-control-plane.channelRefsSource.{artifactUrl, signatureUrl, tokenFile}`. | Forgejo / Gitea / GitHub / GitLab / sourcehut / plain HTTPS / S3 with presigned URLs / anything HTTP-shaped. URL templates for common forges live in `nixfleet-scopes.scopes.gitops.*` as pure data — adding a new forge is one `.nix` file, no Rust changes. |
+| **Binary cache server** | Nothing — the framework does not ship a cache-server module. Hosts that should serve a cache import a scope. | `nixfleet-scopes.nixosModules.harmonia`, `nixfleet-scopes.nixosModules.attic-server`, plain `services.nix-serve`, cachix as a service, or a hand-rolled wrapper. |
+| **Binary cache client** | An HTTPS URL + a public key string. Configured via `services.nixfleet-cache.{cacheUrl, publicKey}`. | Any cache speaking the standard nix-cache HTTP protocol (narinfo + nar). Identical client config regardless of which server impl is upstream. |
+| **Cache trust keys** | A flat list of opaque strings forwarded to `nix.settings.trusted-public-keys`. Configured via `nixfleet.trust.cacheKeys`. | Stock `<name>:<base64>`, attic `attic:<host>:<base64>`, or both at once — see §II #2. |
+| **PKI / mTLS issuer** | Cert + key file paths on disk. The framework reads them; their provenance is not a contract. | Caddy's internal CA (current fleet choice), Smallstep, vault-pki, hand-rolled scripts, or a public CA — anything that produces RSA / ECDSA / Ed25519 cert files compatible with rustls. |
+| **Secrets backend** | Cert / key / token *paths* in option fields. The framework reads files; how they got there is not a contract. | agenix (current fleet choice), sops-nix, plain nixops, manual secret-staging scripts, or systemd-creds. |
+| **Disk layout** | A `disko.devices` attrset on the host. | `nixfleet`'s bundled disk-templates for common cases, hand-rolled disko config, or none if filesystems are pre-provisioned. |
+| **Impermanence** | An `environment.persistence` option must exist (the framework's own service modules contribute to it). The framework imports the upstream `impermanence` flake to satisfy this. | Activate via `nixfleet.impermanence.enable = true`, or leave disabled — the schema is always declared. |
+
+**What this means for fleets.** Every framework binary or NixOS module touches only the contract surface above. A fleet that wants GitHub instead of Forgejo, harmonia instead of attic, sops-nix instead of agenix, or vault-pki instead of Caddy CA changes its scope imports and its option values — the framework code is rebuilt without modification.
+
+**What this means for nixfleet maintainers.** New tech-specific impls land as scopes (in `nixfleet-scopes` or out-of-tree), not as framework features. If something tech-specific *must* enter the framework — e.g. a new wire-protocol participant — it's a contract change governed by §VII below.
+
+---
+
+## VII. Non-contracts (explicit)
 
 The following are NOT contracts — they may change without coordination:
 
@@ -240,7 +261,7 @@ If something that should be a contract is drifting, propose it as an addition to
 
 ---
 
-## VII. Amendment procedure
+## VIII. Amendment procedure
 
 1. Open a PR that modifies this document.
 2. Label it `contract-change`.

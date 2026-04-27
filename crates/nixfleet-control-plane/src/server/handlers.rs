@@ -615,9 +615,10 @@ pub(super) async fn confirm(
 
 /// `GET /v1/agent/closure/{hash}` — closure proxy fallback for hosts
 /// that can't reach the binary cache directly. Forwards narinfo
-/// requests to the configured attic upstream. Real Nix-cache-protocol
-/// forwarding (full nar streaming) is a follow-up PR; this lands the
-/// wire shape + the upstream config path.
+/// requests to the configured cache upstream (any nix-cache-protocol
+/// HTTP backend: harmonia, attic, cachix, plain nix-serve, …). Real
+/// Nix-cache-protocol forwarding (full nar streaming) is a follow-up
+/// PR; this lands the wire shape + the upstream config path.
 ///
 /// When `closure_upstream` is unset, returns 501 Not Implemented.
 pub(super) async fn closure_proxy(
