@@ -27,7 +27,7 @@
         {
           nixfleet.trust = {
             inherit ciReleaseKey;
-            atticCacheKey.current = "attic:cache.example.com:AAAA...";
+            cacheKeys = ["attic:cache.example.com:AAAA..."];
           };
         }
       ];
@@ -56,7 +56,7 @@ in {
   happyEd25519CiKeyAlgorithm = happyEd25519.nixfleet.trust.ciReleaseKey.current.algorithm;
   happyEd25519CiKeyPublicNonEmpty = (builtins.stringLength happyEd25519.nixfleet.trust.ciReleaseKey.current.public) > 0;
 
-  happyAtticKey = happyP256.nixfleet.trust.atticCacheKey.current;
+  happyCacheKeysCount = builtins.length happyP256.nixfleet.trust.cacheKeys;
   happyOrgKeyDefaultsToNull = happyP256.nixfleet.trust.orgRootKey.current;
   assertionsDeclared = builtins.length happyP256.assertions;
 }

@@ -73,8 +73,18 @@ pub struct TrustConfig {
 
     pub ci_release_key: KeySlot,
 
+    /// Trusted public keys for the binary cache(s) the fleet
+    /// substitutes from. Each entry is the raw string nix accepts in
+    /// `nix.settings.trusted-public-keys` — the framework forwards
+    /// these opaquely without parsing. This covers harmonia's stock
+    /// `<name>:<base64>`, attic's `attic:<host>:<base64>`, cachix
+    /// keys, etc., interchangeably.
+    ///
+    /// Defaults to an empty list so fleets with no cache, or fleets
+    /// that wire trust through a separate channel, leave the field
+    /// off in trust.json.
     #[serde(default)]
-    pub attic_cache_key: Option<AtticKeySlot>,
+    pub cache_keys: Vec<String>,
 
     #[serde(default)]
     pub org_root_key: Option<KeySlot>,
@@ -129,52 +139,3 @@ impl KeySlot {
     }
 }
 
-/// Attic cache key material in the attic-native string format
-/// `"attic:<host>:<base64>"`.
-///
-/// Typed as an opaque newtype over `String`: attic's own signing model
-/// encodes host and key bytes inside the string, so splitting it into
-/// `{algorithm, public}` would be redundant with attic-side parsing.
-/// Consumers forward the raw string to attic tooling at closure-verify
-/// time.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(transparent)]
-pub struct AtticPubkey(pub String);
-
-/// A single attic-cache trust slot with rotation grace + compromise
-/// switch. Shape mirrors [`KeySlot`] — same `current` / `previous` /
-/// `reject_before` semantics — except key material is an opaque
-/// [`AtticPubkey`] rather than a `{algorithm, public}` pair.
-///
-/// A two-key active window supports the 30-day dual-accept rotation
-/// grace documented in CONTRACTS.md §II #2: agents treat closures
-/// signed under either `current` or `previous` as trusted until the
-/// operator closes the window by setting `previous` back to `None`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AtticKeySlot {
-    #[serde(default)]
-    pub current: Option<AtticPubkey>,
-
-    #[serde(default)]
-    pub previous: Option<AtticPubkey>,
-
-    #[serde(default)]
-    pub reject_before: Option<DateTime<Utc>>,
-}
-
-impl AtticKeySlot {
-    /// Returns the active key list for this slot. Both `current` and
-    /// `previous` are returned unconditionally when present, in that
-    /// order — matches the first-match semantics of [`KeySlot::active_keys`].
-    pub fn active_keys(&self) -> Vec<AtticPubkey> {
-        let mut keys = Vec::with_capacity(2);
-        if let Some(k) = &self.current {
-            keys.push(k.clone());
-        }
-        if let Some(k) = &self.previous {
-            keys.push(k.clone());
-        }
-        keys
-    }
-}

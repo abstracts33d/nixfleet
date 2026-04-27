@@ -7,13 +7,15 @@
 # {algorithm, public} submodules per CONTRACTS §II #1) and passes
 # through unchanged.
 #
-# `atticCacheKey` and `orgRootKey` store bare-string key material on the
-# option side (keySlotType in modules/_trust.nix). They're pinned to one
-# algorithm each per CONTRACTS §II #2 (attic-native) / §II #3 (ed25519),
-# so the algorithm doesn't need to be declared per-slot. This helper
-# emits both slots as `{current, previous, rejectBefore}` objects
-# matching proto's AtticKeySlot / KeySlot shape, and promotes orgRootKey
-# strings into typed TrustedPubkey entries.
+# `cacheKeys` is a flat list of opaque trusted-key strings forwarded
+# verbatim to nix's `trusted-public-keys`. The framework doesn't
+# parse these — fleets pick whatever cache implementation they want
+# (harmonia, attic, cachix, ...) and supply its native key format.
+#
+# `orgRootKey` stores bare-string key material on the option side
+# (keySlotType in modules/_trust.nix), pinned to ed25519 per
+# CONTRACTS §II #3. This helper promotes it into typed TrustedPubkey
+# entries matching proto's KeySlot shape.
 {trust}: let
   wrapEd25519 = key:
     if key == null
@@ -25,11 +27,7 @@
 in {
   schemaVersion = 1;
   ciReleaseKey = trust.ciReleaseKey;
-  atticCacheKey = {
-    current = trust.atticCacheKey.current;
-    previous = trust.atticCacheKey.previous;
-    rejectBefore = trust.atticCacheKey.rejectBefore;
-  };
+  cacheKeys = trust.cacheKeys;
   orgRootKey = {
     current = wrapEd25519 trust.orgRootKey.current;
     previous = wrapEd25519 trust.orgRootKey.previous;

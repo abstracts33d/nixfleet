@@ -157,7 +157,7 @@ async fn poll_refreshes_verified_fleet_snapshot() {
             "previous": null,
             "rejectBefore": null,
         },
-        "atticCacheKey": null,
+        "cacheKeys": [],
         "orgRootKey": null,
     });
     std::fs::write(&trust_path, trust.to_string()).unwrap();
@@ -232,7 +232,7 @@ async fn poll_retains_snapshot_on_verify_failure() {
             "previous": null,
             "rejectBefore": null,
         },
-        "atticCacheKey": null,
+        "cacheKeys": [],
         "orgRootKey": null,
     });
     std::fs::write(&trust_path, trust.to_string()).unwrap();

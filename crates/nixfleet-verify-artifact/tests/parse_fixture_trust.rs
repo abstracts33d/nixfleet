@@ -17,7 +17,7 @@ fn trust_json_from_fixture_shape_parses() {
         "previous": null,
         "rejectBefore": null
       },
-      "atticCacheKey": { "current": null },
+      "cacheKeys": [],
       "orgRootKey": { "current": null }
     }
     "#;

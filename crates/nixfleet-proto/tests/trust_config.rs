@@ -1,8 +1,8 @@
-//! Round-trip tests for TrustConfig + KeySlot + AtticKeySlot.
+//! Round-trip tests for TrustConfig + KeySlot.
 //!
 //! Shape authoritative per docs/trust-root-flow.md §3.4 + §7.4.
 
-use nixfleet_proto::{AtticKeySlot, AtticPubkey, KeySlot, TrustConfig, TrustedPubkey};
+use nixfleet_proto::{KeySlot, TrustConfig, TrustedPubkey};
 
 #[test]
 fn trust_config_roundtrips_minimum_shape() {
@@ -13,7 +13,7 @@ fn trust_config_roundtrips_minimum_shape() {
             "previous": null,
             "rejectBefore": null
         },
-        "atticCacheKey": null,
+        "cacheKeys": [],
         "orgRootKey": null
     }"#;
     let cfg: TrustConfig = serde_json::from_str(json).unwrap();
@@ -24,8 +24,41 @@ fn trust_config_roundtrips_minimum_shape() {
     );
     assert!(cfg.ci_release_key.previous.is_none());
     assert!(cfg.ci_release_key.reject_before.is_none());
-    assert!(cfg.attic_cache_key.is_none());
+    assert!(cfg.cache_keys.is_empty());
     assert!(cfg.org_root_key.is_none());
+}
+
+#[test]
+fn trust_config_omitted_cache_keys_defaults_to_empty() {
+    // The framework must accept trust.json files that don't list
+    // any cache keys (fleets with no shared cache, or fleets that
+    // distribute cache trust through another channel).
+    let json = r#"{
+        "schemaVersion": 1,
+        "ciReleaseKey": { "current": null, "previous": null, "rejectBefore": null }
+    }"#;
+    let cfg: TrustConfig = serde_json::from_str(json).unwrap();
+    assert!(cfg.cache_keys.is_empty());
+}
+
+#[test]
+fn trust_config_accepts_opaque_cache_key_strings() {
+    // The proto stores the key strings unparsed and forwards them to
+    // nix's `trusted-public-keys`. Nix accepts both stock
+    // `<name>:<base64>` and attic's `attic:<host>:<base64>` formats
+    // interchangeably, so the proto doesn't need to discriminate.
+    let json = r#"{
+        "schemaVersion": 1,
+        "ciReleaseKey": { "current": null, "previous": null, "rejectBefore": null },
+        "cacheKeys": [
+            "cache.lab.internal:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "attic:cache.example.com:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+        ]
+    }"#;
+    let cfg: TrustConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.cache_keys.len(), 2);
+    assert!(cfg.cache_keys[0].starts_with("cache.lab.internal:"));
+    assert!(cfg.cache_keys[1].starts_with("attic:"));
 }
 
 #[test]
@@ -58,36 +91,6 @@ fn key_slot_active_keys_skips_absent() {
 }
 
 #[test]
-fn attic_pubkey_accepts_native_format() {
-    let json = r#""attic:cache.example.com:AAAA""#;
-    let pk: AtticPubkey = serde_json::from_str(json).unwrap();
-    assert_eq!(pk.0, "attic:cache.example.com:AAAA");
-}
-
-#[test]
-fn attic_key_slot_roundtrips_populated_shape() {
-    let json = r#"{
-        "current": "attic:cache.example.com:AAAA",
-        "previous": "attic:cache.example.com:BBBB",
-        "rejectBefore": null
-    }"#;
-    let slot: AtticKeySlot = serde_json::from_str(json).unwrap();
-    let keys = slot.active_keys();
-    assert_eq!(keys.len(), 2);
-    assert_eq!(keys[0].0, "attic:cache.example.com:AAAA");
-    assert_eq!(keys[1].0, "attic:cache.example.com:BBBB");
-    assert!(slot.reject_before.is_none());
-}
-
-#[test]
-fn attic_key_slot_empty_object_is_empty() {
-    let json = r#"{ "current": null, "previous": null, "rejectBefore": null }"#;
-    let slot: AtticKeySlot = serde_json::from_str(json).unwrap();
-    assert!(slot.active_keys().is_empty());
-    assert!(slot.reject_before.is_none());
-}
-
-#[test]
 fn trust_config_rejects_missing_schema_version() {
     let json = r#"{
         "ciReleaseKey": { "current": null, "previous": null, "rejectBefore": null }
@@ -114,7 +117,7 @@ fn trust_config_parses_populated_org_root_key_matching_nix_emission() {
             "previous": null,
             "rejectBefore": null
         },
-        "atticCacheKey": null,
+        "cacheKeys": [],
         "orgRootKey": {
             "current": { "algorithm": "ed25519", "public": "BBBB" },
             "previous": null,

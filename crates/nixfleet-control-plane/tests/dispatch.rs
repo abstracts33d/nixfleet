@@ -139,7 +139,7 @@ fn write_signed_fleet(
             "previous": null,
             "rejectBefore": null,
         },
-        "atticCacheKey": null,
+        "cacheKeys": [],
         "orgRootKey": null,
     });
     let trust = write_pem(dir, "trust.json", &trust_json.to_string());

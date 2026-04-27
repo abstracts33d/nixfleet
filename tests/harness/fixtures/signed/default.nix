@@ -201,7 +201,7 @@ in
         "previous": null,
         "rejectBefore": null
       },
-      "atticCacheKey": { "current": null },
+      "cacheKeys": [],
       "orgRootKey": { "current": null }
     }
     EOF

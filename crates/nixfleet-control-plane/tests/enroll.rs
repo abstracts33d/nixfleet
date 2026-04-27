@@ -104,7 +104,7 @@ fn write_trust_json(dir: &TempDir, org_root_pubkey_b64: &str) -> PathBuf {
         r#"{{
   "schemaVersion": 1,
   "ciReleaseKey": {{ "current": null, "previous": null, "rejectBefore": null }},
-  "atticCacheKey": {{ "current": null, "previous": null, "rejectBefore": null }},
+  "cacheKeys": [],
   "orgRootKey": {{
     "current": {{ "algorithm": "ed25519", "public": "{org_root_pubkey_b64}" }},
     "previous": null,

@@ -32,4 +32,4 @@ pub use fleet_resolved::{
     Channel, Compliance, ComplianceProbes, DisruptionBudget, Edge, FleetResolved, HealthGate, Host,
     Meta, PolicyWave, RolloutPolicy, Selector, SystemdFailedUnits, Wave,
 };
-pub use trust::{AtticKeySlot, AtticPubkey, KeySlot, TrustConfig, TrustedPubkey};
+pub use trust::{KeySlot, TrustConfig, TrustedPubkey};

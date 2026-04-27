@@ -125,12 +125,25 @@ in {
       '';
     };
 
-    atticCacheKey = lib.mkOption {
-      type = keySlotType;
-      default = {};
+    cacheKeys = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      example = [
+        "cache.lab.internal:AAAA..."
+        "attic:cache.example.com:BBBB..."
+      ];
       description = ''
-        Attic binary-cache key. Agents verify before every closure
-        activation. See docs/CONTRACTS.md §II #2.
+        Trusted public keys for the binary cache(s) the fleet
+        substitutes from. Forwarded opaquely to nix as
+        `nix.settings.trusted-public-keys`. Format depends on the
+        cache implementation:
+
+        - harmonia / nix-serve / cachix: `<name>:<base64>`
+        - attic: `attic:<host>:<base64>`
+
+        Both are accepted by nix; mix freely. Empty list is fine for
+        fleets with no shared cache or that distribute trust through
+        another channel. See docs/CONTRACTS.md §II #2.
       '';
     };
 
@@ -152,13 +165,6 @@ in {
         == null
         || config.nixfleet.trust.ciReleaseKey.current != null;
       message = "nixfleet.trust.ciReleaseKey: cannot set .previous without .current";
-    }
-    {
-      assertion =
-        config.nixfleet.trust.atticCacheKey.previous
-        == null
-        || config.nixfleet.trust.atticCacheKey.current != null;
-      message = "nixfleet.trust.atticCacheKey: cannot set .previous without .current";
     }
     {
       assertion =
