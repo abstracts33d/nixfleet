@@ -13,9 +13,37 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::Parser;
 use nixfleet_agent::{checkin_state, comms};
-use nixfleet_proto::agent_wire::CheckinRequest;
+use nixfleet_proto::agent_wire::{CheckinRequest, ReportEvent, ReportRequest};
 
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Build + POST a `/v1/agent/report` event to the CP. Best-effort:
+/// telemetry MUST NOT crash the activation loop, so any HTTP / TLS
+/// / serde failure is logged at warn and swallowed. The event is
+/// already in the local journal (the caller logs first); the report
+/// is purely for the operator's CP-side view.
+async fn post_report(
+    client: &reqwest::Client,
+    cp_url: &str,
+    hostname: &str,
+    rollout: Option<&str>,
+    event: ReportEvent,
+) {
+    let req = ReportRequest {
+        hostname: hostname.to_string(),
+        agent_version: AGENT_VERSION.to_string(),
+        occurred_at: chrono::Utc::now(),
+        rollout: rollout.map(String::from),
+        event,
+    };
+    if let Err(err) = comms::report(client, cp_url, &req).await {
+        tracing::warn!(
+            error = %err,
+            hostname,
+            "report post failed; event is in local journal only",
+        );
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -181,6 +209,16 @@ async fn main() -> anyhow::Result<()> {
                     .await
                     {
                         tracing::warn!(error = %err, "renew failed; retry next tick");
+                        post_report(
+                            &client_handle,
+                            &args.control_plane_url,
+                            &args.machine_id,
+                            None,
+                            ReportEvent::RenewalFailed {
+                                reason: err.to_string(),
+                            },
+                        )
+                        .await;
                     } else {
                         // Rebuild the client with the new cert + key.
                         match comms::build_client(
@@ -232,9 +270,19 @@ async fn main() -> anyhow::Result<()> {
                             {
                                 Ok(nixfleet_agent::comms::ConfirmOutcome::Cancelled) => {
                                     // CP says rollback — run it.
-                                    if let Err(err) =
-                                        nixfleet_agent::activation::rollback().await
-                                    {
+                                    let rb_outcome =
+                                        nixfleet_agent::activation::rollback().await;
+                                    post_report(
+                                        &client_handle,
+                                        &args.control_plane_url,
+                                        &args.machine_id,
+                                        Some(rollout),
+                                        ReportEvent::RollbackTriggered {
+                                            reason: "cp-410: rollout cancelled or deadline expired".to_string(),
+                                        },
+                                    )
+                                    .await;
+                                    if let Err(err) = rb_outcome {
                                         tracing::error!(
                                             error = %err,
                                             "rollback after CP-410 also failed",
@@ -252,15 +300,62 @@ async fn main() -> anyhow::Result<()> {
                                 reason = %reason,
                                 "activation: realise failed; nothing switched, retrying next tick",
                             );
+                            post_report(
+                                &client_handle,
+                                &args.control_plane_url,
+                                &args.machine_id,
+                                Some(&target.channel_ref),
+                                ReportEvent::RealiseFailed {
+                                    closure_hash: target.closure_hash.clone(),
+                                    reason,
+                                },
+                            )
+                            .await;
                         }
-                        Ok(ActivationOutcome::SwitchFailed { exit_status }) => {
+                        Ok(ActivationOutcome::SwitchFailed { phase, exit_status }) => {
                             tracing::error!(
+                                phase = %phase,
                                 exit_code = ?exit_status.code(),
                                 "activation: switch failed; rolling back",
                             );
-                            if let Err(err) =
-                                nixfleet_agent::activation::rollback().await
-                            {
+                            post_report(
+                                &client_handle,
+                                &args.control_plane_url,
+                                &args.machine_id,
+                                Some(&target.channel_ref),
+                                ReportEvent::ActivationFailed {
+                                    phase: phase.clone(),
+                                    exit_code: exit_status.code(),
+                                    stderr_tail: None,
+                                },
+                            )
+                            .await;
+                            let rb_outcome =
+                                nixfleet_agent::activation::rollback().await;
+                            let rollback_event = match &rb_outcome {
+                                Ok(s) if s.success() => ReportEvent::RollbackTriggered {
+                                    reason: format!("activation phase {phase} failed"),
+                                },
+                                Ok(s) => ReportEvent::ActivationFailed {
+                                    phase: format!("rollback-after-{phase}"),
+                                    exit_code: s.code(),
+                                    stderr_tail: None,
+                                },
+                                Err(err) => ReportEvent::ActivationFailed {
+                                    phase: format!("rollback-after-{phase}"),
+                                    exit_code: None,
+                                    stderr_tail: Some(err.to_string()),
+                                },
+                            };
+                            post_report(
+                                &client_handle,
+                                &args.control_plane_url,
+                                &args.machine_id,
+                                Some(&target.channel_ref),
+                                rollback_event,
+                            )
+                            .await;
+                            if let Err(err) = rb_outcome {
                                 tracing::error!(
                                     error = %err,
                                     "rollback after failed switch also failed — manual intervention required",
@@ -273,9 +368,32 @@ async fn main() -> anyhow::Result<()> {
                                 actual = %actual,
                                 "activation: post-switch verify mismatch; rolling back to defend against tampered closure",
                             );
-                            if let Err(err) =
-                                nixfleet_agent::activation::rollback().await
-                            {
+                            post_report(
+                                &client_handle,
+                                &args.control_plane_url,
+                                &args.machine_id,
+                                Some(&target.channel_ref),
+                                ReportEvent::VerifyMismatch {
+                                    expected: expected.clone(),
+                                    actual: actual.clone(),
+                                },
+                            )
+                            .await;
+                            let rb_outcome =
+                                nixfleet_agent::activation::rollback().await;
+                            post_report(
+                                &client_handle,
+                                &args.control_plane_url,
+                                &args.machine_id,
+                                Some(&target.channel_ref),
+                                ReportEvent::RollbackTriggered {
+                                    reason: format!(
+                                        "post-switch verify mismatch (expected={expected}, actual={actual})"
+                                    ),
+                                },
+                            )
+                            .await;
+                            if let Err(err) = rb_outcome {
                                 tracing::error!(
                                     error = %err,
                                     "rollback after verify mismatch also failed — manual intervention required",
@@ -288,6 +406,20 @@ async fn main() -> anyhow::Result<()> {
                             // failed before realise even started); log
                             // and let next tick retry.
                             tracing::error!(error = %err, "activation spawn failed");
+                            post_report(
+                                &client_handle,
+                                &args.control_plane_url,
+                                &args.machine_id,
+                                Some(&target.channel_ref),
+                                ReportEvent::Other {
+                                    kind: "activation-spawn-failed".to_string(),
+                                    detail: Some(serde_json::json!({
+                                        "error": err.to_string(),
+                                        "target_closure": target.closure_hash,
+                                    })),
+                                },
+                            )
+                            .await;
                         }
                     }
                 }

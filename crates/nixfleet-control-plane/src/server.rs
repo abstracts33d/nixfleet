@@ -147,7 +147,12 @@ pub struct AppState {
     pub last_tick_at: RwLock<Option<DateTime<Utc>>>,
     pub host_checkins: RwLock<HashMap<String, HostCheckinRecord>>,
     pub host_reports: RwLock<HashMap<String, VecDeque<ReportRecord>>>,
-    pub channel_refs_cache: RwLock<crate::forgejo_poll::ChannelRefsCache>,
+    /// In-memory channel-refs cache populated by the Forgejo poll
+    /// task. Wrapped in `Arc<RwLock<...>>` so the poll task writes
+    /// directly without a mirror — same shape as `verified_fleet`,
+    /// removes the boot-time race where the reconciler saw
+    /// `channels_observed: 0` for the first ≤30s after CP startup.
+    pub channel_refs_cache: Arc<RwLock<crate::forgejo_poll::ChannelRefsCache>>,
     pub seen_token_nonces: RwLock<HashSet<String>>,
     pub issuance_paths: RwLock<IssuancePaths>,
     pub db: Option<Arc<crate::db::Db>>,
@@ -178,7 +183,9 @@ impl Default for AppState {
             last_tick_at: RwLock::new(None),
             host_checkins: RwLock::new(HashMap::new()),
             host_reports: RwLock::new(HashMap::new()),
-            channel_refs_cache: RwLock::new(crate::forgejo_poll::ChannelRefsCache::default()),
+            channel_refs_cache: Arc::new(RwLock::new(
+                crate::forgejo_poll::ChannelRefsCache::default(),
+            )),
             seen_token_nonces: RwLock::new(HashSet::new()),
             issuance_paths: RwLock::new(IssuancePaths::default()),
             db: None,
@@ -482,13 +489,26 @@ async fn report(
     );
 
     let received_at = Utc::now();
-    let kind_str = format!("{:?}", req.kind).to_lowercase();
-    let error_str = req.error.clone().unwrap_or_else(|| "<none>".to_string());
+
+    // Render the event variant for the journal in a grep-friendly
+    // way: `event=activation-failed`, `event=verify-mismatch`, etc.
+    // The serde_json round-trip extracts the kebab-case discriminator
+    // without the agent having to do it for us.
+    let event_str = serde_json::to_value(&req.event)
+        .ok()
+        .and_then(|v| v.get("event").and_then(|e| e.as_str()).map(String::from))
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let rollout_str = req
+        .rollout
+        .clone()
+        .unwrap_or_else(|| "<none>".to_string());
+
     tracing::info!(
         target: "report",
         hostname = %req.hostname,
-        kind = %kind_str,
-        error = %error_str,
+        event = %event_str,
+        rollout = %rollout_str,
+        agent_version = %req.agent_version,
         event_id = %event_id,
         "report received"
     );
@@ -1302,28 +1322,18 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // CP relies on the file-backed `--artifact` path the reconcile
     // loop primes. Same fallback shape as before.
     //
-    // Bridge note: forgejo_poll::spawn takes its own
-    // Arc<RwLock<ChannelRefsCache>>; AppState owns a plain RwLock.
-    // Short mirror task copies snapshots over every 30s — kept for
-    // the channel-refs cache only, since `verified_fleet` is now
-    // Arc-shareable directly.
+    // Both shared locks (channel_refs_cache + verified_fleet) are
+    // already `Arc<RwLock<...>>` on `AppState`; the poll task writes
+    // through them directly, no mirror task needed. Reads from the
+    // reconcile loop / dispatch path see updates the moment the poll
+    // commits — no boot-time race where `channels_observed: 0` for
+    // the first ≤30s after CP startup.
     if let Some(forgejo_config) = args.forgejo.clone() {
-        let cache_arc: Arc<RwLock<crate::forgejo_poll::ChannelRefsCache>> =
-            Arc::new(RwLock::new(crate::forgejo_poll::ChannelRefsCache::default()));
         crate::forgejo_poll::spawn(
-            cache_arc.clone(),
+            state.channel_refs_cache.clone(),
             state.verified_fleet.clone(),
             forgejo_config,
         );
-        let state_for_mirror = state.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(30));
-            loop {
-                ticker.tick().await;
-                let snap = cache_arc.read().await.clone();
-                *state_for_mirror.channel_refs_cache.write().await = snap;
-            }
-        });
     }
 
     let app = build_router(state);

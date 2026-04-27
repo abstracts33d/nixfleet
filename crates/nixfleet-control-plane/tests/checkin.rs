@@ -16,7 +16,7 @@ use chrono::Utc;
 use nixfleet_control_plane::server;
 use nixfleet_proto::agent_wire::{
     CheckinRequest, CheckinResponse, FetchOutcome, FetchResult, GenerationRef,
-    ReportKind, ReportRequest, ReportResponse,
+    ReportEvent, ReportRequest, ReportResponse,
 };
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
@@ -283,10 +283,12 @@ async fn report_records_event_and_returns_event_id() {
     let req = ReportRequest {
         hostname: "krach".to_string(),
         agent_version: "0.2.0".to_string(),
-        kind: ReportKind::FetchFailed,
-        error: Some("attic 503 — upstream unavailable".to_string()),
-        context: Some(serde_json::json!({"closureHash": "abc123"})),
         occurred_at: Utc::now(),
+        rollout: Some("stable@abc12345".to_string()),
+        event: ReportEvent::RealiseFailed {
+            closure_hash: "abc123".to_string(),
+            reason: "attic 503 — upstream unavailable".to_string(),
+        },
     };
 
     let resp: ReportResponse = client

@@ -174,39 +174,114 @@ pub struct ConfirmResponse {}
 // =====================================================================
 
 /// POST /v1/agent/report request body. Agent emits this when a
-/// fetch/verify failure or other notable event occurs out-of-band
-/// from the regular checkin cadence. Phase 3 records into a bounded
-/// in-memory ring buffer per host; Phase 4 adds SQLite persistence
-/// and correlation with rollouts.
+/// notable event happens out-of-band from the regular checkin
+/// cadence — activation failure, realisation failure, post-switch
+/// verify mismatch, enrollment / renewal failure, trust-file
+/// problem.
+///
+/// Wire shape per RFC-0003 §4.3, with two operationally-useful
+/// additions on top of the RFC's minimum:
+/// - `agentVersion` for triage (CP can spot mismatched-rev agents).
+/// - `occurredAt` so the operator can reason about timing without
+///   relying on CP-side receipt timestamp.
+///
+/// `event` is a discriminator string (kebab-case, see
+/// [`ReportEvent`]). `details` holds per-event structured fields.
+/// `rollout` correlates the event with a `pending_confirms` row
+/// (matches `dispatch::Decision::Dispatch.rollout_id`); `null` for
+/// events that aren't tied to a specific rollout (enrollment,
+/// trust-error, …).
+///
+/// The earlier shipped shape (`kind` enum + free-form `error` +
+/// `context: Value`) is retired here — `kind` was a closed enum
+/// that needed proto bumps for new failure modes, `context: Value`
+/// was opaque to operators, and there was no rollout linkage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportRequest {
     pub hostname: String,
     pub agent_version: String,
-    pub kind: ReportKind,
-    /// Free-form short error string. Logged at info; not surfaced
-    /// to other endpoints in Phase 3.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// Optional structured context — closure hash being fetched,
-    /// channel ref, etc. Treated as an opaque blob in Phase 3.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<serde_json::Value>,
     pub occurred_at: DateTime<Utc>,
+    /// Rollout id this event is bound to (matches the
+    /// `<channel>@<short-ci-commit>` form the dispatch loop emits).
+    /// `None` for events not tied to a specific rollout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout: Option<String>,
+    /// `event` discriminator + per-variant `details` body.
+    /// `#[serde(flatten)]` puts both at the top level of the
+    /// request body, matching RFC-0003 §4.3's example exactly.
+    #[serde(flatten)]
+    pub event: ReportEvent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ReportKind {
-    /// Verifying a fetched target's signature failed.
-    VerifyFailed,
-    /// Couldn't fetch the target closure (network, attic, etc.).
-    FetchFailed,
-    /// Trust file (`trust.json`) failed to parse or wasn't found.
-    TrustError,
-    /// Catch-all for events the agent wants to surface but doesn't
-    /// fit a typed kind. Phase 4 may split this further.
-    Other,
+/// Typed event variants. `event` is a kebab-case discriminator on
+/// the wire; `details` carries the per-event structured body. New
+/// failure modes add a variant — old agents/CPs see the variant
+/// they don't recognise as `Other` if the consumer is permissive,
+/// or surface a deserialise error for stricter callers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", content = "details", rename_all = "kebab-case")]
+pub enum ReportEvent {
+    /// Activation step exited non-zero — `nix-env --set`,
+    /// `switch-to-configuration`, or any subsequent boot-time
+    /// activation. `phase` names the failing step; `exitCode` and
+    /// `stderrTail` are best-effort diagnostics.
+    ActivationFailed {
+        phase: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stderr_tail: Option<String>,
+    },
+
+    /// `nix-store --realise` failed — substituter trust mismatch,
+    /// network failure, or the path simply wasn't there. The agent
+    /// did not switch.
+    RealiseFailed {
+        closure_hash: String,
+        reason: String,
+    },
+
+    /// Post-switch verify caught `/run/current-system` pointing at a
+    /// closure other than the dispatched target. The agent rolled
+    /// back; the CP should mark the rollout suspect.
+    VerifyMismatch {
+        expected: String,
+        actual: String,
+    },
+
+    /// Agent invoked local rollback after a SwitchFailed /
+    /// VerifyMismatch / CP-410 outcome. Informational — paired
+    /// with one of the above for triage context.
+    RollbackTriggered {
+        reason: String,
+    },
+
+    /// First-boot enrollment (`/v1/enroll`) failed.
+    EnrollmentFailed {
+        reason: String,
+    },
+
+    /// Periodic cert renewal (`/v1/agent/renew`) failed.
+    RenewalFailed {
+        reason: String,
+    },
+
+    /// `trust.json` failed to parse or wasn't found at agent
+    /// startup. Agent operates degraded until restart.
+    TrustError {
+        reason: String,
+    },
+
+    /// Catch-all for events that don't yet have a typed variant.
+    /// Keeps the wire forward-compat without a proto bump per
+    /// new failure mode. `kind` is a free-form short label, `detail`
+    /// is an opaque object.
+    Other {
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

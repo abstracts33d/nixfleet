@@ -57,9 +57,17 @@ pub enum ActivationOutcome {
     /// doesn't match the input. The system was never switched —
     /// caller skips rollback, retries next tick.
     RealiseFailed { reason: String },
-    /// `nixos-rebuild switch` exited non-zero. Caller runs local
-    /// rollback.
-    SwitchFailed { exit_status: ExitStatus },
+    /// One of the activation steps exited non-zero. Caller runs
+    /// local rollback. `phase` distinguishes which step failed:
+    /// - `"nix-env-set"`: setting the system profile (system was
+    ///   never activated; rollback re-points the profile).
+    /// - `"switch-to-configuration"`: activation script (the system
+    ///   may be in a half-applied state until rollback re-runs the
+    ///   prior configuration's switch script).
+    SwitchFailed {
+        phase: String,
+        exit_status: ExitStatus,
+    },
     /// Switch succeeded but `/run/current-system`'s basename does not
     /// match the expected closure_hash. The system is now booting an
     /// unexpected closure — caller runs local rollback.
@@ -150,6 +158,7 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
             "agent: nix-env --set failed; not running switch-to-configuration",
         );
         return Ok(ActivationOutcome::SwitchFailed {
+            phase: "nix-env-set".to_string(),
             exit_status: set_status,
         });
     }
@@ -167,6 +176,7 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
             "agent: switch-to-configuration failed",
         );
         return Ok(ActivationOutcome::SwitchFailed {
+            phase: "switch-to-configuration".to_string(),
             exit_status: switch_status,
         });
     }
