@@ -1,4 +1,4 @@
-//! `/v1/enroll` integration test (Phase 3 PR-5 + signature-verify fix).
+//! `/v1/enroll` integration test.
 //!
 //! Mints a real ed25519 keypair on the operator side, signs a token,
 //! materialises a `trust.json` carrying the public half, spins up the
@@ -8,9 +8,6 @@
 //! 2. Signature tampering — flipped byte in signature → 401.
 //! 3. Replay — same nonce twice → 200 then 409.
 //! 4. Hostname-vs-CSR-CN mismatch → 401.
-//!
-//! Together these cover the security boundary that was stubbed in the
-//! initial PR-5 commit.
 
 use std::path::PathBuf;
 use std::sync::Once;

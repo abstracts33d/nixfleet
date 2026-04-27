@@ -118,7 +118,7 @@ in {
       type = ciReleaseKeySlotType;
       default = {};
       description = ''
-        CI release key. Private half in Stream A's HSM/TPM; public half
+        CI release key. Private half in CI's HSM/TPM; public half
         declared here as a typed submodule (`algorithm` + `public`) per
         CONTRACTS.md §II #1. Verified by the control plane on every
         `fleet.resolved` fetch, matching `meta.signatureAlgorithm`.

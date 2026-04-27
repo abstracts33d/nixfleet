@@ -84,8 +84,7 @@ pub fn boot_id() -> Result<String> {
 }
 
 /// Build the `currentGeneration` GenerationRef. `channel_ref` is
-/// always `None` in PR-3 — the agent doesn't know its channel until
-/// PR-4 wires the projection.
+/// `None` until the agent's channel is correlated by the projection.
 pub fn current_generation_ref() -> Result<GenerationRef> {
     Ok(GenerationRef {
         closure_hash: current_closure_hash()?,

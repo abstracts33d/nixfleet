@@ -1,4 +1,4 @@
-//! Bootstrap enrollment + cert renewal client (Phase 3 PR-5).
+//! Bootstrap enrollment + cert renewal client.
 //!
 //! - On first boot, when the agent's `--client-cert` / `--client-key`
 //!   files don't exist, it reads `--bootstrap-token-file`, generates

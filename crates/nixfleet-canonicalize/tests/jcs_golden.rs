@@ -43,33 +43,33 @@ fn invalid_json_is_rejected() {
     assert!(result.is_err(), "invalid JSON must be rejected");
 }
 
-/// Cross-stream JCS byte-identity check.
+/// Cross-component JCS byte-identity check.
 ///
-/// Stream B (nixfleet-compliance) pins a 69-byte canonical reference at
+/// `nixfleet-compliance` pins a 69-byte canonical reference at
 /// `tests/typed-controls/fixtures/_jcs-golden.json`. That file is already
 /// JCS-canonical (keys sorted, compact, no trailing newline). Feeding it
-/// through Stream C's `nixfleet_canonicalize::canonicalize` MUST produce
-/// identical bytes — otherwise Stream A's CI and Stream C's verifier would
-/// compute different signing bytes from the same declaration, silently
-/// breaking every signature at rotation time.
+/// through `nixfleet_canonicalize::canonicalize` MUST produce identical
+/// bytes — otherwise CI and the agent verifier would compute different
+/// signing bytes from the same declaration, silently breaking every
+/// signature at rotation time.
 ///
-/// The fixture is vendored from Stream B at copy-time. If Stream B
-/// changes theirs, this test fails loudly and the copy gets refreshed.
-/// That failure IS the cross-stream drift alarm working.
+/// The fixture is vendored at copy-time. If the source changes, this
+/// test fails loudly and the copy gets refreshed. That failure IS the
+/// cross-component drift alarm working.
 #[test]
 fn stream_b_jcs_golden_round_trips_byte_identical() {
     const STREAM_B_GOLDEN: &str = include_str!("fixtures/stream-b/jcs-golden.json");
 
-    let produced = canonicalize(STREAM_B_GOLDEN).expect("canonicalize Stream B golden");
+    let produced = canonicalize(STREAM_B_GOLDEN).expect("canonicalize pinned golden");
 
     assert_eq!(
         produced, STREAM_B_GOLDEN,
-        "cross-stream JCS byte drift detected: our canonicalize produced different bytes than Stream B's pinned golden"
+        "JCS byte drift detected: our canonicalize produced different bytes than the pinned golden"
     );
     assert_eq!(
         produced.len(),
         69,
-        "Stream B's golden is 69 bytes; we produced {}",
+        "pinned golden is 69 bytes; we produced {}",
         produced.len()
     );
 }

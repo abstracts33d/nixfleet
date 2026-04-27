@@ -1,10 +1,10 @@
 //! Bootstrap token + enrollment + renewal wire types (RFC-0003 §5).
 //!
-//! Phase 3 PR-5. Token format is JSON: `{version, claims, signature}`
-//! where `signature` is a detached ed25519 signature over the JCS
-//! canonical bytes of `claims` (the `nixfleet-canonicalize` crate
-//! produces the same bytes consumers verify against). The org root
-//! pubkey lives in `trust.json` under `orgRootKey.current`.
+//! Token format is JSON: `{version, claims, signature}` where
+//! `signature` is a detached ed25519 signature over the JCS canonical
+//! bytes of `claims` (the `nixfleet-canonicalize` crate produces the
+//! same bytes consumers verify against). The org root pubkey lives in
+//! `trust.json` under `orgRootKey.current`.
 //!
 //! All types are wire-only: no crypto primitives leak from this
 //! module — the CP and `nixfleet-mint-token` consume them via the
@@ -42,8 +42,8 @@ pub struct TokenClaims {
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     /// Random 16-byte nonce, hex-encoded. Lets the CP detect token
-    /// replay (in-memory replay set in PR-5; SQLite persistence in
-    /// Phase 4).
+    /// replay (backed by an in-memory replay set plus SQLite
+    /// persistence when a DB is configured).
     pub nonce: String,
 }
 

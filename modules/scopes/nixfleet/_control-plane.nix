@@ -1,12 +1,10 @@
 # NixOS service module for the NixFleet control plane.
 #
-# Phase 3 PR-1: long-running TLS server. The binary's `serve`
-# subcommand runs forever, accepts mTLS-authenticated connections (PR-2
-# adds the verifier), and ticks an internal reconcile loop every 30s.
-# This replaces Phase 2's oneshot+timer pair — `Type=oneshot` →
-# `Type=simple`, `systemd.timers.nixfleet-control-plane` is dropped.
-# The `tick` subcommand on the binary preserves Phase 2's CLI contract
-# for tests and ad-hoc operator runs.
+# Long-running TLS server. The binary's `serve` subcommand runs
+# forever, accepts mTLS-authenticated connections, and ticks an
+# internal reconcile loop every 30s. The unit runs as `Type=simple`
+# (no timer companion). The `tick` subcommand on the binary is
+# preserved for tests and ad-hoc operator runs.
 #
 # Auto-included by mkHost (disabled by default). Enable on the
 # coordinator host (typically lab) only.
@@ -28,9 +26,9 @@
   # First-deploy bootstrap for observed.json — laid down via
   # systemd-tmpfiles `C` (copy only if path does not exist) so the
   # reconciler's first tick has a parseable file even before the
-  # operator has hand-written one. PR-4 swaps this for an in-memory
-  # projection from agent check-ins; this stays as the offline
-  # dev/test fallback.
+  # operator has hand-written one. The in-memory projection from
+  # agent check-ins is preferred; this stays as the offline dev/test
+  # fallback.
   initialObservedJson = pkgs.writers.writeJSON "observed-initial.json" {
     channelRefs = {};
     lastRolledRefs = {};
@@ -42,7 +40,7 @@
   listenPort = lib.toInt (lib.last (lib.splitString ":" cfg.listen));
 in {
   options.services.nixfleet-control-plane = {
-    enable = lib.mkEnableOption "NixFleet control plane (Phase 3: long-running TLS server)";
+    enable = lib.mkEnableOption "NixFleet control plane (long-running TLS server)";
 
     listen = lib.mkOption {
       type = lib.types.str;
@@ -94,10 +92,10 @@ in {
         example = "/etc/nixfleet/fleet-ca.pem";
         description = ''
           Path to the client CA PEM file. When set, the server
-          requires verified client certs (mTLS). PR-1 leaves this
-          optional — the server starts in TLS-only mode if unset
-          and logs a warning. PR-2 onwards sets this as part of
-          standard deploys; production hosts should always have it.
+          requires verified client certs (mTLS). Optional — the
+          server starts in TLS-only mode if unset and logs a warning.
+          Standard deploys set this; production hosts should always
+          have it.
         '';
       };
     };
@@ -111,7 +109,8 @@ in {
         up-to-date with the fleet repo's HEAD — typically a separate
         timer that pulls the fleet repo into
         `/var/lib/nixfleet-cp/fleet/`. The CP module does not pull
-        git itself in PR-1; PR-4 adds in-process Forgejo polling.
+        git itself; in-process Forgejo polling can refresh this
+        cache automatically.
       '';
     };
 
@@ -126,11 +125,11 @@ in {
       default = "/var/lib/nixfleet-cp/observed.json";
       description = ''
         Path to the JSON file holding observed fleet state — shape
-        per `nixfleet_reconciler::Observed`. Phase 2 + PR-1: hand-
-        written by the operator (auto-bootstrapped to an empty
-        skeleton on first deploy via systemd-tmpfiles). PR-4 swaps
-        the live in-memory projection from agent check-ins; this
-        path remains as the offline dev/test fallback.
+        per `nixfleet_reconciler::Observed`. Hand-written by the
+        operator (auto-bootstrapped to an empty skeleton on first
+        deploy via systemd-tmpfiles). The live in-memory projection
+        from agent check-ins is preferred; this path remains as the
+        offline dev/test fallback.
       '';
     };
 
@@ -154,7 +153,7 @@ in {
       '';
     };
 
-    # PR-5: cert issuance (enroll + renew). The CP holds the fleet
+    # Cert issuance (enroll + renew). The CP holds the fleet
     # CA private key online — see nixfleet issue #41 for the deferred
     # TPM-bound replacement. fleet/modules/nixfleet/tls.nix wires
     # these to agenix-decrypted paths.
@@ -190,7 +189,7 @@ in {
       '';
     };
 
-    # Phase 4 PR-C: closure proxy upstream. Attic instance the CP
+    # Closure proxy upstream. Attic instance the CP
     # forwards /v1/agent/closure/<hash> requests to. Typically the
     # local attic on lab. When null, the endpoint returns 501.
     closureUpstream = lib.mkOption {
@@ -198,17 +197,17 @@ in {
       default = null;
       example = "http://localhost:8085";
       description = ''
-        Attic upstream URL for closure-proxy forwarding. Phase 4
-        PR-C ships narinfo forwarding (operator can curl
+        Attic upstream URL for closure-proxy forwarding. Ships
+        narinfo forwarding (operator can curl
         `<cp>/v1/agent/closure/<hash>` and get the upstream's
         narinfo response). Full nar streaming is a follow-up.
       '';
     };
 
-    # Phase 4 PR-1: SQLite path. When set, the CP opens + migrates
-    # the DB on startup. Token replay + cert revocations + (Phase 4
-    # PR-2+) pending confirms + rollouts persist across CP restarts.
-    # When null, in-memory state only — fine for dev, not production.
+    # SQLite path. When set, the CP opens + migrates the DB on
+    # startup. Token replay + cert revocations + pending confirms +
+    # rollouts persist across CP restarts. When null, in-memory state
+    # only — fine for dev, not production.
     dbPath = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = "/var/lib/nixfleet-cp/state.db";
@@ -217,16 +216,15 @@ in {
         StateDirectory so impermanent hosts can persist via
         environment.persistence (already declared below). Set to
         `null` to disable persistence — e.g. for dev/test or until
-        the operator is ready for the full Phase 4 stateful CP.
+        the operator is ready for the full stateful CP.
       '';
     };
 
-    # PR-4: Forgejo channel-refs poll. When set, the CP polls
+    # Forgejo channel-refs poll. When set, the CP polls
     # /api/v1/repos/{owner}/{repo}/contents/{artifactPath} every 60s
-    # and refreshes the in-memory channel-refs cache. Phase 4 may
-    # extend this with a sibling poll for the .sig file (verify-on-
-    # load) — for now the CP trusts the authenticated TLS channel
-    # to Forgejo + Forgejo's RBAC.
+    # and refreshes the in-memory channel-refs cache. A sibling poll
+    # for the .sig file (verify-on-load) may be added; for now the CP
+    # trusts the authenticated TLS channel to Forgejo + Forgejo's RBAC.
     forgejo = {
       baseUrl = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -298,8 +296,7 @@ in {
           message = ''
             services.nixfleet-control-plane requires both tls.cert and tls.key
             to be set when enabled. Wire them through agenix in fleet/modules/
-            nixfleet/tls.nix (see commit 3d68ed8^ for the historical shape, or
-            the prep PR re-introducing it for Phase 3).
+            nixfleet/tls.nix.
           '';
         }
       ];
@@ -384,11 +381,10 @@ in {
           RestartSec = 10;
           StateDirectory = "nixfleet-cp";
 
-          # Hardening — same posture as v0.1's CP module (tag v0.1.1).
-          # Network access is required (TLS listener), so PrivateNetwork
-          # from Phase 2 is dropped. ProtectSystem=strict is fine since
-          # the server reads from /etc + /var/lib + /run/agenix and only
-          # writes to its StateDirectory.
+          # Hardening. Network access is required (TLS listener), so
+          # PrivateNetwork is not set. ProtectSystem=strict is fine
+          # since the server reads from /etc + /var/lib + /run/agenix
+          # and only writes to its StateDirectory.
           ProtectSystem = "strict";
           ProtectHome = true;
           PrivateTmp = true;

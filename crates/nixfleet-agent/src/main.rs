@@ -1,11 +1,11 @@
-//! `nixfleet-agent` — Phase 3 PR-3 poll loop.
+//! `nixfleet-agent` — main poll + activation loop.
 //!
-//! Real main loop. Reads cert paths + CP URL from CLI flags, builds
-//! an mTLS reqwest client, polls `/v1/agent/checkin` every
-//! `pollInterval` seconds with a richer body than RFC-0003 §4.1's
-//! minimum (pending generation, last-fetch outcome, agent uptime).
-//! No activation — the response's `target` is logged but never
-//! acted on (Phase 4 wires that).
+//! Reads cert paths + CP URL from CLI flags, builds an mTLS reqwest
+//! client, polls `/v1/agent/checkin` every `pollInterval` seconds
+//! with a richer body than RFC-0003 §4.1's minimum (pending
+//! generation, last-fetch outcome, agent uptime). On a dispatched
+//! target, realises and activates the closure, then confirms via
+//! `/v1/agent/confirm`.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -49,7 +49,7 @@ async fn post_report(
 #[command(
     name = "nixfleet-agent",
     version,
-    about = "NixFleet v0.2 fleet agent (poll-only, Phase 3 PR-3)."
+    about = "NixFleet fleet agent."
 )]
 struct Args {
     /// Control plane URL (e.g. https://lab:8080). Trailing slash
@@ -108,18 +108,18 @@ async fn main() -> anyhow::Result<()> {
 
     // The trust file is parsed on startup just to fail fast if
     // misconfigured. The agent doesn't currently consume the trust
-    // root for any in-process verification (PR-4 introduces the
-    // direct-fetch fallback path that uses verify_artifact); for now
-    // it's a contract-shape check.
+    // root for any in-process verification (a future direct-fetch
+    // fallback path would use verify_artifact); for now it's a
+    // contract-shape check.
     let trust_raw = std::fs::read_to_string(&args.trust_file).with_context(|| {
         format!("read trust file {}", args.trust_file.display())
     })?;
     let _trust: nixfleet_proto::TrustConfig =
         serde_json::from_str(&trust_raw).context("parse trust file")?;
 
-    // PR-5: first-boot enrollment. When the agent starts and finds
-    // no client cert at the configured path, AND a bootstrap token
-    // is available, run /v1/enroll and write the issued cert + key
+    // First-boot enrollment. When the agent starts and finds no
+    // client cert at the configured path, AND a bootstrap token is
+    // available, run /v1/enroll and write the issued cert + key
     // before continuing to the poll loop.
     if let (Some(cert_path), Some(key_path), Some(token_file)) = (
         args.client_cert.as_deref(),
@@ -187,10 +187,10 @@ async fn main() -> anyhow::Result<()> {
 
         ticker.tick().await;
 
-        // PR-5: self-paced renewal at 50% of cert validity. Each
-        // tick checks the cert; if past 50%, generate a fresh CSR
-        // and POST /v1/agent/renew via the current authenticated
-        // client. Failure is non-fatal — next tick retries.
+        // Self-paced renewal at 50% of cert validity. Each tick
+        // checks the cert; if past 50%, generate a fresh CSR and
+        // POST /v1/agent/renew via the current authenticated client.
+        // Failure is non-fatal — next tick retries.
         if let (Some(cert_path), Some(key_path)) =
             (args.client_cert.as_deref(), args.client_key.as_deref())
         {
@@ -240,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(resp) => {
                 consecutive_failures = 0;
                 if let Some(target) = &resp.target {
-                    // Phase 4: realise + switch + verify the target.
+                    // Realise + switch + verify the target.
                     // On full Success → POST /v1/agent/confirm. On any
                     // outcome that left the system in an unexpected
                     // state (SwitchFailed, VerifyMismatch) → local

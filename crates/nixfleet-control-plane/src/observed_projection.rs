@@ -1,18 +1,16 @@
 //! Live `Observed` projection from in-memory checkin state.
 //!
-//! Replaces Phase 2's hand-written `observed.json` as the default
-//! source of truth for the reconcile loop. The file-backed input
-//! stays as `--observed` for offline-replay debugging (operator
+//! Default source of truth for the reconcile loop. The file-backed
+//! input stays as `--observed` for offline-replay debugging (operator
 //! dumps in-memory state, reproduces a tick) and as a dev/test
 //! fallback when no agents are checking in yet.
 //!
 //! For now this is intentionally a dumb projection — every host
 //! that has ever checked in shows up as `online`, with its most
-//! recent `currentGeneration.closureHash` as the
-//! `current_generation` field. Phase 4 introduces staleness
-//! detection (host with no checkin in N intervals → online: false)
-//! and active-rollout tracking; this module's signature stays the
-//! same so PR-4's logic plugs in cleanly.
+//! recent `currentGeneration.closureHash` as the `current_generation`
+//! field. Staleness detection (host with no checkin in N intervals →
+//! online: false) and active-rollout tracking are future work; this
+//! module's signature is set up so that logic plugs in cleanly.
 
 use std::collections::HashMap;
 
@@ -39,9 +37,9 @@ pub fn project(
 
     Observed {
         channel_refs: channel_refs.clone(),
-        // PR-4 doesn't yet track these; reconcile against the empty
-        // case is fine — Phase 4's dispatch loop is what populates
-        // active rollouts and last-rolled-refs.
+        // Not yet tracked here; reconcile against the empty case is
+        // fine — the dispatch loop is what populates active rollouts
+        // and last-rolled-refs.
         last_rolled_refs: HashMap::new(),
         host_state,
         active_rollouts: Vec::new(),

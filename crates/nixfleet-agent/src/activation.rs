@@ -387,8 +387,8 @@ pub async fn confirm_target(
 mod tests {
     //! Pure-logic tests for the path-comparison surface of
     //! `read_current_system_basename`. The realise/switch path itself
-    //! is covered by the microvm harness (Phase 5) — unit-level
-    //! mocking of `Command` is more friction than payoff.
+    //! is covered by the microvm harness — unit-level mocking of
+    //! `Command` is more friction than payoff.
 
     use super::*;
     use std::path::{Path, PathBuf};

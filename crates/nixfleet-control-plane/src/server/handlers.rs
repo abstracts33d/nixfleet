@@ -218,7 +218,7 @@ async fn dispatch_target_for_checkin(
 ///
 /// In-memory ring buffer per host, capped at `REPORT_RING_CAP`.
 /// New reports push to the back; oldest is dropped on overflow.
-/// Phase 5 promotes this to SQLite + correlates with rollouts.
+/// Future work: promote to SQLite + correlate with rollouts.
 pub(super) async fn report(
     State(state): State<Arc<AppState>>,
     Extension(peer_certs): Extension<PeerCertificates>,

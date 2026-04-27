@@ -1,4 +1,4 @@
-//! Long-running TLS server (Phase 3 PR-1 onwards).
+//! Long-running TLS server.
 //!
 //! axum router + axum-server TLS listener + internal reconcile loop
 //! + Forgejo poll. The slim entry point — `serve()` and
@@ -75,7 +75,7 @@ async fn version_layer(
 /// starts the reconcile loop + the Forgejo poll task, binds the
 /// listener, runs forever.
 pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
-    // Phase 4 PR-1: open + migrate SQLite if a path is configured.
+    // Open + migrate SQLite if a path is configured.
     let db = if let Some(path) = &args.db_path {
         let db = crate::db::Db::open(path)?;
         db.migrate()?;
@@ -99,12 +99,12 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     let state = Arc::new(app_state);
 
-    // Phase 4 PR-B: magic-rollback timer.
+    // Magic-rollback timer.
     if let Some(db_arc) = db {
         crate::rollback_timer::spawn(db_arc);
     }
 
-    // Seed issuance config (PR-5).
+    // Seed issuance config.
     *state.issuance_paths.write().await = IssuancePaths {
         fleet_ca_cert: args.fleet_ca_cert.clone(),
         fleet_ca_key: args.fleet_ca_key.clone(),
@@ -199,7 +199,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     } else {
         tracing::warn!(
             "control plane started without --client-ca: /v1/* endpoints will reject all clients with 401. \
-             Pass --client-ca to enable mTLS — recommended for any non-PR-1 deployment."
+             Pass --client-ca to enable mTLS — recommended for any production deployment."
         );
         "TLS-only"
     };

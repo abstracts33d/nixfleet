@@ -1,8 +1,8 @@
 //! `nixfleet-mint-token` — operator-side bootstrap token minter.
 //!
-//! Phase 3 PR-5. Run once on the operator's workstation per new
-//! fleet host (typically as part of declaring the host in
-//! fleet.nix and committing an agenix-encrypted token).
+//! Run once on the operator's workstation per new fleet host
+//! (typically as part of declaring the host in fleet.nix and
+//! committing an agenix-encrypted token).
 //!
 //! Usage:
 //!
@@ -61,7 +61,7 @@ struct Args {
     #[arg(long, default_value_t = 24)]
     validity_hours: u32,
 
-    /// Token schema version. Always 1 in PR-5.
+    /// Token schema version. Always 1.
     #[arg(long, default_value_t = 1)]
     version: u32,
 }

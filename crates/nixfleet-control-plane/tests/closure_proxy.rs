@@ -1,4 +1,4 @@
-//! `/v1/agent/closure/{hash}` integration tests (Phase 4 PR-C).
+//! `/v1/agent/closure/{hash}` integration tests.
 //!
 //! Coverage:
 //! - 501 Not Implemented when no upstream is configured.

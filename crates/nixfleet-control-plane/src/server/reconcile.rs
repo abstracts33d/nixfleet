@@ -89,10 +89,10 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             };
             let checkins = state.host_checkins.read().await.clone();
 
-            // PR-4 projection: in-memory checkins + cached channel-refs.
+            // Live projection: in-memory checkins + cached channel-refs.
             // When the Forgejo poll hasn't succeeded yet AND no agents
             // have checked in, fall back to the file-backed
-            // observed.json so PR-1's deploy-without-agents path keeps
+            // observed.json so the deploy-without-agents path keeps
             // working.
             let inputs_now = TickInputs {
                 now,

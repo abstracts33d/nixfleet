@@ -1,4 +1,4 @@
-//! `/v1/agent/checkin` + `/v1/agent/report` integration test (PR-3).
+//! `/v1/agent/checkin` + `/v1/agent/report` integration test.
 //!
 //! Spins up an in-process server with mTLS, sends a checkin from a
 //! client cert with CN=krach, asserts the body shape comes through
@@ -186,7 +186,7 @@ async fn checkin_records_request_and_returns_null_target() {
         .await
         .unwrap();
 
-    assert!(resp.target.is_none(), "Phase 3 should never dispatch");
+    assert!(resp.target.is_none(), "should not dispatch in this scenario");
     assert_eq!(resp.next_checkin_secs, 60);
 
     server_handle.abort();

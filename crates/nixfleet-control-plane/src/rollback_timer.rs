@@ -1,12 +1,10 @@
-//! Magic rollback deadline tracker (Phase 4 PR-B).
+//! Magic rollback deadline tracker.
 //!
 //! Periodic background task: every 30s, scan `pending_confirms` for
 //! rows whose `confirm_deadline` has passed but `state` is still
 //! `'pending'`. Transition each to `'rolled-back'` and emit a
 //! journal line. The agent learns the rollout was rolled back via
-//! its next `/v1/agent/checkin` (the CP would normally include
-//! `target = null` and a separate signal — Phase 4 dispatch loop
-//! adds that signal).
+//! its next `/v1/agent/checkin`.
 //!
 //! This task is the CP-side half of magic rollback (issue #2). The
 //! agent-side half is in `nixfleet-agent`'s activation loop (parallel

@@ -36,7 +36,7 @@
     apps.nixfleet-verify-artifact = {
       type = "app";
       program = "${workspace.packages.nixfleet-verify-artifact}/bin/nixfleet-verify-artifact";
-      meta.description = "Phase 2 harness CLI — verify a signed fleet.resolved against a trust.json";
+      meta.description = "Harness CLI — verify a signed fleet.resolved against a trust.json";
     };
 
     # Doc pipeline using STANDARD tooling — `cargo doc` for the

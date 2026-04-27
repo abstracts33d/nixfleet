@@ -17,11 +17,10 @@ use nixfleet_proto::agent_wire::{CheckinRequest, ReportRequest};
 use nixfleet_proto::FleetResolved;
 use tokio::sync::RwLock;
 
-/// Per-host event ring buffer cap. Phase 3's `/v1/agent/report` is
-/// in-memory only — Phase 4 polish wires the agent to actually emit
-/// reports, but persistence (SQLite-backed `host_reports` table) is
-/// still pending. 32 entries is enough to spot a flapping host
-/// without unbounded memory growth.
+/// Per-host event ring buffer cap. `/v1/agent/report` is in-memory
+/// only; SQLite-backed persistence for `host_reports` is still
+/// pending. 32 entries is enough to spot a flapping host without
+/// unbounded memory growth.
 pub(super) const REPORT_RING_CAP: usize = 32;
 
 /// Returned to the agent in `CheckinResponse.next_checkin_secs`.
@@ -51,7 +50,7 @@ pub struct ServeArgs {
     pub tls_key: PathBuf,
     pub client_ca: Option<PathBuf>,
     /// Fleet CA cert — used by issuance to chain new agent certs.
-    /// Often the same path as `client_ca`. PR-5 onwards.
+    /// Often the same path as `client_ca`.
     pub fleet_ca_cert: Option<PathBuf>,
     /// Fleet CA private key — issuance signs new agent certs with
     /// this. **Online on the CP per the deferred-trust-hardening
@@ -62,28 +61,29 @@ pub struct ServeArgs {
     pub artifact_path: PathBuf,
     pub signature_path: PathBuf,
     pub trust_path: PathBuf,
-    /// PR-1 fallback path. PR-4 prefers the in-memory projection from
-    /// check-ins; this path is used only when no agents have checked
-    /// in yet AND `forgejo` is None (offline dev/test mode).
+    /// File-backed observed-state fallback path. The in-memory
+    /// projection from check-ins is preferred; this path is used only
+    /// when no agents have checked in yet AND `forgejo` is None
+    /// (offline dev/test mode).
     pub observed_path: PathBuf,
     pub freshness_window: Duration,
-    /// PR-4 / GitOps closure: when set, the Forgejo poll fetches
+    /// GitOps closure: when set, the Forgejo poll fetches
     /// `releases/fleet.resolved.json` + `.sig` from the operator's
     /// repo every 60s, verifies, and refreshes `verified_fleet`. When
     /// `None`, the CP relies on the file-backed `--artifact` path
     /// alone.
     pub forgejo: Option<crate::forgejo_poll::ForgejoConfig>,
-    /// Phase 4 PR-1: SQLite path. When `Some`, the DB is opened +
-    /// migrated at startup. When `None`, in-memory state only.
+    /// SQLite path. When `Some`, the DB is opened + migrated at
+    /// startup. When `None`, in-memory state only.
     pub db_path: Option<PathBuf>,
-    /// Phase 4 PR-C: closure proxy upstream. Forwarded URL of the
-    /// attic instance the CP proxies `/v1/agent/closure/<hash>`
-    /// requests to. `None` → endpoint returns 501.
+    /// Closure proxy upstream. Forwarded URL of the attic instance the
+    /// CP proxies `/v1/agent/closure/<hash>` requests to. `None` →
+    /// endpoint returns 501.
     pub closure_upstream: Option<String>,
 }
 
-/// Most-recent checkin per host. PR-4's projection feeds this into
-/// the reconciler.
+/// Most-recent checkin per host. The projection feeds this into the
+/// reconciler.
 #[derive(Debug, Clone)]
 pub struct HostCheckinRecord {
     pub last_checkin: DateTime<Utc>,
@@ -91,8 +91,7 @@ pub struct HostCheckinRecord {
 }
 
 /// In-memory record of an event report. Bounded ring buffer per
-/// host (cap = `REPORT_RING_CAP`). DB-backed persistence is
-/// deferred to Phase 5.
+/// host (cap = `REPORT_RING_CAP`). DB-backed persistence is deferred.
 #[derive(Debug, Clone)]
 pub struct ReportRecord {
     pub event_id: String,

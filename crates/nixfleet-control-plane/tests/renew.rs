@@ -1,4 +1,4 @@
-//! `/v1/agent/renew` integration tests (Phase 4 polish).
+//! `/v1/agent/renew` integration tests.
 //!
 //! Counterpart to `enroll.rs`. Renewal is the steady-state cert
 //! rotation path: an agent already has a fleet-CA-signed cert,

@@ -1,13 +1,13 @@
 # modules/tests/_agent-v2-trust.nix
 #
-# Eval-only assertions for the v0.2 agent scope module
+# Eval-only assertions for the agent scope module
 # (modules/scopes/nixfleet/_agent.nix). Verifies that:
 #   - environment.etc materialises /etc/nixfleet/agent/trust.json from
 #     config.nixfleet.trust via pkgs.writers.writeJSON.
 #   - The configured trust payload carries schemaVersion = 1 (required
 #     per docs/trust-root-flow.md §7.4 and proto::TrustConfig).
 #   - systemd ExecStart carries --trust-file, --control-plane-url,
-#     --machine-id, --poll-interval for the v0.2 poll-only contract.
+#     --machine-id, --poll-interval for the poll-only contract.
 #
 # Called from modules/tests/eval.nix. Imported (not auto-imported by
 # import-tree) because the filename starts with an underscore.

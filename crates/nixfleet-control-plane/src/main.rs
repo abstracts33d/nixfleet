@@ -3,15 +3,14 @@
 //! Two subcommands:
 //!
 //! * `serve` (default) — long-running TLS server. axum + tokio +
-//!   axum-server. Internal 30s reconcile loop. Phase 3 PR-1 ships
-//!   `GET /healthz`; PR-2+ light up the agent endpoints.
+//!   axum-server. Internal 30s reconcile loop. Exposes `GET /healthz`
+//!   and the `/v1/*` agent endpoints.
 //!
-//! * `tick` — Phase 2's oneshot behaviour: read inputs, verify,
-//!   reconcile, print plan, exit. Preserved for tests + ad-hoc
-//!   operator runs (handy for diffing what the loop is doing
-//!   without tailing journald).
+//! * `tick` — oneshot: read inputs, verify, reconcile, print plan,
+//!   exit. Preserved for tests + ad-hoc operator runs (handy for
+//!   diffing what the loop is doing without tailing journald).
 //!
-//! Exit codes for `tick` (preserved from Phase 2):
+//! Exit codes for `tick`:
 //! - 0 — verify ok, plan emitted (the plan may be empty — no drift).
 //! - 1 — verify failed; one summary line emitted with the reason.
 //! - 2 — input/IO/parse error before verify could run.
@@ -31,7 +30,7 @@ use nixfleet_control_plane::{render_plan, server, tick, TickInputs, VerifyOutcom
 #[command(
     name = "nixfleet-control-plane",
     version,
-    about = "NixFleet control plane (Phase 3): long-running TLS server + reconciler."
+    about = "NixFleet control plane: long-running TLS server + reconciler."
 )]
 struct Args {
     #[command(subcommand)]
@@ -44,9 +43,8 @@ enum Command {
     /// natural operator default — `nixfleet-control-plane serve`.
     Serve(ServeFlags),
     /// One-shot tick: read inputs, verify, reconcile, print, exit.
-    /// Preserves Phase 2's CLI contract for tests + ad-hoc operator
-    /// runs (handy for diffing what the loop is doing without
-    /// tailing journald).
+    /// For tests + ad-hoc operator runs (handy for diffing what the
+    /// loop is doing without tailing journald).
     Tick(TickFlags),
 }
 
@@ -65,8 +63,7 @@ struct ServeFlags {
     tls_key: PathBuf,
 
     /// Client CA PEM file. When set, server requires verified client
-    /// certs (mTLS). PR-1 leaves this optional; PR-2 onwards sets it
-    /// as part of the standard deploy.
+    /// certs (mTLS). Optional; the standard deploy sets it.
     #[arg(long, env = "NIXFLEET_CP_CLIENT_CA")]
     client_ca: Option<PathBuf>,
 
@@ -83,9 +80,9 @@ struct ServeFlags {
     trust_file: PathBuf,
 
     /// Path to observed state JSON (shape per
-    /// `nixfleet_reconciler::Observed`). PR-4 swaps this default
-    /// path for an in-memory projection from agent check-ins; the
-    /// flag stays as a dev/test fallback.
+    /// `nixfleet_reconciler::Observed`). The in-memory projection
+    /// from agent check-ins is preferred; the flag remains as a
+    /// dev/test fallback.
     #[arg(long)]
     observed: PathBuf,
 
@@ -93,7 +90,7 @@ struct ServeFlags {
     #[arg(long, default_value_t = 86400)]
     freshness_window_secs: u64,
 
-    // PR-4: Forgejo channel-refs poll. All four flags must be set
+    // Forgejo channel-refs poll. All four flags must be set
     // together; if any are missing the poll task is not spawned and
     // the CP falls back to reading channel-refs from the file-backed
     // observed.json.
@@ -134,9 +131,9 @@ struct ServeFlags {
     #[arg(long, env = "NIXFLEET_CP_FORGEJO_TOKEN_FILE")]
     forgejo_token_file: Option<PathBuf>,
 
-    // PR-5: cert issuance (enroll + renew). The CP holds the fleet
-    // CA private key online — see issue #41 for the deferred TPM-
-    // bound replacement. When these are unset, /v1/enroll and
+    // Cert issuance (enroll + renew). The CP holds the fleet CA
+    // private key online — see issue #41 for the deferred TPM-bound
+    // replacement. When these are unset, /v1/enroll and
     // /v1/agent/renew return 500.
     /// Fleet CA cert path (read on each issuance for the chain).
     #[arg(long, env = "NIXFLEET_CP_FLEET_CA_CERT")]
@@ -153,18 +150,17 @@ struct ServeFlags {
           env = "NIXFLEET_CP_AUDIT_LOG")]
     audit_log: PathBuf,
 
-    /// Phase 4 PR-1: SQLite database path. When set, the CP opens
-    /// the DB at startup, runs migrations, and uses it for token
-    /// replay + cert revocation + (Phase 4 PR-2+) pending confirms
-    /// + rollouts. When unset, in-memory state only — fine for
-    /// dev/test, not for production.
+    /// SQLite database path. When set, the CP opens the DB at
+    /// startup, runs migrations, and uses it for token replay + cert
+    /// revocation + pending confirms + rollouts. When unset, in-memory
+    /// state only — fine for dev/test, not for production.
     #[arg(long, env = "NIXFLEET_CP_DB_PATH")]
     db_path: Option<PathBuf>,
 
-    /// Phase 4 PR-C: closure proxy upstream. Attic instance the CP
-    /// forwards `/v1/agent/closure/<hash>` requests to. Typical
-    /// value on lab: `http://localhost:8085` (attic on the same
-    /// host). When unset, the closure proxy endpoint returns 501.
+    /// Closure proxy upstream. Attic instance the CP forwards
+    /// `/v1/agent/closure/<hash>` requests to. Typical value on lab:
+    /// `http://localhost:8085` (attic on the same host). When unset,
+    /// the closure proxy endpoint returns 501.
     #[arg(long, env = "NIXFLEET_CP_CLOSURE_UPSTREAM")]
     closure_upstream: Option<String>,
 }
@@ -202,9 +198,6 @@ fn install_crypto_provider() {
     // purposes — the important thing is that *some* aws_lc_rs
     // provider is registered before we build a `ServerConfig`.
     //
-    // Provenance: workaround discovered in v0.1's CP main.rs (tag
-    // v0.1.1). Documented at length there to spare the next person
-    // a wasted afternoon — comment ported here.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 

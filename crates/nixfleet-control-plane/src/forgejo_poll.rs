@@ -1,10 +1,9 @@
-//! Forgejo poll loop for channel-refs (Phase 3 PR-4).
+//! Forgejo poll loop for channel-refs.
 //!
-//! Replaces the hand-edited `/etc/nixfleet/cp/channel-refs.json`
-//! default from PR-4's earlier design. Polls Forgejo's contents API
-//! every 60s for `releases/fleet.resolved.json`, decodes the base64
-//! body, runs the existing `verify_artifact` against it, and
-//! refreshes an in-memory `channel_refs` cache.
+//! Polls Forgejo's contents API every 60s for
+//! `releases/fleet.resolved.json`, decodes the base64 body, runs the
+//! existing `verify_artifact` against it, and refreshes an in-memory
+//! `channel_refs` cache.
 //!
 //! Failure semantics: log warning + retain previous cache. CP does
 //! not crash on Forgejo unavailability — operator can curl /healthz

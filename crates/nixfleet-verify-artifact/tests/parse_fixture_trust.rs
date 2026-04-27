@@ -1,8 +1,7 @@
 //! Sanity check: the exact `test-trust.json` shape emitted by
 //! `tests/harness/fixtures/signed/default.nix` must deserialize with
 //! `TrustConfig`. Smoke-tests the contract between the harness
-//! fixture (Stream A output) and the proto crate (Stream C input)
-//! before the full signed-roundtrip scenario lands.
+//! fixture and the proto crate.
 
 use nixfleet_proto::TrustConfig;
 

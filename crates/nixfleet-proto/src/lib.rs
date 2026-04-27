@@ -1,4 +1,4 @@
-//! NixFleet v0.2 boundary-contract types.
+//! NixFleet boundary-contract types.
 //!
 //! Every type in this crate mirrors an artifact declared in
 //! `docs/CONTRACTS.md §I`. Changes here are contract changes and
@@ -14,10 +14,10 @@
 //! # Optional-field posture
 //!
 //! Optional fields use `Option<T>` with `#[serde(default)]` and
-//! WITHOUT `skip_serializing_if`. This matches Stream B's emitted
-//! shape, where `null` is present on unset optional fields rather
-//! than the field being omitted entirely. JCS canonical bytes are
-//! thereby byte-identical across Nix emission and Rust round-trip.
+//! WITHOUT `skip_serializing_if`. This matches the Nix evaluator's
+//! emitted shape, where `null` is present on unset optional fields
+//! rather than the field being omitted entirely. JCS canonical bytes
+//! are thereby byte-identical across Nix emission and Rust round-trip.
 //!
 //! Fields that are only present in some artifacts (e.g. `meta` on
 //! a signed vs unsigned fixture) are handled at the domain level,

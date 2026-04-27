@@ -1,4 +1,4 @@
-//! `/v1/whoami` integration test (Phase 3 PR-2).
+//! `/v1/whoami` integration test.
 //!
 //! Mints a synthetic fleet CA + server cert + client cert in-test
 //! with rcgen, spins up `serve` with the CA wired as `--client-ca`
@@ -6,9 +6,7 @@
 //! asserts the verified CN matches what we put in the cert.
 //!
 //! Also covers the negative case: same server, but a request
-//! without a client cert is rejected at the TLS handshake. This is
-//! the proof-of-life test for the mTLS pipeline before PR-3
-//! wires the agent body.
+//! without a client cert is rejected at the TLS handshake.
 
 use std::path::PathBuf;
 use std::sync::Once;

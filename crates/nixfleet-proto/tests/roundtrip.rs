@@ -23,7 +23,7 @@ fn every_nullable_roundtrips_byte_for_byte() {
 
     assert_eq!(
         produced, golden,
-        "FleetResolved round-trip is not JCS byte-identical to Stream B-style emission"
+        "FleetResolved round-trip is not JCS byte-identical to the canonical golden"
     );
 }
 
@@ -47,19 +47,18 @@ fn signed_artifact_roundtrips_byte_for_byte() {
     assert_eq!(parsed.meta.ci_commit.as_deref(), Some("deadbeef"));
 }
 
-/// Sanity check against Stream B's real Nix output.
+/// Sanity check against the Nix evaluator's real output.
 ///
-/// Copied from `tests/lib/mkFleet/fixtures/empty-selector-warns.resolved.json`
-/// on branch `feat/mkfleet-promotion` (copy-time SHA locked in git log of
-/// this file). If Stream B changes the schema, this test fails and we
+/// Copied from `tests/lib/mkFleet/fixtures/empty-selector-warns.resolved.json`.
+/// If the Nix evaluator changes the schema, this test fails and we
 /// re-copy + adjust proto types.
 #[test]
 fn stream_b_empty_selector_parses_and_canonicalizes() {
     let input = load("stream-b/empty-selector-warns.resolved.json");
 
-    let parsed: FleetResolved = serde_json::from_str(&input).expect("parse Stream B fixture");
+    let parsed: FleetResolved = serde_json::from_str(&input).expect("parse fleet fixture");
 
-    // Spot-check a field that only Stream B's newer schema carries:
+    // Spot-check a field that only the newer schema carries:
     assert!(parsed.channels.contains_key("stable"));
     let chan = &parsed.channels["stable"];
     assert!(chan.freshness_window > 0);

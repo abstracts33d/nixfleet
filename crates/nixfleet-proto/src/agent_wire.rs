@@ -1,11 +1,11 @@
 //! Agent ↔ control-plane wire types (RFC-0003 §4).
 //!
 //! Defined in this crate (rather than in either binary) so the agent
-//! and CP serialise/deserialise from one schema and Stream B can
-//! reuse the same types for harness assertions. The Phase 3 expansion
-//! adds `pendingGeneration`, `lastEvaluatedTarget`, `lastFetchOutcome`,
-//! and `uptimeSecs` to the checkin body — all nullable, additive over
-//! RFC-0003 §4.1's minimum.
+//! and CP serialise/deserialise from one schema and the Nix harness
+//! can reuse the same types for assertions. The checkin body adds
+//! `pendingGeneration`, `lastEvaluatedTarget`, `lastFetchOutcome`,
+//! and `uptimeSecs` on top of RFC-0003 §4.1's minimum — all nullable,
+//! additive over the wire.
 //!
 //! Unknown-field posture follows the crate-level convention: serde's
 //! default is to ignore unknowns; consumers MUST treat additions
@@ -28,7 +28,7 @@ pub const PROTOCOL_MAJOR_VERSION: u32 = 1;
 pub const PROTOCOL_VERSION_HEADER: &str = "x-nixfleet-protocol";
 
 // =====================================================================
-// /v1/agent/checkin — RFC-0003 §4.1 + Phase 3 expansion
+// /v1/agent/checkin — RFC-0003 §4.1 + checkin-body expansion
 // =====================================================================
 
 /// POST /v1/agent/checkin request body. Sent by the agent every
@@ -50,8 +50,8 @@ pub struct CheckinRequest {
 
     /// The most recent target the agent saw from the CP. Null on
     /// first checkin or before the agent has fetched a target.
-    /// Phase 3 doesn't activate, but it's useful for the operator
-    /// to see what the agent *would* activate.
+    /// Useful for the operator to see what the agent *would*
+    /// activate even if no activation has occurred yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_evaluated_target: Option<EvaluatedTarget>,
 
@@ -70,9 +70,9 @@ pub struct CheckinRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GenerationRef {
     pub closure_hash: String,
-    /// Channel ref this closure was published from, if known. Null
-    /// during PR-1/PR-3 because the agent doesn't yet correlate
-    /// channels (PR-4 introduces the projection that does).
+    /// Channel ref this closure was published from, if known. May
+    /// be null when the agent has not yet correlated its current
+    /// generation to a channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_ref: Option<String>,
     pub boot_id: String,
@@ -83,8 +83,8 @@ pub struct GenerationRef {
 pub struct PendingGeneration {
     pub closure_hash: String,
     /// Wall-clock time the pending generation is scheduled to take
-    /// over (typically `null` in Phase 3 — pending = "queued for
-    /// next boot, no deadline").
+    /// over (typically `null` — pending means "queued for next boot,
+    /// no deadline").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_for: Option<DateTime<Utc>>,
 }
@@ -115,14 +115,13 @@ pub enum FetchResult {
     None,
 }
 
-/// POST /v1/agent/checkin response. Phase 3 always returns
-/// `target: null` (no rollouts dispatched until Phase 4).
+/// POST /v1/agent/checkin response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckinResponse {
     /// The closure hash + channel-ref the CP wants this host to
-    /// move to. Null in Phase 3 — Phase 4's dispatch loop populates
-    /// this once activation is wired up.
+    /// move to. Null when the host is converged or no dispatch is
+    /// in flight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<EvaluatedTarget>,
     pub next_checkin_secs: u32,
@@ -132,7 +131,7 @@ pub struct CheckinResponse {
 // /v1/agent/confirm — RFC-0003 §4.2 (activation confirmation)
 // =====================================================================
 
-/// POST /v1/agent/confirm request body (Phase 4).
+/// POST /v1/agent/confirm request body.
 ///
 /// Agent posts this exactly once after a new generation has booted
 /// and the agent process has come up healthy. CP records the
@@ -140,15 +139,15 @@ pub struct CheckinResponse {
 /// `pending_confirms.confirm_deadline` and transitions expired
 /// records to `rolled-back` if no confirm arrived in the window.
 ///
-/// Body shape per RFC-0003 §4.2 — minus probeResults (Phase 7).
+/// Body shape per RFC-0003 §4.2 — minus probeResults (future work).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfirmRequest {
     pub hostname: String,
-    /// Rollout identifier the agent is confirming. Phase 4's
-    /// dispatch loop assigns rollout IDs when populating
-    /// CheckinResponse.target; the agent echoes back what it acted
-    /// on. Format: `<channel>@<ref>` per RFC-0003 examples.
+    /// Rollout identifier the agent is confirming. The dispatch loop
+    /// assigns rollout IDs when populating CheckinResponse.target;
+    /// the agent echoes back what it acted on. Format:
+    /// `<channel>@<ref>` per RFC-0003 examples.
     pub rollout: String,
     pub wave: u32,
     /// What the agent is now running, post-activation. Same shape
@@ -164,7 +163,7 @@ pub struct ConfirmRequest {
 /// the wave already failed (agent then triggers local rollback on
 /// its own)." 410 is a status-code-only response; this struct
 /// covers the rare success-with-body case (currently empty —
-/// future Phase 4 PRs may add fields without a major bump).
+/// fields may be added without a major bump).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfirmResponse {}

@@ -1,4 +1,4 @@
-//! Phase 4 dispatch-loop integration test.
+//! Dispatch-loop integration test.
 //!
 //! Drives the full path: a real ed25519-signed `fleet.resolved.json`
 //! is verified at server boot (priming `AppState.verified_fleet`);
@@ -76,8 +76,8 @@ fn write_bytes(dir: &TempDir, name: &str, contents: &[u8]) -> PathBuf {
 /// canonicalizes on read).
 fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String, Vec<u8>) {
     // Hand-rolled JSON to keep the test independent of the proto
-    // crate's serde shape. Field order matches what Stream B emits;
-    // canonicalization will resort it anyway, so order is cosmetic.
+    // crate's serde shape. Canonicalization will resort fields anyway,
+    // so order is cosmetic.
     let signed_at = "2026-04-26T00:00:00Z";
     let json = serde_json::json!({
         "schemaVersion": 1,

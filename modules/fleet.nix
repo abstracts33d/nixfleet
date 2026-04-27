@@ -112,7 +112,7 @@ in {
       ];
     };
 
-    # agent-test: exercises the v0.2 agent against a stub CP.
+    # agent-test: exercises the agent against a stub CP.
     agent-test = mkHost {
       hostName = "agent-test";
       platform = "x86_64-linux";
@@ -134,7 +134,7 @@ in {
       ];
     };
 
-    # cp-test: exercises the v0.2 control plane scope module, mirroring
+    # cp-test: exercises the control plane scope module, mirroring
     # agent-test's role. Pinned ciReleaseKey so trust.json materialises
     # with a non-null current slot for the eval assertions.
     cp-test = mkHost {
@@ -257,7 +257,7 @@ in {
     };
   };
 
-  # darwin-agent-test retired alongside the v0.1 darwin agent scope
-  # module (#29). Darwin agent support is on the Phase 4 trim list; any
-  # future darwin support will be reintroduced on the v0.2 contract.
+  # darwin-agent-test was retired alongside the darwin agent scope
+  # module (#29). Darwin agent support is currently out of scope; any
+  # future darwin support will be reintroduced on the current contract.
 }

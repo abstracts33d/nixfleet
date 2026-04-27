@@ -1,8 +1,8 @@
 //! `fleet.resolved.json` — CONTRACTS.md §I #1, RFC-0001 §4.1.
 //!
-//! Produced by CI (Stream A invoking Stream B's Nix eval). Consumed
-//! by the control plane and, on the fallback direct-fetch path, by
-//! agents. Byte-identical JCS canonical bytes across Nix and Rust.
+//! Produced by CI invoking the Nix evaluator. Consumed by the
+//! control plane and, on the fallback direct-fetch path, by agents.
+//! Byte-identical JCS canonical bytes across Nix and Rust.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -108,13 +108,14 @@ pub struct Selector {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthGate {
-    // Stream B emits `"healthGate": {}` when no inner constraints are
-    // set, NOT `{"complianceProbes": null, "systemdFailedUnits": null}`.
+    // The Nix evaluator emits `"healthGate": {}` when no inner
+    // constraints are set, NOT
+    // `{"complianceProbes": null, "systemdFailedUnits": null}`.
     // Round-trip must preserve the empty-object shape, so these two
     // fields skip on `None` — the only Options in the crate with this
     // posture. All other `Option` fields (closureHash, pubkey,
     // signedAt, ciCommit, selector.channel, maxInFlight*) DO serialize
-    // `None` as explicit `null`, matching Stream B for those.
+    // `None` as explicit `null`, matching the Nix evaluator's output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub systemd_failed_units: Option<SystemdFailedUnits>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

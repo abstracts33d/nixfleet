@@ -14,7 +14,7 @@
     # Build a runCommand that prints PASS/FAIL for each assertion and
     # fails on first failure. Inlined from the now-deleted
     # modules/tests/_lib/helpers.nix — eval.nix is the only remaining
-    # caller after v0.1 VM tests were retired (#29).
+    # caller after the legacy VM tests were retired (#29).
     mkEvalCheck = name: assertions:
       pkgs.runCommand "eval-test-${name}" {} (
         lib.concatStringsSep "\n" (
@@ -153,10 +153,10 @@
           ];
 
         # Agent tags / health-checks / metrics-port eval checks retired
-        # alongside the v0.1 agent module (#29). v0.2 agent options are
-        # tested via modules/tests/_agent-v2-trust.nix.
+        # alongside the legacy agent module (#29). The current agent
+        # options are tested via modules/tests/_agent-v2-trust.nix.
 
-        # --- v0.2 agent: trust.json + ExecStart flags (Task 1.9) ---
+        # --- agent: trust.json + ExecStart flags (Task 1.9) ---
         eval-nixfleet-agent-v2-trust = mkEvalCheck "nixfleet-agent-v2-trust" (
           import ./_agent-v2-trust.nix {
             inherit lib;
@@ -164,7 +164,7 @@
           }
         );
 
-        # --- v0.2 control plane: trust.json + ExecStart flags (Task 1.9) ---
+        # --- control plane: trust.json + ExecStart flags (Task 1.9) ---
         eval-nixfleet-cp-v2-trust = mkEvalCheck "nixfleet-cp-v2-trust" (
           import ./_cp-v2-trust.nix {
             inherit lib;
@@ -379,9 +379,9 @@
           ];
 
         # Darwin agent eval checks (launchd daemon, health config, tags,
-        # isDarwin hostSpec) were retired alongside the v0.1 darwin agent
-        # scope module (#29). Phase 4 trim list already covers darwin
-        # support removal; any reintroduction comes on the v0.2 contract.
+        # isDarwin hostSpec) were retired alongside the darwin agent
+        # scope module (#29). Darwin support is currently out of scope;
+        # any reintroduction comes on the current contract.
       };
     };
 }

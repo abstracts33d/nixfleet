@@ -1,10 +1,8 @@
 //! mTLS defense-in-depth: extract verified peer cert + CN, expose as
 //! request extension, optionally enforce CN-vs-path-id.
 //!
-//! Ported from v0.1's `crates/control-plane/src/auth_cn.rs` (tag
-//! v0.1.1) with the upstream-attribution comments preserved. v0.1
-//! shipped against the same axum-server 0.7 + tokio-rustls 0.26 +
-//! x509-parser 0.16 stack, so the implementation is drop-in.
+//! Builds against axum-server 0.7 + tokio-rustls 0.26 + x509-parser
+//! 0.16.
 //!
 //! ## Why this module exists in-tree
 //!
@@ -15,10 +13,10 @@
 //! and injects the chain into every request on that connection via a
 //! per-connection `tower::Service` wrapper.
 //!
-//! The `axum-server-mtls` crate (v0.1.0) implements exactly this
-//! pattern. We vendor a trimmed-down version in-tree to avoid taking
-//! a 0.1.0 third-party dependency. The implementation is mechanical
-//! and matches the upstream pattern.
+//! The `axum-server-mtls` crate implements exactly this pattern. We
+//! vendor a trimmed-down version in-tree to avoid taking a 0.1.0
+//! third-party dependency. The implementation is mechanical and
+//! matches the upstream pattern.
 //!
 //! ## Wiring
 //!
@@ -28,16 +26,15 @@
 //! injects `PeerCertificates` into every request extension on a
 //! connection. The `/v1/whoami` handler reads the extension via
 //! [`PeerCertificates::leaf_cn`]. The future
-//! [`cn_matches_path_machine_id`] middleware (wired by PR-3+ on
-//! agent-facing routes that take a `{id}` path segment) reads the
-//! extension and rejects with 403 if the CN does not match.
+//! [`cn_matches_path_machine_id`] middleware (wired on agent-facing
+//! routes that take a `{id}` path segment) reads the extension and
+//! rejects with 403 if the CN does not match.
 //!
 //! When mTLS is not configured (`tls.client_ca` is None at the
 //! server config level), the `PeerCertificates` extension still
 //! exists but is empty (`is_present() == false`). The middleware
-//! treats that as a no-op and lets the request through, so PR-1's
-//! TLS-only mode (and the existing /healthz integration test) keeps
-//! working.
+//! treats that as a no-op and lets the request through, so TLS-only
+//! mode (and the /healthz integration test) keeps working.
 
 use axum::extract::{Path, Request};
 use axum::http::StatusCode;
@@ -231,9 +228,8 @@ where
 /// - The `PeerCertificates` extension is present but empty (mTLS is
 ///   not configured at the server level).
 ///
-/// Both no-op cases let the request through unchanged so PR-1's
-/// TLS-only mode keeps working. Agent-route wiring lands in PR-3
-/// when `/v1/agent/checkin` and `/v1/agent/report` go in.
+/// Both no-op cases let the request through unchanged so TLS-only
+/// mode keeps working.
 pub async fn cn_matches_path_machine_id(
     Path(params): Path<HashMap<String, String>>,
     request: Request,

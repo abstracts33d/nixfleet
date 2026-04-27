@@ -1,15 +1,12 @@
 # modules/tests/_cp-v2-trust.nix
 #
-# Eval-only assertions for the Phase 2 control-plane scope module
+# Eval-only assertions for the control-plane scope module
 # (modules/scopes/nixfleet/_control-plane.nix). Verifies:
 #   - trust.json materialises at /etc/nixfleet/cp/trust.json
 #   - --artifact, --signature, --trust-file, --observed,
 #     --freshness-window-secs land on the ExecStart
-#   - Default paths match the Phase 2 contract
+#   - Default paths match the contract
 #   - A timer unit is declared
-#
-# Phase 3 will graft wire endpoints (--listen, mTLS, db-path); update
-# this file when those flags re-enter the CLI surface.
 #
 # Called from modules/tests/eval.nix. Imported (not auto-imported by
 # import-tree) because the filename starts with an underscore.

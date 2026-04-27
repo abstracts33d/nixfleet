@@ -1,18 +1,15 @@
 //! NixFleet control plane.
 //!
-//! Phase 2 shipped this as a oneshot reconciler runner: read
-//! `fleet.resolved.json` + a hand-written `observed.json`, verify,
-//! reconcile, emit the plan, exit. Phase 3 PR-1 turns the same binary
-//! into a long-running TLS server: the existing [`tick`] function
-//! becomes the body of a 30s `tokio::time::interval` loop inside a
-//! new [`server`] module, and `GET /healthz` lights up as the first
-//! axum endpoint. The `tick` subcommand is preserved for tests +
-//! ad-hoc operator runs (see `src/main.rs`).
+//! The binary runs as a long-running TLS server: the [`tick`] function
+//! is the body of a 30s `tokio::time::interval` loop inside the
+//! [`server`] module, and `GET /healthz` is exposed as an axum
+//! endpoint. The `tick` subcommand is preserved for tests + ad-hoc
+//! operator runs (see `src/main.rs`).
 //!
-//! [`tick`] remains a pure function so the long-running serve loop
-//! and the oneshot CLI share one verify-and-reconcile path. The
-//! file-backed `--observed` flag stays as a dev/test fallback until
-//! PR-4 introduces the live projection from agent check-ins.
+//! [`tick`] is a pure function so the long-running serve loop and the
+//! oneshot CLI share one verify-and-reconcile path. The file-backed
+//! `--observed` flag remains as a dev/test fallback alongside the
+//! live projection from agent check-ins.
 
 pub mod auth_cn;
 pub mod db;

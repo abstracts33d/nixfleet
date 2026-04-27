@@ -1,4 +1,4 @@
-# NixOS service module for the NixFleet fleet agent (v0.2 contract).
+# NixOS service module for the NixFleet fleet agent.
 #
 # Linux-only. Poll-only agent that reads a trust-root declaration from
 # /etc/nixfleet/agent/trust.json and talks to the control plane over
@@ -6,10 +6,10 @@
 # nixos-rebuild switch changes the etc entry content, systemd restarts,
 # the binary re-reads on startup.
 #
-# v0.1 surface (tags, healthChecks, metricsPort, dryRun, allowInsecure,
-# cacheUrl, healthInterval) was removed in #29 as part of the v0.2
-# migration. The v0.2 agent is intentionally minimal; health, metrics,
-# and cache concerns move out of the agent binary in this contract.
+# Legacy options (tags, healthChecks, metricsPort, dryRun,
+# allowInsecure, cacheUrl, healthInterval) were removed in #29.
+# The agent is intentionally minimal; health, metrics, and cache
+# concerns live outside the agent binary.
 #
 # Auto-included by mkHost (disabled by default).
 {
@@ -22,7 +22,7 @@
   cfg = config.services.nixfleet-agent;
   nixfleet-agent = inputs.self.packages.${pkgs.system}.nixfleet-agent;
 
-  # Materialise config.nixfleet.trust into the v0.2 proto::TrustConfig
+  # Materialise config.nixfleet.trust into the proto::TrustConfig
   # JSON shape (crates/nixfleet-proto/src/trust.rs). schemaVersion = 1
   # is required per docs/trust-root-flow.md §7.4 — binaries refuse to
   # start on unknown versions.
@@ -88,7 +88,7 @@ in {
       };
     };
 
-    # PR-5: bootstrap token for first-boot enrollment. When set, and
+    # Bootstrap token for first-boot enrollment. When set, and
     # `tls.clientCert` doesn't exist yet on disk, the agent reads
     # this token, generates a CSR, POSTs /v1/enroll, and writes the
     # issued cert + key to the configured paths before entering its
@@ -121,7 +121,7 @@ in {
         startLimitIntervalSec = 0;
 
         # Agent shells out to:
-        # - `nix-store --realise <path>` (Phase 4 closure-hash verify
+        # - `nix-store --realise <path>` (closure-hash verify
         #   pre-switch, fetches via attic + checks substituter sigs)
         # - `nix-env --profile /nix/var/nix/profiles/system --set <path>`
         #   (point system profile at the new closure)
@@ -137,9 +137,9 @@ in {
         # Sidesteps `nixos-rebuild-ng`'s evolving CLI surface — the
         # 26.05 Python rewrite renamed `--system` to `--store-path` and
         # tries to evaluate `<nixpkgs/nixos>` on `--rollback`, both of
-        # which broke the agent on lab during the first real Phase 4
-        # dispatch round-trip. switch-to-configuration's contract is
-        # stable across NixOS releases.
+        # which broke the agent on lab during the first real dispatch
+        # round-trip. switch-to-configuration's contract is stable
+        # across NixOS releases.
         path = [config.nix.package pkgs.systemd];
 
         environment = {

@@ -2,8 +2,8 @@
 #
 # Produces `fleet.resolved` per RFC-0001 §4.1 + docs/CONTRACTS.md §I #1.
 # Output is canonicalized to JCS (RFC 8785) by `bin/nixfleet-canonicalize`
-# (owned by Stream C) before signing — DO NOT introduce floats, opaque
-# derivations, or attrsets whose iteration order is significant here.
+# before signing — DO NOT introduce floats, opaque derivations, or
+# attrsets whose iteration order is significant here.
 {lib}: let
   inherit (lib) mkOption types;
 
@@ -430,8 +430,8 @@
   # `signatureAlgorithm` is optional — omit it when signing with ed25519
   # (the default per CONTRACTS §I #1 for backward-compatible consumers).
   # Set it to `"ecdsa-p256"` (or any future value the contract accepts)
-  # when Stream A's CI signs with a non-default algorithm, e.g. when the
-  # TPM keyslot emits ECDSA P-256.
+  # when CI signs with a non-default algorithm, e.g. when the TPM
+  # keyslot emits ECDSA P-256.
   withSignature = {
     signedAt,
     ciCommit,

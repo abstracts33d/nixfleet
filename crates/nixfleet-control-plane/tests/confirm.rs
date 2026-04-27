@@ -1,4 +1,4 @@
-//! `/v1/agent/confirm` integration tests (Phase 4 PR-A).
+//! `/v1/agent/confirm` integration tests.
 //!
 //! Coverage:
 //! - happy path: pending row exists, agent posts matching confirm,

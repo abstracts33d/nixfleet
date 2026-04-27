@@ -41,8 +41,8 @@ pub enum AuditContext {
     },
 }
 
-/// In-memory replay set for bootstrap-token nonces. PR-5 wraps this
-/// in `Arc<RwLock<HashSet<String>>>` inside AppState.
+/// In-memory replay set for bootstrap-token nonces. AppState wraps
+/// this in `Arc<RwLock<HashSet<String>>>`.
 pub fn token_seen(nonces: &std::collections::HashSet<String>, nonce: &str) -> bool {
     nonces.contains(nonce)
 }

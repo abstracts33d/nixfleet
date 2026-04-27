@@ -64,9 +64,9 @@ pub(super) async fn require_cn(
 /// on `/v1/*` requests (RFC-0003 §6).
 ///
 /// Forward-compat posture: missing header → log debug + accept. This
-/// lets older agents (Phase 3-deployed before this PR landed) keep
-/// working during the transition. Header present + mismatched major
-/// → 426 Upgrade Required + log warn.
+/// lets older agents that pre-date the version header keep working
+/// during the transition. Header present + mismatched major → 426
+/// Upgrade Required + log warn.
 ///
 /// `/healthz` is not subject to this — it's the operator's status
 /// probe and runs unauthenticated; protocol-versioning the health

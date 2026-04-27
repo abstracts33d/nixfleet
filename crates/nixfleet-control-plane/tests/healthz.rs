@@ -1,14 +1,9 @@
-//! `/healthz` integration test (Phase 3 PR-1).
+//! `/healthz` integration test.
 //!
 //! Mints a self-signed server cert with rcgen, spins up the long-
 //! running serve loop in-process on an ephemeral port, hits `/healthz`
 //! over TLS with reqwest (CA-pinned to the rcgen cert), asserts 200 +
 //! the documented JSON shape.
-//!
-//! This is the substrate every subsequent Phase 3 PR extends: PR-2
-//! adds an mTLS variant, PR-3 spins up an in-process agent against
-//! it, etc. Keeping this test focused (just /healthz) keeps the diff
-//! readable in PR review.
 
 use std::path::PathBuf;
 use std::sync::Once;
@@ -55,7 +50,7 @@ fn write_pem(dir: &TempDir, name: &str, contents: &str) -> PathBuf {
     path
 }
 
-/// Minimal Phase 2 inputs the reconcile loop expects to find. `tick`
+/// Minimal inputs the reconcile loop expects to find. `tick`
 /// will fail to parse a non-existent artifact, but the failure is
 /// logged-not-fatal — the listener stays up. `/healthz` doesn't
 /// depend on tick succeeding.

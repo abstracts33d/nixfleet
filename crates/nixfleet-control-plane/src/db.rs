@@ -1,16 +1,12 @@
-//! SQLite persistence for the control plane (Phase 4 PR-1).
+//! SQLite persistence for the control plane.
 //!
-//! Skeleton ported from v0.1's `crates/control-plane/src/db.rs` (tag
-//! v0.1.1) — same rusqlite + refinery stack, same WAL + FK posture.
-//! v0.1's schema was for a different model (machines + generations
-//! + reports); Phase 4 starts fresh with a `migrations/` layout
-//! committed to this PR. Subsequent Phase 4 PRs add migrations
-//! additively.
+//! Built on the rusqlite + refinery stack with WAL + FK posture.
+//! The schema lives under `migrations/` and grows additively.
 //!
 //! Concurrency: a `Mutex<Connection>` guards a single SQLite
 //! connection. SQLite scales fine for fleet sizes O(100) under WAL;
-//! Phase 4 doesn't need a connection pool. Mutex poisoning is
-//! converted to anyhow errors instead of panicking.
+//! a connection pool is unnecessary. Mutex poisoning is converted
+//! to anyhow errors instead of panicking.
 //!
 //! All schema-modifying operations go through `migrate()` which
 //! refinery makes idempotent + version-tracked.
@@ -124,7 +120,7 @@ impl Db {
 
     /// Drop replay records older than `max_age` (typical: 24h, the
     /// token validity window). Returns the number of pruned rows.
-    /// Phase 4 PR-2 wires this into a periodic background task.
+    /// A periodic background task invokes this.
     pub fn prune_token_replay(&self, max_age_hours: i64) -> Result<usize> {
         let guard = self.conn()?;
         let n = guard
@@ -173,9 +169,9 @@ impl Db {
     // ===============================================================
 
     /// Record a dispatched activation. Called from the dispatch loop
-    /// (Phase 4 follow-up) when CP populates `target` in a checkin
-    /// response. The agent will later post `/v1/agent/confirm` with
-    /// the same `rollout_id` once it boots the new closure.
+    /// when CP populates `target` in a checkin response. The agent
+    /// will later post `/v1/agent/confirm` with the same `rollout_id`
+    /// once it boots the new closure.
     pub fn record_pending_confirm(
         &self,
         hostname: &str,
@@ -259,9 +255,8 @@ impl Db {
     /// before the `<` comparison. Naked string compare would put `T`
     /// (0x54) above ` ` (0x20) at position 10, so deadlines would
     /// always look greater than now — expired rows never matched and
-    /// the rollback timer was a no-op. Caught on lab during the first
-    /// real Phase 4 dispatch (deadline passed by 50s, row still
-    /// `pending`).
+    /// the rollback timer was a no-op. Caught on lab when a deadline
+    /// passed by 50s while the row was still `pending`.
     pub fn pending_confirms_expired(&self) -> Result<Vec<(i64, String, String, u32, String)>> {
         let guard = self.conn()?;
         let mut stmt = guard.prepare(

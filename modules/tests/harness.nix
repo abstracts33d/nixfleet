@@ -5,7 +5,7 @@
 # VM, with /nix/store shared over virtiofs for near-zero cold-start cost.
 #
 # DIFFERENT from modules/tests/vm-fleet-scenarios.nix: that file wires
-# full-closure v0.1 agent/CP nodes through pkgs.testers.runNixOSTest with
+# full-closure agent/CP nodes through pkgs.testers.runNixOSTest with
 # nothing microvm-related. The harness here uses astro/microvm.nix guests.
 # Do NOT unify the two substrates - they solve different problems.
 #
@@ -39,14 +39,14 @@
         # package is available for this system (x86_64-linux only today;
         # other systems skip it silently).
         // lib.optionalAttrs (nixfleet-canonicalize != null) {
-          # Phase 2 PR(a) signed-fixture derivation. Byte-stability
-          # regression guard; rebuild failure signals non-determinism in
-          # mkFleet, canonicalize, or the keygen helper.
+          # Signed-fixture derivation. Byte-stability regression guard;
+          # rebuild failure signals non-determinism in mkFleet,
+          # canonicalize, or the keygen helper.
           phase-2-signed-fixture = harness.signedFixture;
         }
         // lib.optionalAttrs (nixfleet-canonicalize != null && nixfleet-verify-artifact != null) {
-          # Phase 2 PR(b) signed-roundtrip scenario. Exercises the full
-          # stack: fixture build -> mTLS serve -> agent fetch ->
+          # Signed-roundtrip scenario. Exercises the full stack:
+          # fixture build -> mTLS serve -> agent fetch ->
           # verify_artifact accept -> OK marker.
           fleet-harness-signed-roundtrip = harness.fleet-harness-signed-roundtrip;
         };
