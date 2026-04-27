@@ -36,7 +36,6 @@
   agentModule = ../../scopes/nixfleet/_agent.nix;
   agentDarwinModule = ../../scopes/nixfleet/_agent_darwin.nix;
   controlPlaneModule = ../../scopes/nixfleet/_control-plane.nix;
-  cacheServerModule = ../../scopes/nixfleet/_cache-server.nix;
   cacheModule = ../../scopes/nixfleet/_cache.nix;
   microvmHostModule = ../../scopes/nixfleet/_microvm-host.nix;
   operatorModule = ../../scopes/nixfleet/_operator.nix;
@@ -95,7 +94,6 @@ in
         coreNixos
         agentModule
         controlPlaneModule
-        cacheServerModule
         cacheModule
         microvmHostModule
         operatorModule

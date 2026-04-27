@@ -63,10 +63,6 @@
         heading = "Binary cache (consumer) — `services.nixfleet-cache.*`";
         file = ./scopes/nixfleet/_cache.nix;
       }
-      {
-        heading = "Binary cache (server) — `services.nixfleet-cache-server.*`";
-        file = ./scopes/nixfleet/_cache-server.nix;
-      }
     ];
 
     sectionMd = {
