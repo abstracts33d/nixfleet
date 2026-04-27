@@ -46,11 +46,6 @@ in {
       luks-btrfs-impermanence = ../disk-templates/luks-btrfs-impermanence-disk.nix;
     };
 
-    # DEPRECATED — re-export of nixfleet-scopes. Will be removed once
-    # consumers (currently only abstracts33d/fleet) switch to importing
-    # `nixfleet-scopes` as a direct input. See decoupling plan, phase 3.
-    scopes = inputs.nixfleet-scopes.scopes;
-
     # Transitional flakeModules for fleet repos
     flakeModules = {
       apps = ./apps.nix;
