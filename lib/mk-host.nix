@@ -26,7 +26,7 @@
   inputs,
   lib,
 }: let
-  hostSpecModule = ../modules/host-spec.nix;
+  hostSpecModule = ../contracts/host-spec.nix;
 
   # Core modules (plain NixOS/Darwin modules)
   coreNixos = ../modules/core/_nixos.nix;
@@ -50,7 +50,7 @@
   # nixfleet-scopes/modules/scopes/operators/. The framework reads
   # only `hostSpec.{userName, rootSshKeys}`; the operators scope (when
   # imported) populates those fields from its own option tree.
-  persistenceModule = ../modules/scopes/nixfleet/_persistence.nix;
+  persistenceModule = ../contracts/persistence.nix;
 
   isDarwinPlatform = platform:
     builtins.elem platform ["aarch64-darwin" "x86_64-darwin"];

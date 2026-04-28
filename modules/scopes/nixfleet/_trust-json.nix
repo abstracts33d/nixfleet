@@ -13,7 +13,7 @@
 # (harmonia, attic, cachix, ...) and supply its native key format.
 #
 # `orgRootKey` stores bare-string key material on the option side
-# (keySlotType in modules/_trust.nix), pinned to ed25519 per
+# (keySlotType in modules/contracts/trust.nix), pinned to ed25519 per
 # CONTRACTS §II #3. This helper promotes it into typed TrustedPubkey
 # entries matching proto's KeySlot shape.
 {trust}: let

@@ -1,6 +1,6 @@
 # modules/tests/_trust-options.nix
 #
-# Eval test for modules/_trust.nix. Verifies the option tree shape,
+# Eval test for modules/contracts/trust.nix. Verifies the option tree shape,
 # including the typed ciReleaseKey submodule per CONTRACTS §II #1.
 #
 # Declares `assertions` as a freeform option so the _trust.nix
@@ -22,7 +22,7 @@
   evalTrustWith = ciReleaseKey:
     (lib.evalModules {
       modules = [
-        ../_trust.nix
+        ../../contracts/trust.nix
         assertionsShim
         {
           nixfleet.trust = {

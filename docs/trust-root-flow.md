@@ -16,7 +16,7 @@ fleet.nix  (Nix layer — declarative)
   nixfleet.trust.atticCacheKey.current = "attic:cache.lab.internal:<base64>";
   nixfleet.trust.orgRootKey.current = null;
        │
-       │  NixOS module system: modules/_trust.nix typechecks + asserts
+       │  NixOS module system: modules/contracts/trust.nix typechecks + asserts
        ▼
 CP-host NixOS config  (applied via mkHost on the CP host)
   environment.etc."nixfleet/cp/trust.json".source = writers.writeJSON "trust.json" {
@@ -58,7 +58,7 @@ No CP restart needed — the trust file regenerates on next activation; the CP r
 
 ### 3.1 Declaration surface — `nixfleet.trust.*`
 
-Already landed (PR #17, reinforced by PR #18 contract amendment). See `modules/_trust.nix`:
+Already landed (PR #17, reinforced by PR #18 contract amendment). See `modules/contracts/trust.nix`:
 
 ```nix
 nixfleet.trust.ciReleaseKey.current = {

@@ -5,6 +5,7 @@
 # Exports:
 #   flake.lib.nixfleet.mkHost  - the API
 #   flake.nixosModules.nixfleet-core - for users who want modules without mkHost
+#   flake.scopes.* - pluggable contract impls (persistence, keyslots, gitops, secrets)
 #   flake.diskoTemplates - reusable disk layout templates
 #   flakeModules.apps/tests/iso/formatter - for fleet repos (transitional)
 {
@@ -27,6 +28,29 @@ in {
 
     # For consumers who don't want mkHost (just raw modules)
     nixosModules.nixfleet-core = ./core/_nixos.nix;
+
+    # Pluggable impls of framework-declared contracts. Each entry is a
+    # NixOS module (or a path to one) the consumer fleet imports
+    # explicitly. Sibling entries are alternative impls of the same
+    # contract — fleets pick exactly one per family.
+    scopes = {
+      persistence = {
+        impermanence = ../impls/persistence/impermanence.nix;
+      };
+      keyslots = {
+        tpm = ../impls/keyslots/tpm;
+      };
+      # GitOps source-URL builders — pure data, used by
+      # services.nixfleet-control-plane.channelRefsSource.
+      # `gitea` shares the Forgejo API verbatim.
+      gitops = {
+        forgejo = import ../impls/gitops/forgejo.nix;
+        gitea = import ../impls/gitops/forgejo.nix;
+      };
+      # Identity-path resolution for agenix/sops/... backends.
+      # Single canonical resolution; not plural.
+      secrets = ../impls/secrets;
+    };
 
     # Disk-template data layer absorbed from former nixfleet-scopes.
     # nixfleet's own QEMU test fixtures (modules/_hardware/qemu/) use

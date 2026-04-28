@@ -26,7 +26,7 @@
 }: let
   hS = config.hostSpec;
 in {
-  imports = [../_trust.nix];
+  imports = [../../contracts/trust.nix];
 
   # --- nixpkgs ---
   nixpkgs.config = lib.mkDefault {

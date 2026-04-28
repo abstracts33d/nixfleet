@@ -45,7 +45,7 @@
     sections = [
       {
         heading = "Trust roots — `nixfleet.trust.*`";
-        file = ./_trust.nix;
+        file = ../contracts/trust.nix;
       }
       {
         heading = "Agent — `services.nixfleet-agent.*`";

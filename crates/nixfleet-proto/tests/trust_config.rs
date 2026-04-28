@@ -100,7 +100,7 @@ fn trust_config_rejects_missing_schema_version() {
 }
 
 /// Exercises the exact JSON shape the Nix scope modules emit when an
-/// operator pins an org root key. `modules/_trust.nix` stores the key
+/// operator pins an org root key. `modules/contracts/trust.nix` stores the key
 /// as a bare string; `modules/scopes/nixfleet/_trust-json.nix` promotes
 /// it into the `{algorithm: "ed25519", public: <str>}` struct proto
 /// expects (CONTRACTS §II #3 — org root key is always ed25519).

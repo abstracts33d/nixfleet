@@ -1,4 +1,4 @@
-# modules/_trust.nix
+# modules/contracts/trust.nix
 #
 # nixfleet.trust.* — the four trust roots from docs/CONTRACTS.md §II.
 # Public keys are declared here; private keys live elsewhere (HSM, host
