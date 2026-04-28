@@ -4,6 +4,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### v0.2 completeness cycle (2026-04-28)
+
+Closes the framework-scoped gaps required for ARCHITECTURE.md §8 done-criterion #1 — *"destroying the CP's database and rebuilding from empty state results in full fleet visibility within one reconcile cycle"* — to hold against strict reading. Six commits between `fe3baec` and `ac5a66f`; tests 127 → 165.
+
+#### Added
+
+- **Wave soak timer (RFC-0002 §3.2 Healthy → Soaked).**
+  - `Action::SoakHost { rollout, host }` variant on the reconciler's action stream.
+  - Reconciler `Healthy` arm consults `rollout.last_healthy_since[host]` against `wave.soak_minutes`; emits `SoakHost` when `now - last_healthy_since >= soak_window`.
+  - CP-side `host_rollout_state` table (V003 migration) keyed on `(rollout_id, hostname)` with `host_state` + `last_healthy_since` columns.
+  - DB methods: `record_host_healthy`, `clear_host_healthy`, `host_soak_state_for_rollout`, `healthy_rollouts_for_host`, `mark_host_soaked`, `host_rollout_state_exists`.
+  - CP-side action processor in `server::reconcile::apply_actions` runs each tick to fold `SoakHost` actions into the DB.
+  - `Rollout` widened with `last_healthy_since: HashMap<String, DateTime<Utc>>` (additive, `#[serde(default)]` keeps file-backed `observed.json` fixtures parseable).
+  - `db::active_rollouts_snapshot` joins `pending_confirms` (latest per host, state ∈ `{pending, confirmed}`) with `host_rollout_state` so `observed_projection::project` populates `active_rollouts` (was hardcoded `Vec::new()` pre-cycle).
+
+- **Confirm-handler idempotency (gap A, #46).** `/v1/agent/confirm` with no matching pending row now cross-checks the agent's `closure_hash` against the verified target; match → synthetic `confirmed` row + `record_host_healthy` + 204. Mismatch → 410 (existing semantics). Closes the unnecessary-rollback regression on CP rebuild.
+
+- **Signed `revocations.json` sidecar (gap C, #48).** New CONTRACTS.md §I artifact alongside `fleet.resolved.json`, signed by the same `ciReleaseKey`. CP fetches + verifies + replays into `cert_revocations` on every reconcile tick. Operator UX shifts revocations from CLI-on-CP to git commit + CI sign + push. Closes the only security-material rebuild gap.
+  - New types: `nixfleet_proto::Revocations` + `RevocationEntry`.
+  - New verify path: `nixfleet_reconciler::verify_revocations`.
+  - New CP poll: `revocations_poll` module + `--revocations-artifact-url` / `--revocations-signature-url` / `--revocations-token-file` CLI flags.
+  - Release-tool integration: optional `--revocations-attr <attr>` flag signs the operator-declared list alongside `fleet.resolved.json`.
+  - Nix-side: `mkFleet` gains a `revocations` option; surfaced as `<flake>.fleet.revocations`.
+
+- **Agent-attested `last_confirmed_at` (gap B-cp, #47 — CP-side half).** New optional field on `CheckinRequest` (wire-additive, no protocol bump). CP repopulates `host_rollout_state.last_healthy_since` from the attestation when the host is converged on its target with no existing `host_rollout_state` row, clamped to `min(now, attested)` against clock skew. Agent-side population (B-agent) folds into #2 when the agent activation loop lands.
+
+- **`signed_fetch` module.** Shared `build_client` / `read_token` / `fetch_signed_pair` helpers extracted from `channel_refs_poll` + `revocations_poll` so the two parallel modules stay byte-stable on the HTTP fetch path.
+
+- **End-to-end soak-loop integration test (`tests/soak_loop.rs`).** Single test exercises the full chain: `confirm` → `record_healthy` → projection → reconciler → `SoakHost` → `mark_soaked` → projection → `ConvergeRollout`.
+
+#### Documentation
+
+- **`docs/commercial-extensions.md`** (new). Catalogues capabilities the open kernel intentionally does not ship — HA replication, real-time signed-state snapshots, SLA observability, audit packages, hosted CP, multi-tenant federation, fine-grained RBAC, long-running metrics warehousing — with stranger-fleet-test rationale and integration paths.
+- **ARCHITECTURE.md §6 Phase 10 — "CP-resident state by recovery profile"** subsection enumerating every SQLite table with its recovery class (soft from agent inputs / hard from signed artifacts in git).
+- **ARCHITECTURE.md §7 Non-goals** points at `docs/commercial-extensions.md` for capabilities deliberately out of scope.
+- **ARCHITECTURE.md §8 done-criterion #1** expanded with the per-table guarantee.
+- **`docs/roadmap/0002-v0.2-completeness-gaps.md`** updated with the cycle's full status; gap #2 marked closed (steps 1+2+3); gaps A/B/C/D enumerated with their closing commits.
+
+#### Issues
+
+- Closed: #46 (gap A), #48 (gap C).
+- Updated: #47 (gap B — CP-side complete, agent-side defers to #2), #14 (Phase 10 teardown — acceptance criterion refreshed; microvm.nix scenario deferred to next cycle pending #5's harness work), #10 (v0.2 tracking — cycle summary), #12 (signed artifacts — cross-link to gap C), #2 (Magic rollback — naming the slot for B-agent).
+
 ### Architecture refactor — kernel/opinion split (2026-04-27 → 2026-04-28)
 
 Two-repo architecture: framework + consumer fleet. `nixfleet-scopes` archived; its

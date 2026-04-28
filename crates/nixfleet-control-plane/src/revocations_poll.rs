@@ -23,6 +23,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::db::Db;
+use crate::signed_fetch;
 
 /// Poll cadence — same default as channel-refs poll. Fast enough
 /// that operator-declared revocations propagate within a minute;
@@ -51,11 +52,7 @@ pub struct RevocationsSource {
 /// signed artifact every minute is a quiet no-op.
 pub fn spawn(db: Arc<Db>, config: RevocationsSource) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let client = reqwest::Client::builder()
-            .use_rustls_tls()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("build revocations poll client");
+        let client = signed_fetch::build_client();
 
         let mut ticker = tokio::time::interval(POLL_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -112,18 +109,14 @@ async fn poll_once(
     client: &reqwest::Client,
     config: &RevocationsSource,
 ) -> Result<nixfleet_proto::Revocations> {
-    let token = match &config.token_file {
-        Some(path) => Some(
-            std::fs::read_to_string(path)
-                .with_context(|| format!("read revocations token file {}", path.display()))?
-                .trim()
-                .to_string(),
-        ),
-        None => None,
-    };
-
-    let artifact_bytes = fetch_url(client, &config.artifact_url, token.as_deref()).await?;
-    let signature_bytes = fetch_url(client, &config.signature_url, token.as_deref()).await?;
+    let token = signed_fetch::read_token(config.token_file.as_deref())?;
+    let (artifact_bytes, signature_bytes) = signed_fetch::fetch_signed_pair(
+        client,
+        &config.artifact_url,
+        &config.signature_url,
+        token.as_deref(),
+    )
+    .await?;
 
     let trust_raw = std::fs::read_to_string(&config.trust_path)
         .with_context(|| format!("read trust file {}", config.trust_path.display()))?;
@@ -141,23 +134,4 @@ async fn poll_once(
         reject_before,
     )
     .map_err(|e| anyhow::anyhow!("verify_revocations (revocations poll): {e:?}"))
-}
-
-async fn fetch_url(
-    client: &reqwest::Client,
-    url: &str,
-    token: Option<&str>,
-) -> Result<Vec<u8>> {
-    let mut req = client.get(url);
-    if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {t}"));
-    }
-    let resp = req.send().await.with_context(|| format!("GET {url}"))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("{url}: {status}: {body}");
-    }
-    let bytes = resp.bytes().await.with_context(|| format!("read body {url}"))?;
-    Ok(bytes.to_vec())
 }

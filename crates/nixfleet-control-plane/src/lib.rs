@@ -20,6 +20,7 @@ pub mod observed_projection;
 pub mod revocations_poll;
 pub mod rollback_timer;
 pub mod server;
+pub mod signed_fetch;
 pub mod tls;
 
 use std::fs;

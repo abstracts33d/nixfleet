@@ -25,6 +25,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::sync::RwLock;
 
+use crate::signed_fetch;
+
 /// Poll cadence — D9 default. Faster doesn't help (CI sign + push
 /// latency dominates); slower delays the operator's "I pushed a
 /// release commit, when does CP see it" feedback loop unhelpfully.
@@ -95,11 +97,7 @@ pub fn spawn(
     config: ChannelRefsSource,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let client = reqwest::Client::builder()
-            .use_rustls_tls()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("build channel-refs poll client");
+        let client = signed_fetch::build_client();
 
         let mut ticker = tokio::time::interval(POLL_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -174,11 +172,7 @@ pub fn spawn(
 pub async fn prime_once(
     config: &ChannelRefsSource,
 ) -> Result<nixfleet_proto::FleetResolved> {
-    let client = reqwest::Client::builder()
-        .use_rustls_tls()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .context("build channel-refs prime client")?;
+    let client = signed_fetch::build_client();
     let (_refs, fleet) = poll_once(&client, config).await?;
     Ok(fleet)
 }
@@ -187,20 +181,14 @@ async fn poll_once(
     client: &reqwest::Client,
     config: &ChannelRefsSource,
 ) -> Result<(HashMap<String, String>, nixfleet_proto::FleetResolved)> {
-    let token = match &config.token_file {
-        Some(path) => Some(
-            std::fs::read_to_string(path)
-                .with_context(|| format!("read channel-refs token file {}", path.display()))?
-                .trim()
-                .to_string(),
-        ),
-        None => None,
-    };
-
-    let artifact_bytes =
-        fetch_url(client, &config.artifact_url, token.as_deref()).await?;
-    let signature_bytes =
-        fetch_url(client, &config.signature_url, token.as_deref()).await?;
+    let token = signed_fetch::read_token(config.token_file.as_deref())?;
+    let (artifact_bytes, signature_bytes) = signed_fetch::fetch_signed_pair(
+        client,
+        &config.artifact_url,
+        &config.signature_url,
+        token.as_deref(),
+    )
+    .await?;
 
     // Trust roots are read fresh on every poll. Operator rotates
     // `nixfleet.trust.ciReleaseKey.current` → next deploy
@@ -238,29 +226,4 @@ async fn poll_once(
         refs.insert(name.clone(), ci_commit.clone());
     }
     Ok((refs, fleet_resolved))
-}
-
-/// Fetch raw bytes from a URL with optional Bearer auth. Single
-/// shared helper for artifact + signature so request shape lives in
-/// one place.
-async fn fetch_url(
-    client: &reqwest::Client,
-    url: &str,
-    token: Option<&str>,
-) -> Result<Vec<u8>> {
-    let mut req = client.get(url);
-    if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {t}"));
-    }
-
-    let resp = req.send().await.with_context(|| format!("GET {url}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("{url}: {status}: {body}");
-    }
-
-    let bytes = resp.bytes().await.with_context(|| format!("read body {url}"))?;
-    Ok(bytes.to_vec())
 }
