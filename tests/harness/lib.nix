@@ -44,32 +44,46 @@
     } ''
       mkdir -p $out
 
-      # OpenSSL config snippets per cert type. Inlined as heredocs
-      # so we don't need a separate config file in the closure.
-      cat > $out/ca-ext.cnf <<'EOF'
+      # OpenSSL config files. Single combined config for the CA
+      # (req section + extensions section, both required by
+      # `openssl req -x509`). Per-cert-type extension files for the
+      # `openssl x509 -req` step (uses `-extfile`, no config needed).
+      cat > $out/ca.cnf <<'EOF'
+      [req]
+      distinguished_name = dn
+      prompt = no
+      x509_extensions = ca_ext
+
+      [dn]
+      CN = nixfleet-test-ca
+
+      [ca_ext]
       basicConstraints = critical, CA:TRUE
       keyUsage = critical, keyCertSign, cRLSign, digitalSignature
+      subjectKeyIdentifier = hash
       EOF
       cat > $out/server-ext.cnf <<'EOF'
       basicConstraints = critical, CA:FALSE
       keyUsage = critical, digitalSignature, keyEncipherment
       extendedKeyUsage = serverAuth
       subjectAltName = DNS:cp, DNS:localhost
+      authorityKeyIdentifier = keyid
       EOF
       cat > $out/client-ext.cnf <<'EOF'
       basicConstraints = critical, CA:FALSE
       keyUsage = critical, digitalSignature, keyEncipherment
       extendedKeyUsage = clientAuth
+      authorityKeyIdentifier = keyid
       EOF
 
       # Fleet CA (self-signed, EC P-256, explicit CA:TRUE).
+      # `x509_extensions = ca_ext` in the [req] section is what
+      # `openssl req -x509` reads to apply the CA-cert extensions
+      # (basicConstraints CA:TRUE etc.) — no `-extensions` flag
+      # needed when it's wired into the config.
       openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout $out/ca-key.pem -out $out/ca.pem -days 365 -nodes \
-        -subj '/CN=nixfleet-test-ca' \
-        -extensions @section -config <(echo '[req]'; \
-          echo 'distinguished_name=dn'; echo 'prompt=no'; \
-          echo '[dn]'; echo 'CN=nixfleet-test-ca'; \
-          echo '[section]'; cat $out/ca-ext.cnf)
+        -config $out/ca.cnf
 
       # CP server cert (CN=cp, SAN includes cp + localhost for test curl).
       openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
@@ -98,7 +112,7 @@
         '')
         (lib.filter (h: h != "cp") hostnames)}
 
-      rm -f $out/*-csr.pem $out/*.srl $out/*-ext.cnf
+      rm -f $out/*-csr.pem $out/*.srl $out/*-ext.cnf $out/ca.cnf
     '';
 
   # One cert set covering the harness hostnames. Additional hostnames get
