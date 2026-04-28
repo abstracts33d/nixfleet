@@ -134,6 +134,104 @@ pub(super) async fn checkin(
     }))
 }
 
+/// Gap A orphan-confirm recovery. Returns `true` when the orphan
+/// confirm represents a CP-rebuild recovery case the CP can absorb
+/// without forcing the agent to roll back, `false` when it should
+/// fall through to a 410 (genuine wrong-rollout / cancelled case).
+///
+/// Recovery requires:
+/// 1. A verified fleet snapshot (otherwise we cannot validate the
+///    agent's claimed target).
+/// 2. The agent's `request.generation.closure_hash` matches the
+///    host's declared `closureHash` in the verified
+///    `FleetResolved.hosts[hostname]`. This is the same authorisation
+///    invariant the positive flow trusts (mTLS-CN + closure on file).
+///
+/// On success: synthesise a `confirmed` `pending_confirms` row +
+/// stamp `record_host_healthy`. On any failure (DB error, missing
+/// fleet, missing host, missing closure declaration, closure
+/// mismatch): return false. Failures are non-fatal — the agent
+/// still hears 410 and triggers its local rollback, no worse than
+/// pre-gap-A behaviour.
+async fn try_recover_orphan_confirm(
+    state: &Arc<AppState>,
+    req: &ConfirmRequest,
+) -> bool {
+    let Some(db) = state.db.as_ref() else {
+        return false;
+    };
+    let Some(fleet) = state.verified_fleet.read().await.clone() else {
+        tracing::debug!(
+            hostname = %req.hostname,
+            "orphan-confirm recovery: no verified fleet snapshot yet",
+        );
+        return false;
+    };
+    let Some(host_decl) = fleet.hosts.get(&req.hostname) else {
+        tracing::debug!(
+            hostname = %req.hostname,
+            "orphan-confirm recovery: host not in verified fleet",
+        );
+        return false;
+    };
+    let Some(target_closure) = host_decl.closure_hash.as_ref() else {
+        tracing::debug!(
+            hostname = %req.hostname,
+            "orphan-confirm recovery: host has no declared closureHash",
+        );
+        return false;
+    };
+    if target_closure != &req.generation.closure_hash {
+        tracing::info!(
+            hostname = %req.hostname,
+            rollout = %req.rollout,
+            agent_closure = %req.generation.closure_hash,
+            target_closure = %target_closure,
+            "orphan-confirm recovery: closure_hash mismatch — genuine 410",
+        );
+        return false;
+    }
+
+    let now = Utc::now();
+    if let Err(err) = db.record_confirmed_pending(
+        &req.hostname,
+        &req.rollout,
+        req.wave,
+        target_closure,
+        &req.rollout,
+        now,
+    ) {
+        tracing::warn!(
+            hostname = %req.hostname,
+            rollout = %req.rollout,
+            error = %err,
+            "orphan-confirm recovery: record_confirmed_pending failed",
+        );
+        return false;
+    }
+    if let Err(err) = db.record_host_healthy(&req.hostname, &req.rollout, now) {
+        tracing::warn!(
+            hostname = %req.hostname,
+            rollout = %req.rollout,
+            error = %err,
+            "orphan-confirm recovery: record_host_healthy failed (synthetic row already inserted)",
+        );
+        // Don't reverse the synthetic insert — leaving it in place
+        // means the rollout audit trail still reflects the
+        // activation, even if the soak marker is missing. The
+        // soak loop's worst case becomes "this host's soak timer
+        // restarts on next confirm" — same as pre-gap-B.
+    }
+    tracing::info!(
+        target: "confirm",
+        hostname = %req.hostname,
+        rollout = %req.rollout,
+        target_closure = %target_closure,
+        "orphan-confirm recovery: synthesised confirmed pending_confirms row + Healthy marker",
+    );
+    true
+}
+
 /// Per-checkin "left Healthy" sweep (RFC-0002 §3.2). Compares the
 /// reported `current_generation.closure_hash` against each rollout
 /// the host is currently recorded as Healthy in; on mismatch,
@@ -621,9 +719,14 @@ pub(super) async fn renew(
 ///
 /// Behaviour:
 /// - Pending row exists, deadline not passed → mark confirmed, 204.
-/// - No matching row in 'pending' state → 410 Gone (covers both
-///   "wrong rollout_id" and "deadline expired / cancelled"; agent
-///   responds the same way: trigger local rollback per RFC §4.2).
+/// - No matching row in 'pending' state → orphan-recovery path
+///   (gap A in docs/roadmap/0002-v0.2-completeness-gaps.md): if the
+///   agent's reported `closure_hash` matches the host's declared
+///   target in the verified `FleetResolved`, treat this as a CP-
+///   rebuild recovery — synthesise a confirmed pending_confirms
+///   row + record_host_healthy + 204. Closure-hash mismatch →
+///   genuine 410 (rollout cancelled / wrong rollout / deadline
+///   expired; agent triggers local rollback per RFC §4.2).
 /// - DB unset → 503 (endpoint requires persistence).
 pub(super) async fn confirm(
     State(state): State<Arc<AppState>>,
@@ -651,30 +754,36 @@ pub(super) async fn confirm(
     })?;
 
     if updated == 0 {
-        tracing::info!(
-            hostname = %req.hostname,
-            rollout = %req.rollout,
-            "confirm: no matching pending row — returning 410"
-        );
-        return Ok(Response::builder()
-            .status(StatusCode::GONE)
-            .body(Body::from(""))
-            .unwrap_or_default());
-    }
-
-    // RFC-0002 §3.2 ConfirmWindow → Healthy transition. Stamp
-    // last_healthy_since so step 3's reconciler arm can gate
-    // Healthy → Soaked once `wave.soak_minutes` elapses. Failure
-    // is non-fatal: the confirm itself succeeded, so the agent
-    // hears 204; an operator alerts off the warn line if the
-    // soak-state write breaks.
-    if let Err(err) = db.record_host_healthy(&req.hostname, &req.rollout, Utc::now()) {
-        tracing::warn!(
-            hostname = %req.hostname,
-            rollout = %req.rollout,
-            error = %err,
-            "confirm: record_host_healthy failed; soak timer will skip this host",
-        );
+        // Try the gap A orphan-confirm recovery path before
+        // declaring 410. Recovery succeeds only when the agent's
+        // reported closure_hash matches the host's verified
+        // target — that's the same authorisation invariant as
+        // the positive flow (mTLS-CN + closure on file).
+        if try_recover_orphan_confirm(&state, &req).await {
+            // Fall through to the success log + 204 path.
+        } else {
+            tracing::info!(
+                hostname = %req.hostname,
+                rollout = %req.rollout,
+                "confirm: no matching pending row + no recoverable orphan — returning 410"
+            );
+            return Ok(Response::builder()
+                .status(StatusCode::GONE)
+                .body(Body::from(""))
+                .unwrap_or_default());
+        }
+    } else {
+        // Standard path: stamp last_healthy_since (RFC-0002 §3.2
+        // ConfirmWindow → Healthy). The orphan-recovery branch
+        // already wrote it inline so we don't double-up here.
+        if let Err(err) = db.record_host_healthy(&req.hostname, &req.rollout, Utc::now()) {
+            tracing::warn!(
+                hostname = %req.hostname,
+                rollout = %req.rollout,
+                error = %err,
+                "confirm: record_host_healthy failed; soak timer will skip this host",
+            );
+        }
     }
 
     tracing::info!(
@@ -755,4 +864,162 @@ pub(super) async fn closure_proxy(
         .header("content-type", "text/x-nix-narinfo")
         .body(Body::from(body))
         .unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+    use nixfleet_proto::agent_wire::{ConfirmRequest, GenerationRef};
+    use nixfleet_proto::fleet_resolved::Meta;
+    use nixfleet_proto::{Channel, Compliance, Host};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn fleet_with_host(hostname: &str, closure: Option<&str>) -> nixfleet_proto::FleetResolved {
+        let mut hosts = HashMap::new();
+        hosts.insert(
+            hostname.to_string(),
+            Host {
+                system: "x86_64-linux".to_string(),
+                tags: vec![],
+                channel: "stable".to_string(),
+                closure_hash: closure.map(String::from),
+                pubkey: None,
+            },
+        );
+        let mut channels = HashMap::new();
+        channels.insert(
+            "stable".to_string(),
+            Channel {
+                rollout_policy: "default".to_string(),
+                reconcile_interval_minutes: 5,
+                freshness_window: 60,
+                signing_interval_minutes: 30,
+                compliance: Compliance {
+                    strict: false,
+                    frameworks: vec![],
+                },
+            },
+        );
+        nixfleet_proto::FleetResolved {
+            schema_version: 1,
+            hosts,
+            channels,
+            rollout_policies: HashMap::new(),
+            waves: HashMap::new(),
+            edges: vec![],
+            disruption_budgets: vec![],
+            meta: Meta {
+                schema_version: 1,
+                signed_at: None,
+                ci_commit: Some("abc12345".to_string()),
+                signature_algorithm: None,
+            },
+        }
+    }
+
+    fn confirm_req(hostname: &str, rollout: &str, closure: &str) -> ConfirmRequest {
+        ConfirmRequest {
+            hostname: hostname.to_string(),
+            rollout: rollout.to_string(),
+            wave: 0,
+            generation: GenerationRef {
+                closure_hash: closure.to_string(),
+                channel_ref: None,
+                boot_id: "boot".to_string(),
+            },
+        }
+    }
+
+    async fn state_with_fleet_and_db(
+        fleet: nixfleet_proto::FleetResolved,
+    ) -> (Arc<AppState>, Arc<Db>) {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        db.migrate().unwrap();
+        let state = Arc::new(AppState {
+            db: Some(Arc::clone(&db)),
+            verified_fleet: Arc::new(tokio::sync::RwLock::new(Some(Arc::new(fleet)))),
+            ..AppState::default()
+        });
+        (state, db)
+    }
+
+    #[tokio::test]
+    async fn orphan_recovery_succeeds_when_closure_matches() {
+        // Gap A happy path. CP rebuilt mid-flight; agent posts a
+        // confirm whose closure matches the verified target. The
+        // recovery path synthesises a confirmed row + Healthy
+        // marker and returns true so the handler emits 204 instead
+        // of forcing a local rollback.
+        let fleet = fleet_with_host("test-host", Some("target-system-r1"));
+        let (state, db) = state_with_fleet_and_db(fleet).await;
+        let req = confirm_req("test-host", "stable@abc12345", "target-system-r1");
+
+        assert!(
+            try_recover_orphan_confirm(&state, &req).await,
+            "matching closure should recover",
+        );
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].rollout_id, "stable@abc12345");
+        assert_eq!(snap[0].target_closure_hash, "target-system-r1");
+        // Healthy marker stamped in the same call.
+        let healthy = db.healthy_rollouts_for_host("test-host").unwrap();
+        assert_eq!(healthy.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn orphan_recovery_rejects_closure_mismatch() {
+        // Genuine wrong-rollout case. Agent claims to have
+        // activated something the fleet doesn't agree with — must
+        // fall through to 410.
+        let fleet = fleet_with_host("test-host", Some("target-system-r1"));
+        let (state, db) = state_with_fleet_and_db(fleet).await;
+        let req = confirm_req("test-host", "stable@evil", "target-system-different");
+
+        assert!(
+            !try_recover_orphan_confirm(&state, &req).await,
+            "mismatched closure must not recover",
+        );
+        assert!(db.active_rollouts_snapshot().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn orphan_recovery_rejects_when_host_not_in_fleet() {
+        // Agent claims to be a host the verified fleet doesn't
+        // know about — recovery refuses to invent state for it.
+        let fleet = fleet_with_host("known-host", Some("target"));
+        let (state, _db) = state_with_fleet_and_db(fleet).await;
+        let req = confirm_req("rogue-host", "stable@abc", "target");
+
+        assert!(!try_recover_orphan_confirm(&state, &req).await);
+    }
+
+    #[tokio::test]
+    async fn orphan_recovery_rejects_when_no_verified_fleet() {
+        // First-boot CP with no verified snapshot yet — recovery
+        // can't validate the agent's claim, so it stays
+        // conservative.
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        db.migrate().unwrap();
+        let state = Arc::new(AppState {
+            db: Some(Arc::clone(&db)),
+            ..AppState::default()
+        });
+        let req = confirm_req("test-host", "stable@abc", "target");
+        assert!(!try_recover_orphan_confirm(&state, &req).await);
+    }
+
+    #[tokio::test]
+    async fn orphan_recovery_rejects_when_host_lacks_closure_declaration() {
+        // The fleet lists the host but with no closureHash (CI
+        // didn't produce one). Without a target to validate
+        // against, recovery refuses.
+        let fleet = fleet_with_host("test-host", None);
+        let (state, _db) = state_with_fleet_and_db(fleet).await;
+        let req = confirm_req("test-host", "stable@abc", "anything");
+        assert!(!try_recover_orphan_confirm(&state, &req).await);
+    }
 }

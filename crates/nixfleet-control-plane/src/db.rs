@@ -231,6 +231,50 @@ impl Db {
         Ok(guard.last_insert_rowid())
     }
 
+    /// Insert a `pending_confirms` row directly in `'confirmed'`
+    /// state — used by the orphan-confirm recovery path (gap A) when
+    /// an agent posts `/v1/agent/confirm` but no matching `pending`
+    /// row exists (typically because the CP was rebuilt mid-flight).
+    /// The orphan handler verifies the agent's `closure_hash` matches
+    /// the host's declared target before calling this; the synthetic
+    /// row preserves the audit trail of "this host activated this
+    /// closure" without forcing a spurious rollback. `confirm_deadline`
+    /// is set to `confirmed_at` since the deadline is moot for an
+    /// already-confirmed row.
+    pub fn record_confirmed_pending(
+        &self,
+        hostname: &str,
+        rollout_id: &str,
+        wave: u32,
+        target_closure_hash: &str,
+        target_channel_ref: &str,
+        confirmed_at: DateTime<Utc>,
+    ) -> Result<i64> {
+        let guard = self.conn()?;
+        let ts = confirmed_at.to_rfc3339();
+        guard
+            .execute(
+                "INSERT INTO pending_confirms(hostname, rollout_id, wave,
+                                              target_closure_hash,
+                                              target_channel_ref,
+                                              confirm_deadline,
+                                              confirmed_at,
+                                              state)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'confirmed')",
+                params![
+                    hostname,
+                    rollout_id,
+                    wave,
+                    target_closure_hash,
+                    target_channel_ref,
+                    &ts,
+                    &ts,
+                ],
+            )
+            .context("insert pending_confirms (orphan recovery)")?;
+        Ok(guard.last_insert_rowid())
+    }
+
     /// Returns true if the host has any `pending_confirms` row in
     /// state `'pending'`. Used by the dispatch loop to avoid
     /// re-dispatching while an activation is in flight (would create
@@ -848,6 +892,46 @@ mod tests {
         // longer Healthy, so checkin doesn't need to re-clear.
         db.clear_host_healthy("test-host", "stable@r1").unwrap();
         assert!(db.healthy_rollouts_for_host("test-host").unwrap().is_empty());
+    }
+
+    #[test]
+    fn record_confirmed_pending_writes_confirmed_state() {
+        // Gap A orphan-confirm recovery path. Synthetic row must
+        // land in 'confirmed' state with confirmed_at populated and
+        // be picked up by active_rollouts_snapshot just like a row
+        // that went through the normal pending → confirmed flow.
+        let db = fresh_db();
+        let now = Utc::now();
+        db.record_confirmed_pending(
+            "test-host",
+            "stable@orphan",
+            0,
+            "target-system",
+            "stable@orphan",
+            now,
+        )
+        .unwrap();
+        // The host is not yet recorded as Healthy — the handler
+        // does that as a separate step. So the snapshot's
+        // host_states maps to the defensive "Healthy" fallback for
+        // confirmed rows without an hrs row.
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].rollout_id, "stable@orphan");
+        assert_eq!(snap[0].target_closure_hash, "target-system");
+        assert_eq!(
+            snap[0].host_states.get("test-host").map(String::as_str),
+            Some("Healthy"),
+        );
+        // healthy_rollouts_for_host requires both the confirmed row
+        // and the Healthy marker to surface — exercising the join.
+        // Pre-Healthy: empty.
+        assert!(db.healthy_rollouts_for_host("test-host").unwrap().is_empty());
+        db.record_host_healthy("test-host", "stable@orphan", now).unwrap();
+        let healthy = db.healthy_rollouts_for_host("test-host").unwrap();
+        assert_eq!(healthy.len(), 1);
+        assert_eq!(healthy[0].0, "stable@orphan");
+        assert_eq!(healthy[0].1, "target-system");
     }
 
     #[test]
