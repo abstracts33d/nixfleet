@@ -115,8 +115,8 @@ in
         operatorModule
       ]
       ++ lib.optionals isVm [
-        ../../_hardware/qemu/disk-config.nix
-        ../../_hardware/qemu/hardware-configuration.nix
+        ../tests/fixtures/qemu/disk-config.nix
+        ../tests/fixtures/qemu/hardware-configuration.nix
         ({
           lib,
           pkgs,
