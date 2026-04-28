@@ -6,8 +6,6 @@
 
 Declarative NixOS fleet management with reproducible deployments, cryptographic security, and compliance automation.
 
-![NixFleet Demo](docs/assets/nixfleet-demo.gif)
-
 ## Why NixFleet
 
 Infrastructure teams face four converging crises:
@@ -81,8 +79,6 @@ The framework ships kernel + contract impls. Service wraps, hardware bundles, ro
 }
 ```
 
-For starter templates, run `nix flake init -t github:arcanesys/nixfleet` (standalone), `#batch` (identical machines), or `#fleet` (multi-host).
-
 ### Deployment
 
 Standard NixOS tooling works out of the box:
@@ -116,19 +112,9 @@ Dynamic tab completion for rollout/release/machine IDs, queried live from the co
 - **Deployment strategies** - Canary, staged, and all-at-once rollouts with health gates and automatic rollback
 - **Operators** - Declarative multi-user management with SSH keys, sudo access, Home Manager routing
 - **Compliance as code** - NIS2, DORA, ISO 27001, ANSSI controls with evidence probes and governance engine
-- **Securix compatibility** - Integrates with [Securix](https://github.com/arcanesys/securix), the DINUM-aligned secure NixOS distribution for French and European government environments. See `examples/securix-endpoint/` for an ANSSI BP-028 hardened endpoint.
+- **Securix compatibility** - Integrates with [Securix](https://github.com/arcanesys/securix), the DINUM-aligned secure NixOS distribution for French and European government environments.
 - **Instant rollback** - Atomic NixOS generation switching
 - **Darwin support** - macOS fleet participation via nix-darwin agent
-
-## Examples
-
-| Example | When to use it |
-|---------|---------------|
-| `examples/standalone-host/` | Single machine in its own repo |
-| `examples/batch-hosts/` | 50+ identical machines from a template |
-| `examples/client-fleet/` | Multi-host fleet with flake-parts |
-| `examples/fleet-homelab/` | Declarative fleet via `lib.mkFleet` — run `nix eval .#fleet.resolved --json` to inspect the resolved artifact |
-| `examples/securix-endpoint/` | Hardened ANSSI BP-028 distro composition with Securix |
 
 ## Documentation
 

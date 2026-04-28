@@ -37,9 +37,9 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(60);
 pub struct ChannelRefsSource {
     /// URL that yields the raw bytes of the canonical resolved
     /// artifact JSON. e.g.
-    /// `https://git.lab.internal/abstracts33d/fleet/raw/branch/main/releases/fleet.resolved.json`
+    /// `https://git.example.com/myorg/myfleet/raw/branch/main/releases/fleet.resolved.json`
     /// (Forgejo) or
-    /// `https://raw.githubusercontent.com/abstracts33d/fleet/main/releases/fleet.resolved.json`
+    /// `https://raw.githubusercontent.com/myorg/myfleet/main/releases/fleet.resolved.json`
     /// (GitHub).
     pub artifact_url: String,
     /// URL that yields the raw bytes of the matching signature.

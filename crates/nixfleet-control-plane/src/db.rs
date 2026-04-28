@@ -351,10 +351,10 @@ mod tests {
     fn token_replay_round_trip() {
         let db = fresh_db();
         assert!(!db.token_seen("nonce-1").unwrap());
-        db.record_token_nonce("nonce-1", "krach").unwrap();
+        db.record_token_nonce("nonce-1", "test-host").unwrap();
         assert!(db.token_seen("nonce-1").unwrap());
         // Idempotent on re-record.
-        db.record_token_nonce("nonce-1", "krach").unwrap();
+        db.record_token_nonce("nonce-1", "test-host").unwrap();
         assert!(db.token_seen("nonce-1").unwrap());
     }
 
@@ -372,7 +372,7 @@ mod tests {
         let db = fresh_db();
         let past_deadline = Utc::now() - chrono::Duration::seconds(60);
         db.record_pending_confirm(
-            "krach",
+            "test-host",
             "stable@abc",
             0,
             "decl-system",
@@ -388,7 +388,7 @@ mod tests {
             "row past deadline should be picked up, got {expired:?}",
         );
         let (_, host, rollout, _, target) = &expired[0];
-        assert_eq!(host, "krach");
+        assert_eq!(host, "test-host");
         assert_eq!(rollout, "stable@abc");
         assert_eq!(target, "decl-system");
     }
@@ -400,7 +400,7 @@ mod tests {
         let db = fresh_db();
         let future_deadline = Utc::now() + chrono::Duration::seconds(120);
         db.record_pending_confirm(
-            "krach",
+            "test-host",
             "stable@def",
             0,
             "decl-system",
@@ -415,17 +415,17 @@ mod tests {
     #[test]
     fn cert_revocation_upserts() {
         let db = fresh_db();
-        assert!(db.cert_revoked_before("krach").unwrap().is_none());
+        assert!(db.cert_revoked_before("test-host").unwrap().is_none());
         let t1 = Utc::now();
-        db.revoke_cert("krach", t1, Some("compromised"), Some("operator"))
+        db.revoke_cert("test-host", t1, Some("compromised"), Some("operator"))
             .unwrap();
-        let r1 = db.cert_revoked_before("krach").unwrap().unwrap();
+        let r1 = db.cert_revoked_before("test-host").unwrap().unwrap();
         // Stored as rfc3339; round-trip loses sub-second precision.
         assert_eq!(r1.timestamp(), t1.timestamp());
         // Upsert moves not_before forward.
         let t2 = Utc::now() + chrono::Duration::seconds(60);
-        db.revoke_cert("krach", t2, None, None).unwrap();
-        let r2 = db.cert_revoked_before("krach").unwrap().unwrap();
+        db.revoke_cert("test-host", t2, None, None).unwrap();
+        let r2 = db.cert_revoked_before("test-host").unwrap().unwrap();
         assert!(r2 >= r1);
     }
 }

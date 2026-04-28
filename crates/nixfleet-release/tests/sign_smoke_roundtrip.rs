@@ -21,12 +21,12 @@ use rand::rngs::OsRng;
 fn dummy_resolved() -> FleetResolved {
     let mut hosts = std::collections::HashMap::new();
     hosts.insert(
-        "krach".to_string(),
+        "test-host".to_string(),
         Host {
             system: "x86_64-linux".into(),
             tags: vec![],
             channel: "stable".into(),
-            closure_hash: Some("abc123-nixos-system-krach-26.05".into()),
+            closure_hash: Some("abc123-nixos-system-test-host-26.05".into()),
             pubkey: None,
         },
     );
@@ -101,8 +101,8 @@ fn end_to_end_sign_then_verify_artifact_accepts() {
     .expect("verify_artifact accepts real signature");
 
     assert_eq!(
-        parsed.hosts["krach"].closure_hash.as_deref(),
-        Some("abc123-nixos-system-krach-26.05"),
+        parsed.hosts["test-host"].closure_hash.as_deref(),
+        Some("abc123-nixos-system-test-host-26.05"),
         "verified artifact carries the injected closureHash"
     );
 }

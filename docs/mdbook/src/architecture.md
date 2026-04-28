@@ -90,9 +90,9 @@ CP           dispatch::Decision::Converged → target: null
 
 | Property | Today | Target | Tracking |
 |---|---|---|---|
-| CP holds no secrets | 🟡 fleet CA private key online | TPM-bound CA, offline root | [#41](https://github.com/abstracts33d/nixfleet/issues/41) |
+| CP holds no secrets | 🟡 fleet CA private key online | TPM-bound CA, offline root | [#41](https://github.com/arcanesys/nixfleet/issues/41) |
 | Trust roots disconnected from CP | ✅ org-root key never reaches CP | — | — |
-| Host identity = host key | 🟡 fresh keypair per enroll | host SSH key derives CSR | [#43](https://github.com/abstracts33d/nixfleet/issues/43) |
+| Host identity = host key | 🟡 fresh keypair per enroll | host SSH key derives CSR | [#43](https://github.com/arcanesys/nixfleet/issues/43) |
 | Reproducible artifact verify | ✅ JCS + ed25519/ECDSA | — | — |
 | Agent-side closure verify | ✅ realise + post-switch basename | + signed-narinfo verify (Phase 7) | — |
-| Compliance gates | ❌ static-only | probe execution + signed evidence | [#4](https://github.com/abstracts33d/nixfleet/issues/4), [#13](https://github.com/abstracts33d/nixfleet/issues/13) |
+| Compliance gates | ❌ static-only | probe execution + signed evidence | [#4](https://github.com/arcanesys/nixfleet/issues/4), [#13](https://github.com/arcanesys/nixfleet/issues/13) |

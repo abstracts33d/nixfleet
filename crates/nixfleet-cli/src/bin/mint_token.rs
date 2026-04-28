@@ -1,18 +1,18 @@
 //! `nixfleet-mint-token` — operator-side bootstrap token minter.
 //!
 //! Run once on the operator's workstation per new fleet host
-//! (typically as part of declaring the host in fleet.nix and
-//! committing an agenix-encrypted token).
+//! (typically as part of declaring the host and committing an
+//! encrypted token via the fleet's secrets backend).
 //!
 //! Usage:
 //!
 //! ```text
 //! nixfleet-mint-token \
-//!     --hostname krach \
+//!     --hostname test-host \
 //!     --csr-pubkey-fingerprint <sha256-base64-of-CSR-spki> \
 //!     --org-root-key /path/to/org-root.ed25519.key \
 //!     --validity-hours 24 \
-//!     > bootstrap-token-krach.json
+//!     > bootstrap-token-test-host.json
 //! ```
 //!
 //! The agent's first-boot enrollment generates its own keypair

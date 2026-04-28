@@ -166,7 +166,7 @@ async fn confirm_happy_path_marks_row_confirmed() {
 
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
 
     // Pre-populate a pending_confirms row via direct DB access.
@@ -175,7 +175,7 @@ async fn confirm_happy_path_marks_row_confirmed() {
         db.migrate().unwrap();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
         db.record_pending_confirm(
-            "krach",
+            "test-host",
             "stable@abc123",
             0,
             "deadbeef-nixos-system",
@@ -199,7 +199,7 @@ async fn confirm_happy_path_marks_row_confirmed() {
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
     let req = ConfirmRequest {
-        hostname: "krach".to_string(),
+        hostname: "test-host".to_string(),
         rollout: "stable@abc123".to_string(),
         wave: 0,
         generation: GenerationRef {
@@ -223,7 +223,7 @@ async fn confirm_happy_path_marks_row_confirmed() {
     let state: String = conn
         .query_row(
             "SELECT state FROM pending_confirms WHERE hostname=?1 AND rollout_id=?2",
-            rusqlite::params!["krach", "stable@abc123"],
+            rusqlite::params!["test-host", "stable@abc123"],
             |r| r.get(0),
         )
         .unwrap();
@@ -239,7 +239,7 @@ async fn confirm_returns_410_when_no_pending_row() {
 
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
 
     // DB is initialised but has no pending row for this rollout.
@@ -262,7 +262,7 @@ async fn confirm_returns_410_when_no_pending_row() {
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
     let req = ConfirmRequest {
-        hostname: "krach".to_string(),
+        hostname: "test-host".to_string(),
         rollout: "rollout-that-doesnt-exist".to_string(),
         wave: 0,
         generation: GenerationRef {
@@ -289,7 +289,7 @@ async fn confirm_rejects_cn_hostname_mismatch() {
 
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
     {
         let db = Db::open(&db_path).unwrap();
@@ -309,7 +309,7 @@ async fn confirm_rejects_cn_hostname_mismatch() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
-    // Cert CN is "krach"; body claims hostname "ohm".
+    // Cert CN is "test-host"; body claims hostname "ohm".
     let req = ConfirmRequest {
         hostname: "ohm".to_string(),
         rollout: "any".to_string(),
@@ -338,7 +338,7 @@ async fn confirm_returns_503_without_db() {
 
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
 
     let port = pick_free_port().await;
     let handle = spawn_server_with_db_at_port(
@@ -354,7 +354,7 @@ async fn confirm_returns_503_without_db() {
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
     let req = ConfirmRequest {
-        hostname: "krach".to_string(),
+        hostname: "test-host".to_string(),
         rollout: "any".to_string(),
         wave: 0,
         generation: GenerationRef {

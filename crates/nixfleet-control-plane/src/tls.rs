@@ -19,9 +19,9 @@ use std::sync::Arc;
 /// deployments. Production deployments always pass a CA path.
 ///
 /// All file IO is synchronous and happens once at startup. Failures
-/// here should crash the process — they indicate misconfigured agenix
-/// paths or a damaged fleet CA, neither of which the runtime can
-/// recover from.
+/// here should crash the process — they indicate misconfigured
+/// secrets-backend paths or a damaged fleet CA, neither of which the
+/// runtime can recover from.
 pub fn build_server_config(
     cert_path: &Path,
     key_path: &Path,

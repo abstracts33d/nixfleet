@@ -241,7 +241,7 @@ mod tests {
                         target_ref: "abc".into(),
                     },
                     Action::Skip {
-                        host: "krach".into(),
+                        host: "test-host".into(),
                         reason: "offline".into(),
                     },
                 ],

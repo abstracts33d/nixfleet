@@ -1,7 +1,7 @@
 # RFC-0001: Declarative fleet topology (`fleet.nix`)
 
 **Status.** Draft.
-**Target.** `abstracts33d/nixfleet` issue #1.
+**Target.** `arcanesys/nixfleet` issue #1.
 **Scope.** Schema and evaluation contract for the `fleet` flake output. Does not cover reconciliation semantics (that's #3) or activation (that's #2).
 
 ## 1. Motivation

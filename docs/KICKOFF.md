@@ -9,17 +9,17 @@ This document describes how the v0.2 implementation cycle runs and hands each of
 ### Pre-kickoff (complete when this PR merges)
 
 - `ARCHITECTURE.md`, RFCs 0001–0003, runnable spike, `docs/CONTRACTS.md`, `docs/KICKOFF.md` on `main`.
-- Issues #1–#9, #12–#14 filed and labeled on `abstracts33d/nixfleet`.
-- Twin issue #1 filed and labeled on `abstracts33d/nixfleet-compliance`.
-- Tracking issue #10 on `abstracts33d/nixfleet` is the single board for the whole cycle.
+- Issues #1–#9, #12–#14 filed and labeled on `arcanesys/nixfleet`.
+- Twin issue #1 filed and labeled on `arcanesys/nixfleet-compliance`.
+- Tracking issue #10 on `arcanesys/nixfleet` is the single board for the whole cycle.
 
 ### Phase 1 — Independent streams (weeks 1–N)
 
 Three streams run without any cross-stream PRs:
 
-- **Stream A — Infra:** work happens in the private `fleet` repo on `abstracts33d/fleet`.
-- **Stream B — Nix:** work in `abstracts33d/nixfleet` and `abstracts33d/nixfleet-compliance`.
-- **Stream C — Rust:** work in `abstracts33d/nixfleet`.
+- **Stream A — Infra:** work happens in the private `fleet` repo on `your-fleet`.
+- **Stream B — Nix:** work in `arcanesys/nixfleet` and `arcanesys/nixfleet-compliance`.
+- **Stream C — Rust:** work in `arcanesys/nixfleet`.
 
 Each stream drives toward its first milestone (below). No stream modifies another stream's contract surface without a `contract-change` PR (see `docs/CONTRACTS.md` §VII).
 
@@ -118,13 +118,13 @@ These are self-contained. A fresh session can pick one up cold.
 
 ### Stream A — Infra (M70q coordinator)
 
-**Repo.** `abstracts33d/fleet` (private). NOT `abstracts33d/nixfleet`.
+**Repo.** `your-fleet` (private). NOT `arcanesys/nixfleet`.
 
 **Goal.** The M70q is the homelab fleet's trust-bearing coordinator. Forgejo hosts the git forge, attic hosts the binary cache, CI evaluates and signs, Caddy+Tailscale gate everything behind a private network.
 
 **Reading list (before first commit):**
-1. `abstracts33d/nixfleet/ARCHITECTURE.md` — §1.1–1.3 (flake / CI / attic), §3 (main flow), §6 Phase 0.
-2. `abstracts33d/nixfleet/docs/CONTRACTS.md` — §II (trust roots) + §III (canonicalization).
+1. `arcanesys/nixfleet/ARCHITECTURE.md` — §1.1–1.3 (flake / CI / attic), §3 (main flow), §6 Phase 0.
+2. `arcanesys/nixfleet/docs/CONTRACTS.md` — §II (trust roots) + §III (canonicalization).
 
 **Milestone 1 deliverable.** A single NixOS host module (`hosts/m70q-attic.nix` in the `fleet` repo) that enables:
 
@@ -142,11 +142,11 @@ These are self-contained. A fresh session can pick one up cold.
 3. CP endpoint URL format → Stream C consumes.
 
 **Non-goals for this stream.**
-- Do not modify `abstracts33d/nixfleet`.
+- Do not modify `arcanesys/nixfleet`.
 - Do not design the wire protocol or reconciliation logic.
 - Do not implement compliance controls.
 
-**First issue to pick up.** There is no nixfleet-repo issue for this stream — it happens in the `fleet` repo. Create a tracking issue in the `fleet` repo for milestone 1 and reference it from `abstracts33d/nixfleet#10`.
+**First issue to pick up.** There is no nixfleet-repo issue for this stream — it happens in the `fleet` repo. Create a tracking issue in the `fleet` repo for milestone 1 and reference it from `arcanesys/nixfleet#10`.
 
 **Owned contracts from CONTRACTS.md.** §II #1 (CI release key), §II #2 (attic key). Stream A holds the private keys; Stream B declares the public halves.
 
@@ -154,20 +154,20 @@ These are self-contained. A fresh session can pick one up cold.
 
 ### Stream B — Nix (schema + compliance)
 
-**Repos.** `abstracts33d/nixfleet` + `abstracts33d/nixfleet-compliance`.
+**Repos.** `arcanesys/nixfleet` + `arcanesys/nixfleet-compliance`.
 
 **Goal.** Produce `fleet.resolved.json` from a declared `fleet.nix`; migrate compliance controls to the typed `static` | `runtime` | `both` model; keep the Nix side of every boundary contract byte-compatible with Stream C's Rust consumers.
 
 **Reading list (before first commit):**
-1. `abstracts33d/nixfleet/ARCHITECTURE.md` — all.
-2. `abstracts33d/nixfleet/rfcs/0001-fleet-nix.md` — all.
-3. `abstracts33d/nixfleet/docs/CONTRACTS.md` — §I #1, #3, #5, §II (declarations), §III (canonicalization), §VII (amendment).
-4. `abstracts33d/nixfleet/spike/` — the running prototype; `lib/mk-fleet.nix` promotes to production.
+1. `arcanesys/nixfleet/ARCHITECTURE.md` — all.
+2. `arcanesys/nixfleet/docs/rfcs/0001-fleet-nix.md` — all.
+3. `arcanesys/nixfleet/docs/CONTRACTS.md` — §I #1, #3, #5, §II (declarations), §III (canonicalization), §VII (amendment).
+4. `arcanesys/nixfleet/spike/` — the running prototype; `lib/mk-fleet.nix` promotes to production.
 
 **Milestone 1 deliverables.**
 1. Promote `spike/lib/mkFleet.nix` → `lib/mk-fleet.nix` in production shape. All RFC-0001 §4.2 invariants implemented and fail fast; new invariant: `channel.freshnessWindow ≥ 2 × signingIntervalMinutes` (gap captured in #13).
 2. `nixfleet.trust.*` option tree in `modules/trust.nix`, with docstrings referencing CONTRACTS.md §II.
-3. `abstracts33d/nixfleet-compliance#1` resolved: typed control migration, schema-versioned probe descriptors, JCS canonicalization contract declared, negative-test fixture per control. At least one `type = "both"` reference control per framework.
+3. `arcanesys/nixfleet-compliance#1` resolved: typed control migration, schema-versioned probe descriptors, JCS canonicalization contract declared, negative-test fixture per control. At least one `type = "both"` reference control per framework.
 4. Baseline compliance control explicitly exempting the agent's outbound network path from any firewall-lock control — documented as a required baseline so that compliance landing does not cut agents off (CONTRACTS.md §I captures this in the probe registry; implement here).
 
 **Acceptance.** `nix eval --json .#fleet.resolved` from the homelab example in `spike/examples/homelab/` produces a `schemaVersion: 1` artifact that serialized to JCS is byte-identical to what Stream C's canonicalizer produces on the same input.
@@ -183,7 +183,7 @@ These are self-contained. A fresh session can pick one up cold.
 - Do not design CP storage or wire protocol (Stream C).
 - Do not touch `crates/*` beyond reading types to confirm mirror.
 
-**First issues to pick up.** `abstracts33d/nixfleet#1`, then `abstracts33d/nixfleet-compliance#1`, then `abstracts33d/nixfleet#7`. Issue `#12` has a Nix portion (option tree) that lands with `#1`; the signing tooling lands in Stream C.
+**First issues to pick up.** `arcanesys/nixfleet#1`, then `arcanesys/nixfleet-compliance#1`, then `arcanesys/nixfleet#7`. Issue `#12` has a Nix portion (option tree) that lands with `#1`; the signing tooling lands in Stream C.
 
 **Owned contracts from CONTRACTS.md.** §I #1 (producer), §I #3 (producer), §I #5 (producer), §II declarations, part of §III (canonicalization tooling specification).
 
@@ -191,16 +191,16 @@ These are self-contained. A fresh session can pick one up cold.
 
 ### Stream C — Rust (reconciler + agent + CP + wire protocol)
 
-**Repo.** `abstracts33d/nixfleet` — all work in `crates/`.
+**Repo.** `arcanesys/nixfleet` — all work in `crates/`.
 
 **Goal.** Promote the reconciler spike to production; build the agent skeleton, the control plane, the wire protocol crate, and the JCS canonicalization tool. Keep every contract byte-compatible with Stream B's Nix output.
 
 **Reading list (before first commit):**
-1. `abstracts33d/nixfleet/ARCHITECTURE.md` — all.
-2. `abstracts33d/nixfleet/rfcs/0002-reconciler.md` — all.
-3. `abstracts33d/nixfleet/rfcs/0003-protocol.md` — all.
-4. `abstracts33d/nixfleet/docs/CONTRACTS.md` — §I #1, #2, #4, #6, §II (verification), §III (canonicalization), §IV (storage purity), §V (versioning), §VII.
-5. `abstracts33d/nixfleet/spike/reconciler/` — ~200 lines; promotes to production.
+1. `arcanesys/nixfleet/ARCHITECTURE.md` — all.
+2. `arcanesys/nixfleet/docs/rfcs/0002-reconciler.md` — all.
+3. `arcanesys/nixfleet/docs/rfcs/0003-protocol.md` — all.
+4. `arcanesys/nixfleet/docs/CONTRACTS.md` — §I #1, #2, #4, #6, §II (verification), §III (canonicalization), §IV (storage purity), §V (versioning), §VII.
+5. `arcanesys/nixfleet/spike/reconciler/` — ~200 lines; promotes to production.
 
 **Milestone 1 deliverables.**
 1. `crates/nixfleet-proto` — serde types for every artifact in CONTRACTS.md §I. `schemaVersion` roundtrip tests against Nix-generated fixtures. Decide and document: `deny_unknown_fields` vs ignore posture per artifact.
@@ -229,7 +229,7 @@ These are self-contained. A fresh session can pick one up cold.
 - Do not provision infrastructure (Stream A).
 - Do not implement activation (`nixos-rebuild switch`) in milestone 1 — that's Phase 4 of the architecture, gated on Checkpoint 2.
 
-**First issues to pick up.** `abstracts33d/nixfleet#2` (agent skeleton prep), `#3` (channel→rev reconciler wiring), `#12` Rust portion (signature verification code + canonicalize tool), `#13` (freshness enforcement). Full `#4`, `#9`, `#14` skeletons land here but complete in later checkpoints.
+**First issues to pick up.** `arcanesys/nixfleet#2` (agent skeleton prep), `#3` (channel→rev reconciler wiring), `#12` Rust portion (signature verification code + canonicalize tool), `#13` (freshness enforcement). Full `#4`, `#9`, `#14` skeletons land here but complete in later checkpoints.
 
 **Owned contracts from CONTRACTS.md.** §I #2 (producer and consumer), §I #4 (consumer), §I #6 (producer), §II verification logic, §III (canonicalization library pin + golden test), §IV (storage purity).
 

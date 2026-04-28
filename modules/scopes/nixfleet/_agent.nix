@@ -92,12 +92,13 @@ in {
     # `tls.clientCert` doesn't exist yet on disk, the agent reads
     # this token, generates a CSR, POSTs /v1/enroll, and writes the
     # issued cert + key to the configured paths before entering its
-    # poll loop. fleet/modules/secrets/nixos.nix wires this to an
-    # agenix-decrypted `bootstrap-token-${hostname}` path.
+    # poll loop. The fleet wires this to a secrets-backend-decrypted
+    # `bootstrap-token-${hostname}` path (agenix, sops, systemd-creds,
+    # …).
     bootstrapTokenFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "/run/agenix/bootstrap-token-krach";
+      example = "/run/secrets/bootstrap-token-host-01";
       description = ''
         Path to a one-shot bootstrap token (operator-minted by
         `nixfleet-mint-token`, signed with the org root key). Used

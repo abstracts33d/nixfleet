@@ -146,7 +146,7 @@ async fn whoami_returns_verified_cn_when_client_cert_present() {
 
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
     let (artifact, signature, trust, observed) = write_phase2_input_stubs(&dir);
 
     let port = pick_free_port().await;
@@ -189,7 +189,7 @@ async fn whoami_returns_verified_cn_when_client_cert_present() {
     assert_eq!(resp.status(), 200);
 
     let body: WhoamiBody = resp.json().await.unwrap();
-    assert_eq!(body.cn, "krach");
+    assert_eq!(body.cn, "test-host");
 
     server_handle.abort();
 }
@@ -200,7 +200,7 @@ async fn whoami_rejects_request_without_client_cert() {
 
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, _client_cert, _client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
     let (artifact, signature, trust, observed) = write_phase2_input_stubs(&dir);
 
     let port = pick_free_port().await;

@@ -409,14 +409,14 @@ mod tests {
 
     #[test]
     fn basename_extracts_from_typical_store_path() {
-        let p = PathBuf::from("/nix/store/abc123-nixos-system-krach-26.05");
-        assert_eq!(basename_of(&p).unwrap(), "abc123-nixos-system-krach-26.05");
+        let p = PathBuf::from("/nix/store/abc123-nixos-system-test-host-26.05");
+        assert_eq!(basename_of(&p).unwrap(), "abc123-nixos-system-test-host-26.05");
     }
 
     #[test]
     fn basename_unchanged_by_trailing_slash() {
-        let p = PathBuf::from("/nix/store/abc123-nixos-system-krach-26.05/");
-        assert_eq!(basename_of(&p).unwrap(), "abc123-nixos-system-krach-26.05");
+        let p = PathBuf::from("/nix/store/abc123-nixos-system-test-host-26.05/");
+        assert_eq!(basename_of(&p).unwrap(), "abc123-nixos-system-test-host-26.05");
     }
 
     #[test]

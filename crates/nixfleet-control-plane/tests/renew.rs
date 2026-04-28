@@ -225,7 +225,7 @@ async fn renew_happy_path_signs_fresh_cert() {
     install_crypto_provider_once();
 
     let dir = TempDir::new().unwrap();
-    let pki = mint_pki(&dir, "krach");
+    let pki = mint_pki(&dir, "test-host");
     let port = pick_free_port().await;
     let handle = spawn_server(
         &dir,
@@ -239,7 +239,7 @@ async fn renew_happy_path_signs_fresh_cert() {
     )
     .await;
 
-    let csr_pem = mint_csr("krach");
+    let csr_pem = mint_csr("test-host");
     let req = RenewRequest { csr_pem };
     let client = build_mtls_client(&pki.ca_cert, &pki.agent_cert_pem, &pki.agent_key_pem);
 
@@ -269,7 +269,7 @@ async fn renew_rejects_request_without_client_cert() {
     install_crypto_provider_once();
 
     let dir = TempDir::new().unwrap();
-    let pki = mint_pki(&dir, "krach");
+    let pki = mint_pki(&dir, "test-host");
     let port = pick_free_port().await;
     let handle = spawn_server(
         &dir,
@@ -283,7 +283,7 @@ async fn renew_rejects_request_without_client_cert() {
     )
     .await;
 
-    let csr_pem = mint_csr("krach");
+    let csr_pem = mint_csr("test-host");
     let req = RenewRequest { csr_pem };
     let client = build_no_cert_client(&pki.ca_cert);
 
@@ -313,17 +313,17 @@ async fn renew_rejects_revoked_cert() {
     install_crypto_provider_once();
 
     let dir = TempDir::new().unwrap();
-    let pki = mint_pki(&dir, "krach");
+    let pki = mint_pki(&dir, "test-host");
     let db_path = dir.path().join("state.db");
 
-    // Revoke krach with a `not_before` set firmly in the future of
+    // Revoke test-host with a `not_before` set firmly in the future of
     // the agent cert's notBefore. The cert-revocation gate in
     // `require_cn` must reject the request.
     {
         let db = Db::open(&db_path).unwrap();
         db.migrate().unwrap();
         let revoked_before = Utc::now() + chrono::Duration::days(365);
-        db.revoke_cert("krach", revoked_before, Some("test"), Some("test-operator"))
+        db.revoke_cert("test-host", revoked_before, Some("test"), Some("test-operator"))
             .unwrap();
     }
 
@@ -340,7 +340,7 @@ async fn renew_rejects_revoked_cert() {
     )
     .await;
 
-    let csr_pem = mint_csr("krach");
+    let csr_pem = mint_csr("test-host");
     let req = RenewRequest { csr_pem };
     let client = build_mtls_client(&pki.ca_cert, &pki.agent_cert_pem, &pki.agent_key_pem);
 
@@ -364,7 +364,7 @@ async fn renew_returns_500_when_ca_not_configured() {
     install_crypto_provider_once();
 
     let dir = TempDir::new().unwrap();
-    let pki = mint_pki(&dir, "krach");
+    let pki = mint_pki(&dir, "test-host");
     let port = pick_free_port().await;
     // Spawn WITHOUT fleet_ca_cert / fleet_ca_key — the renew handler
     // can't sign a fresh cert and should respond 500.
@@ -380,7 +380,7 @@ async fn renew_returns_500_when_ca_not_configured() {
     )
     .await;
 
-    let csr_pem = mint_csr("krach");
+    let csr_pem = mint_csr("test-host");
     let req = RenewRequest { csr_pem };
     let client = build_mtls_client(&pki.ca_cert, &pki.agent_cert_pem, &pki.agent_key_pem);
 

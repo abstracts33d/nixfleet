@@ -15,9 +15,9 @@ the code disagrees, the code is being built to match.
 
 | File | Topic |
 |---|---|
-| [`../rfcs/0001-fleet-nix.md`](../rfcs/0001-fleet-nix.md) | Declarative fleet shape: `mkFleet`, selectors, rollouts, edges, budgets, `fleet.resolved` artifact |
-| [`../rfcs/0002-reconciler.md`](../rfcs/0002-reconciler.md) | Reconciler state machine, decision procedure, verify path, failure handling |
-| [`../rfcs/0003-protocol.md`](../rfcs/0003-protocol.md) | Agent ↔ control-plane wire protocol, identity model, endpoints, security model |
+| [`rfcs/0001-fleet-nix.md`](./rfcs/0001-fleet-nix.md) | Declarative fleet shape: `mkFleet`, selectors, rollouts, edges, budgets, `fleet.resolved` artifact |
+| [`rfcs/0002-reconciler.md`](./rfcs/0002-reconciler.md) | Reconciler state machine, decision procedure, verify path, failure handling |
+| [`rfcs/0003-protocol.md`](./rfcs/0003-protocol.md) | Agent ↔ control-plane wire protocol, identity model, endpoints, security model |
 
 ## Operational reference (mdbook)
 

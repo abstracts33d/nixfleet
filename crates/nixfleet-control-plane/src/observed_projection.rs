@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn projection_reflects_each_host_checkin() {
         let mut checkins = HashMap::new();
-        checkins.insert("krach".to_string(), checkin_for("krach", "abc"));
+        checkins.insert("test-host".to_string(), checkin_for("test-host", "abc"));
         checkins.insert("ohm".to_string(), checkin_for("ohm", "def"));
 
         let channel_refs = HashMap::from([("dev".to_string(), "deadbeef".to_string())]);
@@ -82,10 +82,10 @@ mod tests {
 
         assert_eq!(observed.host_state.len(), 2);
         assert_eq!(
-            observed.host_state["krach"].current_generation.as_deref(),
+            observed.host_state["test-host"].current_generation.as_deref(),
             Some("abc")
         );
-        assert!(observed.host_state["krach"].online);
+        assert!(observed.host_state["test-host"].online);
         assert_eq!(observed.channel_refs["dev"], "deadbeef");
     }
 

@@ -5,7 +5,7 @@ agent VMs cheaply, so fleet-scale scenarios (rollout, rollback, health
 gates, compliance gates) can run under `nix flake check` without the
 cost of full-QEMU `nixosTest` nodes.
 
-Tracked by issue [#5](https://github.com/abstracts33d/nixfleet/issues/5).
+Tracked by issue [#5](https://github.com/arcanesys/nixfleet/issues/5).
 
 This harness is independent from the v0.1 fleet scenarios under
 `modules/tests/_vm-fleet-scenarios/`. Those run full-closure nixosTest

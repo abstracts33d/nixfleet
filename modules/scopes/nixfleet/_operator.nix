@@ -7,10 +7,11 @@
 #   root key).
 #
 # The org root **private** key is intentionally NOT a fleet-wide
-# secret. It lives in fleet-secrets agenix-encrypted to the operator
-# user + the operator workstation's host key only — lab CP and other
-# fleet hosts never decrypt it. The CP only verifies token signatures
-# with the public half (declared in `config.nixfleet.trust.orgRootKey`).
+# secret. It lives in the fleet's secrets store, encrypted to the
+# operator user + the operator workstation's host key only — the
+# control-plane and other fleet hosts never decrypt it. The CP only
+# verifies token signatures with the public half (declared in
+# `config.nixfleet.trust.orgRootKey`).
 #
 # Per the design property in `docs/CONTRACTS.md §II #3` and
 # nixfleet#10's "control plane holds no secrets, forges no trust",
@@ -38,17 +39,17 @@ in {
     orgRootKeyFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "/run/agenix/org-root-key";
+      example = "/run/secrets/org-root-key";
       description = ''
-        Path to the agenix-decrypted org root ed25519 private key
-        (raw 32 bytes). Used by `nixfleet-mint-token --org-root-key`
-        when the operator runs the tool interactively. The path is
-        not consumed by any systemd service; it's only read when the
-        operator invokes the tool.
+        Path to the org root ed25519 private key (raw 32 bytes),
+        decrypted by the fleet's secrets backend. Used by
+        `nixfleet-mint-token --org-root-key` when the operator runs
+        the tool interactively. The path is not consumed by any
+        systemd service; it's only read when the operator invokes
+        the tool.
 
-        Wired by `fleet/modules/nixfleet/operator.nix` to
-        `config.age.secrets.org-root-key.path` on the operator's
-        workstation. `null` on every other host.
+        Set on the operator's workstation only — `null` on every
+        other host.
       '';
     };
   };
@@ -61,9 +62,9 @@ in {
     environment.systemPackages = [nixfleet-cli];
 
     # Surface the configured key path via shell env so the operator
-    # can run `nixfleet-mint-token` without remembering the agenix
-    # path (or muscle-memorise an alias). When `orgRootKeyFile` is
-    # null this stays unset.
+    # can run `nixfleet-mint-token` without remembering the
+    # decrypted-secret path (or muscle-memorise an alias). When
+    # `orgRootKeyFile` is null this stays unset.
     environment.variables = lib.mkIf (cfg.orgRootKeyFile != null) {
       NIXFLEET_OPERATOR_ORG_ROOT_KEY = cfg.orgRootKeyFile;
     };

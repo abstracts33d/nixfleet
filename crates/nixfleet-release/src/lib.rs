@@ -660,7 +660,7 @@ mod tests {
     fn dummy_resolved() -> FleetResolved {
         let mut hosts = std::collections::HashMap::new();
         hosts.insert(
-            "krach".to_string(),
+            "test-host".to_string(),
             Host {
                 system: "x86_64-linux".into(),
                 tags: vec![],
@@ -714,12 +714,12 @@ mod tests {
     fn inject_sets_closure_hash_for_known_hosts_and_skips_unknown() {
         let mut r = dummy_resolved();
         let mut hashes = BTreeMap::new();
-        hashes.insert("krach".to_string(), "abc123-nixos-system-krach".to_string());
+        hashes.insert("test-host".to_string(), "abc123-nixos-system-test-host".to_string());
         hashes.insert("ghost".to_string(), "should-be-ignored".to_string());
         inject_closure_hashes(&mut r, &hashes);
         assert_eq!(
-            r.hosts["krach"].closure_hash.as_deref(),
-            Some("abc123-nixos-system-krach")
+            r.hosts["test-host"].closure_hash.as_deref(),
+            Some("abc123-nixos-system-test-host")
         );
         assert!(r.hosts["aether"].closure_hash.is_none());
         assert!(!r.hosts.contains_key("ghost"));

@@ -181,7 +181,7 @@ mod tests {
 
     fn checkin(closure_hash: &str, fetch: Option<FetchResult>) -> CheckinRequest {
         CheckinRequest {
-            hostname: "krach".to_string(),
+            hostname: "test-host".to_string(),
             agent_version: "test".to_string(),
             current_generation: GenerationRef {
                 closure_hash: closure_hash.to_string(),
@@ -209,66 +209,66 @@ mod tests {
         let fleet = fleet_with("ohm", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("krach", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now()),
             Decision::Unmanaged
         ));
     }
 
     #[test]
     fn no_declaration_when_fleet_omits_closure() {
-        let fleet = fleet_with("krach", host(None));
+        let fleet = fleet_with("test-host", host(None));
         let req = checkin("running-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("krach", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now()),
             Decision::NoDeclaration
         ));
     }
 
     #[test]
     fn converged_when_current_matches_target() {
-        let fleet = fleet_with("krach", host(Some("matched-system")));
+        let fleet = fleet_with("test-host", host(Some("matched-system")));
         let req = checkin("matched-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("krach", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now()),
             Decision::Converged
         ));
     }
 
     #[test]
     fn in_flight_when_pending_row_exists() {
-        let fleet = fleet_with("krach", host(Some("declared-system")));
+        let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("krach", &req, &fleet, /* pending */ true, now()),
+            decide_target("test-host", &req, &fleet, /* pending */ true, now()),
             Decision::InFlight
         ));
     }
 
     #[test]
     fn hold_after_verify_failed() {
-        let fleet = fleet_with("krach", host(Some("declared-system")));
+        let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::VerifyFailed));
         assert!(matches!(
-            decide_target("krach", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now()),
             Decision::HoldAfterFailure
         ));
     }
 
     #[test]
     fn hold_after_fetch_failed() {
-        let fleet = fleet_with("krach", host(Some("declared-system")));
+        let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::FetchFailed));
         assert!(matches!(
-            decide_target("krach", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now()),
             Decision::HoldAfterFailure
         ));
     }
 
     #[test]
     fn dispatch_when_diverged_and_no_pending() {
-        let fleet = fleet_with("krach", host(Some("declared-system")));
+        let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
-        let d = decide_target("krach", &req, &fleet, false, now());
+        let d = decide_target("test-host", &req, &fleet, false, now());
         let Decision::Dispatch { target, rollout_id } = d else {
             panic!("expected Dispatch, got {:?}", d);
         };
@@ -281,10 +281,10 @@ mod tests {
 
     #[test]
     fn dispatch_falls_back_to_closure_hash_when_no_ci_commit() {
-        let mut fleet = fleet_with("krach", host(Some("xxxxxxxxyyyyyyy-system")));
+        let mut fleet = fleet_with("test-host", host(Some("xxxxxxxxyyyyyyy-system")));
         fleet.meta.ci_commit = None;
         let req = checkin("running-system", Some(FetchResult::Ok));
-        let d = decide_target("krach", &req, &fleet, false, now());
+        let d = decide_target("test-host", &req, &fleet, false, now());
         let Decision::Dispatch { rollout_id, .. } = d else {
             panic!("expected Dispatch");
         };
@@ -294,9 +294,9 @@ mod tests {
     #[test]
     fn dispatch_when_no_fetch_outcome_yet() {
         // Brand-new agent, never fetched anything — should still dispatch.
-        let fleet = fleet_with("krach", host(Some("declared-system")));
+        let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", None);
-        let d = decide_target("krach", &req, &fleet, false, now());
+        let d = decide_target("test-host", &req, &fleet, false, now());
         assert!(matches!(d, Decision::Dispatch { .. }));
     }
 }

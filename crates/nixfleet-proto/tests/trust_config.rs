@@ -51,13 +51,13 @@ fn trust_config_accepts_opaque_cache_key_strings() {
         "schemaVersion": 1,
         "ciReleaseKey": { "current": null, "previous": null, "rejectBefore": null },
         "cacheKeys": [
-            "cache.lab.internal:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "cache.example.com:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             "attic:cache.example.com:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
         ]
     }"#;
     let cfg: TrustConfig = serde_json::from_str(json).unwrap();
     assert_eq!(cfg.cache_keys.len(), 2);
-    assert!(cfg.cache_keys[0].starts_with("cache.lab.internal:"));
+    assert!(cfg.cache_keys[0].starts_with("cache.example.com:"));
     assert!(cfg.cache_keys[1].starts_with("attic:"));
 }
 

@@ -16,8 +16,8 @@ default-theme = "navy"
 preferred-dark-theme = "navy"
 no-section-label = false
 fold = { enable = true, level = 2 }
-git-repository-url = "https://git.lab.internal/abstracts33d/nixfleet"
-edit-url-template = "https://git.lab.internal/abstracts33d/nixfleet/_edit/main/docs/mdbook/{path}"
+git-repository-url = "https://github.com/arcanesys/nixfleet"
+edit-url-template = "https://github.com/arcanesys/nixfleet/edit/main/docs/mdbook/{path}"
 additional-css = []
 
 [output.html.search]

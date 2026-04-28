@@ -129,7 +129,7 @@ in {
       type = lib.types.listOf lib.types.str;
       default = [];
       example = [
-        "cache.lab.internal:AAAA..."
+        "cache.example.com:AAAA..."
         "attic:cache.example.com:BBBB..."
       ];
       description = ''

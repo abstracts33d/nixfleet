@@ -236,10 +236,10 @@ async fn enroll_happy_path_signs_cert() {
     )
     .await;
 
-    let (csr_pem, _pubkey_der, fingerprint) = mint_csr("krach");
+    let (csr_pem, _pubkey_der, fingerprint) = mint_csr("test-host");
     let now = Utc::now();
     let claims = TokenClaims {
-        hostname: "krach".to_string(),
+        hostname: "test-host".to_string(),
         expected_pubkey_fingerprint: fingerprint,
         issued_at: now - ChronoDuration::seconds(5),
         expires_at: now + ChronoDuration::hours(1),
@@ -298,10 +298,10 @@ async fn enroll_rejects_tampered_signature() {
     )
     .await;
 
-    let (csr_pem, _pubkey_der, fingerprint) = mint_csr("krach");
+    let (csr_pem, _pubkey_der, fingerprint) = mint_csr("test-host");
     let now = Utc::now();
     let claims = TokenClaims {
-        hostname: "krach".to_string(),
+        hostname: "test-host".to_string(),
         expected_pubkey_fingerprint: fingerprint,
         issued_at: now - ChronoDuration::seconds(5),
         expires_at: now + ChronoDuration::hours(1),
@@ -362,10 +362,10 @@ async fn enroll_rejects_replayed_nonce() {
     )
     .await;
 
-    let (csr_pem, _pubkey_der, fingerprint) = mint_csr("krach");
+    let (csr_pem, _pubkey_der, fingerprint) = mint_csr("test-host");
     let now = Utc::now();
     let claims = TokenClaims {
-        hostname: "krach".to_string(),
+        hostname: "test-host".to_string(),
         expected_pubkey_fingerprint: fingerprint,
         issued_at: now - ChronoDuration::seconds(5),
         expires_at: now + ChronoDuration::hours(1),

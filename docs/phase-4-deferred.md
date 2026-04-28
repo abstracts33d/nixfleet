@@ -46,10 +46,10 @@ These are documented as issues. The v0.2 brief's "control plane holds no secrets
 
 | # | Item | Issue | Why deferred | Cost | Risk during tech-debt window |
 |---|---|---|---|---|---|
-| 8 | TPM-bound issuance CA + offline fleet root + name constraints | [#41](https://github.com/abstracts33d/nixfleet/issues/41) | Substrate exists in `nixfleet.tpmKeyslot` scope (already used for CI signing); ~5-8 days to wire end-to-end for the fleet CA path | Phase 7-9 polish | Medium — Tailscale-only access + 5-host fleet bound the blast radius. Single biggest violation of the slogan today. |
-| 9 | Host-key-derived agent identity (CSR signing key = SSH host key, not fresh keypair) | [#43](https://github.com/abstracts33d/nixfleet/issues/43) | Mid-complexity refactor; doesn't change wire format | ~200-300 LOC, Phase 6 | Medium — sovereignty property weakened: cert/host-key compromise no longer equivalent |
+| 8 | TPM-bound issuance CA + offline fleet root + name constraints | [#41](https://github.com/arcanesys/nixfleet/issues/41) | Substrate exists in `nixfleet.tpmKeyslot` scope (already used for CI signing); ~5-8 days to wire end-to-end for the fleet CA path | Phase 7-9 polish | Medium — Tailscale-only access + 5-host fleet bound the blast radius. Single biggest violation of the slogan today. |
+| 9 | Host-key-derived agent identity (CSR signing key = SSH host key, not fresh keypair) | [#43](https://github.com/arcanesys/nixfleet/issues/43) | Mid-complexity refactor; doesn't change wire format | ~200-300 LOC, Phase 6 | Medium — sovereignty property weakened: cert/host-key compromise no longer equivalent |
 | 10 | Probe execution + signed evidence (RFC-0003 §7.3) | — (Phase 7 milestone) | Whole separate phase | weeks | Low (compliance not yet a deploy gate) |
-| 11 | Compliance gates as rollout blockers | [#4](https://github.com/abstracts33d/nixfleet/issues/4) | Depends on probe execution | ~3 days | Low |
+| 11 | Compliance gates as rollout blockers | [#4](https://github.com/arcanesys/nixfleet/issues/4) | Depends on probe execution | ~3 days | Low |
 
 ## Documentation
 
@@ -64,11 +64,11 @@ These are documented as issues. The v0.2 brief's "control plane holds no secrets
 
 | # | Item | Issue | Status |
 |---|---|---|---|
-| 16 | microvm harness extensions for new Phase 3/4 endpoints | [#5](https://github.com/abstracts33d/nixfleet/issues/5), [#27](https://github.com/abstracts33d/nixfleet/issues/27) | Phase 5 (basic harness already partial) |
-| 17 | Phase-10 teardown test ("rebuild CP from empty state") | [#14](https://github.com/abstracts33d/nixfleet/issues/14) | Phase 10 — final v0.2 acceptance gate |
+| 16 | microvm harness extensions for new Phase 3/4 endpoints | [#5](https://github.com/arcanesys/nixfleet/issues/5), [#27](https://github.com/arcanesys/nixfleet/issues/27) | Phase 5 (basic harness already partial) |
+| 17 | Phase-10 teardown test ("rebuild CP from empty state") | [#14](https://github.com/arcanesys/nixfleet/issues/14) | Phase 10 — final v0.2 acceptance gate |
 | 18 | Operator CLI commands: `nixfleet revoke`, `nixfleet pending-confirms`, `nixfleet prune-replay` | — | Phase 9 polish |
-| 19 | `nixfleet diff` (declared vs observed) | [#8](https://github.com/abstracts33d/nixfleet/issues/8) | Phase 9 |
-| 20 | deploy-rs schema compatibility layer | [#7](https://github.com/abstracts33d/nixfleet/issues/7) | Niche — only when migration is real |
+| 19 | `nixfleet diff` (declared vs observed) | [#8](https://github.com/arcanesys/nixfleet/issues/8) | Phase 9 |
+| 20 | deploy-rs schema compatibility layer | [#7](https://github.com/arcanesys/nixfleet/issues/7) | Niche — only when migration is real |
 | 21 | Persist `host_reports` in DB (currently in-memory ring, capped at REPORT_RING_CAP=32). Now that the agent emits typed events, persistence is worth doing — operators want to query "all reports for rollout X" historically. | — | Phase 5 — small (~80 LOC + migration), waits for the active-rollouts table |
 
 ## Polish / cleanup
@@ -95,26 +95,26 @@ The lab redeploy cycle on 2026-04-27 surfaced bugs that integration tests had mi
 
 | Issue | Title | Status |
 |---|---|---|
-| [#1](https://github.com/abstracts33d/nixfleet/issues/1) | fleet.nix schema | ✅ Phase 1 |
-| [#2](https://github.com/abstracts33d/nixfleet/issues/2) | Magic rollback in agent | ✅ — local rollback (Phase 4 PR-D), CP detects deadline expiry (Phase 4 PR-B + datetime fix), agent reacts to `/confirm` 410, agent rolls back on post-switch closure-hash mismatch, agent emits `rollback-triggered` reports. End-to-end deadline-expiry path still unexercised on hardware (would need to artificially block the agent's `/confirm` POST). |
-| [#3](https://github.com/abstracts33d/nixfleet/issues/3) | GitOps release binding | ✅ — Forgejo poll refreshes verified_fleet from operator commits (`c30e2fe`) |
-| [#4](https://github.com/abstracts33d/nixfleet/issues/4) | Compliance as rollout gate | ❌ Phase 6/7 |
-| [#5](https://github.com/abstracts33d/nixfleet/issues/5) | microvm harness | 🟡 partial — basic harness exists; not extended for new endpoints |
-| [#6](https://github.com/abstracts33d/nixfleet/issues/6) | agenix secrets, no cleartext on CP | 🟡 mostly done — fleet CA private key online is the remaining cleartext (#41) |
-| [#7](https://github.com/abstracts33d/nixfleet/issues/7) | deploy-rs compat | ❌ |
-| [#8](https://github.com/abstracts33d/nixfleet/issues/8) | `nixfleet diff` | ❌ |
-| [#9](https://github.com/abstracts33d/nixfleet/issues/9) | Declarative enrollment | 🟡 mostly there — bootstrap tokens via fleet-secrets work; agenix entry now conditional on token file existence so hosts with pre-issued certs don't need one |
-| [#12](https://github.com/abstracts33d/nixfleet/issues/12) | Signed artifacts | 🟡 2/3 done — CI release key (Phase 1) + attic cache key (Phase 1); host probe signatures Phase 7 |
-| [#13](https://github.com/abstracts33d/nixfleet/issues/13) | Freshness window | ✅ implemented in `verify_artifact` |
-| [#14](https://github.com/abstracts33d/nixfleet/issues/14) | Phase-10 teardown test | ❌ — final acceptance gate |
-| [#41](https://github.com/abstracts33d/nixfleet/issues/41) | TPM-bound issuance CA | ❌ Phase 7-9 — single biggest sovereignty gap |
-| [#43](https://github.com/abstracts33d/nixfleet/issues/43) | Host-key-derived identity | ❌ Phase 6 |
+| [#1](https://github.com/arcanesys/nixfleet/issues/1) | fleet.nix schema | ✅ Phase 1 |
+| [#2](https://github.com/arcanesys/nixfleet/issues/2) | Magic rollback in agent | ✅ — local rollback (Phase 4 PR-D), CP detects deadline expiry (Phase 4 PR-B + datetime fix), agent reacts to `/confirm` 410, agent rolls back on post-switch closure-hash mismatch, agent emits `rollback-triggered` reports. End-to-end deadline-expiry path still unexercised on hardware (would need to artificially block the agent's `/confirm` POST). |
+| [#3](https://github.com/arcanesys/nixfleet/issues/3) | GitOps release binding | ✅ — Forgejo poll refreshes verified_fleet from operator commits (`c30e2fe`) |
+| [#4](https://github.com/arcanesys/nixfleet/issues/4) | Compliance as rollout gate | ❌ Phase 6/7 |
+| [#5](https://github.com/arcanesys/nixfleet/issues/5) | microvm harness | 🟡 partial — basic harness exists; not extended for new endpoints |
+| [#6](https://github.com/arcanesys/nixfleet/issues/6) | agenix secrets, no cleartext on CP | 🟡 mostly done — fleet CA private key online is the remaining cleartext (#41) |
+| [#7](https://github.com/arcanesys/nixfleet/issues/7) | deploy-rs compat | ❌ |
+| [#8](https://github.com/arcanesys/nixfleet/issues/8) | `nixfleet diff` | ❌ |
+| [#9](https://github.com/arcanesys/nixfleet/issues/9) | Declarative enrollment | 🟡 mostly there — bootstrap tokens via fleet-secrets work; agenix entry now conditional on token file existence so hosts with pre-issued certs don't need one |
+| [#12](https://github.com/arcanesys/nixfleet/issues/12) | Signed artifacts | 🟡 2/3 done — CI release key (Phase 1) + attic cache key (Phase 1); host probe signatures Phase 7 |
+| [#13](https://github.com/arcanesys/nixfleet/issues/13) | Freshness window | ✅ implemented in `verify_artifact` |
+| [#14](https://github.com/arcanesys/nixfleet/issues/14) | Phase-10 teardown test | ❌ — final acceptance gate |
+| [#41](https://github.com/arcanesys/nixfleet/issues/41) | TPM-bound issuance CA | ❌ Phase 7-9 — single biggest sovereignty gap |
+| [#43](https://github.com/arcanesys/nixfleet/issues/43) | Host-key-derived identity | ❌ Phase 6 |
 
 ## Honest summary
 
 **v0.2 functional completion**: Phase 3 wire + Phase 4 dispatch+activation are both functionally complete and proven on lab hardware. GitOps loop closed. The activation chain runs end-to-end (`commit → CI → poll → dispatch → realise → switch-to-configuration → confirm → DB row marked confirmed`) in ~3 seconds on real hardware.
 
-**Most impactful remaining sovereignty gap**: [#41](https://github.com/abstracts33d/nixfleet/issues/41) (TPM-bound CA). Wire works; "CP holds no secrets" is broken in steady-state — the fleet CA private key is agenix-decrypted on lab and read at issuance time.
+**Most impactful remaining sovereignty gap**: [#41](https://github.com/arcanesys/nixfleet/issues/41) (TPM-bound CA). Wire works; "CP holds no secrets" is broken in steady-state — the fleet CA private key is agenix-decrypted on lab and read at issuance time.
 
 **Most impactful remaining functionality gap**: reconciler state-machine extensions (#1 above) for multi-wave / soak / health-gate enforcement. Per-host dispatch is unconditional today; production multi-host coordination needs the wave-soak-promote sequencing the reconciler already emits actions for but the CP doesn't act on.
 

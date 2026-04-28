@@ -176,7 +176,7 @@ async fn closure_proxy_returns_501_when_upstream_unset() {
     install_crypto_provider_once();
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
 
     let cp_port = pick_free_port().await;
     let handle = spawn_cp(&dir, server_cert, server_key, ca.clone(), cp_port, None).await;
@@ -204,7 +204,7 @@ async fn closure_proxy_forwards_to_upstream() {
     install_crypto_provider_once();
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
 
     // Stub HTTP upstream. Must bind before spawning CP so the CP can
     // resolve the URL at startup.
@@ -243,7 +243,7 @@ async fn closure_proxy_returns_502_when_upstream_unreachable() {
     install_crypto_provider_once();
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
 
     // Pick a port and DON'T bind anything to it — guaranteed
     // connection refused. Note: there's a small race where another

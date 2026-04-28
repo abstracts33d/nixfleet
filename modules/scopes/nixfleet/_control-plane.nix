@@ -67,22 +67,22 @@ in {
       cert = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "/run/agenix/cp-cert";
+        example = "/run/secrets/cp-cert";
         description = ''
           Path to the TLS server certificate PEM file. Wired by
-          `fleet/modules/nixfleet/tls.nix` to the agenix-decrypted
-          `cp-cert` path. Required when `enable = true`; the
-          assertion at config-time enforces this.
+          the fleet's secrets backend to the decrypted `cp-cert`
+          path. Required when `enable = true`; the assertion at
+          config-time enforces this.
         '';
       };
 
       key = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "/run/agenix/cp-key";
+        example = "/run/secrets/cp-key";
         description = ''
-          Path to the TLS server private key PEM file (agenix-
-          decrypted `cp-key` path). Required when `enable = true`.
+          Path to the TLS server private key PEM file (decrypted
+          `cp-key` path). Required when `enable = true`.
         '';
       };
 
@@ -155,8 +155,8 @@ in {
 
     # Cert issuance (enroll + renew). The CP holds the fleet
     # CA private key online — see nixfleet issue #41 for the deferred
-    # TPM-bound replacement. fleet/modules/nixfleet/tls.nix wires
-    # these to agenix-decrypted paths.
+    # TPM-bound replacement. The fleet wires these to paths produced
+    # by its secrets backend.
     fleetCaCert = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -171,11 +171,12 @@ in {
     fleetCaKey = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "/run/agenix/fleet-ca-key";
+      example = "/run/secrets/fleet-ca-key";
       description = ''
-        Fleet CA private key path (agenix-decrypted). Used to sign
-        agent certs in /v1/enroll and /v1/agent/renew. **Online on
-        the CP — see nixfleet issue #41.**
+        Fleet CA private key path (decrypted by the fleet's secrets
+        backend). Used to sign agent certs in /v1/enroll and
+        /v1/agent/renew. **Online on the CP — see nixfleet issue
+        #41.**
       '';
     };
 
@@ -258,7 +259,7 @@ in {
       tokenFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "/run/agenix/cp-channel-refs-token";
+        example = "/run/secrets/cp-channel-refs-token";
         description = ''
           Path to a file containing the upstream API token (sent as
           `Authorization: Bearer <token>`). Optional — leave null for
@@ -284,8 +285,7 @@ in {
           assertion = (cfg.tls.cert != null) && (cfg.tls.key != null);
           message = ''
             services.nixfleet-control-plane requires both tls.cert and tls.key
-            to be set when enabled. Wire them through agenix in fleet/modules/
-            nixfleet/tls.nix.
+            to be set when enabled. Wire them through your secrets backend.
           '';
         }
       ];
@@ -369,8 +369,9 @@ in {
 
           # Hardening. Network access is required (TLS listener), so
           # PrivateNetwork is not set. ProtectSystem=strict is fine
-          # since the server reads from /etc + /var/lib + /run/agenix
-          # and only writes to its StateDirectory.
+          # since the server reads from /etc + /var/lib + the
+          # secrets-backend mountpoint, and only writes to its
+          # StateDirectory.
           ProtectSystem = "strict";
           ProtectHome = true;
           PrivateTmp = true;

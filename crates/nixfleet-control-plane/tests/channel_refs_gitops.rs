@@ -29,7 +29,7 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
     let json = serde_json::json!({
         "schemaVersion": 1,
         "hosts": {
-            "krach": {
+            "test-host": {
                 "system": "x86_64-linux",
                 "tags": [],
                 "channel": "stable",
@@ -146,7 +146,7 @@ async fn poll_refreshes_verified_fleet_snapshot() {
     let public_b64 = base64::engine::general_purpose::STANDARD.encode(signing_key.verifying_key());
 
     let (raw_json, canonical_bytes) =
-        build_fleet_resolved_json("decl0001-nixos-system-krach-26.05", "deadbeef00000000");
+        build_fleet_resolved_json("decl0001-nixos-system-test-host-26.05", "deadbeef00000000");
     let signature = signing_key.sign(&canonical_bytes);
 
     let trust_path = dir.path().join("trust.json");
@@ -201,8 +201,8 @@ async fn poll_refreshes_verified_fleet_snapshot() {
     let fleet =
         last_snapshot.expect("verified_fleet snapshot should have been refreshed by the poll");
     assert_eq!(
-        fleet.hosts.get("krach").and_then(|h| h.closure_hash.as_deref()),
-        Some("decl0001-nixos-system-krach-26.05"),
+        fleet.hosts.get("test-host").and_then(|h| h.closure_hash.as_deref()),
+        Some("decl0001-nixos-system-test-host-26.05"),
         "snapshot should carry the fetched closureHash",
     );
     assert_eq!(fleet.meta.ci_commit.as_deref(), Some("deadbeef00000000"));
@@ -221,7 +221,7 @@ async fn poll_retains_snapshot_on_verify_failure() {
         base64::engine::general_purpose::STANDARD.encode(wrong_key.verifying_key());
 
     let (raw_json, canonical_bytes) =
-        build_fleet_resolved_json("decl0001-nixos-system-krach-26.05", "cafebabe00000000");
+        build_fleet_resolved_json("decl0001-nixos-system-test-host-26.05", "cafebabe00000000");
     let signature = signing_key.sign(&canonical_bytes);
 
     let trust_path = dir.path().join("trust.json");

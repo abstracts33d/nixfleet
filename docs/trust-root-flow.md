@@ -13,7 +13,7 @@ fleet.nix  (Nix layer — declarative)
   nixfleet.trust.ciReleaseKey.current = { algorithm = "ecdsa-p256"; public = "<base64>"; };
   nixfleet.trust.ciReleaseKey.previous = null;        # 30-day rotation grace
   nixfleet.trust.ciReleaseKey.rejectBefore = null;    # compromise switch
-  nixfleet.trust.atticCacheKey.current = "attic:cache.lab.internal:<base64>";
+  nixfleet.trust.atticCacheKey.current = "attic:cache.example.com:<base64>";
   nixfleet.trust.orgRootKey.current = null;
        │
        │  NixOS module system: modules/contracts/trust.nix typechecks + asserts
@@ -191,7 +191,7 @@ Parallel question: how does the artifact itself reach the CP?
 
 Per ARCHITECTURE.md §1.4: CP polls the git forge for channel-ref updates. Two concrete implementations possible:
 
-**(a) CP pulls from Forgejo raw-file HTTP.** Requires the CP to have Forgejo HTTP access (lab.internal). Requires a new CLI flag `--release-url-template https://git.lab.internal/<owner>/fleet/raw/main/releases/fleet.resolved.json` or similar.
+**(a) CP pulls from Forgejo raw-file HTTP.** Requires the CP to have Forgejo HTTP access (example.com). Requires a new CLI flag `--release-url-template https://git.example.com/<owner>/fleet/raw/main/releases/fleet.resolved.json` or similar.
 
 **(b) CP reads from a local git checkout.** The CP host runs a systemd timer that `git pull`s a shared fleet clone into `/var/lib/nixfleet-cp/fleet.git/`; CP reads `/var/lib/nixfleet-cp/fleet.git/releases/fleet.resolved.json`. No new network surface on the CP binary.
 

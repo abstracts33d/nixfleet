@@ -70,7 +70,7 @@ fn write_bytes(dir: &TempDir, name: &str, contents: &[u8]) -> PathBuf {
     path
 }
 
-/// Build a minimal valid `fleet.resolved.json` declaring `krach`'s
+/// Build a minimal valid `fleet.resolved.json` declaring `test-host`'s
 /// channel + target closure. Returns the canonical bytes (sign these)
 /// and the original JSON string (write to disk; the server re-
 /// canonicalizes on read).
@@ -82,7 +82,7 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
     let json = serde_json::json!({
         "schemaVersion": 1,
         "hosts": {
-            "krach": {
+            "test-host": {
                 "system": "x86_64-linux",
                 "tags": [],
                 "channel": "stable",
@@ -250,12 +250,12 @@ async fn spawn_with_signed_fleet(
     handle
 }
 
-const DECLARED_CLOSURE: &str = "decl0001-nixos-system-krach-26.05";
+const DECLARED_CLOSURE: &str = "decl0001-nixos-system-test-host-26.05";
 const CI_COMMIT: &str = "abc12345deadbeefcafebabe";
 
 fn checkin_request(current: &str) -> CheckinRequest {
     CheckinRequest {
-        hostname: "krach".to_string(),
+        hostname: "test-host".to_string(),
         agent_version: "test".to_string(),
         current_generation: GenerationRef {
             closure_hash: current.to_string(),
@@ -278,7 +278,7 @@ async fn dispatch_issues_target_when_diverged() {
 
     let dir = TempDir::new().unwrap();
     let (artifact, signature, trust) = write_signed_fleet(&dir, DECLARED_CLOSURE, CI_COMMIT);
-    let (ca, server_cert, server_key, client_cert, client_key) = mint_ca_and_certs(&dir, "krach");
+    let (ca, server_cert, server_key, client_cert, client_key) = mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
     let port = pick_free_port().await;
 
@@ -312,8 +312,8 @@ async fn dispatch_issues_target_when_diverged() {
     // Verify the DB has a matching pending_confirms row.
     let db = Db::open(&db_path).unwrap();
     assert!(
-        db.pending_confirm_exists("krach").unwrap(),
-        "expected a pending_confirms row for krach",
+        db.pending_confirm_exists("test-host").unwrap(),
+        "expected a pending_confirms row for test-host",
     );
 
     handle.abort();
@@ -325,7 +325,7 @@ async fn dispatch_returns_null_when_converged() {
 
     let dir = TempDir::new().unwrap();
     let (artifact, signature, trust) = write_signed_fleet(&dir, DECLARED_CLOSURE, CI_COMMIT);
-    let (ca, server_cert, server_key, client_cert, client_key) = mint_ca_and_certs(&dir, "krach");
+    let (ca, server_cert, server_key, client_cert, client_key) = mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
     let port = pick_free_port().await;
 
@@ -357,7 +357,7 @@ async fn dispatch_returns_null_when_converged() {
     );
     let db = Db::open(&db_path).unwrap();
     assert!(
-        !db.pending_confirm_exists("krach").unwrap(),
+        !db.pending_confirm_exists("test-host").unwrap(),
         "no pending_confirms row should have been written",
     );
 
@@ -370,7 +370,7 @@ async fn dispatch_is_idempotent_across_two_checkins() {
 
     let dir = TempDir::new().unwrap();
     let (artifact, signature, trust) = write_signed_fleet(&dir, DECLARED_CLOSURE, CI_COMMIT);
-    let (ca, server_cert, server_key, client_cert, client_key) = mint_ca_and_certs(&dir, "krach");
+    let (ca, server_cert, server_key, client_cert, client_key) = mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
     let port = pick_free_port().await;
 
@@ -420,7 +420,7 @@ async fn dispatch_is_idempotent_across_two_checkins() {
     let n: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pending_confirms WHERE hostname = ?1",
-            rusqlite::params!["krach"],
+            rusqlite::params!["test-host"],
             |r| r.get(0),
         )
         .unwrap();

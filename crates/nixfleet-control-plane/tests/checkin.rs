@@ -1,7 +1,7 @@
 //! `/v1/agent/checkin` + `/v1/agent/report` integration test.
 //!
 //! Spins up an in-process server with mTLS, sends a checkin from a
-//! client cert with CN=krach, asserts the body shape comes through
+//! client cert with CN=test-host, asserts the body shape comes through
 //! and CN-vs-hostname mismatch is rejected.
 //!
 //! Shares the cert-minting helpers with `whoami.rs` — duplicated
@@ -134,7 +134,7 @@ async fn checkin_records_request_and_returns_null_target() {
 
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
     let (artifact, signature, trust, observed) = write_phase2_input_stubs(&dir);
 
     let port = pick_free_port().await;
@@ -160,7 +160,7 @@ async fn checkin_records_request_and_returns_null_target() {
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
     let req = CheckinRequest {
-        hostname: "krach".to_string(),
+        hostname: "test-host".to_string(),
         agent_version: "0.2.0".to_string(),
         current_generation: GenerationRef {
             closure_hash: "abc123".to_string(),
@@ -198,7 +198,7 @@ async fn checkin_rejects_cn_hostname_mismatch() {
 
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
     let (artifact, signature, trust, observed) = write_phase2_input_stubs(&dir);
 
     let port = pick_free_port().await;
@@ -223,7 +223,7 @@ async fn checkin_rejects_cn_hostname_mismatch() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
-    // Cert CN is "krach"; body claims to be "ohm". CP rejects.
+    // Cert CN is "test-host"; body claims to be "ohm". CP rejects.
     let req = CheckinRequest {
         hostname: "ohm".to_string(),
         agent_version: "0.2.0".to_string(),
@@ -255,7 +255,7 @@ async fn report_records_event_and_returns_event_id() {
 
     let dir = TempDir::new().unwrap();
     let (ca, server_cert, server_key, client_cert, client_key) =
-        mint_ca_and_certs(&dir, "krach");
+        mint_ca_and_certs(&dir, "test-host");
     let (artifact, signature, trust, observed) = write_phase2_input_stubs(&dir);
 
     let port = pick_free_port().await;
@@ -281,7 +281,7 @@ async fn report_records_event_and_returns_event_id() {
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
     let req = ReportRequest {
-        hostname: "krach".to_string(),
+        hostname: "test-host".to_string(),
         agent_version: "0.2.0".to_string(),
         occurred_at: Utc::now(),
         rollout: Some("stable@abc12345".to_string()),

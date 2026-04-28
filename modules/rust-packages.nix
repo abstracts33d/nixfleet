@@ -15,9 +15,10 @@
         # Fully-built static site: mdbook (curated guide + RFCs +
         # nixosOptionsDoc) with the cargo doc Rust API reference
         # mounted at `api/`. Pure derivation, no source-tree mutation —
-        # consumers (fleet's caddy vhost, GH Pages CI) reference it as
-        # a /nix/store path. Mirrors what `apps.docs` writes into the
-        # working tree, but produces a single immutable output.
+        # consumers reference it as a /nix/store path (e.g. as a
+        # reverse-proxy doc root or a CI publish target). Mirrors
+        # what `apps.docs` writes into the working tree, but produces
+        # a single immutable output.
         docs-site = pkgs.runCommand "nixfleet-docs-site" {
           nativeBuildInputs = [pkgs.mdbook];
         } ''
@@ -28,7 +29,7 @@
           cp ${config.packages.options-doc} docs/mdbook/src/options.md
 
           mkdir -p docs/mdbook/src/rfcs
-          cp rfcs/*.md docs/mdbook/src/rfcs/
+          cp docs/rfcs/*.md docs/mdbook/src/rfcs/
 
           mdbook build docs/mdbook
 
@@ -105,7 +106,7 @@
 
             echo "==> copying RFCs into mdbook"
             mkdir -p "$repo_root/docs/mdbook/src/rfcs"
-            for f in "$repo_root"/rfcs/*.md; do
+            for f in "$repo_root"/docs/rfcs/*.md; do
               [ -f "$f" ] || continue
               cp -f "$f" "$repo_root/docs/mdbook/src/rfcs/$(basename "$f")"
             done

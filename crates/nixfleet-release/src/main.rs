@@ -42,8 +42,11 @@ struct Cli {
 
     /// Optional shell command run once per built closure. Receives
     /// env: NIXFLEET_HOST, NIXFLEET_PATH, NIXFLEET_CLOSURE_HASH.
-    /// Typical: `attic push fleet "$NIXFLEET_PATH"` or
-    /// `nix copy --to ssh://lab "$NIXFLEET_PATH"`.
+    /// Examples (pick whichever matches your cache):
+    ///   `attic push <cache> "$NIXFLEET_PATH"`
+    ///   `nix copy --to s3://...   "$NIXFLEET_PATH"`
+    ///   `nix copy --to ssh://...  "$NIXFLEET_PATH"`
+    ///   (or any other command that publishes the closure).
     #[arg(long, env = "NIXFLEET_PUSH_CMD")]
     push_cmd: Option<String>,
 

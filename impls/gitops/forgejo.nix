@@ -12,9 +12,9 @@
 {
   # Build {artifactUrl, signatureUrl} for a Forgejo / Gitea host.
   #
-  # baseUrl: scheme + host, no trailing slash. e.g. "https://git.lab.internal"
-  # owner:   repo owner / org. e.g. "abstracts33d"
-  # repo:    repo name. e.g. "fleet"
+  # baseUrl: scheme + host, no trailing slash. e.g. "https://git.example.com"
+  # owner:   repo owner / org. e.g. "myorg"
+  # repo:    repo name. e.g. "myfleet".
   # ref:     branch or tag. Default "main".
   # path:    repo-relative path to the artifact JSON. Default
   #          "releases/fleet.resolved.json"; the matching ".sig" is
