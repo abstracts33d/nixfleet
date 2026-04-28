@@ -166,16 +166,26 @@ async fn dispatch_target_for_checkin(
         }
     };
 
-    let decision =
-        crate::dispatch::decide_target(&req.hostname, req, &fleet, pending_for_host, now);
+    let decision = crate::dispatch::decide_target(
+        &req.hostname,
+        req,
+        &fleet,
+        pending_for_host,
+        now,
+        CONFIRM_DEADLINE_SECS as u32,
+    );
 
     match decision {
-        crate::dispatch::Decision::Dispatch { target, rollout_id } => {
+        crate::dispatch::Decision::Dispatch {
+            target,
+            rollout_id,
+            wave_index,
+        } => {
             let confirm_deadline = now + chrono::Duration::seconds(CONFIRM_DEADLINE_SECS);
             match db.record_pending_confirm(
                 &req.hostname,
                 &rollout_id,
-                /* wave */ 0,
+                /* wave */ wave_index.unwrap_or(0),
                 &target.closure_hash,
                 &target.channel_ref,
                 confirm_deadline,

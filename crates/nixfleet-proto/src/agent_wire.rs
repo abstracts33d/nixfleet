@@ -95,6 +95,42 @@ pub struct EvaluatedTarget {
     pub closure_hash: String,
     pub channel_ref: String,
     pub evaluated_at: DateTime<Utc>,
+    /// Rollout id this target is bound to (RFC-0003 §4.1). Format
+    /// `<channel>@<short-ci-commit-or-closure>` per dispatch
+    /// emission. `None` only for legacy / synthetic targets that
+    /// pre-date the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout_id: Option<String>,
+    /// Index of this host in `fleet.waves[host.channel]` (0-based).
+    /// `None` when the channel has no wave plan declared (the lab
+    /// fleet's single-channel single-wave deploy stays `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wave_index: Option<u32>,
+    /// Activation policy bound to this target (RFC-0003 §4.1).
+    /// `None` only for legacy synthetic targets that pre-date the
+    /// field; when present, the agent honours the supplied
+    /// `confirmWindowSecs` rather than its own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activate: Option<ActivateBlock>,
+}
+
+/// Activation policy embedded in `EvaluatedTarget` per RFC-0003
+/// §4.1. The agent receives `confirmEndpoint` + `confirmWindowSecs`
+/// alongside the closure to activate so it knows where and within
+/// what deadline to POST `/v1/agent/confirm` after switching.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateBlock {
+    /// Seconds the agent has to POST `/v1/agent/confirm` after
+    /// activating before the CP triggers magic rollback. Sourced
+    /// from CP-side configuration (currently a constant; may become
+    /// per-channel or per-wave when wave staging lands).
+    pub confirm_window_secs: u32,
+    /// HTTP path the agent POSTs to with `ConfirmRequest`.
+    /// Currently always `/v1/agent/confirm`. Carried on the wire
+    /// so that future endpoint relocations don't need an agent
+    /// rebuild + redeploy.
+    pub confirm_endpoint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -23,9 +23,14 @@
 use chrono::{DateTime, Utc};
 
 use nixfleet_proto::{
-    agent_wire::{CheckinRequest, EvaluatedTarget, FetchResult},
+    agent_wire::{ActivateBlock, CheckinRequest, EvaluatedTarget, FetchResult},
     FleetResolved,
 };
+
+/// Path the agent POSTs `ConfirmRequest` to after activating. Embedded
+/// in every dispatched `EvaluatedTarget.activate` so the agent does not
+/// hardcode the path.
+const CONFIRM_ENDPOINT: &str = "/v1/agent/confirm";
 
 /// Outcome of the dispatch decision for a host.
 ///
@@ -54,6 +59,11 @@ pub enum Decision {
     Dispatch {
         target: EvaluatedTarget,
         rollout_id: String,
+        /// Index of this host in `fleet.waves[host.channel]`, if
+        /// any waves are declared. The handler uses it for the
+        /// `pending_confirms` row's `wave` column. Mirrored on
+        /// `target.wave_index` so the agent sees it on the wire.
+        wave_index: Option<u32>,
     },
 }
 
@@ -63,12 +73,18 @@ pub enum Decision {
 /// row in state `'pending'` for this hostname (regardless of which
 /// rollout). The caller queries the DB and passes the bool — keeps
 /// this function pure and trivially unit-testable.
+///
+/// `confirm_window_secs` is the value embedded in the dispatched
+/// target's `activate.confirmWindowSecs` (RFC-0003 §4.1). Threaded
+/// through as a parameter so this function stays pure and doesn't
+/// have to import the `server` module's CP-side constant.
 pub fn decide_target(
     hostname: &str,
     request: &CheckinRequest,
     fleet: &FleetResolved,
     pending_for_host: bool,
     now: DateTime<Utc>,
+    confirm_window_secs: u32,
 ) -> Decision {
     let host = match fleet.hosts.get(hostname) {
         Some(h) => h,
@@ -111,13 +127,31 @@ pub fn decide_target(
         .unwrap_or_else(|| target_closure.chars().take(8).collect::<String>());
     let rollout_id = format!("{}@{}", host.channel, suffix);
 
+    // Wave-plan lookup: which entry in `fleet.waves[host.channel]`
+    // (if any) lists this hostname. `None` for fleets that don't
+    // declare a wave plan — the lab's single-channel single-wave
+    // deploy. RFC-0002 §3 wave staging consumes this when it lands.
+    let wave_index: Option<u32> = fleet.waves.get(&host.channel).and_then(|waves| {
+        waves
+            .iter()
+            .position(|w| w.hosts.iter().any(|h| h == hostname))
+            .map(|i| i as u32)
+    });
+
     Decision::Dispatch {
         target: EvaluatedTarget {
             closure_hash: target_closure.clone(),
             channel_ref: rollout_id.clone(),
             evaluated_at: now,
+            rollout_id: Some(rollout_id.clone()),
+            wave_index,
+            activate: Some(ActivateBlock {
+                confirm_window_secs,
+                confirm_endpoint: CONFIRM_ENDPOINT.to_string(),
+            }),
         },
         rollout_id,
+        wave_index,
     }
 }
 
@@ -209,7 +243,7 @@ mod tests {
         let fleet = fleet_with("ohm", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now(), 120),
             Decision::Unmanaged
         ));
     }
@@ -219,7 +253,7 @@ mod tests {
         let fleet = fleet_with("test-host", host(None));
         let req = checkin("running-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now(), 120),
             Decision::NoDeclaration
         ));
     }
@@ -229,7 +263,7 @@ mod tests {
         let fleet = fleet_with("test-host", host(Some("matched-system")));
         let req = checkin("matched-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now(), 120),
             Decision::Converged
         ));
     }
@@ -239,7 +273,7 @@ mod tests {
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, /* pending */ true, now()),
+            decide_target("test-host", &req, &fleet, /* pending */ true, now(), 120),
             Decision::InFlight
         ));
     }
@@ -249,7 +283,7 @@ mod tests {
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::VerifyFailed));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now(), 120),
             Decision::HoldAfterFailure
         ));
     }
@@ -259,7 +293,7 @@ mod tests {
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::FetchFailed));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, false, now()),
+            decide_target("test-host", &req, &fleet, false, now(), 120),
             Decision::HoldAfterFailure
         ));
     }
@@ -268,8 +302,13 @@ mod tests {
     fn dispatch_when_diverged_and_no_pending() {
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
-        let d = decide_target("test-host", &req, &fleet, false, now());
-        let Decision::Dispatch { target, rollout_id } = d else {
+        let d = decide_target("test-host", &req, &fleet, false, now(), 120);
+        let Decision::Dispatch {
+            target,
+            rollout_id,
+            wave_index,
+        } = d
+        else {
             panic!("expected Dispatch, got {:?}", d);
         };
         assert_eq!(target.closure_hash, "declared-system");
@@ -277,6 +316,44 @@ mod tests {
         assert_eq!(rollout_id, "stable@abc12345");
         assert_eq!(target.channel_ref, "stable@abc12345");
         assert_eq!(target.evaluated_at, now());
+        // Wire-additive RFC-0003 §4.1 fields:
+        assert_eq!(target.rollout_id.as_deref(), Some("stable@abc12345"));
+        // No waves declared in fleet_with → both Decision and target
+        // surface `wave_index = None`.
+        assert_eq!(wave_index, None);
+        assert_eq!(target.wave_index, None);
+        let activate = target.activate.expect("activate block populated");
+        assert_eq!(activate.confirm_window_secs, 120);
+        assert_eq!(activate.confirm_endpoint, "/v1/agent/confirm");
+    }
+
+    #[test]
+    fn dispatch_surfaces_wave_index_when_waves_declared() {
+        // Channel has a 2-wave plan; the host is in wave 1 (index).
+        let mut fleet = fleet_with("test-host", host(Some("declared-system")));
+        fleet.waves.insert(
+            "stable".to_string(),
+            vec![
+                nixfleet_proto::Wave {
+                    hosts: vec!["other-host".to_string()],
+                    soak_minutes: 5,
+                },
+                nixfleet_proto::Wave {
+                    hosts: vec!["test-host".to_string()],
+                    soak_minutes: 5,
+                },
+            ],
+        );
+        let req = checkin("running-system", Some(FetchResult::Ok));
+        let d = decide_target("test-host", &req, &fleet, false, now(), 120);
+        let Decision::Dispatch {
+            target, wave_index, ..
+        } = d
+        else {
+            panic!("expected Dispatch");
+        };
+        assert_eq!(wave_index, Some(1));
+        assert_eq!(target.wave_index, Some(1));
     }
 
     #[test]
@@ -284,7 +361,7 @@ mod tests {
         let mut fleet = fleet_with("test-host", host(Some("xxxxxxxxyyyyyyy-system")));
         fleet.meta.ci_commit = None;
         let req = checkin("running-system", Some(FetchResult::Ok));
-        let d = decide_target("test-host", &req, &fleet, false, now());
+        let d = decide_target("test-host", &req, &fleet, false, now(), 120);
         let Decision::Dispatch { rollout_id, .. } = d else {
             panic!("expected Dispatch");
         };
@@ -292,11 +369,24 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_threads_confirm_window_into_activate_block() {
+        // Different confirm-window must propagate to the wire.
+        let fleet = fleet_with("test-host", host(Some("declared-system")));
+        let req = checkin("running-system", Some(FetchResult::Ok));
+        let d = decide_target("test-host", &req, &fleet, false, now(), 240);
+        let Decision::Dispatch { target, .. } = d else {
+            panic!("expected Dispatch");
+        };
+        let activate = target.activate.expect("activate block populated");
+        assert_eq!(activate.confirm_window_secs, 240);
+    }
+
+    #[test]
     fn dispatch_when_no_fetch_outcome_yet() {
         // Brand-new agent, never fetched anything — should still dispatch.
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", None);
-        let d = decide_target("test-host", &req, &fleet, false, now());
+        let d = decide_target("test-host", &req, &fleet, false, now(), 120);
         assert!(matches!(d, Decision::Dispatch { .. }));
     }
 }
