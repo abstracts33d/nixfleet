@@ -91,6 +91,20 @@ struct Args {
     /// writes the issued cert + key to `client_cert` / `client_key`.
     #[arg(long, env = "NIXFLEET_AGENT_BOOTSTRAP_TOKEN_FILE")]
     bootstrap_token_file: Option<PathBuf>,
+
+    /// Per-host state directory. The agent writes
+    /// `last_confirmed_at` here on every successful confirm so it
+    /// can attest the timestamp on every subsequent checkin
+    /// (gap B in
+    /// docs/roadmap/0002-v0.2-completeness-gaps.md). Survives agent
+    /// process restart; CP-side `recover_soak_state_from_attestation`
+    /// consumes the attestation to rebuild
+    /// `host_rollout_state.last_healthy_since` after a CP rebuild.
+    /// Default `/var/lib/nixfleet-agent`. The systemd unit
+    /// (modules/scopes/nixfleet/_agent.nix or harness equivalent)
+    /// sets `StateDirectory=` to this path.
+    #[arg(long, env = "NIXFLEET_AGENT_STATE_DIR", default_value = "/var/lib/nixfleet-agent")]
+    state_dir: PathBuf,
 }
 
 #[tokio::main]
@@ -289,7 +303,25 @@ async fn main() -> anyhow::Result<()> {
                                         );
                                     }
                                 }
-                                Ok(_) => {} // Acknowledged or Other — done.
+                                Ok(nixfleet_agent::comms::ConfirmOutcome::Acknowledged) => {
+                                    // Gap B: persist the confirm
+                                    // timestamp so subsequent checkins
+                                    // can attest it. Best-effort —
+                                    // failure to persist doesn't roll
+                                    // back the activation.
+                                    if let Err(err) = nixfleet_agent::checkin_state::write_last_confirmed(
+                                        &args.state_dir,
+                                        &target.closure_hash,
+                                        chrono::Utc::now(),
+                                    ) {
+                                        tracing::warn!(
+                                            error = %err,
+                                            state_dir = %args.state_dir.display(),
+                                            "write_last_confirmed failed; soak attestation will be missing on next checkin",
+                                        );
+                                    }
+                                }
+                                Ok(nixfleet_agent::comms::ConfirmOutcome::Other) => {} // logged in confirm_target
                                 Err(err) => {
                                     tracing::warn!(error = %err, "confirm post failed");
                                 }
@@ -445,6 +477,27 @@ async fn send_checkin(
     let pending_generation = checkin_state::pending_generation()?;
     let uptime_secs = checkin_state::uptime_secs(started_at);
 
+    // Gap B: attest the most recent confirm timestamp when it
+    // applies to the live closure. read_last_confirmed handles all
+    // mismatch cases (rolled-back closure, missing file, malformed,
+    // future-dated) by returning Ok(None) so the checkin always
+    // populates a sensible Option<DateTime>.
+    let last_confirmed_at = match checkin_state::read_last_confirmed(
+        &args.state_dir,
+        &current_generation.closure_hash,
+        chrono::Utc::now(),
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                state_dir = %args.state_dir.display(),
+                "read_last_confirmed failed; checkin proceeds without attestation",
+            );
+            None
+        }
+    };
+
     let req = CheckinRequest {
         hostname: args.machine_id.clone(),
         agent_version: AGENT_VERSION.to_string(),
@@ -453,7 +506,7 @@ async fn send_checkin(
         last_evaluated_target: None,
         last_fetch_outcome: None,
         uptime_secs: Some(uptime_secs),
-        last_confirmed_at: None,
+        last_confirmed_at,
     };
 
     comms::checkin(client, &args.control_plane_url, &req).await

@@ -54,6 +54,11 @@
       Type = "simple";
       Restart = "on-failure";
       RestartSec = 5;
+      # StateDirectory creates /var/lib/nixfleet-agent at unit
+      # start with mode 0700; the agent writes
+      # `last_confirmed_at` (gap B attestation) here.
+      StateDirectory = "nixfleet-agent";
+      StateDirectoryMode = "0700";
       ExecStart = lib.concatStringsSep " " [
         "${agentPkg}/bin/nixfleet-agent"
         "--control-plane-url https://cp:${toString controlPlanePort}"
@@ -63,6 +68,7 @@
         "--ca-cert /etc/nixfleet-agent/ca.pem"
         "--client-cert /etc/nixfleet-agent/${agentHostName}-cert.pem"
         "--client-key /etc/nixfleet-agent/${agentHostName}-key.pem"
+        "--state-dir /var/lib/nixfleet-agent"
       ];
       # Surface in host journal via microvm@<name>.service so the
       # scenario can grep without per-VM journal mounts.

@@ -4,11 +4,29 @@
 //! generation, boot ID. All file I/O is `std::fs::*` — these are
 //! tiny reads of /run + /proc, no async needed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use nixfleet_proto::agent_wire::{GenerationRef, PendingGeneration};
+
+/// Filename inside `--state-dir` that carries the agent's most
+/// recent successful confirm. Two-line plaintext format:
+///   `<closure_hash>\n<rfc3339-timestamp>\n`
+/// Written after every Acknowledged `/v1/agent/confirm`; read on
+/// every checkin. The closure_hash binds the timestamp to the
+/// generation it applies to — if the agent rolls back (current
+/// generation no longer matches the recorded closure), the
+/// timestamp is suppressed from the next checkin.
+///
+/// Closes the agent half of gap B (issue #47): the CP-side
+/// projection ([`crates/nixfleet-control-plane/src/server/handlers.rs`]
+/// `recover_soak_state_from_attestation`) consumes
+/// `CheckinRequest.last_confirmed_at` to repopulate
+/// `host_rollout_state.last_healthy_since` after a CP rebuild,
+/// clamped to `min(now, attested)`.
+pub const LAST_CONFIRM_FILENAME: &str = "last_confirmed_at";
 
 /// Path to the symlink pointing at the currently active system
 /// closure. Reading it as a symlink target gives us the store
@@ -114,6 +132,135 @@ pub fn pending_generation() -> Result<Option<PendingGeneration>> {
 /// loop starts).
 pub fn uptime_secs(started_at: Instant) -> u64 {
     started_at.elapsed().as_secs()
+}
+
+/// Persist the moment of a successful confirm so the next checkin
+/// can attest it (and it survives an agent restart). Writes
+/// atomically via `tempfile + rename` so a crash mid-write doesn't
+/// leave a partially-written file. Best-effort: failures log + are
+/// non-fatal — soak attestation is recovery hygiene, not the
+/// activation contract.
+pub fn write_last_confirmed(state_dir: &Path, closure_hash: &str, at: DateTime<Utc>) -> Result<()> {
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("create state dir {}", state_dir.display()))?;
+    let final_path = state_dir.join(LAST_CONFIRM_FILENAME);
+    let tmp_path = state_dir.join(format!("{LAST_CONFIRM_FILENAME}.tmp"));
+    let body = format!("{closure_hash}\n{}\n", at.to_rfc3339());
+    std::fs::write(&tmp_path, body)
+        .with_context(|| format!("write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &final_path).with_context(|| {
+        format!(
+            "rename {} -> {}",
+            tmp_path.display(),
+            final_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Read the persisted last-confirm timestamp, if it applies to the
+/// agent's current generation. Returns `None` when:
+/// - the state file doesn't exist (first boot, never confirmed);
+/// - the file's recorded `closure_hash` differs from the agent's
+///   current generation (host rolled back; the timestamp no longer
+///   describes the live system);
+/// - the file is malformed (parse error, missing line);
+/// - the timestamp is in the future of `now` (clock skew or
+///   tamper — we'd be attesting future-dated state which the CP
+///   clamps to `min(now, attested)` anyway, so just suppress).
+///
+/// Errors only on filesystem I/O failures; logical mismatches
+/// return `Ok(None)` so the caller can include the field as
+/// `Option::None` in the checkin without aborting the request.
+pub fn read_last_confirmed(
+    state_dir: &Path,
+    current_closure: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>> {
+    let path = state_dir.join(LAST_CONFIRM_FILENAME);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let mut lines = raw.lines();
+    let recorded_closure = match lines.next() {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(None),
+    };
+    let recorded_ts = match lines.next() {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(None),
+    };
+    if recorded_closure != current_closure {
+        return Ok(None);
+    }
+    let parsed: DateTime<Utc> = match recorded_ts.parse() {
+        Ok(t) => t,
+        Err(_) => return Ok(None),
+    };
+    if parsed > now {
+        return Ok(None);
+    }
+    Ok(Some(parsed))
+}
+
+#[cfg(test)]
+mod write_read_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn write_then_read_round_trips_when_closure_matches() {
+        let dir = TempDir::new().unwrap();
+        let now = Utc::now();
+        let stamp = now - chrono::Duration::seconds(30);
+        write_last_confirmed(dir.path(), "abc-system", stamp).unwrap();
+        let got = read_last_confirmed(dir.path(), "abc-system", now)
+            .unwrap()
+            .expect("present");
+        assert_eq!(got.timestamp(), stamp.timestamp());
+    }
+
+    #[test]
+    fn read_returns_none_when_closure_mismatch() {
+        let dir = TempDir::new().unwrap();
+        let now = Utc::now();
+        write_last_confirmed(dir.path(), "old-system", now).unwrap();
+        let got = read_last_confirmed(dir.path(), "new-system", now).unwrap();
+        assert!(
+            got.is_none(),
+            "rolled-back closure must not surface stale timestamp",
+        );
+    }
+
+    #[test]
+    fn read_returns_none_when_no_file() {
+        let dir = TempDir::new().unwrap();
+        let got = read_last_confirmed(dir.path(), "any", Utc::now()).unwrap();
+        assert!(got.is_none(), "absent state file is the first-boot case");
+    }
+
+    #[test]
+    fn read_returns_none_when_timestamp_future() {
+        let dir = TempDir::new().unwrap();
+        let now = Utc::now();
+        let future = now + chrono::Duration::hours(1);
+        write_last_confirmed(dir.path(), "abc-system", future).unwrap();
+        let got = read_last_confirmed(dir.path(), "abc-system", now).unwrap();
+        assert!(
+            got.is_none(),
+            "future-dated stamp suppressed (clock-skew / tamper guard)",
+        );
+    }
+
+    #[test]
+    fn read_returns_none_on_malformed_body() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(LAST_CONFIRM_FILENAME), "only-one-line").unwrap();
+        let got = read_last_confirmed(dir.path(), "anything", Utc::now()).unwrap();
+        assert!(got.is_none());
+    }
 }
 
 #[cfg(test)]
