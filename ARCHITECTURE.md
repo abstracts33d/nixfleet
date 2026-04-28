@@ -295,9 +295,24 @@ Deliverable: adding a new RPi sensor is: `nix run .#provision rpi-sensor-02 <mac
 
 ### Phase 10 — Control-plane teardown test
 
-The actual validation of the design principle. Destroy the control plane's SQLite. Restart it from empty state. Observe: it re-reads fleet.resolved from git, accepts agent check-ins, reconstructs fleet state within one reconcile tick per channel. No data lost.
+The actual validation of the design principle. Destroy the control plane's SQLite. Restart it from empty state. Observe: it re-reads fleet.resolved + revocations.json from git, replays the verified revocation set, accepts agent check-ins, reconstructs fleet state within one reconcile tick per channel. No data lost.
 
 Deliverable: a documented "disaster recovery" procedure that takes under 5 minutes from healthy-control-plane-gone to full-fleet-visibility restored.
+
+#### CP-resident state by recovery profile
+
+Every SQLite table the CP keeps falls into one of two recovery classes. The classification is load-bearing for done-criterion #1 of §8: rebuilding the CP from empty state must restore the fleet's desired-state guarantees within one reconcile cycle, not just "approximately reach steady state eventually".
+
+- **Soft state — recoverable from agent inputs on the next checkin cycle, or acceptable as a one-window operational regression:**
+  - `token_replay` — bootstrap nonces with 24h TTL. Loss extends the replay window by up to one TTL. Bounded; no breach.
+  - `pending_confirms` — in-flight activation deadlines. Loss could force the agent into an unnecessary local rollback when its confirm POST hits a 410. Closed by gap A's [`confirm-handler idempotency`](docs/roadmap/0002-v0.2-completeness-gaps.md#4-confirm-handler-idempotency-for-orphan-confirms-new--gap-a): when the agent's reported `closure_hash` matches the verified target, the handler synthesises a confirmed row and returns 204 instead of 410.
+  - `host_rollout_state` — per-host soak markers. Loss restarts soak windows from zero. Closed by gap B's [`agent-attested last_confirmed_at`](docs/roadmap/0002-v0.2-completeness-gaps.md#5-agent-attested-last_confirmed_at-for-soak-recovery-new--gap-b): the agent persists the moment of its most recent successful confirm and echoes it on every checkin; the CP repopulates `last_healthy_since` from the attestation, clamped to `min(now, attested)`.
+
+- **Hard state — must come from signed artifacts pre-existing in git or from operator-declared trust roots:**
+  - `cert_revocations` — agent-cert revocation list. Loss is a **security regression** — previously-revoked certs become valid again. Closed by gap C's [`signed revocations.json sidecar`](docs/roadmap/0002-v0.2-completeness-gaps.md#6-signed-revocationsjson-sidecar-artifact-new--gap-c): operator commits revocations to the fleet repo, CI signs the artifact with the same `ciReleaseKey` that signs `fleet.resolved.json`, the CP fetches + verifies + replays on every reconcile tick. Recovery from empty is "one tick later, table populated from the signed artifact."
+  - `trust.json` — the trust roots themselves. Sourced from the flake at build time; rebuildable as long as the flake survives. Issue #41 tracks the deferred TPM-bound issuance CA.
+
+The principle is now *"the CP holds nothing whose loss creates a security regression on rebuild, and nothing whose loss creates more than a one-window operational regression."* That is the strict reading of done-criterion #1; gaps A + B + C in the active remediation cycle are what make it true.
 
 ---
 
@@ -319,7 +334,7 @@ For the operations-grade capabilities the open kernel intentionally does not shi
 
 Four falsifiable statements. If any is false, the design hasn't landed:
 
-1. Destroying the control plane's database and rebuilding from empty state results in full fleet visibility within one reconcile cycle, with zero operator intervention beyond restarting the service.
+1. Destroying the control plane's database and rebuilding from empty state results in full fleet visibility within one reconcile cycle, with zero operator intervention beyond restarting the service. Strict reading: every CP-resident table either repopulates from agent inputs (soft state — `token_replay`, `pending_confirms`, `host_rollout_state`) or from a signed artifact in git (hard state — `cert_revocations` via the signed `revocations.json` sidecar, `trust.json` via the flake). See §6 Phase 10 for the per-table classification.
 2. An auditor can be handed a host's hostname + a date range, and — without access to the control plane — produce a cryptographically-verifiable statement of "on this date, this host ran closure sha256-X, which was built from commit Y, and passed compliance controls Z₁..Zₙ with signed probe outputs matching the declared schemas".
 3. The control plane's disk contents, stolen in their entirety, yield zero plaintext secret material.
 4. A deliberately-corrupted closure pushed to attic (bypassing CI) is rejected by every agent; a deliberately-modified `fleet.resolved` served by the control plane is rejected by the control plane's own signature verification.
