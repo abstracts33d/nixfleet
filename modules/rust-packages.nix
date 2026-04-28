@@ -19,29 +19,30 @@
         # reverse-proxy doc root or a CI publish target). Mirrors
         # what `apps.docs` writes into the working tree, but produces
         # a single immutable output.
-        docs-site = pkgs.runCommand "nixfleet-docs-site" {
-          nativeBuildInputs = [pkgs.mdbook];
-        } ''
-          cp -r ${inputs.self} src
-          chmod -R u+w src
-          cd src
+        docs-site =
+          pkgs.runCommand "nixfleet-docs-site" {
+            nativeBuildInputs = [pkgs.mdbook];
+          } ''
+            cp -r ${inputs.self} src
+            chmod -R u+w src
+            cd src
 
-          cp ${config.packages.options-doc} docs/mdbook/src/options.md
+            cp ${config.packages.options-doc} docs/mdbook/src/options.md
 
-          mkdir -p docs/mdbook/src/rfcs
-          cp docs/rfcs/*.md docs/mdbook/src/rfcs/
+            mkdir -p docs/mdbook/src/rfcs
+            cp docs/rfcs/*.md docs/mdbook/src/rfcs/
 
-          mdbook build docs/mdbook
+            mdbook build docs/mdbook
 
-          mkdir -p docs/mdbook/book/api
-          if [ -d ${workspace.cargoDocs}/share/doc ]; then
-            cp -r ${workspace.cargoDocs}/share/doc/. docs/mdbook/book/api/
-          else
-            cp -r ${workspace.cargoDocs}/. docs/mdbook/book/api/
-          fi
+            mkdir -p docs/mdbook/book/api
+            if [ -d ${workspace.cargoDocs}/share/doc ]; then
+              cp -r ${workspace.cargoDocs}/share/doc/. docs/mdbook/book/api/
+            else
+              cp -r ${workspace.cargoDocs}/. docs/mdbook/book/api/
+            fi
 
-          cp -r docs/mdbook/book $out
-        '';
+            cp -r docs/mdbook/book $out
+          '';
       };
 
     apps.agent = {

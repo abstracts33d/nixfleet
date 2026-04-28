@@ -8,7 +8,7 @@
 # coverage now lives in the consuming fleet repo's CI; the framework
 # keeps only the lib-level mkFleet fixtures that don't depend on a
 # concrete fleet instance.
-{self, ...}: {
+{...}: {
   perSystem = {
     pkgs,
     system,

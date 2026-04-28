@@ -349,7 +349,8 @@ in {
             ]
             ++ lib.optionals
             (
-              cfg.channelRefsSource.artifactUrl != null
+              cfg.channelRefsSource.artifactUrl
+              != null
               && cfg.channelRefsSource.signatureUrl != null
             ) (
               [
