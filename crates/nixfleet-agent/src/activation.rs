@@ -59,6 +59,19 @@ pub enum ActivationOutcome {
     /// doesn't match the input. The system was never switched —
     /// caller skips rollback, retries next tick.
     RealiseFailed { reason: String },
+    /// `nix-store --realise` failed specifically because the closure's
+    /// narinfo signature did not match any key in
+    /// `nixfleet.trust.cacheKeys` (issue #12 root #2). Distinct from
+    /// the generic RealiseFailed so the operator dashboard can route
+    /// "trust violation" alerts separately from "transient fetch
+    /// failure". The system was never switched. Cache-substituter-
+    /// agnostic — fires for harmonia, attic, cachix, or any other
+    /// nix-cache-protocol backend; nix's substituter trust check is
+    /// the gate, this just classifies its failure.
+    SignatureMismatch {
+        closure_hash: String,
+        stderr_tail: String,
+    },
     /// One of the activation steps exited non-zero. Caller runs
     /// local rollback. `phase` distinguishes which step failed:
     /// - `"nix-env-set"`: setting the system profile (system was
@@ -103,7 +116,18 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
     let store_path = format!("/nix/store/{}", target.closure_hash);
     let realised = match realise(&store_path).await {
         Ok(p) => p,
-        Err(err) => {
+        Err(RealiseError::SignatureMismatch { stderr_tail }) => {
+            tracing::error!(
+                target_closure = %target.closure_hash,
+                stderr_tail = %stderr_tail,
+                "agent: closure signature mismatch — refused by nix substituter trust",
+            );
+            return Ok(ActivationOutcome::SignatureMismatch {
+                closure_hash: target.closure_hash.clone(),
+                stderr_tail,
+            });
+        }
+        Err(RealiseError::Other(err)) => {
             tracing::error!(
                 target_closure = %target.closure_hash,
                 error = %err,
@@ -225,10 +249,59 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
     Ok(ActivationOutcome::Success)
 }
 
+/// Structured failure mode for `realise()`. Distinguishing
+/// signature-mismatch from generic failure lets the agent map each
+/// to a different `ReportEvent` variant (issue #12 root #2: explicit
+/// surfacing of cache-trust violations vs transient fetch failures).
+pub enum RealiseError {
+    /// nix's substituter trust check refused the narinfo because no
+    /// signature in it matched any key in `trusted-public-keys`
+    /// (sourced from `nixfleet.trust.cacheKeys`). Stderr tail kept
+    /// for triage; trimmed to the last few hundred bytes so the
+    /// `ReportEvent` payload doesn't bloat.
+    SignatureMismatch { stderr_tail: String },
+    /// Anything else: spawn failure, network error, missing path,
+    /// non-utf8 stdout, etc. Generic — caller maps to RealiseFailed.
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for RealiseError {
+    fn from(err: anyhow::Error) -> Self {
+        RealiseError::Other(err)
+    }
+}
+
+/// Heuristic: is this stderr from `nix-store --realise` the
+/// signature-trust failure mode? nix has shipped several phrasings
+/// over the years; this matches the stable-as-of-2.18+ wording plus
+/// a few legacy patterns. Cache-substituter-agnostic — the error
+/// originates in nix's own narinfo verifier, not the cache backend.
+///
+/// Tested in `tests::detect_signature_error_*` — when nix changes
+/// the wording, the test breaks rather than the production behavior
+/// silently degrading to generic RealiseFailed.
+pub fn looks_like_signature_error(stderr: &str) -> bool {
+    let lower = stderr.to_lowercase();
+    [
+        // nix 2.18+: "cannot add path '…' because it lacks a valid signature"
+        "lacks a valid signature",
+        // nix 2.18+: "no signature is trusted by"
+        "no signature is trusted",
+        // legacy 2.x phrasing
+        "is not signed by any of the keys",
+        "no signatures matched",
+        // narinfo-level failure on substituter side
+        "signature mismatch",
+        "untrusted signature",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 /// `nix-store --realise <path>` — fetch + verify, return the realised
 /// path from stdout. nix-store prints one path per line; we expect
 /// exactly one (we passed exactly one input).
-async fn realise(store_path: &str) -> Result<String> {
+async fn realise(store_path: &str) -> Result<String, RealiseError> {
     let output = Command::new("nix-store")
         .arg("--realise")
         .arg(store_path)
@@ -238,10 +311,19 @@ async fn realise(store_path: &str) -> Result<String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if looks_like_signature_error(&stderr) {
+            // Trim to last ~500 bytes — enough for the matching line
+            // plus context, capped so a chatty trace doesn't bloat
+            // the ReportEvent body.
+            let tail_start = stderr.len().saturating_sub(500);
+            let tail = stderr[tail_start..].to_string();
+            return Err(RealiseError::SignatureMismatch { stderr_tail: tail });
+        }
         return Err(anyhow!(
             "nix-store --realise {store_path} exited {:?}: {stderr}",
             output.status.code()
-        ));
+        )
+        .into());
     }
 
     let stdout = String::from_utf8(output.stdout)
@@ -438,8 +520,71 @@ mod tests {
                     actual: "b".into()
                 }
             ),
+            format!(
+                "{:?}",
+                ActivationOutcome::SignatureMismatch {
+                    closure_hash: "h".into(),
+                    stderr_tail: "x".into(),
+                }
+            ),
         ];
         let unique: std::collections::HashSet<_> = outcomes.iter().collect();
         assert_eq!(unique.len(), outcomes.len(), "outcome variants collide on Debug");
+    }
+
+    #[test]
+    fn detect_signature_error_matches_nix_2_18_phrasing() {
+        let s = "error: cannot add path '/nix/store/abc-foo' because \
+                 it lacks a valid signature";
+        assert!(looks_like_signature_error(s));
+    }
+
+    #[test]
+    fn detect_signature_error_matches_no_signature_trusted() {
+        let s = "error: no signature is trusted by any of these keys: cache.example.com-1";
+        assert!(looks_like_signature_error(s));
+    }
+
+    #[test]
+    fn detect_signature_error_matches_legacy_phrasing() {
+        let s = "error: path '/nix/store/abc-foo' is not signed by any of the keys in \
+                 trusted-public-keys";
+        assert!(looks_like_signature_error(s));
+    }
+
+    #[test]
+    fn detect_signature_error_matches_no_signatures_matched() {
+        let s = "error: no signatures matched any of the configured public keys";
+        assert!(looks_like_signature_error(s));
+    }
+
+    #[test]
+    fn detect_signature_error_matches_signature_mismatch() {
+        let s = "warning: signature mismatch for path '/nix/store/abc-foo'";
+        assert!(looks_like_signature_error(s));
+    }
+
+    #[test]
+    fn detect_signature_error_does_not_match_network_failure() {
+        // Network blip → generic RealiseFailed, not SignatureMismatch.
+        let s = "error: unable to download 'https://cache.example.com/nar/abc.nar': \
+                 Couldn't connect to server";
+        assert!(!looks_like_signature_error(s));
+    }
+
+    #[test]
+    fn detect_signature_error_does_not_match_missing_path() {
+        let s = "error: path '/nix/store/abc-foo' is required, but it has no substitutes \
+                 and there is no derivation that produces it";
+        assert!(!looks_like_signature_error(s));
+    }
+
+    #[test]
+    fn detect_signature_error_case_insensitive() {
+        // tracing or operator-side log redirection sometimes uppercases
+        // the first letter; the heuristic is case-insensitive so
+        // "Lacks a valid signature" still matches.
+        let s = "Error: path Lacks A Valid Signature on this host";
+        assert!(looks_like_signature_error(s));
     }
 }

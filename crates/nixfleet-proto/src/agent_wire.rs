@@ -339,6 +339,21 @@ pub enum ReportEvent {
         reason: String,
     },
 
+    /// Agent refused to activate a target because nix's substituter
+    /// trust check rejected the closure's narinfo signature against
+    /// the keys in `nixfleet.trust.cacheKeys` (issue #12 root #2).
+    /// Cache-substituter-agnostic — fires for harmonia, attic,
+    /// cachix, or any other nix-cache-protocol backend. Distinct
+    /// from `RealiseFailed` so the operator dashboard can route
+    /// "trust violation" alerts separately from "transient fetch
+    /// failure". `stderrTail` is the last few hundred bytes of
+    /// `nix-store --realise` stderr — capped to keep ReportEvent
+    /// payloads small.
+    ClosureSignatureMismatch {
+        closure_hash: String,
+        stderr_tail: String,
+    },
+
     /// Agent refused to activate a target because the backing
     /// `fleet.resolved.json` is older than the channel's
     /// `freshness_window` (issue #13). Defense-in-depth — the CP

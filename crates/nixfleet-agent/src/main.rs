@@ -391,6 +391,27 @@ async fn main() -> anyhow::Result<()> {
                             )
                             .await;
                         }
+                        Ok(ActivationOutcome::SignatureMismatch {
+                            closure_hash,
+                            stderr_tail,
+                        }) => {
+                            tracing::error!(
+                                closure_hash = %closure_hash,
+                                stderr_tail = %stderr_tail,
+                                "activation: closure signature mismatch — refused by nix substituter trust",
+                            );
+                            post_report(
+                                &client_handle,
+                                &args.control_plane_url,
+                                &args.machine_id,
+                                Some(&target.channel_ref),
+                                ReportEvent::ClosureSignatureMismatch {
+                                    closure_hash,
+                                    stderr_tail,
+                                },
+                            )
+                            .await;
+                        }
                         Ok(ActivationOutcome::SwitchFailed { phase, exit_status }) => {
                             tracing::error!(
                                 phase = %phase,
