@@ -41,31 +41,6 @@
               cp -r ${workspace.cargoDocs}/. docs/mdbook/book/api/
             fi
 
-            # cargo doc --no-deps doesn't generate a workspace-root
-            # index.html — only per-crate. The mdbook chapter at
-            # `api.html` links to `./api/index.html`, which would 404.
-            # Write a minimal landing page that lists every crate dir
-            # and links to its index. Discovered live: docs.lab.internal/api
-            # was 404'ing despite 549 cargo-doc files being present.
-            chmod -R u+w docs/mdbook/book/api
-            {
-              echo '<!doctype html><html lang=en><head><meta charset=utf-8>'
-              echo '<title>NixFleet — Rust API</title>'
-              echo '<style>body{font:14px/1.5 system-ui,sans-serif;max-width:800px;margin:2em auto;padding:0 1em;color:#222}h1{margin-bottom:0}.meta{color:#666;font-size:13px;margin-top:4px;margin-bottom:2em}ul{padding-left:1.2em}li{margin:.4em 0}code{font-family:ui-monospace,monospace}</style></head><body>'
-              echo '<h1>NixFleet — Rust API</h1>'
-              echo '<div class="meta">cargo doc output, per-crate. <a href="../api.html">← back to mdbook</a></div>'
-              echo '<ul>'
-              for d in docs/mdbook/book/api/*/; do
-                crate=$(basename "$d")
-                # Skip cargo-internal `src/` tree (source listings, not crates).
-                [ "$crate" = src ] && continue
-                # Only list dirs that actually have an index.html.
-                [ -f "$d/index.html" ] || continue
-                echo "<li><a href=\"$crate/index.html\"><code>$crate</code></a></li>"
-              done
-              echo '</ul></body></html>'
-            } > docs/mdbook/book/api/index.html
-
             cp -r docs/mdbook/book $out
           '';
       };
