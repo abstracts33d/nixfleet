@@ -453,6 +453,7 @@ async fn send_checkin(
         last_evaluated_target: None,
         last_fetch_outcome: None,
         uptime_secs: Some(uptime_secs),
+        last_confirmed_at: None,
     };
 
     comms::checkin(client, &args.control_plane_url, &req).await

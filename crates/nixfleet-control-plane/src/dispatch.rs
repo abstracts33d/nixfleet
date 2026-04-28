@@ -229,6 +229,7 @@ mod tests {
                 error: None,
             }),
             uptime_secs: None,
+        last_confirmed_at: None,
         }
     }
 

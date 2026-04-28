@@ -125,6 +125,7 @@ pub(super) async fn checkin(
         .insert(req.hostname.clone(), record);
 
     clear_left_healthy_for_checkin(&state, &req).await;
+    recover_soak_state_from_attestation(&state, &req, now).await;
 
     let target = dispatch_target_for_checkin(&state, &req, now).await;
 
@@ -230,6 +231,129 @@ async fn try_recover_orphan_confirm(
         "orphan-confirm recovery: synthesised confirmed pending_confirms row + Healthy marker",
     );
     true
+}
+
+/// Gap B-cp soak-state recovery from agent attestation.
+///
+/// After a CP rebuild, `host_rollout_state.last_healthy_since` is
+/// gone for every host. Hosts that were mid-soak when the CP died
+/// would otherwise restart their soak window from zero on the
+/// next confirm, costing up to one full `soak_minutes` per
+/// affected wave. The agent's `last_confirmed_at` attestation
+/// (RFC-0003 §4.1 wire-additive field) lets the CP repopulate
+/// `last_healthy_since` from the agent-known timestamp — bringing
+/// the soak gate's effective state back close to its pre-rebuild
+/// position.
+///
+/// Triggers when ALL of:
+/// 1. Agent reports `last_confirmed_at` (legacy agents leave it
+///    None, no-op for them).
+/// 2. CP has a verified `FleetResolved` snapshot.
+/// 3. The host is declared in the fleet with a `closureHash`.
+/// 4. The host's reported `current_generation.closure_hash` matches
+///    the declared target — i.e. it's converged on the live target.
+/// 5. No `host_rollout_state` row already exists for
+///    (rollout, host). An existing row reflects the actual
+///    lifecycle (Healthy/Soaked/Reverted) and is more authoritative
+///    than a re-attestation.
+///
+/// On success: synthesise a confirmed `pending_confirms` row +
+/// a `host_rollout_state` Healthy marker stamped with
+/// `min(now, last_confirmed_at)`. The clamp prevents a clock-
+/// skewed agent from claiming future-dated state to short-circuit
+/// the soak gate.
+///
+/// Trust model: the agent has root on its own host — the soak
+/// gate is operator-policy, not a security boundary against the
+/// host. Cross-checking against `boot_id` / `uptime_secs` is
+/// available if a fleet wants stricter enforcement (out of scope
+/// here).
+async fn recover_soak_state_from_attestation(
+    state: &Arc<AppState>,
+    req: &CheckinRequest,
+    now: DateTime<Utc>,
+) {
+    let Some(attested) = req.last_confirmed_at else {
+        return;
+    };
+    let Some(db) = state.db.as_ref() else {
+        return;
+    };
+    let Some(fleet) = state.verified_fleet.read().await.clone() else {
+        return;
+    };
+    let Some(host_decl) = fleet.hosts.get(&req.hostname) else {
+        return;
+    };
+    let Some(target_closure) = host_decl.closure_hash.as_ref() else {
+        return;
+    };
+    if target_closure != &req.current_generation.closure_hash {
+        return;
+    }
+
+    // Mirror the rollout_id derivation in dispatch::decide_target —
+    // `<channel>@<short>` where short is first 8 chars of ci_commit
+    // when present, otherwise first 8 of the closure hash. Both
+    // sides MUST agree on this format so the recovered row's
+    // rollout_id matches what dispatch would emit.
+    let suffix: String = fleet
+        .meta
+        .ci_commit
+        .as_deref()
+        .map(|c| c.chars().take(8).collect::<String>())
+        .unwrap_or_else(|| target_closure.chars().take(8).collect::<String>());
+    let rollout_id = format!("{}@{}", host_decl.channel, suffix);
+
+    match db.host_rollout_state_exists(&req.hostname, &rollout_id) {
+        Ok(true) => return, // already known — leave alone
+        Ok(false) => {}
+        Err(err) => {
+            tracing::warn!(
+                hostname = %req.hostname,
+                rollout = %rollout_id,
+                error = %err,
+                "soak-state recovery: existence check failed",
+            );
+            return;
+        }
+    }
+
+    let stamp = std::cmp::min(now, attested);
+
+    if let Err(err) = db.record_confirmed_pending(
+        &req.hostname,
+        &rollout_id,
+        0,
+        target_closure,
+        &rollout_id,
+        now,
+    ) {
+        tracing::warn!(
+            hostname = %req.hostname,
+            rollout = %rollout_id,
+            error = %err,
+            "soak-state recovery: record_confirmed_pending failed",
+        );
+        return;
+    }
+    if let Err(err) = db.record_host_healthy(&req.hostname, &rollout_id, stamp) {
+        tracing::warn!(
+            hostname = %req.hostname,
+            rollout = %rollout_id,
+            error = %err,
+            "soak-state recovery: record_host_healthy failed (synthetic confirmed row already inserted)",
+        );
+        return;
+    }
+    tracing::info!(
+        target: "soak",
+        hostname = %req.hostname,
+        rollout = %rollout_id,
+        attested = %attested.to_rfc3339(),
+        stamped = %stamp.to_rfc3339(),
+        "soak-state recovery: stamped last_healthy_since from agent attestation",
+    );
 }
 
 /// Per-checkin "left Healthy" sweep (RFC-0002 §3.2). Compares the
@@ -919,6 +1043,27 @@ mod tests {
         }
     }
 
+    fn checkin_req_with_attestation(
+        hostname: &str,
+        closure: &str,
+        attested: Option<DateTime<Utc>>,
+    ) -> nixfleet_proto::agent_wire::CheckinRequest {
+        nixfleet_proto::agent_wire::CheckinRequest {
+            hostname: hostname.to_string(),
+            agent_version: "test".into(),
+            current_generation: GenerationRef {
+                closure_hash: closure.to_string(),
+                channel_ref: None,
+                boot_id: "boot".to_string(),
+            },
+            pending_generation: None,
+            last_evaluated_target: None,
+            last_fetch_outcome: None,
+            uptime_secs: None,
+            last_confirmed_at: attested,
+        }
+    }
+
     fn confirm_req(hostname: &str, rollout: &str, closure: &str) -> ConfirmRequest {
         ConfirmRequest {
             hostname: hostname.to_string(),
@@ -1021,5 +1166,111 @@ mod tests {
         let (state, _db) = state_with_fleet_and_db(fleet).await;
         let req = confirm_req("test-host", "stable@abc", "anything");
         assert!(!try_recover_orphan_confirm(&state, &req).await);
+    }
+
+    #[tokio::test]
+    async fn b_cp_recovery_stamps_attested_timestamp_when_no_existing_row() {
+        // Gap B-cp happy path. Host is converged on the verified
+        // target, no host_rollout_state row exists (CP rebuilt),
+        // attestation arrives → stamp last_healthy_since.
+        let fleet = fleet_with_host("test-host", Some("system-r1"));
+        let (state, db) = state_with_fleet_and_db(fleet).await;
+        let attested = Utc::now() - chrono::Duration::minutes(3);
+        let req = checkin_req_with_attestation("test-host", "system-r1", Some(attested));
+
+        recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1, "snapshot should contain the recovered rollout");
+        let stamped = snap[0]
+            .last_healthy_since
+            .get("test-host")
+            .expect("host has stamped soak marker");
+        assert_eq!(
+            stamped.timestamp(),
+            attested.timestamp(),
+            "stamp must clamp to min(now, attested) — attested is in the past so it wins",
+        );
+    }
+
+    #[tokio::test]
+    async fn b_cp_recovery_clamps_future_attestation_to_now() {
+        // Defensive clamp: a clock-skewed agent claims attestation
+        // in the future. CP must clamp to `now` so the agent can't
+        // short-circuit the soak gate.
+        let fleet = fleet_with_host("test-host", Some("system-r1"));
+        let (state, db) = state_with_fleet_and_db(fleet).await;
+        let now = Utc::now();
+        let future = now + chrono::Duration::minutes(60);
+        let req = checkin_req_with_attestation("test-host", "system-r1", Some(future));
+
+        recover_soak_state_from_attestation(&state, &req, now).await;
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        let stamped = snap[0].last_healthy_since.get("test-host").unwrap();
+        assert_eq!(
+            stamped.timestamp(),
+            now.timestamp(),
+            "future-dated attestation must clamp to now",
+        );
+    }
+
+    #[tokio::test]
+    async fn b_cp_recovery_skips_when_host_not_converged() {
+        // Host reports a closure that doesn't match the verified
+        // target — it's still rolling out, not in the recovery
+        // window. Skip.
+        let fleet = fleet_with_host("test-host", Some("target-r1"));
+        let (state, db) = state_with_fleet_and_db(fleet).await;
+        let attested = Utc::now() - chrono::Duration::minutes(1);
+        let req = checkin_req_with_attestation("test-host", "different-closure", Some(attested));
+
+        recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
+        assert!(db.active_rollouts_snapshot().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn b_cp_recovery_skips_when_host_state_already_exists() {
+        // host_rollout_state already has a row (e.g. from a normal
+        // confirm or from gap A's orphan recovery). Re-attestation
+        // must NOT overwrite — the existing row is more
+        // authoritative.
+        let fleet = fleet_with_host("test-host", Some("system-r1"));
+        let (state, db) = state_with_fleet_and_db(fleet).await;
+
+        // Pre-populate a Healthy row for the rollout the host
+        // would derive (channel "stable", short "abc12345" from the
+        // fleet's ci_commit).
+        let original = Utc::now() - chrono::Duration::seconds(5);
+        db.record_host_healthy("test-host", "stable@abc12345", original)
+            .unwrap();
+
+        let attested = Utc::now() - chrono::Duration::hours(2);
+        let req = checkin_req_with_attestation("test-host", "system-r1", Some(attested));
+
+        recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
+
+        // last_healthy_since stays at `original` (5s ago), NOT at
+        // `attested` (2h ago) — recovery saw the existing row and
+        // skipped.
+        let map = db.host_soak_state_for_rollout("stable@abc12345").unwrap();
+        let stamped = map.get("test-host").unwrap();
+        assert_eq!(
+            stamped.timestamp(),
+            original.timestamp(),
+            "existing row must not be overwritten by attestation",
+        );
+    }
+
+    #[tokio::test]
+    async fn b_cp_recovery_noop_for_legacy_agents_without_attestation() {
+        // Legacy agent — no last_confirmed_at. CP behaviour is
+        // unchanged: no soak-state writes happen.
+        let fleet = fleet_with_host("test-host", Some("system-r1"));
+        let (state, db) = state_with_fleet_and_db(fleet).await;
+        let req = checkin_req_with_attestation("test-host", "system-r1", None);
+
+        recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
+        assert!(db.active_rollouts_snapshot().unwrap().is_empty());
     }
 }

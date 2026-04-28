@@ -458,6 +458,29 @@ impl Db {
         Ok(n)
     }
 
+    /// True iff any `host_rollout_state` row exists for the given
+    /// (rollout_id, hostname). Used by gap B-cp's soak-state
+    /// recovery path to avoid overwriting existing host state when
+    /// the agent's attestation arrives — an existing row reflects
+    /// the actual lifecycle (Healthy/Soaked/Reverted/...) and is
+    /// more authoritative than a re-attestation.
+    pub fn host_rollout_state_exists(
+        &self,
+        hostname: &str,
+        rollout_id: &str,
+    ) -> Result<bool> {
+        let guard = self.conn()?;
+        let n: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM host_rollout_state
+                 WHERE rollout_id = ?1 AND hostname = ?2",
+                params![rollout_id, hostname],
+                |row| row.get(0),
+            )
+            .context("count host_rollout_state")?;
+        Ok(n > 0)
+    }
+
     /// Currently-Healthy hosts in `rollout_id` and the timestamp
     /// they entered Healthy. Step 2 of gap #2 (next session, the
     /// observed-state projection) reads this so the reconciler can

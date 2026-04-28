@@ -64,6 +64,24 @@ pub struct CheckinRequest {
     /// agents that crash-loop without showing up as down.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uptime_secs: Option<u64>,
+
+    /// Wall-clock moment the agent posted its most recent successful
+    /// `/v1/agent/confirm` for the currently-running generation.
+    /// `None` for legacy agents that don't track this, for first-boot
+    /// before any confirm, and for hosts that activated outside the
+    /// CP's dispatch path.
+    ///
+    /// Gap B of `docs/roadmap/0002-v0.2-completeness-gaps.md`: the
+    /// CP repopulates `host_rollout_state.last_healthy_since` from
+    /// this attestation when the host is converged on its target
+    /// closure but the CP has no soak-marker row (typical after a
+    /// CP rebuild — soak state was wiped, agent's record survived).
+    /// CP-side clamps to `min(now, last_confirmed_at)` so a clock-
+    /// skewed agent can't artificially advance the soak gate.
+    /// Wire-additive — old agents leave it None and the CP's
+    /// behaviour is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_confirmed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -270,6 +270,7 @@ fn checkin_request(current: &str) -> CheckinRequest {
             error: None,
         }),
         uptime_secs: None,
+        last_confirmed_at: None,
     }
 }
 
