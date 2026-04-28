@@ -375,7 +375,56 @@
       )
       (lib.attrNames cfg.channels);
 
-    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ configurationErrors ++ complianceErrors ++ cycleErrors ++ freshnessErrors;
+    # Static compliance gate (issue #4). For every host on a channel
+    # with `compliance.strict = true`, walk the host's evaluated
+    # `compliance.evidence.probes.*` (populated by the
+    # nixfleet-compliance modules each host imports) and collect any
+    # whose `type ∈ {static, both}` and whose `staticEvidence.passed`
+    # is explicitly false. Failures throw at fleet-eval time, before
+    # CI ever signs a release.
+    #
+    # Hosts on non-strict channels skip the gate entirely — evidence
+    # collection still runs, but a failed static control is a warning
+    # rather than a build break. Channels that don't import
+    # nixfleet-compliance (or import it without enabling controls)
+    # have empty `compliance.evidence.probes` and contribute zero
+    # errors. Forward-compatible: schema additions on the
+    # nixfleet-compliance side don't require a fleet-side bump.
+    staticComplianceErrors = let
+      strictChannels = lib.filter (n: cfg.channels.${n}.compliance.strict) (lib.attrNames cfg.channels);
+      hostsOnStrictChannels =
+        lib.filter (n: builtins.elem cfg.hosts.${n}.channel strictChannels) (lib.attrNames cfg.hosts);
+    in
+      lib.concatMap (
+        hostName: let
+          host = cfg.hosts.${hostName};
+          probes = host.configuration.config.compliance.evidence.probes or {};
+          probeNames = lib.attrNames probes;
+          # Only static + both controls participate in the build-time
+          # gate. `runtime`-only controls produce evidence after
+          # activation and are gated by the agent / CP at confirm time.
+          staticOrBoth =
+            lib.filter (
+              p: let
+                t = probes.${p}.type or "runtime";
+              in
+                t == "static" || t == "both"
+            )
+            probeNames;
+          failures =
+            lib.filter (
+              p: let
+                ev = probes.${p}.staticEvidence or null;
+              in
+                ev != null && (ev.passed or true) == false
+            )
+            staticOrBoth;
+        in
+          map (p: "host '${hostName}' (channel '${host.channel}', strict): static control '${p}' failed — ${lib.generators.toPretty {} (probes.${p}.staticEvidence.evidence or {})}") failures
+      )
+      hostsOnStrictChannels;
+
+    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ configurationErrors ++ complianceErrors ++ cycleErrors ++ freshnessErrors ++ staticComplianceErrors;
   in
     if errs == []
     then true
