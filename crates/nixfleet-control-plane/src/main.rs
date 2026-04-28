@@ -97,7 +97,8 @@ struct ServeFlags {
     // raw bytes of the artifact / signature works (Forgejo `raw`
     // path, GitHub `raw.githubusercontent.com`, GitLab `/-/raw/...`,
     // a plain file server, etc.). Concrete URL templates for common
-    // forges live in `nixfleet-scopes/modules/scopes/gitops/`.
+    // forges live in this repo's `impls/gitops/` and are exposed at
+    // `flake.scopes.gitops.<forge>`.
     /// URL that yields the raw bytes of the canonical signed
     /// fleet.resolved.json. When unset, channel-refs polling is
     /// disabled.

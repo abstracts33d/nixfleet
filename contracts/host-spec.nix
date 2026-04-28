@@ -2,13 +2,14 @@
 #
 # Framework-level options only - scope/role/profile/hardware concerns
 # live elsewhere:
-# - `nixfleet.<scope>.*` options come from `arcanesys/nixfleet-scopes`
-# - `fleet.*` options come from the consuming fleet
+# - `nixfleet.<scope>.*` options for contract impls come from
+#   `flake.scopes.*` (this repo's `impls/`).
+# - Service options, role bundles, hardware, and `fleet.*` options
+#   come from the consuming fleet.
 #
-# Posture flags (`isImpermanent`, `isServer`, `isMinimal`) that were
-# here in earlier revisions of NixFleet have been removed - their roles
-# are now played by scope `enable` options (set by roles) in
-# nixfleet-scopes.
+# Posture flags (`isImpermanent`, `isServer`, `isMinimal`) that lived
+# here in earlier revisions have been removed — their roles are played
+# by per-scope `enable` options set in fleet-side role bundles.
 {
   config,
   lib,
@@ -24,8 +25,8 @@
       type = lib.types.str;
       description = ''
         Primary user name on this host. Set explicitly, or populated by
-        the operators scope (`nixfleet-scopes.scopes.operators`) from
-        its own `nixfleet.operators.primaryUser` namespace.
+        a fleet-side operators scope from its own
+        `nixfleet.operators.primaryUser` (or equivalent) namespace.
       '';
     };
     home = lib.mkOption {
@@ -73,10 +74,9 @@
       default = [];
       description = ''
         SSH public keys authorized for root login. Empty list = no
-        managed root keys. Populated either by hand on hosts with no
-        operators scope, or automatically by the operators scope
-        (`nixfleet-scopes.scopes.operators`) from
-        `nixfleet.operators.rootSshKeys`.
+        managed root keys. Populated either by hand or automatically
+        by a fleet-side operators scope from its own
+        `nixfleet.operators.rootSshKeys` (or equivalent) namespace.
       '';
     };
 

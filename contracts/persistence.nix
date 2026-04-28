@@ -8,20 +8,22 @@
 # fleet uses (impermanence-flake-based wipe-on-boot, ZFS rollback,
 # snapper-driven snapshots, or none).
 #
-# Implementations live in `nixfleet-scopes/modules/scopes/persistence/*`.
-# A persistence-aware fleet imports exactly one of them; the scope
-# reads `config.nixfleet.persistence.{enable, persistRoot,
-# directories, files}` and translates to whatever its mechanism
-# requires (e.g. `environment.persistence."/persist".directories =
-# ...` for the impermanence impl).
+# Implementations live in `impls/persistence/*` (this repo) and are
+# exposed at `flake.scopes.persistence.<impl>`. A persistence-aware
+# fleet imports exactly one of them; the impl reads
+# `config.nixfleet.persistence.{enable, persistRoot, directories,
+# files}` and translates to whatever its mechanism requires (e.g.
+# `environment.persistence."/persist".directories = ...` for the
+# impermanence impl).
 #
 # Pre-phase-12 the framework imported `inputs.impermanence` directly
 # and bundled the upstream module + btrfs wipe + persisted-dir list
-# in one file. Phase 12 split that: schema in framework, impl in
-# scopes. The framework no longer depends on the impermanence flake.
+# in one file. Phase 12 split that: schema in `contracts/`, impl in
+# `impls/` — fleets that don't enable the impermanence impl pay no
+# runtime cost from the input.
 #
-# Home Manager-side persistence remains a separate concern — see the
-# `impermanenceHm` scope output in nixfleet-scopes for the HM hook.
+# Home Manager-side persistence remains a separate concern — fleets
+# wire it via their own HM module imports.
 {
   config,
   lib,
@@ -33,7 +35,7 @@ in {
     enable = lib.mkEnableOption ''
       NixFleet system-level persistence. Activates the persistence
       implementation imported by the consumer (e.g.
-      `nixfleet-scopes.scopes.persistence.impermanence`). Without
+      `inputs.nixfleet.scopes.persistence.impermanence`). Without
       that import, this option toggles only the schema — the
       framework's own service-module contributions to
       `nixfleet.persistence.directories` are silently merged but

@@ -10,7 +10,7 @@
 //! Concrete URL shapes (Forgejo `/raw/branch/...`, GitHub
 //! `raw.githubusercontent.com/...`, GitLab `/-/raw/...`, plain
 //! HTTPS, etc.) are constructed by the consumer (or by a helper
-//! scope in nixfleet-scopes' `gitops/` family).
+//! exposed at `flake.scopes.gitops.<forge>` from this repo).
 //!
 //! Failure semantics: log warning + retain previous cache. CP does
 //! not crash on source unavailability — operator can curl /healthz

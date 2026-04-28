@@ -1,15 +1,14 @@
 # Core NixOS module - framework mechanism only.
 #
-# Opinions (users, bootloader, programs, security, hardware) are gone:
-# - User creation lives in `arcanesys/nixfleet-scopes` roles
-#   (workstation / server) - consumers that want a primary user import
-#   the appropriate role.
-# - Bootloader config (systemd-boot, initrd modules, kernelPackages) is
-#   left to host-specific modules (hardware-configuration.nix, disk
-#   templates in nixfleet-scopes) where it belongs.
+# Opinions (users, bootloader, programs, security, hardware) live in
+# the consuming fleet, not here:
+# - User creation: fleets wire `users.users.<name>` themselves, or
+#   layer their own operators schema on top of `hostSpec.userName`.
+# - Bootloader config (systemd-boot, initrd modules, kernelPackages):
+#   host-specific modules (hardware-configuration.nix, fleet-side
+#   disk templates).
 # - `programs.{zsh,git,gnupg,dconf}`, `security.sudo`,
-#   `hardware.ledger` etc. are opinions and move downstream to fleet
-#   scopes / Home Manager.
+#   `hardware.ledger` etc.: fleet-side scopes or Home Manager.
 #
 # What stays here:
 # - nix settings (substituters, trusted keys, gc, experimental features)

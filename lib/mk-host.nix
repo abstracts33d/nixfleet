@@ -1,27 +1,34 @@
 # mkHost - the single NixFleet API function.
 # Returns a nixosSystem or darwinSystem with framework-level mechanism only.
 #
-# Opinions (base CLI tools, firewall, secrets, backup, monitoring,
-# impermanence, home-manager, disko) live in `arcanesys/nixfleet-scopes`.
-# Consumers compose them via the `modules` argument:
+# Service deployment opinions (firewall config, monitoring, home-manager
+# wiring, disko layouts, role bundles) live in the consuming fleet — not
+# in nixfleet. mkHost ships the framework runtime (agent, control-plane,
+# cache, microvm-host service modules) plus the host-spec + persistence
+# + trust contract schemas, and nothing else. Consumers compose the rest
+# via the `modules` argument:
 #
 #     mkHost {
 #       hostName = "myhost"; platform = "x86_64-linux";
 #       hostSpec = { userName = "alice"; };
 #       modules = [
-#         inputs.nixfleet-scopes.scopes.roles.workstation  # WHAT it is
-#         ./modules/profiles/developer.nix                  # WHO uses it / HOW
-#         ./modules/hardware/desktop-amd-nvidia.nix         # WHAT hardware
+#         # Contract impls — opt in to those you want
+#         inputs.nixfleet.scopes.persistence.impermanence
+#         inputs.nixfleet.scopes.keyslots.tpm
+#         # Fleet-local service modules
+#         ./modules/scopes/firewall
+#         ./modules/scopes/monitoring
+#         ./modules/profiles/developer.nix
+#         ./modules/hardware/desktop-amd-nvidia.nix
 #         ./modules/hosts/myhost/hardware-configuration.nix
 #       ];
 #     };
 #
-# Per Decision 2 + 3 of the scopes-extraction plan (rev 4):
-# - Home Manager is a scope (not a framework service); consumers pull it
-#   in via `nixfleet-scopes.scopes.home-manager` (usually indirectly
-#   through a role) and add their own user-level HM imports.
-# - disko + impermanence are scopes too; mkHost does not auto-import
-#   their NixOS modules any more.
+# - Home Manager is fleet-side: consumers wire in their preferred HM
+#   modules and per-user imports themselves; mkHost does not inject HM.
+# - disko + impermanence are fleet-side too; the framework declares the
+#   persistence schema (contracts/persistence.nix) but ships only the
+#   impermanence impl as opt-in (flake.scopes.persistence.impermanence).
 {
   inputs,
   lib,
@@ -43,13 +50,12 @@
   # Framework-level persistence schema (pure schema, no impl).
   # Auto-imported so nixfleet's service modules can contribute to
   # `nixfleet.persistence.directories` via standard option merging.
-  # The actual persistence implementation (impermanence flake bind-
-  # mounts, ZFS rollback, snapper, …) lives in `nixfleet-scopes/
-  # modules/scopes/persistence/*`; consumer fleets import exactly one.
-  # The operators schema is *not* in the framework — it lives in
-  # nixfleet-scopes/modules/scopes/operators/. The framework reads
-  # only `hostSpec.{userName, rootSshKeys}`; the operators scope (when
-  # imported) populates those fields from its own option tree.
+  # Persistence impls (impermanence + future ZFS rollback, snapper, …)
+  # live under `impls/persistence/` and are exposed at
+  # `flake.scopes.persistence.<impl>`; consumer fleets pick one.
+  # The framework reads only `hostSpec.{userName, rootSshKeys}` for
+  # identity; consumers populate hostSpec however they like (directly,
+  # via a fleet-side operators schema, etc.).
   persistenceModule = ../contracts/persistence.nix;
 
   isDarwinPlatform = platform:
@@ -67,7 +73,7 @@ in
     # (sufficient for hosts that consume only nixfleet). Consumer
     # fleets that want their *own* inputs visible to imported
     # modules — e.g. so a fleet-side role can do
-    # `imports = [inputs.nixfleet-scopes.scopes.roles.X]` — pass
+    # `imports = [inputs.<some-fleet-input>...]` — pass
     # `extraInputs = inputs` from their flake's outputs lambda.
     # Merged into the framework inputs so framework-side modules
     # still see what they need (impermanence, disko, nixpkgs, …).
@@ -85,20 +91,20 @@ in
     # Mechanism only: core system config + hostSpec + nixfleet service
     # modules. No HM injection, no disko auto-import.
     #
-    # `_persistence.nix` is auto-imported because nixfleet's own
-    # internal service modules (agent, control-plane, microvm-host)
+    # `contracts/persistence.nix` is auto-imported because nixfleet's
+    # own internal service modules (agent, control-plane, microvm-host)
     # conditionally contribute to `nixfleet.persistence.directories`,
     # and the NixOS module system validates option paths even inside
     # `lib.mkIf false`. The module declares the schema only — pure
     # data — so nothing materialises unless the consumer also imports
     # a persistence implementation (e.g.
-    # `nixfleet-scopes.scopes.persistence.impermanence`) that reads
+    # `inputs.nixfleet.scopes.persistence.impermanence`) that reads
     # the schema and applies its mechanism.
     #
     # The framework reads only `hostSpec.{userName, rootSshKeys}` for
-    # primary-user identity and root SSH access. The operators scope
-    # (in nixfleet-scopes) populates those fields when imported; bare
-    # fleets without the scope set them directly.
+    # primary-user identity and root SSH access. Consumers populate
+    # hostSpec however they like — directly, via a fleet-side
+    # operators schema, or any other mechanism.
     frameworkNixosModules =
       [
         {nixpkgs.hostPlatform = platform;}
@@ -148,16 +154,15 @@ in
     ];
 
     # specialArgs.inputs visible to all imported modules — consumer's
-    # extra inputs (e.g. `nixfleet-scopes`, fleet-specific flakes)
-    # merged BENEATH the framework's own inputs. Framework wins on
-    # collision so that:
+    # extra inputs (fleet-specific flakes) merged BENEATH the
+    # framework's own inputs. Framework wins on collision so that:
     #   - `inputs.self` resolves to nixfleet for framework modules
     #     (which read `inputs.self.packages.<sys>.nixfleet-{agent,
     #     control-plane,cli}` to find their binaries),
     #   - common inputs (nixpkgs, home-manager, disko, …) come from
     #     the framework's pinned versions.
-    # Consumer-only attrs (`nixfleet-scopes`, fleet-specific flakes
-    # the framework doesn't declare) survive the merge unshadowed.
+    # Consumer-only attrs (fleet-specific flakes the framework doesn't
+    # declare) survive the merge unshadowed.
     # Fleet-side modules that need fleet's own self read it via
     # closure capture from the `outputs = inputs: …` lambda; that
     # path is unaffected by specialArgs.

@@ -227,8 +227,8 @@ in {
     # `GET <url>` with an optional Bearer token. URL templates for
     # specific git forges (Forgejo `/raw/branch/...`, GitHub
     # `raw.githubusercontent.com/...`, GitLab `/-/raw/...`) live in
-    # `nixfleet-scopes/modules/scopes/gitops/`; consumers either use
-    # those scope helpers or build the URLs by hand.
+    # `impls/gitops/` and are exposed at `flake.scopes.gitops.<forge>`;
+    # consumers either use those helpers or build the URLs by hand.
     channelRefsSource = {
       artifactUrl = lib.mkOption {
         type = lib.types.nullOr lib.types.str;

@@ -6,8 +6,8 @@
 # - Dock management still exposes `options.local.dock` here because the
 #   *mechanism* (dockutil-driven declarative dock) is framework-level;
 #   fleet repos populate `local.dock.entries` under their own scopes.
-# - User creation for the primary user moves to
-#   `arcanesys/nixfleet-scopes` roles.
+# - User creation for the primary user is the consuming fleet's
+#   responsibility (wired against `hostSpec.userName`).
 #
 # What stays here:
 # - nix settings (substituters, trusted keys, experimental features)
@@ -117,8 +117,8 @@ in {
 
       # --- identity pass-through ---
       # `hostSpec.userName` is set either by the consumer directly or
-      # by the operators scope (in nixfleet-scopes) when imported.
-      # Framework reads only `hostSpec.*` — see modules/contracts/host-spec.nix.
+      # by a fleet-side operators scope. Framework reads only
+      # `hostSpec.*` — see contracts/host-spec.nix.
       system.stateVersion = lib.mkDefault 4;
       system.checks.verifyNixPath = false;
       system.primaryUser = "${hS.userName}";

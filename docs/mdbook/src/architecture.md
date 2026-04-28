@@ -1,14 +1,13 @@
 # Architecture
 
-NixFleet is a three-layer system with a thin wire protocol between agents and the control plane. Curated; update when the design shifts, not on every code change.
+NixFleet is a two-layer system with a thin wire protocol between agents and the control plane. Curated; update when the design shifts, not on every code change.
 
 ## Layers
 
 | Layer | Repo | Responsibility |
 |---|---|---|
-| **Framework** | `nixfleet` | mkHost API, wire protocol, control plane, agent, reconciler, CI signing primitives, JCS canonicalization |
-| **Scopes** | `nixfleet-scopes` | Reusable infra modules (impermanence, monitoring, home-manager, …). Composed via roles. _(Being slimmed; nixfleet-relevant scopes will fold into the framework in a follow-up.)_ |
-| **Consumer** | `fleet` (your repo) | Org-specific configuration: `mkHost` calls, secrets, fleet-local scopes |
+| **Framework** | `nixfleet` | mkHost / mkFleet API, contract schemas (`contracts/`), pluggable contract impls (`impls/` exposed at `flake.scopes.*`), wire protocol, control plane, agent, reconciler, CI signing primitives, JCS canonicalization |
+| **Consumer** | `fleet` (your repo) | Everything fleet-shaped: service deployments, role bundles, hardware modules, profiles, secrets, host definitions. Composed via `mkHost` from the framework |
 
 ## Components
 

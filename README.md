@@ -37,11 +37,10 @@ Operator                Control Plane              Hosts
 
 | Repository | What it provides | License |
 |------------|-----------------|---------|
-| **nixfleet** (this repo) | Framework: `mkHost` API, agent, control plane, CLI | MIT / AGPL |
-| [nixfleet-scopes](https://github.com/arcanesys/nixfleet-scopes) | 17 infrastructure scopes, 4 roles, 6 disk templates | MIT |
-| [nixfleet-compliance](https://github.com/arcanesys/nixfleet-compliance) | 16 compliance controls, 4 regulatory frameworks, evidence probes | MIT |
+| **nixfleet** (this repo) | Framework: `mkHost` / `mkFleet` API, contract impls (`flake.scopes.*`), agent, control plane, CLI | MIT / AGPL |
+| [nixfleet-compliance](https://github.com/arcanesys/nixfleet-compliance) | Compliance controls (NIS2, DORA, ISO 27001, ANSSI), evidence probes | MIT |
 
-nixfleet provides mechanism, nixfleet-scopes provides generic infrastructure opinions, nixfleet-compliance adds regulatory controls. Each works standalone.
+The framework ships kernel + contract impls. Service wraps, hardware bundles, role taxonomies, and other deployment opinions live in the consuming fleet repo — not in nixfleet — so the framework stays generic and the consumer keeps full ownership of its shape.
 
 > **Try it now:** [nixfleet-demo](https://github.com/arcanesys/nixfleet-demo) ships a complete 6-host QEMU fleet with pre-baked credentials. Clone, build VMs, deploy - no setup required.
 
@@ -59,15 +58,17 @@ nixfleet provides mechanism, nixfleet-scopes provides generic infrastructure opi
       hostName = "my-server";
       platform = "x86_64-linux";
       modules = [
-        nixfleet.scopes.roles.server
+        # Contract impls — opt in to the ones you want
+        nixfleet.scopes.persistence.impermanence
+        nixfleet.scopes.secrets
+
         ./hardware-configuration.nix
-        ({ ... }: {
-          nixfleet.operators = {
-            primaryUser = "deploy";
-            users.deploy = {
-              isAdmin = true;
-              sshAuthorizedKeys = [ "ssh-ed25519 AAAA..." ];
-            };
+        ({ config, ... }: {
+          hostSpec.userName = "deploy";
+          users.users.deploy = {
+            isNormalUser = true;
+            extraGroups = [ "wheel" ];
+            openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAA..." ];
           };
           services.nixfleet-agent = {
             enable = true;

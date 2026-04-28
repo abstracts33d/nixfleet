@@ -1,6 +1,8 @@
 # btrfs disk template - GPT + ESP + btrfs root with @root, @nix, optional @swap.
-# Use via `disko.devices` by importing with custom args:
-#   disko.devices = import nixfleet-scopes.scopes.disk-templates.btrfs { inherit lib; disk = "/dev/nvme0n1"; };
+# Internal: nixfleet's QEMU test fixture uses these layouts. Not a
+# public flake output — fleets that want disk-templates as a starter
+# kit should copy the file they want into their own repo.
+# Usage: `disko.devices = import ./btrfs-disk.nix { inherit lib; disk = "/dev/nvme0n1"; };`
 #
 # NOTE: ... is needed because disko passes diskoFile
 {

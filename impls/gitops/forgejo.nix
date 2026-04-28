@@ -3,7 +3,7 @@
 # `services.nixfleet-control-plane.channelRefsSource` consumes.
 #
 # Pure data — not a NixOS module. Fleets use it by `let cfg =
-# nixfleet-scopes.scopes.gitops.forgejo.urlsFor { ... }; in
+# inputs.nixfleet.scopes.gitops.forgejo.urlsFor { ... }; in
 # services.nixfleet-control-plane.channelRefsSource = {
 #   artifactUrl = cfg.artifactUrl;
 #   signatureUrl = cfg.signatureUrl;
