@@ -3,12 +3,14 @@
 use crate::host_state::{self, WaveOutcome};
 use crate::observed::{Observed, Rollout};
 use crate::Action;
+use chrono::{DateTime, Utc};
 use nixfleet_proto::FleetResolved;
 
 pub(crate) fn advance_rollout(
     fleet: &FleetResolved,
     observed: &Observed,
     rollout: &Rollout,
+    now: DateTime<Utc>,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
 
@@ -33,7 +35,7 @@ pub(crate) fn advance_rollout(
     let WaveOutcome {
         actions: wave_actions,
         wave_all_soaked,
-    } = host_state::handle_wave(fleet, observed, rollout, &wave.hosts);
+    } = host_state::handle_wave(fleet, observed, rollout, wave, now);
     actions.extend(wave_actions);
 
     if wave_all_soaked {

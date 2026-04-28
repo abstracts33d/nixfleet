@@ -4,7 +4,7 @@ use crate::{rollout_state, Action, Observed};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::FleetResolved;
 
-pub fn reconcile(fleet: &FleetResolved, observed: &Observed, _now: DateTime<Utc>) -> Vec<Action> {
+pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>) -> Vec<Action> {
     let mut actions = Vec::new();
 
     // §4 step 2: open rollouts for channels whose ref changed.
@@ -24,9 +24,11 @@ pub fn reconcile(fleet: &FleetResolved, observed: &Observed, _now: DateTime<Utc>
         }
     }
 
-    // §4 step 4: advance each Executing rollout.
+    // §4 step 4: advance each Executing rollout. `now` flows down
+    // to the per-host arm so the soak-timer gate (RFC-0002 §3.2
+    // Healthy → Soaked) can compare against last_healthy_since.
     for rollout in &observed.active_rollouts {
-        actions.extend(rollout_state::advance_rollout(fleet, observed, rollout));
+        actions.extend(rollout_state::advance_rollout(fleet, observed, rollout, now));
     }
 
     actions

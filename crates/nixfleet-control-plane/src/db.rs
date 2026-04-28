@@ -367,6 +367,29 @@ impl Db {
         Ok(())
     }
 
+    /// Transition a host's RFC-0002 §3.2 state to Soaked. Idempotent
+    /// + defensive: only fires when the row is currently Healthy
+    /// (the only state that can advance to Soaked per the machine).
+    /// Step 3 of gap #2 — the CP-side action processor calls this
+    /// when the reconciler emits `Action::SoakHost`. Returns the
+    /// number of rows updated; 0 means the host was no longer
+    /// Healthy (typical: it reverted between the reconciler tick
+    /// and the action's application).
+    pub fn mark_host_soaked(&self, hostname: &str, rollout_id: &str) -> Result<usize> {
+        let guard = self.conn()?;
+        let n = guard
+            .execute(
+                "UPDATE host_rollout_state
+                 SET host_state = 'Soaked',
+                     updated_at = datetime('now')
+                 WHERE rollout_id = ?1 AND hostname = ?2
+                   AND host_state = 'Healthy'",
+                params![rollout_id, hostname],
+            )
+            .context("mark host_rollout_state Soaked")?;
+        Ok(n)
+    }
+
     /// Clear the Healthy marker for (rollout, host) — the host has
     /// left Healthy (its `current_generation.closure_hash` no
     /// longer matches the rollout's target). Nulls
@@ -825,6 +848,34 @@ mod tests {
         // longer Healthy, so checkin doesn't need to re-clear.
         db.clear_host_healthy("test-host", "stable@r1").unwrap();
         assert!(db.healthy_rollouts_for_host("test-host").unwrap().is_empty());
+    }
+
+    #[test]
+    fn mark_host_soaked_only_transitions_from_healthy() {
+        // Step 3 SoakHost handler. Only Healthy → Soaked is valid.
+        let db = fresh_db();
+        // No row → no-op.
+        assert_eq!(db.mark_host_soaked("ohm", "stable@r1").unwrap(), 0);
+        // Healthy → Soaked.
+        db.record_host_healthy("ohm", "stable@r1", Utc::now()).unwrap();
+        assert_eq!(db.mark_host_soaked("ohm", "stable@r1").unwrap(), 1);
+        // Already Soaked → idempotent no-op (the WHERE filter
+        // guards the transition).
+        assert_eq!(db.mark_host_soaked("ohm", "stable@r1").unwrap(), 0);
+
+        // Verify the active-rollout snapshot reflects the
+        // transition. Need a confirmed pending_confirms row to
+        // pass the snapshot's join filter.
+        let future = Utc::now() + chrono::Duration::seconds(120);
+        db.record_pending_confirm("ohm", "stable@r1", 0, "target", "stable@r1", future)
+            .unwrap();
+        db.confirm_pending("ohm", "stable@r1").unwrap();
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(
+            snap[0].host_states.get("ohm").map(String::as_str),
+            Some("Soaked"),
+        );
     }
 
     #[test]

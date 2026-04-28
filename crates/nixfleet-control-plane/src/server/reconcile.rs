@@ -148,6 +148,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
 
             match result {
                 Ok(out) => {
+                    apply_actions(&state, &out).await;
                     let plan = render_plan(&out);
                     tracing::info!(target: "reconcile", "{}", plan.trim_end());
                 }
@@ -158,6 +159,57 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             *state.last_tick_at.write().await = Some(now);
         }
     });
+}
+
+/// Apply the side-effects of the reconciler's action stream that
+/// require CP-side state mutation. Today that's only
+/// `Action::SoakHost` (RFC-0002 §3.2 Healthy → Soaked) — the other
+/// variants are emitted for journal/observability and don't write
+/// to the DB. Errors per action are logged + skipped; the tick
+/// completes regardless. The action stream is at-least-once: the
+/// reconciler re-emits SoakHost on every tick while the host
+/// remains Healthy + soak elapsed, so transient failures retry on
+/// the next tick automatically.
+async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
+    use nixfleet_reconciler::Action;
+
+    let actions = match &out.verify {
+        crate::VerifyOutcome::Ok { actions, .. } => actions,
+        crate::VerifyOutcome::Failed { .. } => return,
+    };
+    let Some(db) = state.db.as_ref() else {
+        return;
+    };
+    for action in actions {
+        if let Action::SoakHost { rollout, host } = action {
+            match db.mark_host_soaked(host, rollout) {
+                Ok(0) => {
+                    tracing::debug!(
+                        target: "soak",
+                        host = %host,
+                        rollout = %rollout,
+                        "soak: mark_host_soaked no-op (host not in Healthy)",
+                    );
+                }
+                Ok(_) => {
+                    tracing::info!(
+                        target: "soak",
+                        host = %host,
+                        rollout = %rollout,
+                        "soak: host transitioned Healthy → Soaked",
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        host = %host,
+                        rollout = %rollout,
+                        error = %err,
+                        "soak: mark_host_soaked failed",
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Run a tick using the in-memory projection rather than reading

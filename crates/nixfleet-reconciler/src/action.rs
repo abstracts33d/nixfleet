@@ -25,6 +25,15 @@ pub enum Action {
         rollout: String,
         reason: String,
     },
+    /// RFC-0002 §3.2 Healthy → Soaked transition. Emitted when the
+    /// reconciler observes that a host has been Healthy for at
+    /// least `wave.soak_minutes`. The CP-side action processor
+    /// writes `host_rollout_state.host_state = 'Soaked'` so the
+    /// next reconcile tick sees the host advance.
+    SoakHost {
+        rollout: String,
+        host: String,
+    },
     Skip {
         host: String,
         reason: String,

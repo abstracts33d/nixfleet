@@ -16,6 +16,24 @@ fn healthy_to_soaked() {
 }
 
 #[test]
+fn healthy_soak_elapsed_emits_soak_host() {
+    // RFC-0002 §3.2 Healthy → Soaked. Host has been Healthy for
+    // 10m, soak window is 5m → reconciler emits SoakHost. The
+    // CP-side processor will mark host_state='Soaked' on the next
+    // tick; this test only validates the reconciler's decision.
+    let (actual, expected) = common::run("host/healthy_soak_elapsed");
+    common::assert_matches(&actual, &expected);
+}
+
+#[test]
+fn healthy_soak_not_elapsed_emits_nothing() {
+    // Host has been Healthy for 2m, soak window is 5m → no
+    // SoakHost yet. Wave stays unsoaked; reconciler defers.
+    let (actual, expected) = common::run("host/healthy_soak_not_elapsed");
+    common::assert_matches(&actual, &expected);
+}
+
+#[test]
 fn confirmwindow_blocks_wave() {
     let (actual, expected) = common::run("host/confirmwindow_timeout_reverted");
     common::assert_matches(&actual, &expected);

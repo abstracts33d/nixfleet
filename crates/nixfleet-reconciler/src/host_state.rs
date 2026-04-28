@@ -6,7 +6,8 @@
 
 use crate::observed::{Observed, Rollout};
 use crate::{budgets, edges, Action};
-use nixfleet_proto::FleetResolved;
+use chrono::{DateTime, Utc};
+use nixfleet_proto::{FleetResolved, Wave};
 
 pub(crate) struct WaveOutcome {
     pub actions: Vec<Action>,
@@ -17,14 +18,15 @@ pub(crate) fn handle_wave(
     fleet: &FleetResolved,
     observed: &Observed,
     rollout: &Rollout,
-    wave_hosts: &[String],
+    wave: &Wave,
+    now: DateTime<Utc>,
 ) -> WaveOutcome {
     let mut out = WaveOutcome {
         actions: Vec::new(),
         wave_all_soaked: true,
     };
 
-    for host in wave_hosts {
+    for host in &wave.hosts {
         let state = rollout
             .host_states
             .get(host)
@@ -67,8 +69,26 @@ pub(crate) fn handle_wave(
                     target_ref: rollout.target_ref.clone(),
                 });
             }
-            "Dispatched" | "Activating" | "ConfirmWindow" | "Healthy" => {
+            "Dispatched" | "Activating" | "ConfirmWindow" => {
                 out.wave_all_soaked = false;
+            }
+            "Healthy" => {
+                // RFC-0002 §3.2: Healthy → Soaked once the host has
+                // remained Healthy for `wave.soak_minutes`. Without
+                // a `last_healthy_since` marker the soak gate stays
+                // closed (defensive — better to wait than promote
+                // a wave that's missing data). Step 1+2 of gap #2
+                // populate this map; step 3 (this arm) consumes it.
+                out.wave_all_soaked = false;
+                let soak_window = chrono::Duration::minutes(wave.soak_minutes as i64);
+                if let Some(since) = rollout.last_healthy_since.get(host) {
+                    if now.signed_duration_since(*since) >= soak_window {
+                        out.actions.push(Action::SoakHost {
+                            rollout: rollout.id.clone(),
+                            host: host.clone(),
+                        });
+                    }
+                }
             }
             "Soaked" | "Converged" => {}
             "Failed" => {
