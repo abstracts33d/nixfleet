@@ -29,8 +29,8 @@ in {
 
       userKey = lib.mkOption {
         type = types.nullOr types.str;
-        default = "${hS.home}/.keys/id_ed25519";
-        defaultText = lib.literalExpression ''"''${config.hostSpec.home}/.keys/id_ed25519"'';
+        default = "${hS.home}/.ssh/id_ed25519";
+        defaultText = lib.literalExpression ''"''${config.hostSpec.home}/.ssh/id_ed25519"'';
         description = "Fallback decryption identity (user key). Used on workstations only.";
       };
 

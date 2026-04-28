@@ -48,8 +48,8 @@ in {
       example = "0.0.0.0:8080";
       description = ''
         HOST:PORT the control plane listens on. Default 8080 per spec
-        D3 — port < 1024 would require CAP_NET_BIND_SERVICE; 443
-        collides with operator-facing services on lab.
+        D3 — port < 1024 would require CAP_NET_BIND_SERVICE, and 443
+        is typically already taken by a reverse proxy on the same host.
       '';
     };
 
@@ -190,9 +190,10 @@ in {
       '';
     };
 
-    # Closure proxy upstream. Attic instance the CP
-    # forwards /v1/agent/closure/<hash> requests to. Typically the
-    # local attic on lab. When null, the endpoint returns 501.
+    # Closure proxy upstream. Cache server (harmonia, attic, nix-serve,
+    # cachix, …) the CP forwards /v1/agent/closure/<hash> requests to.
+    # Typically a cache running on the same host as the CP. When null,
+    # the endpoint returns 501.
     closureUpstream = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -234,7 +235,7 @@ in {
       artifactUrl = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "https://git.lab.internal/abstracts33d/fleet/raw/branch/main/releases/fleet.resolved.json";
+        example = "https://git.example.com/myorg/myfleet/raw/branch/main/releases/fleet.resolved.json";
         description = ''
           Fully-formed URL that yields the raw bytes of the canonical
           signed fleet.resolved.json. When null, channel-refs polling
@@ -246,7 +247,7 @@ in {
       signatureUrl = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "https://git.lab.internal/abstracts33d/fleet/raw/branch/main/releases/fleet.resolved.json.sig";
+        example = "https://git.example.com/myorg/myfleet/raw/branch/main/releases/fleet.resolved.json.sig";
         description = ''
           Fully-formed URL that yields the raw bytes of the matching
           signature. The poll task fetches both files together and

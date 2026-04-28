@@ -8,7 +8,7 @@
 # window and a shared `rejectBefore` timestamp for compromise response.
 #
 # `ciReleaseKey` carries an explicit `algorithm` per the §II #1 amendment
-# in abstracts33d/nixfleet#18 (ECDSA P-256 alongside ed25519 because
+# in arcanesys/nixfleet#18 (ECDSA P-256 alongside ed25519 because
 # commodity TPM2 hardware does not expose the ed25519 curve). The other
 # trust roots remain bare strings for now; their algorithms are pinned
 # by CONTRACTS.md §II #2 (attic-native) and §II #3 (ed25519).
