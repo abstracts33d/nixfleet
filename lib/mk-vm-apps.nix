@@ -147,7 +147,7 @@
         local vm_user
         vm_user="$(nix eval ".#nixosConfigurations.''${host}.config.hostSpec.userName" --raw 2>/dev/null || echo "root")"
         # Mirror the secrets impl's default `userKey` path —
-        # `${hS.home}/.ssh/id_ed25519`. Both paths are written so
+        # `''${hS.home}/.ssh/id_ed25519`. Both paths are written so
         # impermanent hosts (key bind-mounted from /persist/home/...)
         # and non-impermanent hosts (key in plain /home/...) work.
         for prefix in "persist/home/$vm_user" "home/$vm_user"; do
