@@ -25,6 +25,11 @@
   harnessLib,
   testCerts,
   resolvedJsonPath,
+  # Issue #5 fleet-N parameterisation. Default agentNames preserves
+  # the original 2-agent smoke shape; the fleet-N wrappers in
+  # tests/harness/default.nix override this for fleet-5 / fleet-10.
+  agentNames ? ["agent-01" "agent-02"],
+  scenarioName ? "fleet-harness-smoke",
   ...
 }: let
   cpHostModule = harnessLib.mkCpHostModule {
@@ -37,11 +42,6 @@
       hostName = name;
     };
 
-  # Extension: change this list to fleet-N by generating
-  # `agent-${toString i}` for i in 1..N. Each extra agent adds one
-  # microvm guest to the host VM; the fixture must list the hostname too.
-  agentNames = ["agent-01" "agent-02"];
-
   agents = lib.listToAttrs (map (n: {
       name = n;
       value = mkAgent n;
@@ -49,7 +49,7 @@
     agentNames);
 in
   harnessLib.mkFleetScenario {
-    name = "fleet-harness-smoke";
+    name = scenarioName;
     inherit cpHostModule agents;
     timeout = 600;
     testScript = ''

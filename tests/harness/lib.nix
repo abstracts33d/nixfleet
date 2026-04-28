@@ -128,6 +128,20 @@
     _module.args = {inherit testCerts signedFixture;};
   };
 
+  # Real-binary CP host module (cycle N+1, issue #14). Runs the
+  # crane-built `nixfleet-control-plane serve` binary against the
+  # signed fixture with persistent SQLite state. Used by the
+  # Phase 10 teardown scenario; future scenarios that need real CP
+  # semantics import this instead of mkCpHostModule.
+  mkRealCpHostModule = {
+    testCerts,
+    signedFixture,
+    cpPkg,
+  }: {
+    imports = [./nodes/cp-real.nix];
+    _module.args = {inherit testCerts signedFixture cpPkg;};
+  };
+
   mkAgentNode = {
     testCerts,
     hostName,
@@ -196,6 +210,37 @@
     system.stateVersion = lib.mkDefault "24.11";
   };
 
+  # Real-binary agent microVM (cycle N+1). Runs the crane-built
+  # `nixfleet-agent` against `cp-real`. Pre-placed certs (no
+  # enrollment); poll loop ticks at `pollIntervalSecs` (default 10s
+  # in the harness so scenarios don't wait the full 60s production
+  # cadence between checkins).
+  mkRealAgentNode = {
+    testCerts,
+    signedFixture,
+    agentPkg,
+    hostName,
+    controlPlaneHost ? "10.0.2.2",
+    controlPlanePort ? 8443,
+    pollIntervalSecs ? 10,
+    extraModules ? [],
+  }: {
+    imports =
+      [
+        ./nodes/agent-real.nix
+      ]
+      ++ extraModules;
+
+    _module.args = {
+      inherit testCerts controlPlaneHost controlPlanePort agentPkg signedFixture pollIntervalSecs;
+      harnessMicrovmDefaults = microvmGuestDefaults;
+      agentHostName = hostName;
+    };
+
+    networking.hostName = hostName;
+    system.stateVersion = lib.mkDefault "24.11";
+  };
+
   # Wrap a CP host-module + a list of agent microVM modules into a
   # runNixOSTest that boots the host and the agent microVMs. The CP stub
   # runs directly on the host VM (see mkCpHostModule for rationale);
@@ -247,6 +292,8 @@ in {
     mkCpHostModule
     mkFleetScenario
     mkHarnessCerts
+    mkRealAgentNode
+    mkRealCpHostModule
     mkSignedCpHostModule
     mkVerifyingAgentNode
     microvmGuestDefaults

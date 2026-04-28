@@ -7,10 +7,15 @@
 # standalone runNixOSTest derivation so a failure in one doesn't mask
 # the others (same convention as modules/tests/_vm-fleet-scenarios/).
 #
-# Scaffold scope: one scenario (`smoke`, N=2 agents). The extension path
-# for `fleet-N` (the acceptance target from issue #5) is to import a new
-# scenario file here and parameterise the agent count — see scenarios/smoke.nix
-# for the pattern.
+# Scenario inventory:
+# - smoke / fleet-2 / fleet-5 / fleet-10 — stub CP + N stub agents.
+#   N=2 is the canonical smoke; N=5 / N=10 satisfy issue #5's
+#   "fleet-N" parameterisation.
+# - signed-roundtrip — stub CP serving the signed fixture, agent
+#   verifies via the verify-artifact CLI.
+# - teardown — real CP binary + real agents; wipes CP DB mid-run
+#   and asserts state recovery (issue #14, ARCHITECTURE.md §8
+#   done-criterion #1).
 {
   lib,
   pkgs,
@@ -24,15 +29,41 @@
   # signed-roundtrip scenario invokes it from inside the agent microVM;
   # the smoke scenario does not need it.
   nixfleet-verify-artifact ? null,
+  # Real binaries for the cycle-N+1 teardown scenario (issue #14)
+  # and any future scenario that needs real CP / agent semantics
+  # (rollouts, dispatch, magic rollback). Defaults to null so
+  # callers without the crane workspace still get the stub-based
+  # smoke + signed-roundtrip scenarios.
+  nixfleet-control-plane ? null,
+  nixfleet-agent ? null,
 }: let
   harnessLib = import ./lib.nix {inherit lib pkgs inputs;};
 
-  # One shared cert set for every harness scenario. When a new scenario
-  # needs a new hostname, append it here and it's available to every
-  # scenario without rebuilding the others.
+  # Hostnames that get test certs minted. Every scenario operates
+  # within this set; adding a new agent name to a future fleet-N
+  # variant means appending here too.
+  certHostnames = [
+    "cp"
+    "agent-01"
+    "agent-02"
+    "agent-03"
+    "agent-04"
+    "agent-05"
+    "agent-06"
+    "agent-07"
+    "agent-08"
+    "agent-09"
+    "agent-10"
+  ];
+
   sharedCerts = harnessLib.mkHarnessCerts {
-    hostnames = ["cp" "agent-01" "agent-02"];
+    hostnames = certHostnames;
   };
+
+  # Helper that generates ["agent-01" .. "agent-NN"] padded to 2
+  # digits (matches the cert-minting hostnames + microvm naming).
+  mkAgentNames = n:
+    map (i: "agent-${lib.fixedWidthString 2 "0" (toString i)}") (lib.range 1 n);
 
   scenarioArgs = {
     inherit lib pkgs inputs harnessLib;
@@ -73,14 +104,47 @@
           inherit signedFixture;
           verifyArtifactPkg = nixfleet-verify-artifact;
         });
+
+  # Cycle-N+1 teardown scenario (issue #14). Real CP + real agents;
+  # wipes CP DB mid-run; asserts agents repopulate within one
+  # reconcile cycle.
+  teardownScenario =
+    if nixfleet-control-plane == null || nixfleet-agent == null
+    then
+      throw ''
+        tests/harness: fleet-harness-teardown requires both
+        `nixfleet-control-plane` and `nixfleet-agent` to be passed
+        in. Wire via `modules/tests/harness.nix` using the crane-
+        built packages.
+      ''
+    else
+      import ./scenarios/teardown.nix (scenarioArgs
+        // {
+          inherit signedFixture;
+          cpPkg = nixfleet-control-plane;
+          agentPkg = nixfleet-agent;
+        });
+
+  # Helper for the parameterised fleet-N variants — same as smoke
+  # but with N agents under the same stub-CP + stub-agent scaffolding.
+  mkFleetNScenario = n:
+    import ./scenarios/smoke.nix (scenarioArgs
+      // {
+        agentNames = mkAgentNames n;
+        scenarioName = "fleet-harness-fleet-${toString n}";
+      });
 in {
-  # Target shape per issue #5: `checks.<system>.fleet-N`. For the scaffold
-  # we only ship N=2 (smoke). Extension: import additional scenario files
-  # here with different agent counts, or parameterise smoke.nix to accept
-  # `agentCount` and expose fleet-5, fleet-10 wrappers.
   fleet-harness-smoke = import ./scenarios/smoke.nix scenarioArgs;
 
   fleet-harness-signed-roundtrip = signedRoundtripScenario;
+
+  fleet-harness-teardown = teardownScenario;
+
+  # Issue #5 fleet-N variants. fleet-2 is identical to smoke
+  # under a different name, kept for criterion completeness.
+  fleet-harness-fleet-2 = mkFleetNScenario 2;
+  fleet-harness-fleet-5 = mkFleetNScenario 5;
+  fleet-harness-fleet-10 = mkFleetNScenario 10;
 
   # Signed-fixture derivation exposed as a harness attribute. Registered
   # as a flake check (`phase-2-signed-fixture`) in `modules/tests/harness.nix`

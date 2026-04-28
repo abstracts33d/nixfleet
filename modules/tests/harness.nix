@@ -26,8 +26,15 @@
     # agent microVM runs.
     nixfleet-canonicalize = config.packages.nixfleet-canonicalize or null;
     nixfleet-verify-artifact = config.packages.nixfleet-verify-artifact or null;
+    # Real binaries for the cycle-N+1 Phase 10 teardown harness
+    # (issue #14). Static-fixture stub nodes (cp.nix / agent.nix /
+    # cp-signed.nix) keep working with the existing scenarios; the
+    # teardown scenario opts into the real-binary nodes via these.
+    nixfleet-control-plane = config.packages.nixfleet-control-plane or null;
+    nixfleet-agent = config.packages.nixfleet-agent or null;
     harness = import ../../tests/harness {
       inherit lib pkgs inputs nixfleet-canonicalize nixfleet-verify-artifact;
+      inherit nixfleet-control-plane nixfleet-agent;
     };
   in
     lib.optionalAttrs (system == "x86_64-linux") {
@@ -49,6 +56,25 @@
           # fixture build -> mTLS serve -> agent fetch ->
           # verify_artifact accept -> OK marker.
           fleet-harness-signed-roundtrip = harness.fleet-harness-signed-roundtrip;
+        }
+        // lib.optionalAttrs (
+          nixfleet-canonicalize
+          != null
+          && nixfleet-control-plane != null
+          && nixfleet-agent != null
+        ) {
+          # Phase 10 teardown scenario (issue #14). Real CP +
+          # real agents; wipes the CP DB mid-run and asserts
+          # state recovery within one reconcile cycle.
+          fleet-harness-teardown = harness.fleet-harness-teardown;
+
+          # Parameterised fleet-N variants (issue #5). Same
+          # scenario as fleet-harness-smoke but with N agents.
+          # CI runs fleet-2 on PR; fleet-10 / fleet-50 are
+          # available for nightly / on-demand.
+          fleet-harness-fleet-2 = harness.fleet-harness-fleet-2;
+          fleet-harness-fleet-5 = harness.fleet-harness-fleet-5;
+          fleet-harness-fleet-10 = harness.fleet-harness-fleet-10;
         };
     };
 }
