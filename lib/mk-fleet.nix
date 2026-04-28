@@ -75,6 +75,42 @@
     };
   };
 
+  # --- Revocations (gap C of docs/roadmap/0002-v0.2-completeness-gaps.md) ---
+  # Operator-declared agent-cert revocation entries. The release
+  # pipeline serialises this list, signs it with the same
+  # ciReleaseKey that signs `fleet.resolved`, and writes
+  # `revocations.json` alongside `fleet.resolved.json`. The CP
+  # fetches + verifies the signed sidecar on each reconcile tick
+  # and replays entries into `cert_revocations`. An empty list is
+  # the steady state — it still gets signed so a CP rebuilt from
+  # empty has a verifiable source for the (empty) revocation set.
+  revocationType = types.submodule {
+    options = {
+      hostname = mkOption {
+        type = types.str;
+        description = "Hostname whose certs are being revoked.";
+      };
+      notBefore = mkOption {
+        type = types.str;
+        description = ''
+          RFC3339 timestamp. Any cert for `hostname` whose
+          notBefore is strictly older than this is rejected at
+          mTLS handshake time.
+        '';
+      };
+      reason = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Free-form operator note (decommissioned, compromised, rotated, etc.).";
+      };
+      revokedBy = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Who declared the revocation. Surfaces in audit logs.";
+      };
+    };
+  };
+
   tagType = types.submodule {
     options.description = mkOption {
       type = types.str;
@@ -481,13 +517,29 @@
                 Override only if using an out-of-tree compliance extension.
               '';
             };
+            revocations = mkOption {
+              type = types.listOf revocationType;
+              default = [];
+              description = ''
+                Operator-declared agent-cert revocations. The release
+                pipeline signs these alongside `fleet.resolved` so the
+                CP can rebuild `cert_revocations` from empty state
+                without a security regression. Empty list is the
+                steady state — it still gets signed so a CP rebuild
+                has a verifiable source.
+              '';
+            };
           };
         }
         input
       ];
     };
   in
-    evaluated.config // {resolved = resolveFleet evaluated.config;};
+    evaluated.config
+    // {
+      resolved = resolveFleet evaluated.config;
+      revocations = evaluated.config.revocations;
+    };
 
   # --- Composition (RFC-0001 §5) ---
   # Merge a list of mkFleet-input attrsets into a single fleet value.

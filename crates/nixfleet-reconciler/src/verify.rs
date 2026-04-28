@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
-use nixfleet_proto::{FleetResolved, TrustedPubkey};
+use nixfleet_proto::{FleetResolved, Revocations, TrustedPubkey};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -99,56 +99,9 @@ pub fn verify_artifact(
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
 ) -> Result<FleetResolved, VerifyError> {
-    if trusted_keys.is_empty() {
-        return Err(VerifyError::NoTrustRoots);
-    }
-
-    // Step 1: parse as generic JSON so we can re-canonicalize it.
-    let raw_str = std::str::from_utf8(signed_bytes).map_err(|e| {
-        VerifyError::Parse(serde_json::Error::io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            e,
-        )))
-    })?;
-    let _value: serde_json::Value = serde_json::from_str(raw_str)?;
-
-    // Step 2: re-canonicalize via the pinned JCS library.
     let canonical =
-        nixfleet_canonicalize::canonicalize(raw_str).map_err(VerifyError::Canonicalize)?;
-
-    // Step 3: try each trust root. First matching signature wins.
-    let mut attempted_any_supported = false;
-    for key in trusted_keys {
-        match key.algorithm.as_str() {
-            "ed25519" => {
-                attempted_any_supported = true;
-                if verify_ed25519(canonical.as_bytes(), signature, &key.public).is_ok() {
-                    return finish_verification(&canonical, now, freshness_window, reject_before);
-                }
-            }
-            "ecdsa-p256" => {
-                attempted_any_supported = true;
-                if verify_ecdsa_p256(canonical.as_bytes(), signature, &key.public).is_ok() {
-                    return finish_verification(&canonical, now, freshness_window, reject_before);
-                }
-            }
-            _other => {
-                // Unknown algorithm — skip this trust root (forward compat).
-                // Only report UnsupportedAlgorithm if NO supported algorithm
-                // appears in the list (below).
-                continue;
-            }
-        }
-    }
-
-    if !attempted_any_supported {
-        // The operator declared only unknown algorithms. Surface the first
-        // unknown one so logs are actionable.
-        return Err(VerifyError::UnsupportedAlgorithm {
-            algorithm: trusted_keys[0].algorithm.clone(),
-        });
-    }
-    Err(VerifyError::BadSignature)
+        verify_signature_against_trust_roots(signed_bytes, signature, trusted_keys)?;
+    finish_verification(&canonical, now, freshness_window, reject_before)
 }
 
 /// Dispatched verification for ed25519. `verify_strict` rejects malleable
@@ -264,6 +217,115 @@ fn verify_ecdsa_p256(
     verifying_key
         .verify(canonical_bytes, &sig)
         .map_err(|_| VerifyError::BadSignature)
+}
+
+/// Verify a signed `revocations.json` artifact (gap C of
+/// `docs/roadmap/0002-v0.2-completeness-gaps.md`). Same trust
+/// class as [`verify_artifact`] — both signed by `ciReleaseKey`
+/// per the cycle's design — so the same freshness window +
+/// reject-before kill switch + canonicalization + signature path
+/// applies. The only thing that differs is the type-parse target
+/// (Revocations rather than FleetResolved) and the schema version
+/// constant (currently the same value, but kept independent so
+/// the two artifacts can evolve their schemas separately).
+pub fn verify_revocations(
+    signed_bytes: &[u8],
+    signature: &[u8],
+    trusted_keys: &[TrustedPubkey],
+    now: DateTime<Utc>,
+    freshness_window: Duration,
+    reject_before: Option<DateTime<Utc>>,
+) -> Result<Revocations, VerifyError> {
+    let canonical =
+        verify_signature_against_trust_roots(signed_bytes, signature, trusted_keys)?;
+    finish_revocations_verification(&canonical, now, freshness_window, reject_before)
+}
+
+/// Shared step 1-3 of artifact verification: parse → canonicalize
+/// → signature against trust roots. Returns the canonical bytes
+/// as a String so the caller can type-parse them. Both
+/// `verify_artifact` (FleetResolved) and `verify_revocations`
+/// (Revocations) call this; the schema-gate + freshness step is
+/// type-specific.
+fn verify_signature_against_trust_roots(
+    signed_bytes: &[u8],
+    signature: &[u8],
+    trusted_keys: &[TrustedPubkey],
+) -> Result<String, VerifyError> {
+    if trusted_keys.is_empty() {
+        return Err(VerifyError::NoTrustRoots);
+    }
+
+    let raw_str = std::str::from_utf8(signed_bytes).map_err(|e| {
+        VerifyError::Parse(serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            e,
+        )))
+    })?;
+    let _value: serde_json::Value = serde_json::from_str(raw_str)?;
+    let canonical =
+        nixfleet_canonicalize::canonicalize(raw_str).map_err(VerifyError::Canonicalize)?;
+
+    let mut attempted_any_supported = false;
+    for key in trusted_keys {
+        match key.algorithm.as_str() {
+            "ed25519" => {
+                attempted_any_supported = true;
+                if verify_ed25519(canonical.as_bytes(), signature, &key.public).is_ok() {
+                    return Ok(canonical);
+                }
+            }
+            "ecdsa-p256" => {
+                attempted_any_supported = true;
+                if verify_ecdsa_p256(canonical.as_bytes(), signature, &key.public).is_ok() {
+                    return Ok(canonical);
+                }
+            }
+            _other => continue,
+        }
+    }
+
+    if !attempted_any_supported {
+        return Err(VerifyError::UnsupportedAlgorithm {
+            algorithm: trusted_keys[0].algorithm.clone(),
+        });
+    }
+    Err(VerifyError::BadSignature)
+}
+
+/// Schema-gate + reject_before + freshness for revocations.json.
+/// Mirrors `finish_verification` for FleetResolved with the type
+/// swap; kept separate so the two artifacts can drift their
+/// schema versions independently.
+fn finish_revocations_verification(
+    canonical: &str,
+    now: DateTime<Utc>,
+    freshness_window: Duration,
+    reject_before: Option<DateTime<Utc>>,
+) -> Result<Revocations, VerifyError> {
+    let revs: Revocations = serde_json::from_str(canonical)?;
+    if revs.schema_version != ACCEPTED_SCHEMA_VERSION {
+        return Err(VerifyError::SchemaVersionUnsupported(revs.schema_version));
+    }
+    let signed_at = revs.meta.signed_at.ok_or(VerifyError::NotSigned)?;
+    if let Some(rb) = reject_before {
+        if signed_at < rb {
+            return Err(VerifyError::RejectedBeforeTimestamp {
+                signed_at,
+                reject_before: rb,
+            });
+        }
+    }
+    let window = ChronoDuration::from_std(freshness_window)
+        .expect("freshness_window fits in i64 nanoseconds — multi-century windows are a bug");
+    if now - signed_at > window {
+        return Err(VerifyError::Stale {
+            signed_at,
+            now,
+            window: freshness_window,
+        });
+    }
+    Ok(revs)
 }
 
 /// Steps 4-6 after signature verification: type-parse, schema-gate,

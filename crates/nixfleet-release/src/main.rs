@@ -113,6 +113,18 @@ struct Cli {
     #[arg(long)]
     reuse_unchanged_signature: bool,
 
+    /// Gap C: flake attribute that yields the operator's
+    /// revocation list (JSON array of `{hostname, notBefore,
+    /// reason?, revokedBy?}`). When set, the release pipeline
+    /// signs `revocations.json` alongside `fleet.resolved.json`
+    /// using the same `--sign-cmd` hook + same trust class. When
+    /// unset, no revocations artifact is produced. Operators who
+    /// haven't migrated to the signed-revocations workflow leave
+    /// this unset and continue to use direct `cert_revocations`
+    /// CLI writes (legacy path).
+    #[arg(long)]
+    revocations_attr: Option<String>,
+
     /// Log format. `pretty` (default) for humans, `json` for CI
     /// log scrapers.
     #[arg(long, default_value = "pretty")]
@@ -198,6 +210,7 @@ fn main() -> ExitCode {
         git_user_email: cli.git_user_email,
         smoke_verify: cli.smoke_verify,
         reuse_unchanged_signature: cli.reuse_unchanged_signature,
+        revocations_attr: cli.revocations_attr,
     };
 
     match nixfleet_release::run(&config) {

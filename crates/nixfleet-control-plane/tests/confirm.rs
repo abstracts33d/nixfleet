@@ -151,6 +151,7 @@ async fn spawn_server_with_db_at_port(
         observed_path: observed,
         freshness_window: Duration::from_secs(86400),
         channel_refs: None,
+        revocations: None,
         db_path,
         closure_upstream: None,
     };

@@ -178,6 +178,16 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         );
     }
 
+    // Revocations poll (gap C): refresh `cert_revocations` from a
+    // signed sidecar artifact every 60s. Requires a configured DB
+    // (the replay target); a None DB silently disables the poll.
+    if let (Some(revocations_source), Some(db)) = (
+        args.revocations.clone(),
+        state.db.clone(),
+    ) {
+        crate::revocations_poll::spawn(db, revocations_source);
+    }
+
     let app = build_router(state);
 
     let tls_config = crate::tls::build_server_config(

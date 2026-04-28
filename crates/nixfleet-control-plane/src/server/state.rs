@@ -75,6 +75,15 @@ pub struct ServeArgs {
     /// implementation-agnostic — Forgejo raw URLs, GitHub
     /// `raw.githubusercontent.com`, GitLab `/-/raw/`, plain HTTP, etc.
     pub channel_refs: Option<crate::channel_refs_poll::ChannelRefsSource>,
+    /// GitOps revocations: when set, the revocations poll fetches
+    /// the signed `revocations.json` + `.sig` from the configured
+    /// upstream URLs every 60s, verifies against the same
+    /// ciReleaseKey trust roots as channel-refs, and replays
+    /// entries into `cert_revocations` (gap C). When `None`, the
+    /// CP runs without a signed revocations source — operators
+    /// who haven't migrated to the signed-sidecar workflow
+    /// continue to use direct DB writes (legacy path).
+    pub revocations: Option<crate::revocations_poll::RevocationsSource>,
     /// SQLite path. When `Some`, the DB is opened + migrated at
     /// startup. When `None`, in-memory state only.
     pub db_path: Option<PathBuf>,

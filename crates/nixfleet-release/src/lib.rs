@@ -34,7 +34,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::FleetResolved;
+use nixfleet_proto::{FleetResolved, RevocationEntry, Revocations};
 use tempfile::NamedTempFile;
 
 /// Hosts to release. Resolved against the consumer's flake at
@@ -101,6 +101,18 @@ pub struct ReleaseConfig {
     /// stamping a new one. Produces byte-stable releases on no-op
     /// runs.
     pub reuse_unchanged_signature: bool,
+    /// Gap C: operator-declared revocations. When `Some`, the
+    /// release pipeline evaluates this flake attribute (which
+    /// must yield a JSON list of `{hostname, notBefore, reason?,
+    /// revokedBy?}` entries — empty list is fine), wraps it in a
+    /// `Revocations` envelope with the same `meta.signedAt` /
+    /// `meta.ciCommit` stamping as `fleet.resolved`, canonicalises,
+    /// signs via the same `sign_cmd` hook, and writes
+    /// `revocations.json` + `revocations.json.sig` alongside
+    /// `fleet.resolved.json` in the release dir. When `None`, no
+    /// revocations artifact is produced and the CP runs without
+    /// the revocations poll source.
+    pub revocations_attr: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -198,10 +210,63 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
     // ── 10. Write release dir ───────────────────────────────────
     write_release(&config.release_dir, &config.artifact_name, canonical.as_bytes(), &sig_bytes)?;
 
+    // ── 10a. Revocations artifact (gap C). Optional. ────────────
+    // Same canonicalize + sign path as fleet.resolved; the artifact
+    // must exist (even empty) for CP-rebuild recovery semantics to
+    // hold — otherwise an operator who has never declared a
+    // revocation has no signed file to prime cert_revocations from.
+    let mut revocations_paths: Vec<PathBuf> = Vec::new();
+    if let Some(attr) = &config.revocations_attr {
+        let entries = eval_revocations(config, attr)?;
+        let revs = Revocations {
+            schema_version: 1,
+            revocations: entries,
+            meta: nixfleet_proto::Meta {
+                schema_version: 1,
+                signed_at: Some(signed_at),
+                ci_commit: ci_commit.clone(),
+                signature_algorithm: Some(config.signature_algorithm.clone()),
+            },
+        };
+        let revs_json = serde_json::to_string(&revs)
+            .context("serialise revocations.json")?;
+        let revs_canonical = nixfleet_canonicalize::canonicalize(&revs_json)
+            .context("canonicalize revocations.json")?;
+        let revs_sig_path = config
+            .release_dir
+            .join("revocations.json.sig");
+        let revs_path = config.release_dir.join("revocations.json");
+        // Reuse-unchanged short-circuit: if the existing canonical
+        // bytes match what we'd write, reuse the signature on disk
+        // (idempotent, byte-stable). Otherwise sign anew.
+        let revs_sig_bytes = if revs_path.exists()
+            && revs_sig_path.exists()
+            && std::fs::read(&revs_path).ok().as_deref() == Some(revs_canonical.as_bytes())
+        {
+            std::fs::read(&revs_sig_path).context("read existing revocations signature")?
+        } else {
+            sign(&config.sign_cmd, revs_canonical.as_bytes())?
+        };
+        write_release(
+            &config.release_dir,
+            "revocations.json",
+            revs_canonical.as_bytes(),
+            &revs_sig_bytes,
+        )?;
+        revocations_paths.push(revs_path);
+        revocations_paths.push(revs_sig_path);
+        tracing::info!(
+            target: "nixfleet_release",
+            entries = revs.revocations.len(),
+            "revocations.json signed + written",
+        );
+    }
+
     // ── 11. Git commit + push ───────────────────────────────────
     let mut commit_sha = None;
     if config.git_commit {
-        let release_files = vec![release_path.clone(), signature_path.clone()];
+        let mut release_files = vec![release_path.clone(), signature_path.clone()];
+        release_files.extend(revocations_paths.iter().cloned());
         let committed = git_commit_release(config, &release_files, ci_commit.as_deref(), signed_at)?;
         if let Some(c) = &config.git_push {
             if committed {
@@ -258,6 +323,32 @@ fn enumerate_hosts(config: &ReleaseConfig) -> Result<Vec<String>> {
             .collect(),
         HostsSpec::Explicit(list) => list.clone(),
     })
+}
+
+/// Evaluate the operator's revocations declaration. The attr must
+/// produce a JSON array of `{hostname, notBefore, reason?,
+/// revokedBy?}` objects. An empty array is valid and means "no
+/// revocations on file" — the artifact still gets produced so a
+/// CP-rebuild has something to verify + replay (even if empty).
+fn eval_revocations(config: &ReleaseConfig, attr: &str) -> Result<Vec<RevocationEntry>> {
+    let output = Command::new("nix")
+        .args([
+            "eval",
+            "--json",
+            "--no-warn-dirty",
+            &format!(".#{attr}"),
+        ])
+        .current_dir(&config.flake_dir)
+        .output()
+        .with_context(|| format!("invoke `nix eval .#{attr}`"))?;
+    if !output.status.success() {
+        bail!(
+            "nix eval .#{attr}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parse revocations from `nix eval .#{attr}`"))
 }
 
 fn list_attr(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> {
@@ -803,6 +894,7 @@ mod tests {
             git_user_email: None,
             smoke_verify: true,
             reuse_unchanged_signature: false,
+            revocations_attr: None,
         }
     }
 }

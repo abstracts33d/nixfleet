@@ -239,6 +239,7 @@ async fn spawn_with_signed_fleet(
         // (60 minutes) but verify_artifact also takes the global window.
         freshness_window: Duration::from_secs(86400 * 365 * 5),
         channel_refs: None,
+        revocations: None,
         db_path: Some(db_path),
         closure_upstream: None,
     };

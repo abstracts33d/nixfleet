@@ -1,0 +1,163 @@
+//! Revocations poll loop.
+//!
+//! Closes gap C of `docs/roadmap/0002-v0.2-completeness-gaps.md`.
+//! Fetches a signed `revocations.json` artifact from a configured
+//! URL pair, runs `nixfleet_reconciler::verify_revocations`
+//! against the same `ciReleaseKey` trust roots that
+//! `channel_refs_poll` uses, and replays the verified list into
+//! `cert_revocations` so revocations survive CP rebuilds.
+//!
+//! Failure semantics: log warn + retain previous DB state. Same
+//! posture as `channel_refs_poll` — a transient outage or a bad
+//! signature must not blank out a previously-good revocation set.
+//!
+//! Source-agnostic by design: the CP only knows how to issue
+//! `GET <url>` with a Bearer token; concrete URL shapes
+//! (Forgejo / GitHub / GitLab raw) are constructed by the
+//! consumer alongside the existing channel-refs URLs.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+
+use crate::db::Db;
+
+/// Poll cadence — same default as channel-refs poll. Fast enough
+/// that operator-declared revocations propagate within a minute;
+/// slow enough that the upstream isn't hammered.
+pub const POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Configuration for the revocations poll task. Source-agnostic;
+/// the consumer supplies fully-formed URLs that yield raw bytes
+/// when GET'd with the configured Bearer token. Trust roots come
+/// from the same `trust.json` the channel-refs poll reads, so
+/// rotating `nixfleet.trust.ciReleaseKey.current` automatically
+/// covers both artifacts.
+#[derive(Debug, Clone)]
+pub struct RevocationsSource {
+    pub artifact_url: String,
+    pub signature_url: String,
+    pub token_file: Option<PathBuf>,
+    pub trust_path: PathBuf,
+    pub freshness_window: Duration,
+}
+
+/// Spawn the poll task. Runs forever; logs warnings on failure;
+/// upserts every verified revocation into `cert_revocations` on
+/// success. The DB upsert is idempotent (`revoke_cert` already
+/// handles `ON CONFLICT DO UPDATE`), so re-replaying the same
+/// signed artifact every minute is a quiet no-op.
+pub fn spawn(db: Arc<Db>, config: RevocationsSource) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .expect("build revocations poll client");
+
+        let mut ticker = tokio::time::interval(POLL_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            ticker.tick().await;
+            match poll_once(&client, &config).await {
+                Ok(revs) => {
+                    let n = revs.revocations.len();
+                    let mut applied = 0usize;
+                    for entry in &revs.revocations {
+                        match db.revoke_cert(
+                            &entry.hostname,
+                            entry.not_before,
+                            entry.reason.as_deref(),
+                            entry.revoked_by.as_deref(),
+                        ) {
+                            Ok(()) => applied += 1,
+                            Err(err) => tracing::warn!(
+                                hostname = %entry.hostname,
+                                error = %err,
+                                "revocations poll: revoke_cert failed for entry",
+                            ),
+                        }
+                    }
+                    if applied > 0 {
+                        tracing::info!(
+                            target: "revocations",
+                            entries = n,
+                            applied = applied,
+                            signed_at = ?revs.meta.signed_at,
+                            ci_commit = ?revs.meta.ci_commit,
+                            "revocations poll: replayed signed list into cert_revocations",
+                        );
+                    } else {
+                        tracing::debug!(
+                            entries = n,
+                            "revocations poll: list verified, no changes applied",
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "revocations poll failed; retaining previous cert_revocations state",
+                    );
+                }
+            }
+        }
+    })
+}
+
+async fn poll_once(
+    client: &reqwest::Client,
+    config: &RevocationsSource,
+) -> Result<nixfleet_proto::Revocations> {
+    let token = match &config.token_file {
+        Some(path) => Some(
+            std::fs::read_to_string(path)
+                .with_context(|| format!("read revocations token file {}", path.display()))?
+                .trim()
+                .to_string(),
+        ),
+        None => None,
+    };
+
+    let artifact_bytes = fetch_url(client, &config.artifact_url, token.as_deref()).await?;
+    let signature_bytes = fetch_url(client, &config.signature_url, token.as_deref()).await?;
+
+    let trust_raw = std::fs::read_to_string(&config.trust_path)
+        .with_context(|| format!("read trust file {}", config.trust_path.display()))?;
+    let trust: nixfleet_proto::TrustConfig =
+        serde_json::from_str(&trust_raw).context("parse trust file")?;
+    let trusted_keys = trust.ci_release_key.active_keys();
+    let reject_before = trust.ci_release_key.reject_before;
+
+    nixfleet_reconciler::verify_revocations(
+        &artifact_bytes,
+        &signature_bytes,
+        &trusted_keys,
+        chrono::Utc::now(),
+        config.freshness_window,
+        reject_before,
+    )
+    .map_err(|e| anyhow::anyhow!("verify_revocations (revocations poll): {e:?}"))
+}
+
+async fn fetch_url(
+    client: &reqwest::Client,
+    url: &str,
+    token: Option<&str>,
+) -> Result<Vec<u8>> {
+    let mut req = client.get(url);
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {t}"));
+    }
+    let resp = req.send().await.with_context(|| format!("GET {url}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("{url}: {status}: {body}");
+    }
+    let bytes = resp.bytes().await.with_context(|| format!("read body {url}"))?;
+    Ok(bytes.to_vec())
+}

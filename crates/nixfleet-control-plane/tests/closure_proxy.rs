@@ -142,6 +142,7 @@ async fn spawn_cp(
         observed_path: observed,
         freshness_window: Duration::from_secs(86400),
         channel_refs: None,
+        revocations: None,
         db_path: None,
         closure_upstream,
     };

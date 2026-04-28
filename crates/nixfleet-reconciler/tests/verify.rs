@@ -6,7 +6,7 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use ed25519_dalek::{Signer, SigningKey};
 use nixfleet_canonicalize::canonicalize;
 use nixfleet_proto::TrustedPubkey;
-use nixfleet_reconciler::{verify_artifact, VerifyError};
+use nixfleet_reconciler::{verify_artifact, verify_revocations, VerifyError};
 use rand::rngs::OsRng;
 use rand::TryRngCore;
 use std::time::Duration;
@@ -604,6 +604,145 @@ fn reject_before_exact_equal_is_accepted() {
         Some(reject_before),
     )
     .expect("signed_at == reject_before must be accepted under strict < semantic");
+}
+
+// =================================================================
+// verify_revocations — gap C signed sidecar artifact
+// =================================================================
+
+const FIXTURE_REVOCATIONS: &str = r#"{
+  "meta": {
+    "schemaVersion": 1,
+    "signedAt": "2026-04-28T10:00:00Z",
+    "ciCommit": "abc12345"
+  },
+  "revocations": [
+    {
+      "hostname": "old-laptop",
+      "notBefore": "2026-04-26T00:00:00Z",
+      "reason": "decommissioned",
+      "revokedBy": "operator"
+    }
+  ],
+  "schemaVersion": 1
+}"#;
+
+fn sign_revocations(json: &str) -> (Vec<u8>, [u8; 64], TrustedPubkey, DateTime<Utc>) {
+    // Same shape as sign_artifact but reused here for clarity. Both
+    // artifacts share the same trust class + canonicalisation; the
+    // helper is identical except for caller-side type expectations.
+    sign_artifact(json)
+}
+
+#[test]
+fn verify_revocations_ok_returns_revocations() {
+    let (bytes, sig, trust, signed_at) = sign_revocations(FIXTURE_REVOCATIONS);
+    let now = signed_at + ChronoDuration::minutes(30);
+    let window = Duration::from_secs(3 * 3600);
+
+    let result = verify_revocations(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    );
+    let revs = result.expect("verify_revocations_ok");
+    assert_eq!(revs.schema_version, 1);
+    assert_eq!(revs.revocations.len(), 1);
+    assert_eq!(revs.revocations[0].hostname, "old-laptop");
+}
+
+#[test]
+fn verify_revocations_rejects_tampered_signature() {
+    let (bytes, mut sig, trust, signed_at) = sign_revocations(FIXTURE_REVOCATIONS);
+    sig[0] ^= 0xFF;
+    let now = signed_at + ChronoDuration::minutes(30);
+    let window = Duration::from_secs(3 * 3600);
+
+    let err = verify_revocations(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(err, VerifyError::BadSignature));
+}
+
+#[test]
+fn verify_revocations_rejects_stale() {
+    let (bytes, sig, trust, signed_at) = sign_revocations(FIXTURE_REVOCATIONS);
+    let now = signed_at + ChronoDuration::hours(4);
+    let window = Duration::from_secs(3 * 3600);
+
+    let err = verify_revocations(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(err, VerifyError::Stale { .. }));
+}
+
+#[test]
+fn verify_revocations_rejects_unsigned() {
+    // Body has meta.signedAt = null. The signature verifies, but
+    // finish_revocations_verification rejects with NotSigned.
+    let signing_key = fresh_signing_key();
+    let trust = trust_root_for(&signing_key);
+    let json = r#"{
+      "meta": { "schemaVersion": 1, "signedAt": null, "ciCommit": "abc12345" },
+      "revocations": [],
+      "schemaVersion": 1
+    }"#;
+    let reserialized = serde_json::to_string(&serde_json::from_str::<serde_json::Value>(json).unwrap()).unwrap();
+    let canonical = canonicalize(&reserialized).expect("canonicalize");
+    let sig = signing_key.sign(canonical.as_bytes()).to_bytes();
+    let err = verify_revocations(
+        canonical.as_bytes(),
+        &sig,
+        std::slice::from_ref(&trust),
+        Utc::now(),
+        Duration::from_secs(3600),
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(err, VerifyError::NotSigned), "got {err:?}");
+}
+
+#[test]
+fn verify_revocations_empty_list_is_valid() {
+    // Steady state: no revocations on file. The artifact must still
+    // verify so the CP can replay-into-empty without thinking there's
+    // a problem.
+    let json = r#"{
+      "meta": {
+        "schemaVersion": 1,
+        "signedAt": "2026-04-28T10:00:00Z",
+        "ciCommit": "abc12345"
+      },
+      "revocations": [],
+      "schemaVersion": 1
+    }"#;
+    let (bytes, sig, trust, signed_at) = sign_revocations(json);
+    let now = signed_at + ChronoDuration::minutes(5);
+    let revs = verify_revocations(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        Duration::from_secs(3600),
+        None,
+    )
+    .expect("empty list verifies");
+    assert!(revs.revocations.is_empty());
 }
 
 /// `RejectedBeforeTimestamp` wins over `Stale` when both conditions

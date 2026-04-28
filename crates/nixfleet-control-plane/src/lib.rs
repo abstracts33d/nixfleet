@@ -17,6 +17,7 @@ pub mod db;
 pub mod dispatch;
 pub mod issuance;
 pub mod observed_projection;
+pub mod revocations_poll;
 pub mod rollback_timer;
 pub mod server;
 pub mod tls;

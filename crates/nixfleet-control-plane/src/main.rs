@@ -117,6 +117,26 @@ struct ServeFlags {
     #[arg(long, env = "NIXFLEET_CP_CHANNEL_REFS_TOKEN_FILE")]
     channel_refs_token_file: Option<PathBuf>,
 
+    // Revocations poll (gap C). Same source-agnostic shape as
+    // channel-refs; same trust roots; same freshness window. Both
+    // poll configs are independently optional — operators can run
+    // channel-refs without revocations during the rollout.
+    /// URL that yields the raw bytes of the canonical signed
+    /// revocations.json. When unset, revocations polling is disabled.
+    #[arg(long, env = "NIXFLEET_CP_REVOCATIONS_ARTIFACT_URL")]
+    revocations_artifact_url: Option<String>,
+
+    /// URL that yields the raw bytes of the matching revocations.json
+    /// signature. When unset, revocations polling is disabled.
+    #[arg(long, env = "NIXFLEET_CP_REVOCATIONS_SIGNATURE_URL")]
+    revocations_signature_url: Option<String>,
+
+    /// Token file for revocations fetches. Defaults to the
+    /// channel-refs token when unset (the artifacts typically live
+    /// in the same upstream repo and share an auth scope).
+    #[arg(long, env = "NIXFLEET_CP_REVOCATIONS_TOKEN_FILE")]
+    revocations_token_file: Option<PathBuf>,
+
     // Cert issuance (enroll + renew). The CP holds the fleet CA
     // private key online — see issue #41 for the deferred TPM-bound
     // replacement. When these are unset, /v1/enroll and
@@ -230,7 +250,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
             Some(nixfleet_control_plane::channel_refs_poll::ChannelRefsSource {
                 artifact_url,
                 signature_url,
-                token_file: flags.channel_refs_token_file,
+                token_file: flags.channel_refs_token_file.clone(),
                 // Same trust + freshness as the file-backed reconcile
                 // path. Read fresh on every poll so trust-root rotation
                 // propagates without a CP restart.
@@ -243,6 +263,33 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
             anyhow::bail!(
                 "channel-refs poll: --channel-refs-artifact-url and \
                  --channel-refs-signature-url must be passed together (or both omitted)."
+            );
+        }
+    };
+
+    // Revocations poll config: same artifact/signature pair gating
+    // pattern. Token file falls back to the channel-refs one when
+    // unspecified; trust + freshness are shared.
+    let revocations = match (
+        flags.revocations_artifact_url,
+        flags.revocations_signature_url,
+    ) {
+        (Some(artifact_url), Some(signature_url)) => {
+            Some(nixfleet_control_plane::revocations_poll::RevocationsSource {
+                artifact_url,
+                signature_url,
+                token_file: flags
+                    .revocations_token_file
+                    .or(flags.channel_refs_token_file.clone()),
+                trust_path: flags.trust_file.clone(),
+                freshness_window: Duration::from_secs(flags.freshness_window_secs),
+            })
+        }
+        (None, None) => None,
+        _ => {
+            anyhow::bail!(
+                "revocations poll: --revocations-artifact-url and \
+                 --revocations-signature-url must be passed together (or both omitted)."
             );
         }
     };
@@ -261,6 +308,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         observed_path: flags.observed,
         freshness_window: Duration::from_secs(flags.freshness_window_secs),
         channel_refs,
+        revocations,
         db_path: flags.db_path,
         closure_upstream: flags.closure_upstream,
     })

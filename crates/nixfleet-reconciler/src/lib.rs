@@ -28,4 +28,4 @@ pub use action::Action;
 pub use nixfleet_proto::FleetResolved;
 pub use observed::{HostState, Observed, Rollout};
 pub use reconcile::reconcile;
-pub use verify::{verify_artifact, VerifyError};
+pub use verify::{verify_artifact, verify_revocations, VerifyError};
