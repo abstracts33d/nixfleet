@@ -27,7 +27,19 @@ pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>)
     // §4 step 4: advance each Executing rollout. `now` flows down
     // to the per-host arm so the soak-timer gate (RFC-0002 §3.2
     // Healthy → Soaked) can compare against last_healthy_since.
+    //
+    // Issue #21: a rollout referencing a channel that no longer
+    // exists in fleet.resolved.channels gets a ChannelUnknown
+    // observability event before the silent-continue in
+    // advance_rollout fires. Operators can grep the journal for
+    // these to spot teardown drift.
     for rollout in &observed.active_rollouts {
+        if !fleet.channels.contains_key(&rollout.channel) {
+            actions.push(Action::ChannelUnknown {
+                channel: rollout.channel.clone(),
+            });
+            continue;
+        }
         actions.extend(rollout_state::advance_rollout(fleet, observed, rollout, now));
     }
 

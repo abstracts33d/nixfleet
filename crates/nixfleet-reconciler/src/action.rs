@@ -34,6 +34,15 @@ pub enum Action {
         rollout: String,
         host: String,
     },
+    /// Observability-only: an active rollout references a channel
+    /// not declared in `fleet.resolved.channels`. Surfaces channel
+    /// removals that leave orphaned observed state. The reconciler
+    /// silently `continue`s its loop (channel teardown is a valid
+    /// operator workflow); this event makes the orphaning visible
+    /// in journals + traces. Issue #21 / spec OQ #5.
+    ChannelUnknown {
+        channel: String,
+    },
     Skip {
         host: String,
         reason: String,

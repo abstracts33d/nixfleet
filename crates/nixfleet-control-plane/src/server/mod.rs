@@ -53,6 +53,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/agent/closure/{hash}", get(handlers::closure_proxy))
         .route("/v1/enroll", post(handlers::enroll))
         .route("/v1/agent/renew", post(handlers::renew))
+        .route("/v1/channels/{name}", get(handlers::channel_status))
         .layer(axum::middleware::from_fn(version_layer));
 
     Router::new()

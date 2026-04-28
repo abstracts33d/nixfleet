@@ -924,6 +924,52 @@ pub(super) async fn confirm(
         .unwrap_or_default())
 }
 
+#[derive(Debug, Serialize)]
+pub(super) struct ChannelStatusResponse {
+    /// Channel name as declared in `fleet.resolved.channels`.
+    name: String,
+    /// CI commit currently on the verified `fleet.resolved`
+    /// snapshot — the ref the CP is rolling out toward. Mirrors
+    /// `Observed.channel_refs[name]` once the projection has
+    /// caught up. `None` when the verified snapshot's
+    /// `meta.ciCommit` is unset (offline / file-backed deploys).
+    declared_ci_commit: Option<String>,
+    /// rfc3339 of the verified `meta.signedAt`. Operators read
+    /// this to confirm the snapshot is fresh.
+    signed_at: Option<String>,
+    /// Channel's per-policy `freshnessWindow` (minutes), so
+    /// operators can compare `now - signedAt` against the gate
+    /// without re-fetching the artifact.
+    freshness_window_minutes: u32,
+}
+
+/// `GET /v1/channels/{name}` — declared vs currently-rolled
+/// snapshot for a channel (issue #3 acceptance criterion). Reads
+/// from the in-memory verified-fleet snapshot — the same source
+/// of truth dispatch decisions are made against. Returns 404 when
+/// the channel is not declared in the verified `FleetResolved`.
+/// Returns 503 when no verified snapshot has been primed yet
+/// (CP just booted; agents will see 503 on this endpoint until
+/// the channel-refs poll succeeds).
+pub(super) async fn channel_status(
+    State(state): State<Arc<AppState>>,
+    Extension(peer_certs): Extension<PeerCertificates>,
+    Path(name): Path<String>,
+) -> Result<Json<ChannelStatusResponse>, StatusCode> {
+    let _cn = require_cn(&state, &peer_certs).await?;
+
+    let snapshot = state.verified_fleet.read().await.clone();
+    let fleet = snapshot.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let channel = fleet.channels.get(&name).ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(ChannelStatusResponse {
+        name,
+        declared_ci_commit: fleet.meta.ci_commit.clone(),
+        signed_at: fleet.meta.signed_at.map(|t| t.to_rfc3339()),
+        freshness_window_minutes: channel.freshness_window,
+    }))
+}
+
 /// `GET /v1/agent/closure/{hash}` — closure proxy fallback for hosts
 /// that can't reach the binary cache directly. Forwards narinfo
 /// requests to the configured cache upstream (any nix-cache-protocol
