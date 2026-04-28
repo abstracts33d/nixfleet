@@ -3,6 +3,7 @@
 //! The CP projects its SQLite state into these structs for each
 //! reconcile tick. The reconciler never mutates them.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -32,4 +33,13 @@ pub struct Rollout {
     pub state: String,
     pub current_wave: usize,
     pub host_states: HashMap<String, String>,
+    /// When each host most recently entered Healthy. Step 3
+    /// (reconciler arm, RFC-0002 §3.2 Healthy → Soaked transition)
+    /// consults `now - last_healthy_since[host] >= wave.soak_minutes`
+    /// to decide whether the host has soaked. Hosts not in Healthy
+    /// are absent from the map. `#[serde(default)]` keeps file-
+    /// backed `observed.json` fixtures (which predate this field)
+    /// deserialising cleanly.
+    #[serde(default)]
+    pub last_healthy_since: HashMap<String, DateTime<Utc>>,
 }

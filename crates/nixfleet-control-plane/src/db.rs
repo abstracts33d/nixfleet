@@ -23,6 +23,34 @@ mod embedded {
     embed_migrations!("migrations");
 }
 
+/// One active rollout's worth of state, joined from
+/// `pending_confirms` + `host_rollout_state`. Returned by
+/// [`Db::active_rollouts_snapshot`] for the observed-state
+/// projection (step 2 of gap #2 in
+/// docs/roadmap/0002-v0.2-completeness-gaps.md). The CP keeps no
+/// dedicated rollouts table yet (the migration in V002 flagged a
+/// follow-up); rollouts are derived from the union of dispatched
+/// targets + per-host soak markers, scoped to those still in
+/// `pending` or `confirmed` state — `rolled-back` and `cancelled`
+/// rows are filtered out so dead rollouts don't surface as empty-
+/// host-states bundles that the reconciler would treat as fresh
+/// Queued work.
+#[derive(Debug, Clone)]
+pub struct RolloutDbSnapshot {
+    pub rollout_id: String,
+    pub channel: String,
+    pub target_closure_hash: String,
+    pub target_channel_ref: String,
+    /// hostname → RFC-0002 §3.2 state name. `host_rollout_state`
+    /// wins when present (carries Soaked / Converged / Failed once
+    /// step 3 lands). Otherwise derived from the latest
+    /// `pending_confirms.state` for that (rollout, host).
+    pub host_states: HashMap<String, String>,
+    /// hostname → moment the host most recently entered Healthy.
+    /// Excludes hosts whose marker is NULL (not currently Healthy).
+    pub last_healthy_since: HashMap<String, DateTime<Utc>>,
+}
+
 /// SQLite-backed CP persistence.
 pub struct Db {
     conn: Mutex<Connection>,
@@ -431,6 +459,119 @@ impl Db {
         Ok(rows)
     }
 
+    /// Snapshot the active rollouts derived from the DB for the
+    /// observed-state projection (step 2 of gap #2). For each
+    /// (rollout_id, hostname), keep only the latest
+    /// `pending_confirms` row by `dispatched_at`, restricted to
+    /// `state IN ('pending', 'confirmed')`. LEFT JOIN
+    /// `host_rollout_state` for the per-host machine state +
+    /// soak-timer marker.
+    ///
+    /// Filtering out `rolled-back` / `cancelled` rows is load-
+    /// bearing: a rollout whose every row is dead would otherwise
+    /// surface as an empty `host_states` map, and the reconciler
+    /// defaults absent host-state lookups to "Queued" — which means
+    /// it would try to re-dispatch all those hosts. Skipping the
+    /// dead rollouts entirely avoids that trap.
+    ///
+    /// Output order: rollout_id ascending. Deterministic so
+    /// projection tests can compare against expected vectors and
+    /// the reconciler's journal lines stay grep-stable.
+    pub fn active_rollouts_snapshot(&self) -> Result<Vec<RolloutDbSnapshot>> {
+        use std::collections::BTreeMap;
+
+        let guard = self.conn()?;
+        let mut stmt = guard.prepare(
+            "WITH latest_per_host AS (
+                 SELECT pc.rollout_id, pc.hostname,
+                        pc.target_closure_hash, pc.target_channel_ref,
+                        pc.state AS pc_state
+                 FROM pending_confirms pc
+                 WHERE pc.state IN ('pending', 'confirmed')
+                   AND pc.dispatched_at = (
+                     SELECT MAX(p2.dispatched_at)
+                     FROM pending_confirms p2
+                     WHERE p2.rollout_id = pc.rollout_id
+                       AND p2.hostname = pc.hostname
+                   )
+             )
+             SELECT lph.rollout_id, lph.hostname,
+                    lph.target_closure_hash, lph.target_channel_ref,
+                    lph.pc_state,
+                    hrs.host_state, hrs.last_healthy_since
+             FROM latest_per_host lph
+             LEFT JOIN host_rollout_state hrs
+                    ON hrs.rollout_id = lph.rollout_id
+                   AND hrs.hostname = lph.hostname
+             ORDER BY lph.rollout_id, lph.hostname",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?, // rollout_id
+                    row.get::<_, String>(1)?, // hostname
+                    row.get::<_, String>(2)?, // target_closure_hash
+                    row.get::<_, String>(3)?, // target_channel_ref
+                    row.get::<_, String>(4)?, // pc_state
+                    row.get::<_, Option<String>>(5)?, // hrs.host_state
+                    row.get::<_, Option<String>>(6)?, // hrs.last_healthy_since
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // BTreeMap keeps rollout_ids ordered without an extra sort.
+        let mut by_rollout: BTreeMap<String, RolloutDbSnapshot> = BTreeMap::new();
+        for (rollout_id, hostname, target_closure, target_ref, pc_state, hrs_state, hrs_ts) in rows
+        {
+            // Derive the host's state name. host_rollout_state
+            // wins when present — it carries the post-confirm
+            // machine (Healthy/Soaked/...) that step 3 will write.
+            // Otherwise infer from pending_confirms.state.
+            let host_state = match hrs_state {
+                Some(s) => s,
+                None => match pc_state.as_str() {
+                    // Dispatched but pre-confirm: agent is in the
+                    // ConfirmWindow per RFC §3.2.
+                    "pending" => "ConfirmWindow".to_string(),
+                    // Defensive: should not happen — confirm
+                    // handler upserts a host_rollout_state row on
+                    // success. If it does (pre-existing data, or
+                    // the upsert failed-but-confirm-succeeded
+                    // window), surface as Healthy.
+                    "confirmed" => "Healthy".to_string(),
+                    // 'pending' / 'confirmed' are the only states
+                    // surviving the WHERE filter; anything else
+                    // here is a SQLite anomaly.
+                    other => other.to_string(),
+                },
+            };
+
+            let channel = rollout_id
+                .split_once('@')
+                .map(|(c, _)| c.to_string())
+                .unwrap_or_else(|| rollout_id.clone());
+
+            let entry = by_rollout
+                .entry(rollout_id.clone())
+                .or_insert_with(|| RolloutDbSnapshot {
+                    rollout_id: rollout_id.clone(),
+                    channel,
+                    target_closure_hash: target_closure.clone(),
+                    target_channel_ref: target_ref.clone(),
+                    host_states: HashMap::new(),
+                    last_healthy_since: HashMap::new(),
+                });
+            entry.host_states.insert(hostname.clone(), host_state);
+            if let Some(ts) = hrs_ts {
+                let parsed = ts
+                    .parse::<DateTime<Utc>>()
+                    .with_context(|| format!("parse last_healthy_since for {hostname}"))?;
+                entry.last_healthy_since.insert(hostname, parsed);
+            }
+        }
+        Ok(by_rollout.into_values().collect())
+    }
+
     /// Return the most recent revocation `not_before` for `hostname`,
     /// or `None` if not revoked. Caller compares against the
     /// presented cert's notBefore at mTLS handshake time.
@@ -684,6 +825,178 @@ mod tests {
         // longer Healthy, so checkin doesn't need to re-clear.
         db.clear_host_healthy("test-host", "stable@r1").unwrap();
         assert!(db.healthy_rollouts_for_host("test-host").unwrap().is_empty());
+    }
+
+    #[test]
+    fn active_rollouts_snapshot_empty_when_no_rows() {
+        let db = fresh_db();
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert!(snap.is_empty());
+    }
+
+    #[test]
+    fn active_rollouts_snapshot_pending_surfaces_as_confirmwindow() {
+        // Dispatch happened but agent has not confirmed yet. The
+        // host appears in the rollout with state "ConfirmWindow"
+        // (RFC §3.2) and no last_healthy_since marker.
+        let db = fresh_db();
+        let future = Utc::now() + chrono::Duration::seconds(120);
+        db.record_pending_confirm(
+            "ohm",
+            "stable@abc12345",
+            0,
+            "system-r1",
+            "stable@abc12345",
+            future,
+        )
+        .unwrap();
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1);
+        let r = &snap[0];
+        assert_eq!(r.rollout_id, "stable@abc12345");
+        assert_eq!(r.channel, "stable");
+        assert_eq!(r.target_closure_hash, "system-r1");
+        assert_eq!(r.target_channel_ref, "stable@abc12345");
+        assert_eq!(r.host_states.get("ohm").map(String::as_str), Some("ConfirmWindow"));
+        assert!(r.last_healthy_since.is_empty());
+    }
+
+    #[test]
+    fn active_rollouts_snapshot_confirmed_uses_host_rollout_state() {
+        // Once confirm lands, host_rollout_state.host_state takes
+        // precedence (matches the path the production handlers
+        // write). last_healthy_since surfaces in the side map for
+        // step 3's soak gate.
+        let db = fresh_db();
+        let future = Utc::now() + chrono::Duration::seconds(120);
+        let now = Utc::now();
+        db.record_pending_confirm(
+            "ohm",
+            "stable@abc12345",
+            0,
+            "system-r1",
+            "stable@abc12345",
+            future,
+        )
+        .unwrap();
+        db.confirm_pending("ohm", "stable@abc12345").unwrap();
+        db.record_host_healthy("ohm", "stable@abc12345", now).unwrap();
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1);
+        let r = &snap[0];
+        assert_eq!(r.host_states.get("ohm").map(String::as_str), Some("Healthy"));
+        let stored = r.last_healthy_since.get("ohm").expect("Healthy host has soak ts");
+        assert_eq!(stored.timestamp(), now.timestamp());
+    }
+
+    #[test]
+    fn active_rollouts_snapshot_filters_rolled_back_rollouts() {
+        // The rollback timer marked the row 'rolled-back'. The
+        // rollout has no other surviving rows, so it must NOT
+        // appear in active_rollouts — otherwise its empty
+        // host_states map would default to "Queued" in the
+        // reconciler and trigger spurious re-dispatches.
+        let db = fresh_db();
+        let past = Utc::now() - chrono::Duration::seconds(120);
+        db.record_pending_confirm(
+            "ohm",
+            "stable@dead",
+            0,
+            "system-x",
+            "stable@dead",
+            past,
+        )
+        .unwrap();
+        let expired = db.pending_confirms_expired().unwrap();
+        let ids: Vec<i64> = expired.iter().map(|(id, _, _, _, _)| *id).collect();
+        db.mark_rolled_back(&ids).unwrap();
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert!(
+            snap.is_empty(),
+            "rolled-back rollouts must not surface in active_rollouts: {snap:?}",
+        );
+    }
+
+    #[test]
+    fn active_rollouts_snapshot_groups_hosts_per_rollout() {
+        // Two rollouts, two hosts each, mixed states. Each rollout
+        // appears once with its hosts grouped under host_states.
+        let db = fresh_db();
+        let future = Utc::now() + chrono::Duration::seconds(120);
+        for (host, rollout) in [
+            ("ohm", "stable@r1"),
+            ("krach", "stable@r1"),
+            ("pixel", "edge@r2"),
+            ("aether", "edge@r2"),
+        ] {
+            db.record_pending_confirm(host, rollout, 0, "target", rollout, future)
+                .unwrap();
+        }
+        // ohm + pixel confirm; krach + aether stay in ConfirmWindow.
+        db.confirm_pending("ohm", "stable@r1").unwrap();
+        db.confirm_pending("pixel", "edge@r2").unwrap();
+        db.record_host_healthy("ohm", "stable@r1", Utc::now()).unwrap();
+        db.record_host_healthy("pixel", "edge@r2", Utc::now()).unwrap();
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 2);
+        // BTreeMap-ordered: edge@r2 sorts before stable@r1.
+        assert_eq!(snap[0].rollout_id, "edge@r2");
+        assert_eq!(snap[0].host_states.len(), 2);
+        assert_eq!(
+            snap[0].host_states.get("pixel").map(String::as_str),
+            Some("Healthy"),
+        );
+        assert_eq!(
+            snap[0].host_states.get("aether").map(String::as_str),
+            Some("ConfirmWindow"),
+        );
+        assert_eq!(snap[0].last_healthy_since.len(), 1);
+        assert!(snap[0].last_healthy_since.contains_key("pixel"));
+
+        assert_eq!(snap[1].rollout_id, "stable@r1");
+        assert_eq!(
+            snap[1].host_states.get("ohm").map(String::as_str),
+            Some("Healthy"),
+        );
+        assert_eq!(
+            snap[1].host_states.get("krach").map(String::as_str),
+            Some("ConfirmWindow"),
+        );
+    }
+
+    #[test]
+    fn active_rollouts_snapshot_picks_latest_pending_confirm_per_host() {
+        // Re-dispatches accumulate pending_confirms rows for the
+        // same (host, rollout). The snapshot must reflect the most
+        // recent dispatch — older rolled-back rows must not shadow
+        // a fresh pending row.
+        let db = fresh_db();
+        // First dispatch: past deadline, expires + rolls back.
+        let past = Utc::now() - chrono::Duration::seconds(120);
+        db.record_pending_confirm("ohm", "stable@r1", 0, "old", "stable@r1", past)
+            .unwrap();
+        let expired = db.pending_confirms_expired().unwrap();
+        let ids: Vec<i64> = expired.iter().map(|(id, _, _, _, _)| *id).collect();
+        db.mark_rolled_back(&ids).unwrap();
+
+        // Second dispatch with a fresh deadline.
+        let future = Utc::now() + chrono::Duration::seconds(120);
+        db.record_pending_confirm("ohm", "stable@r1", 0, "new", "stable@r1", future)
+            .unwrap();
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1);
+        // Filtered to state IN ('pending','confirmed'), so only
+        // the second row matters and its target is "new".
+        assert_eq!(snap[0].target_closure_hash, "new");
+        assert_eq!(
+            snap[0].host_states.get("ohm").map(String::as_str),
+            Some("ConfirmWindow"),
+        );
     }
 
     #[test]

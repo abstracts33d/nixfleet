@@ -65,6 +65,7 @@ mod tests {
             state: "Executing".into(),
             current_wave: 0,
             host_states,
+            last_healthy_since: HashMap::new(),
         }
     }
 

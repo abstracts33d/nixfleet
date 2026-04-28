@@ -89,11 +89,26 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             };
             let checkins = state.host_checkins.read().await.clone();
 
-            // Live projection: in-memory checkins + cached channel-refs.
-            // When the Forgejo poll hasn't succeeded yet AND no agents
-            // have checked in, fall back to the file-backed
-            // observed.json so the deploy-without-agents path keeps
-            // working.
+            // Active rollouts come from the DB snapshot when the
+            // CP has persistence. Without a DB, the projection
+            // sees no rollouts (same as before this PR landed).
+            // Errors here are logged + treated as empty so the
+            // tick still runs; the reconciler is read-only on
+            // active_rollouts so missing data is conservative.
+            let rollouts = match state.db.as_deref().map(|db| db.active_rollouts_snapshot()) {
+                Some(Ok(v)) => v,
+                Some(Err(err)) => {
+                    tracing::warn!(error = %err, "reconcile: active_rollouts_snapshot failed; treating as empty");
+                    Vec::new()
+                }
+                None => Vec::new(),
+            };
+
+            // Live projection: in-memory checkins + cached channel-refs
+            // + DB-derived rollouts. When the Forgejo poll hasn't
+            // succeeded yet AND no agents have checked in, fall
+            // back to the file-backed observed.json so the deploy-
+            // without-agents path keeps working.
             let inputs_now = TickInputs {
                 now,
                 ..inputs.clone()
@@ -101,7 +116,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             let (result, verified_fleet) = if checkins.is_empty() && channel_refs.is_empty() {
                 (tick(&inputs_now), verify_fleet_only(&inputs_now))
             } else {
-                run_tick_with_projection(&inputs_now, &checkins, &channel_refs)
+                run_tick_with_projection(&inputs_now, &checkins, &channel_refs, &rollouts)
             };
 
             // Snapshot the verified fleet so the dispatch path can
@@ -157,6 +172,7 @@ fn run_tick_with_projection(
     inputs: &TickInputs,
     checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
+    rollouts: &[crate::db::RolloutDbSnapshot],
 ) -> (anyhow::Result<crate::TickOutput>, Option<FleetResolved>) {
     use anyhow::Context;
     let read_inputs = || -> anyhow::Result<(Vec<u8>, Vec<u8>, nixfleet_proto::TrustConfig)> {
@@ -190,7 +206,7 @@ fn run_tick_with_projection(
         Ok(fleet) => {
             let signed_at = fleet.meta.signed_at.expect("verified artifact carries meta.signedAt");
             let ci_commit = fleet.meta.ci_commit.clone();
-            let observed = crate::observed_projection::project(checkins, channel_refs);
+            let observed = crate::observed_projection::project(checkins, channel_refs, rollouts);
             let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
             (
                 crate::VerifyOutcome::Ok {
