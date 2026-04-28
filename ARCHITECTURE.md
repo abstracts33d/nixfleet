@@ -311,6 +311,8 @@ Stated explicitly because pressure to add them will come and each dilutes the co
 - **Not a cloud provisioning tool.** Fleet membership is declared; hosts are not auto-created from templates. If you want autoscaling, generate the flake from a higher-level tool and commit.
 - **Not agentless.** Pull-based means an agent is required on every managed host. Acceptable cost for the sovereignty property.
 
+For the operations-grade capabilities the open kernel intentionally does not ship — HA replication, real-time signed-state snapshots, SLA observability, audit packages, hosted CP, multi-tenant federation, fine-grained RBAC, long-running metrics warehousing — see [`docs/commercial-extensions.md`](docs/commercial-extensions.md). Those belong above the kernel, not inside it.
+
 ---
 
 ## 8. When is it actually done
