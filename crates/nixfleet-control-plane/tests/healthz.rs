@@ -105,6 +105,7 @@ async fn healthz_returns_ok_over_tls() {
         trust_path: trust,
         observed_path: observed,
         freshness_window: Duration::from_secs(86400),
+        confirm_deadline_secs: 120,
         channel_refs: None,
         revocations: None,
         db_path: None,

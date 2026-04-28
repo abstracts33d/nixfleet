@@ -25,8 +25,7 @@ use crate::auth_cn::PeerCertificates;
 
 use super::middleware::require_cn;
 use super::state::{
-    AppState, HostCheckinRecord, ReportRecord, CONFIRM_DEADLINE_SECS, NEXT_CHECKIN_SECS,
-    REPORT_RING_CAP,
+    AppState, HostCheckinRecord, ReportRecord, NEXT_CHECKIN_SECS, REPORT_RING_CAP,
 };
 
 #[derive(Debug, Serialize)]
@@ -447,7 +446,7 @@ async fn dispatch_target_for_checkin(
         &fleet,
         pending_for_host,
         now,
-        CONFIRM_DEADLINE_SECS as u32,
+        state.confirm_deadline_secs as u32,
     );
 
     match decision {
@@ -456,7 +455,8 @@ async fn dispatch_target_for_checkin(
             rollout_id,
             wave_index,
         } => {
-            let confirm_deadline = now + chrono::Duration::seconds(CONFIRM_DEADLINE_SECS);
+            let confirm_deadline =
+                now + chrono::Duration::seconds(state.confirm_deadline_secs);
             match db.record_pending_confirm(
                 &req.hostname,
                 &rollout_id,

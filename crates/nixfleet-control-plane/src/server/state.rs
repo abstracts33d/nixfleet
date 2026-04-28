@@ -34,13 +34,13 @@ pub(super) const NEXT_CHECKIN_SECS: u32 = 60;
 /// slow enough not to spam.
 pub(super) const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Time the dispatch loop gives an agent to fetch + activate +
-/// confirm a target before the magic-rollback timer marks the
-/// pending row as `rolled-back`. 120s is the spec-D1 default —
-/// enough headroom for a closure download + activation, short enough
-/// that a stuck agent surfaces in the journal within one rollback-
-/// timer tick.
-pub(super) const CONFIRM_DEADLINE_SECS: i64 = 120;
+/// Default `--confirm-deadline-secs` when the operator doesn't pass
+/// a flag. 120s is the spec-D1 default — enough headroom for a
+/// closure download + activation, short enough that a stuck agent
+/// surfaces in the journal within one rollback-timer tick. The
+/// effective per-server value is held on `AppState.confirm_deadline_secs`,
+/// configured via clap (`--confirm-deadline-secs`) at start-up.
+pub const DEFAULT_CONFIRM_DEADLINE_SECS: i64 = 120;
 
 /// Inputs the `serve` subcommand receives from clap.
 #[derive(Debug, Clone)]
@@ -67,6 +67,10 @@ pub struct ServeArgs {
     /// (offline dev/test mode).
     pub observed_path: PathBuf,
     pub freshness_window: Duration,
+    /// Time the dispatch loop gives an agent to fetch + activate +
+    /// confirm a target before the magic-rollback timer marks the
+    /// pending row as `rolled-back`. See `DEFAULT_CONFIRM_DEADLINE_SECS`.
+    pub confirm_deadline_secs: i64,
     /// GitOps closure: when set, the channel-refs poll fetches the
     /// signed `fleet.resolved.json` + `.sig` from the configured
     /// upstream URLs every 60s, verifies, and refreshes
@@ -150,6 +154,11 @@ pub struct AppState {
     pub db: Option<Arc<crate::db::Db>>,
     pub closure_upstream: Option<ClosureUpstream>,
     pub verified_fleet: Arc<RwLock<Option<Arc<FleetResolved>>>>,
+    /// Magic-rollback confirm deadline (seconds). Sourced from
+    /// `--confirm-deadline-secs`; falls back to
+    /// `DEFAULT_CONFIRM_DEADLINE_SECS` for callers (tests, defaults)
+    /// that don't pass the flag.
+    pub confirm_deadline_secs: i64,
 }
 
 impl Default for AppState {
@@ -166,6 +175,7 @@ impl Default for AppState {
             db: None,
             closure_upstream: None,
             verified_fleet: Arc::new(RwLock::new(None)),
+            confirm_deadline_secs: DEFAULT_CONFIRM_DEADLINE_SECS,
         }
     }
 }

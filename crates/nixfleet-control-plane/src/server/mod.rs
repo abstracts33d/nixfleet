@@ -88,6 +88,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let mut app_state = AppState::default();
     app_state.db = db.clone();
+    app_state.confirm_deadline_secs = args.confirm_deadline_secs;
     if let Some(base_url) = &args.closure_upstream {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))

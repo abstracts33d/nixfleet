@@ -90,6 +90,14 @@ struct ServeFlags {
     #[arg(long, default_value_t = 86400)]
     freshness_window_secs: u64,
 
+    /// Time the dispatch loop gives an agent to fetch + activate +
+    /// confirm a target before the magic-rollback timer marks the
+    /// pending row as `rolled-back`. 120s is the spec default — tune
+    /// up for slow-link channels (large closures over residential
+    /// uplinks) or down for tight rollout windows. Issue #2 step 5.
+    #[arg(long, default_value_t = 120)]
+    confirm_deadline_secs: i64,
+
     // Channel-refs poll. The artifact + signature URLs together gate
     // whether the poll task is spawned — set both to enable, leave
     // both unset to fall back to file-backed channel-refs from
@@ -307,6 +315,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         trust_path: flags.trust_file,
         observed_path: flags.observed,
         freshness_window: Duration::from_secs(flags.freshness_window_secs),
+        confirm_deadline_secs: flags.confirm_deadline_secs,
         channel_refs,
         revocations,
         db_path: flags.db_path,

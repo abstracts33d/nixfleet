@@ -153,6 +153,19 @@ in {
       '';
     };
 
+    confirmDeadlineSecs = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 120;
+      description = ''
+        Seconds the dispatch loop gives an agent to fetch + activate
+        + confirm a target before the magic-rollback timer marks the
+        pending row as `rolled-back`. 120s is the spec default —
+        tune up for slow-link channels (large closures over
+        residential uplinks) or down for tight rollout windows.
+        Wraps the binary's `--confirm-deadline-secs`.
+      '';
+    };
+
     # Cert issuance (enroll + renew). The CP holds the fleet
     # CA private key online — see nixfleet issue #41 for the deferred
     # TPM-bound replacement. The fleet wires these to paths produced
@@ -369,6 +382,8 @@ in {
               (lib.escapeShellArg cfg.observedPath)
               "--freshness-window-secs"
               (toString (cfg.freshnessWindowMinutes * 60))
+              "--confirm-deadline-secs"
+              (toString cfg.confirmDeadlineSecs)
             ]
             ++ lib.optionals (cfg.tls.clientCa != null) [
               "--client-ca"
