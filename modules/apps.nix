@@ -1,6 +1,4 @@
-{inputs, ...}: let
-  mkVmApps = import ../lib/mk-vm-apps.nix {inherit inputs;};
-in {
+{...}: {
   perSystem = {
     pkgs,
     system,
@@ -203,7 +201,6 @@ in {
           echo -e "''${GREEN}Passed: $PASS''${NC}  ''${RED}Failed: $FAIL''${NC}  ''${YELLOW}Skipped: $SKIP''${NC}"
           if [ "$FAIL" -gt 0 ]; then exit 1; fi
         '';
-      }
-      // (mkVmApps {inherit pkgs;});
+      };
   };
 }
