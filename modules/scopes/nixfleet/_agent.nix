@@ -108,6 +108,28 @@ in {
         cert (mTLS-authenticated /v1/agent/renew), not this token.
       '';
     };
+
+    # Gap B-agent of docs/roadmap/0002-v0.2-completeness-gaps.md.
+    # The agent persists `last_confirmed_at` here after every
+    # successful confirm so subsequent checkins can attest the
+    # timestamp; the CP-side
+    # `recover_soak_state_from_attestation` repopulates
+    # `host_rollout_state.last_healthy_since` after a CP rebuild.
+    # Aligned with `StateDirectory=nixfleet-agent` so the systemd
+    # unit creates the directory with the right owner + perms.
+    stateDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/nixfleet-agent";
+      description = ''
+        Directory the agent uses for per-host persistent state.
+        Currently holds `last_confirmed_at` (gap B) — a two-line
+        plaintext file binding the agent's most recent successful
+        confirm timestamp to the closure it applies to. Created
+        with mode 0700 by the systemd unit's StateDirectory.
+        Survives agent process restart but NOT
+        `systemd-tmpfiles --remove` style wipes.
+      '';
+    };
   };
 
   config = lib.mkMerge [
@@ -181,10 +203,22 @@ in {
               "--bootstrap-token-file"
               (lib.escapeShellArg cfg.bootstrapTokenFile)
             ]
+            ++ [
+              "--state-dir"
+              (lib.escapeShellArg cfg.stateDir)
+            ]
           );
           Restart = "always";
           RestartSec = 30;
-          StateDirectory = "nixfleet";
+          # StateDirectory creates the path under /var/lib with
+          # root:root 0700 by default. Aligning with cfg.stateDir
+          # (basename only, since StateDirectory= is relative to
+          # /var/lib) keeps the systemd-managed lifecycle while
+          # giving the binary the absolute path it expects.
+          StateDirectory =
+            if lib.hasPrefix "/var/lib/" cfg.stateDir
+            then lib.removePrefix "/var/lib/" cfg.stateDir
+            else "nixfleet-agent";
 
           # The agent is a privileged system manager: it runs
           # switch-to-configuration which modifies /boot, /etc, /home, /root,

@@ -270,6 +270,53 @@ in {
         '';
       };
     };
+
+    # Gap C of docs/roadmap/0002-v0.2-completeness-gaps.md: signed
+    # `revocations.json` sidecar. Mirrors `channelRefsSource` —
+    # same `(artifact, signature, token)` shape, same Bearer auth,
+    # same trust class (ciReleaseKey signs both artifacts). When
+    # configured, the CP polls the upstream every 60s and replays
+    # entries into `cert_revocations` so a CP rebuilt from empty
+    # state re-establishes the revocation set within one reconcile
+    # tick. When all three are null, the legacy "operator runs CLI
+    # against the CP" path stays in effect (which has no recovery
+    # source — see DISASTER-RECOVERY.md).
+    revocationsSource = {
+      artifactUrl = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "https://git.example.com/myorg/myfleet/raw/branch/main/releases/revocations.json";
+        description = ''
+          Fully-formed URL that yields the raw bytes of the canonical
+          signed `revocations.json`. When null, revocations polling
+          is disabled. Must be set together with `signatureUrl`.
+        '';
+      };
+
+      signatureUrl = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "https://git.example.com/myorg/myfleet/raw/branch/main/releases/revocations.json.sig";
+        description = ''
+          Fully-formed URL that yields the raw bytes of the matching
+          signature. Verified against the same `ciReleaseKey` trust
+          roots as `fleet.resolved.json`.
+        '';
+      };
+
+      tokenFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/secrets/cp-revocations-token";
+        description = ''
+          Path to a file containing the upstream API token. Defaults
+          to falling back on `channelRefsSource.tokenFile` when null
+          since both artifacts typically live in the same upstream
+          repo with the same auth scope. Set explicitly only if the
+          two artifacts ship from different sources.
+        '';
+      };
+    };
   };
 
   config = lib.mkMerge [
@@ -362,6 +409,33 @@ in {
               ++ lib.optionals (cfg.channelRefsSource.tokenFile != null) [
                 "--channel-refs-token-file"
                 (lib.escapeShellArg cfg.channelRefsSource.tokenFile)
+              ]
+            )
+            ++ lib.optionals
+            (
+              cfg.revocationsSource.artifactUrl
+              != null
+              && cfg.revocationsSource.signatureUrl != null
+            ) (
+              [
+                "--revocations-artifact-url"
+                (lib.escapeShellArg cfg.revocationsSource.artifactUrl)
+                "--revocations-signature-url"
+                (lib.escapeShellArg cfg.revocationsSource.signatureUrl)
+              ]
+              ++ lib.optionals
+              (
+                cfg.revocationsSource.tokenFile
+                != null
+                || cfg.channelRefsSource.tokenFile != null
+              ) [
+                "--revocations-token-file"
+                (lib.escapeShellArg
+                  (
+                    if cfg.revocationsSource.tokenFile != null
+                    then cfg.revocationsSource.tokenFile
+                    else cfg.channelRefsSource.tokenFile
+                  ))
               ]
             )
           );
