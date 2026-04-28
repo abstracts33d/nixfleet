@@ -138,6 +138,17 @@ pub fn decide_target(
             .map(|i| i as u32)
     });
 
+    // Issue #13 freshness relay: ship `meta.signedAt` and the
+    // channel's `freshness_window` (in seconds) into the target so
+    // the agent can run an independent staleness check before
+    // activating. Both Option-typed for forward-compat with older
+    // proto schemas; absent fields fail open on the agent side.
+    let signed_at = fleet.meta.signed_at;
+    let freshness_window_secs = fleet
+        .channels
+        .get(&host.channel)
+        .map(|ch| ch.freshness_window.saturating_mul(60));
+
     Decision::Dispatch {
         target: EvaluatedTarget {
             closure_hash: target_closure.clone(),
@@ -149,6 +160,8 @@ pub fn decide_target(
                 confirm_window_secs,
                 confirm_endpoint: CONFIRM_ENDPOINT.to_string(),
             }),
+            signed_at,
+            freshness_window_secs,
         },
         rollout_id,
         wave_index,

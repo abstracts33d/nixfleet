@@ -130,6 +130,19 @@ pub struct EvaluatedTarget {
     /// `confirmWindowSecs` rather than its own default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activate: Option<ActivateBlock>,
+    /// `meta.signedAt` of the `fleet.resolved.json` artifact that
+    /// produced this target — relayed by the CP so the agent can
+    /// run a defense-in-depth freshness check (issue #13). `None`
+    /// from older CPs that pre-date the field; the agent's freshness
+    /// gate fails open in that case (compatibility), and surfaces a
+    /// warning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_at: Option<DateTime<Utc>>,
+    /// Channel's `freshness_window` in seconds — relayed alongside
+    /// `signed_at` so the agent can enforce the same staleness gate
+    /// the CP enforces at tick start. `None` from older CPs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_window_secs: Option<u32>,
 }
 
 /// Activation policy embedded in `EvaluatedTarget` per RFC-0003
@@ -324,6 +337,23 @@ pub enum ReportEvent {
     /// startup. Agent operates degraded until restart.
     TrustError {
         reason: String,
+    },
+
+    /// Agent refused to activate a target because the backing
+    /// `fleet.resolved.json` is older than the channel's
+    /// `freshness_window` (issue #13). Defense-in-depth — the CP
+    /// applies the same gate at tick start, so seeing this event
+    /// usually indicates either a clock-skew bug or the CP's gate
+    /// failed open. `closureHash` and `channelRef` identify the
+    /// refused target; `signedAt` and `freshnessWindowSecs` come
+    /// from the CP's relay; `ageSecs` is the agent-computed
+    /// `now - signedAt` at decision time.
+    StaleTarget {
+        closure_hash: String,
+        channel_ref: String,
+        signed_at: DateTime<Utc>,
+        freshness_window_secs: u32,
+        age_secs: i64,
     },
 
     /// Catch-all for events that don't yet have a typed variant.

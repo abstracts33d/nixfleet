@@ -363,9 +363,17 @@ fn finish_verification(
     }
 
     // Step 6b: freshness.
+    //
+    // RFC-0003 §8 / issue #13 require ≥60s slack so benign clock
+    // drift between the signing host and the verifying host doesn't
+    // trigger spurious staleness errors. The slack is added to the
+    // window itself rather than the timestamp because we want to
+    // tolerate "signed_at appears more recent than now" symmetrically
+    // — a negative `now - signed_at` already passes this comparison.
     let window = ChronoDuration::from_std(freshness_window)
         .expect("freshness_window fits in i64 nanoseconds — multi-century windows are a bug");
-    if now - signed_at > window {
+    let effective_window = window + ChronoDuration::seconds(CLOCK_SKEW_SLACK_SECS);
+    if now - signed_at > effective_window {
         return Err(VerifyError::Stale {
             signed_at,
             now,
@@ -375,3 +383,8 @@ fn finish_verification(
 
     Ok(fleet)
 }
+
+/// Symmetric clock-skew slack added to the freshness window when
+/// rejecting stale `fleet.resolved` artifacts. Spec (RFC-0003 §8 /
+/// issue #13) requires ≥60s; we use exactly 60s.
+pub const CLOCK_SKEW_SLACK_SECS: i64 = 60;

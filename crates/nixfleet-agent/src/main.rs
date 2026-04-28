@@ -254,6 +254,53 @@ async fn main() -> anyhow::Result<()> {
             Ok(resp) => {
                 consecutive_failures = 0;
                 if let Some(target) = &resp.target {
+                    // Issue #13 freshness gate: refuse to activate a
+                    // target whose backing fleet.resolved is older
+                    // than the channel's freshness_window (with ±60s
+                    // skew slack). Defense-in-depth — the CP applies
+                    // the same gate at tick start, so a stale target
+                    // reaching the agent normally points at a
+                    // CP-side bug or clock-skew issue.
+                    use nixfleet_agent::freshness::{check as freshness_check, FreshnessCheck};
+                    match freshness_check(target, chrono::Utc::now()) {
+                        FreshnessCheck::Stale {
+                            signed_at,
+                            freshness_window_secs,
+                            age_secs,
+                        } => {
+                            tracing::warn!(
+                                closure_hash = %target.closure_hash,
+                                channel_ref = %target.channel_ref,
+                                signed_at = %signed_at,
+                                freshness_window_secs,
+                                age_secs,
+                                "agent: refusing stale target — fleet.resolved older than freshness_window + 60s slack",
+                            );
+                            post_report(
+                                &client_handle,
+                                &args.control_plane_url,
+                                &args.machine_id,
+                                Some(&target.channel_ref),
+                                ReportEvent::StaleTarget {
+                                    closure_hash: target.closure_hash.clone(),
+                                    channel_ref: target.channel_ref.clone(),
+                                    signed_at,
+                                    freshness_window_secs,
+                                    age_secs,
+                                },
+                            )
+                            .await;
+                            continue;
+                        }
+                        FreshnessCheck::Unknown => {
+                            tracing::debug!(
+                                closure_hash = %target.closure_hash,
+                                "agent: target lacks signed_at/freshness_window_secs — older CP, skipping freshness gate",
+                            );
+                        }
+                        FreshnessCheck::Fresh => {}
+                    }
+
                     // Realise + switch + verify the target.
                     // On full Success → POST /v1/agent/confirm. On any
                     // outcome that left the system in an unexpected

@@ -133,6 +133,50 @@ fn verify_at_exact_window_boundary_is_fresh() {
 }
 
 #[test]
+fn verify_within_clock_skew_slack_is_fresh() {
+    // Issue #13 / RFC-0003 §8: verify_artifact tolerates ≥60s clock
+    // skew so a benignly-drifted host doesn't reject a freshly-signed
+    // artifact. age = window + 30s must still be fresh.
+    let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_SIGNED);
+    let window_secs: u64 = 3 * 3600;
+    let now = signed_at + ChronoDuration::seconds(window_secs as i64 + 30);
+    let window = Duration::from_secs(window_secs);
+
+    let result = verify_artifact(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    );
+    assert!(
+        result.is_ok(),
+        "age within slack must be treated as fresh: {result:?}"
+    );
+}
+
+#[test]
+fn verify_just_past_slack_is_stale() {
+    // age = window + 61s — one second past the 60s slack → stale.
+    let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_SIGNED);
+    let window_secs: u64 = 3 * 3600;
+    let now = signed_at + ChronoDuration::seconds(window_secs as i64 + 61);
+    let window = Duration::from_secs(window_secs);
+
+    let err = verify_artifact(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(err, VerifyError::Stale { .. }));
+}
+
+#[test]
 fn verify_unsigned() {
     let json = include_str!("../../nixfleet-proto/tests/fixtures/every-nullable.json");
 

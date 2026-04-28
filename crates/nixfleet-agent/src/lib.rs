@@ -14,3 +14,4 @@ pub mod activation;
 pub mod checkin_state;
 pub mod comms;
 pub mod enrollment;
+pub mod freshness;
