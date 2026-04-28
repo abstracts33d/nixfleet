@@ -68,9 +68,14 @@ in
           host.wait_for_unit(f"microvm@{vm}.service", timeout=300)
 
       # Agent units are oneshot+RemainAfterExit; success == one successful
-      # mTLS fetch of the fixture.
+      # mTLS fetch of the fixture. The deadline scales with agent count
+      # because mass-booting microVMs on a single host VM serialises on
+      # qemu start, guest kernel cold-boot, and the curl that depends on
+      # network-online. Empirically: at N=5 the agents are still running
+      # "Permit User Sessions" past t=77s, so a flat 60s deadline times
+      # out before any of them finish booting let alone fetch.
       import time
-      deadline = time.monotonic() + 60
+      deadline = time.monotonic() + max(60, 30 + 20 * len(${builtins.toJSON agentNames}))
       pending = set(${builtins.toJSON agentNames})
       while pending and time.monotonic() < deadline:
           done = set()
@@ -89,7 +94,8 @@ in
               time.sleep(2)
 
       if pending:
-          raise Exception(f"agents did not report harness-agent-ok within 60s: {pending}")
+          budget = max(60, 30 + 20 * len(${builtins.toJSON agentNames}))
+          raise Exception(f"agents did not report harness-agent-ok within {budget}s: {pending}")
 
       print("fleet-harness-smoke: all agents fetched fleet.resolved.json over mTLS")
     '';
