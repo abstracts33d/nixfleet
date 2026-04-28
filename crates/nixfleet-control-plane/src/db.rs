@@ -14,6 +14,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -303,6 +304,133 @@ impl Db {
         Ok(n)
     }
 
+    // ===============================================================
+    // host_rollout_state — RFC-0002 §3.2 / §4.4 soak timer support
+    // ===============================================================
+
+    /// Mark host as Healthy for `rollout_id`, stamping
+    /// `last_healthy_since = now`. Step 3 of gap #2
+    /// (docs/roadmap/0002-v0.2-completeness-gaps.md) — the
+    /// reconciler arm — consults this against `wave.soak_minutes`
+    /// to gate the Healthy → Soaked transition. UPSERT shape:
+    /// re-entering Healthy after a clear refreshes the timestamp
+    /// without resetting any other column.
+    pub fn record_host_healthy(
+        &self,
+        hostname: &str,
+        rollout_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        let guard = self.conn()?;
+        guard
+            .execute(
+                "INSERT INTO host_rollout_state(rollout_id, hostname,
+                                                host_state,
+                                                last_healthy_since,
+                                                updated_at)
+                 VALUES (?1, ?2, 'Healthy', ?3, datetime('now'))
+                 ON CONFLICT(rollout_id, hostname) DO UPDATE SET
+                   host_state = 'Healthy',
+                   last_healthy_since = excluded.last_healthy_since,
+                   updated_at = datetime('now')",
+                params![rollout_id, hostname, now.to_rfc3339()],
+            )
+            .context("upsert host_rollout_state Healthy")?;
+        Ok(())
+    }
+
+    /// Clear the Healthy marker for (rollout, host) — the host has
+    /// left Healthy (its `current_generation.closure_hash` no
+    /// longer matches the rollout's target). Nulls
+    /// `last_healthy_since` so the soak timer must restart on the
+    /// next Healthy entry. The `host_state` column is intentionally
+    /// untouched: step 3's reconciler arm decides what state to
+    /// transition to (typically back to ConfirmWindow, or Failed).
+    /// Returns the number of rows updated — 0 means there was no
+    /// Healthy marker to clear.
+    pub fn clear_host_healthy(&self, hostname: &str, rollout_id: &str) -> Result<usize> {
+        let guard = self.conn()?;
+        let n = guard
+            .execute(
+                "UPDATE host_rollout_state
+                 SET last_healthy_since = NULL,
+                     updated_at = datetime('now')
+                 WHERE rollout_id = ?1 AND hostname = ?2
+                   AND last_healthy_since IS NOT NULL",
+                params![rollout_id, hostname],
+            )
+            .context("clear host_rollout_state.last_healthy_since")?;
+        Ok(n)
+    }
+
+    /// Currently-Healthy hosts in `rollout_id` and the timestamp
+    /// they entered Healthy. Step 2 of gap #2 (next session, the
+    /// observed-state projection) reads this so the reconciler can
+    /// compute `now - last_healthy_since >= wave.soak_minutes`.
+    /// Excludes rows whose `last_healthy_since` is NULL.
+    pub fn host_soak_state_for_rollout(
+        &self,
+        rollout_id: &str,
+    ) -> Result<HashMap<String, DateTime<Utc>>> {
+        let guard = self.conn()?;
+        let mut stmt = guard.prepare(
+            "SELECT hostname, last_healthy_since
+             FROM host_rollout_state
+             WHERE rollout_id = ?1
+               AND last_healthy_since IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map(params![rollout_id], |row| {
+                let hostname: String = row.get(0)?;
+                let ts: String = row.get(1)?;
+                Ok((hostname, ts))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut out = HashMap::with_capacity(rows.len());
+        for (hostname, ts) in rows {
+            let parsed = ts
+                .parse::<DateTime<Utc>>()
+                .with_context(|| format!("parse last_healthy_since for {hostname}"))?;
+            out.insert(hostname, parsed);
+        }
+        Ok(out)
+    }
+
+    /// Rollouts in which `hostname` is currently Healthy, paired
+    /// with each rollout's `target_closure_hash` (joined from
+    /// `pending_confirms`). The checkin handler calls this on every
+    /// `/v1/agent/checkin` to detect the "left Healthy" case: if
+    /// the host's reported `current_generation.closure_hash` no
+    /// longer matches the rollout's target, the host has reverted
+    /// away and the Healthy marker must be cleared.
+    ///
+    /// Joining avoids denormalising the target closure — a
+    /// confirmed pending_confirms row always exists for any
+    /// (rollout, host) in host_rollout_state, since
+    /// `record_host_healthy` is only called from the confirm
+    /// handler success path. `DISTINCT` collapses the rare case of
+    /// multiple confirmed rows for the same (host, rollout); the
+    /// target closure is rollout-deterministic so any one is fine.
+    pub fn healthy_rollouts_for_host(&self, hostname: &str) -> Result<Vec<(String, String)>> {
+        let guard = self.conn()?;
+        let mut stmt = guard.prepare(
+            "SELECT DISTINCT hrs.rollout_id, pc.target_closure_hash
+             FROM host_rollout_state hrs
+             JOIN pending_confirms pc
+               ON pc.hostname = hrs.hostname
+              AND pc.rollout_id = hrs.rollout_id
+             WHERE hrs.hostname = ?1
+               AND hrs.last_healthy_since IS NOT NULL
+               AND pc.state = 'confirmed'",
+        )?;
+        let rows = stmt
+            .query_map(params![hostname], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Return the most recent revocation `not_before` for `hostname`,
     /// or `None` if not revoked. Caller compares against the
     /// presented cert's notBefore at mTLS handshake time.
@@ -345,6 +473,7 @@ mod tests {
         assert!(names.contains(&"token_replay".to_string()), "tables: {names:?}");
         assert!(names.contains(&"cert_revocations".to_string()));
         assert!(names.contains(&"pending_confirms".to_string()));
+        assert!(names.contains(&"host_rollout_state".to_string()));
     }
 
     #[test]
@@ -410,6 +539,151 @@ mod tests {
         .unwrap();
         let expired = db.pending_confirms_expired().unwrap();
         assert!(expired.is_empty(), "row in window should not expire: {expired:?}");
+    }
+
+    #[test]
+    fn record_host_healthy_round_trips() {
+        let db = fresh_db();
+        let now = Utc::now();
+        db.record_host_healthy("test-host", "stable@abc12345", now)
+            .unwrap();
+        let map = db.host_soak_state_for_rollout("stable@abc12345").unwrap();
+        assert_eq!(map.len(), 1, "expected one Healthy host: {map:?}");
+        let stored = map.get("test-host").expect("test-host present");
+        // RFC3339 round-trip drops sub-second precision.
+        assert_eq!(stored.timestamp(), now.timestamp());
+    }
+
+    #[test]
+    fn record_host_healthy_upserts_timestamp() {
+        // Re-recording Healthy moves last_healthy_since forward
+        // without breaking the row. Step 3 (the reconciler arm)
+        // relies on the latest Healthy entry winning so the soak
+        // timer always reflects the most recent Healthy moment.
+        let db = fresh_db();
+        let t1 = Utc::now() - chrono::Duration::seconds(120);
+        let t2 = Utc::now();
+        db.record_host_healthy("test-host", "stable@r1", t1).unwrap();
+        db.record_host_healthy("test-host", "stable@r1", t2).unwrap();
+        let map = db.host_soak_state_for_rollout("stable@r1").unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map["test-host"].timestamp(),
+            t2.timestamp(),
+            "second record_host_healthy must overwrite first"
+        );
+    }
+
+    #[test]
+    fn clear_host_healthy_nulls_timestamp() {
+        let db = fresh_db();
+        db.record_host_healthy("test-host", "stable@r1", Utc::now())
+            .unwrap();
+        let n = db.clear_host_healthy("test-host", "stable@r1").unwrap();
+        assert_eq!(n, 1);
+        let map = db.host_soak_state_for_rollout("stable@r1").unwrap();
+        assert!(
+            map.is_empty(),
+            "cleared host must drop out of soak state: {map:?}"
+        );
+    }
+
+    #[test]
+    fn clear_host_healthy_is_noop_when_already_clear() {
+        // Idempotent: calling clear on a row whose marker is
+        // already NULL — or on a row that doesn't exist — returns 0
+        // and does not fail. The checkin handler may emit clear()
+        // every checkin while the host stays diverged.
+        let db = fresh_db();
+        let n = db.clear_host_healthy("test-host", "stable@r1").unwrap();
+        assert_eq!(n, 0, "clear on missing row is no-op");
+        db.record_host_healthy("test-host", "stable@r1", Utc::now())
+            .unwrap();
+        assert_eq!(db.clear_host_healthy("test-host", "stable@r1").unwrap(), 1);
+        // Second clear: row exists, marker already NULL.
+        assert_eq!(db.clear_host_healthy("test-host", "stable@r1").unwrap(), 0);
+    }
+
+    #[test]
+    fn host_soak_state_scopes_to_rollout() {
+        // Two rollouts, two hosts each — the projection must
+        // return only the requested rollout's hosts.
+        let db = fresh_db();
+        let now = Utc::now();
+        db.record_host_healthy("ohm", "stable@r1", now).unwrap();
+        db.record_host_healthy("krach", "stable@r1", now).unwrap();
+        db.record_host_healthy("pixel", "edge@r2", now).unwrap();
+
+        let r1 = db.host_soak_state_for_rollout("stable@r1").unwrap();
+        assert_eq!(r1.len(), 2);
+        assert!(r1.contains_key("ohm"));
+        assert!(r1.contains_key("krach"));
+
+        let r2 = db.host_soak_state_for_rollout("edge@r2").unwrap();
+        assert_eq!(r2.len(), 1);
+        assert!(r2.contains_key("pixel"));
+    }
+
+    #[test]
+    fn healthy_rollouts_for_host_joins_pending_confirms() {
+        // The checkin handler calls this to compare reported
+        // current_generation against each rollout's target. The
+        // join requires a confirmed pending_confirms row — an
+        // un-confirmed (still 'pending') row must NOT surface,
+        // since the host has not yet reached Healthy.
+        let db = fresh_db();
+        let future = Utc::now() + chrono::Duration::seconds(120);
+        db.record_pending_confirm(
+            "test-host",
+            "stable@r1",
+            0,
+            "target-system-r1",
+            "stable@r1",
+            future,
+        )
+        .unwrap();
+        // Still pending — healthy_rollouts_for_host must be empty
+        // even after recording Healthy (the row exists but the
+        // join filter is pc.state = 'confirmed').
+        db.record_host_healthy("test-host", "stable@r1", Utc::now())
+            .unwrap();
+        let pre = db.healthy_rollouts_for_host("test-host").unwrap();
+        assert!(
+            pre.is_empty(),
+            "must not surface rollouts whose pending_confirms is still pending: {pre:?}"
+        );
+
+        // Confirm it; now the join hits.
+        let n = db.confirm_pending("test-host", "stable@r1").unwrap();
+        assert_eq!(n, 1);
+        let post = db.healthy_rollouts_for_host("test-host").unwrap();
+        assert_eq!(post.len(), 1);
+        assert_eq!(post[0].0, "stable@r1");
+        assert_eq!(post[0].1, "target-system-r1");
+    }
+
+    #[test]
+    fn healthy_rollouts_for_host_excludes_cleared_rows() {
+        let db = fresh_db();
+        let future = Utc::now() + chrono::Duration::seconds(120);
+        db.record_pending_confirm(
+            "test-host",
+            "stable@r1",
+            0,
+            "target-system-r1",
+            "stable@r1",
+            future,
+        )
+        .unwrap();
+        db.confirm_pending("test-host", "stable@r1").unwrap();
+        db.record_host_healthy("test-host", "stable@r1", Utc::now())
+            .unwrap();
+        assert_eq!(db.healthy_rollouts_for_host("test-host").unwrap().len(), 1);
+
+        // After clear_host_healthy, the row falls out — it's no
+        // longer Healthy, so checkin doesn't need to re-clear.
+        db.clear_host_healthy("test-host", "stable@r1").unwrap();
+        assert!(db.healthy_rollouts_for_host("test-host").unwrap().is_empty());
     }
 
     #[test]

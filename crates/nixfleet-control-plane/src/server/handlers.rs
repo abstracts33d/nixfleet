@@ -124,12 +124,65 @@ pub(super) async fn checkin(
         .await
         .insert(req.hostname.clone(), record);
 
+    clear_left_healthy_for_checkin(&state, &req).await;
+
     let target = dispatch_target_for_checkin(&state, &req, now).await;
 
     Ok(Json(CheckinResponse {
         target,
         next_checkin_secs: NEXT_CHECKIN_SECS,
     }))
+}
+
+/// Per-checkin "left Healthy" sweep (RFC-0002 §3.2). Compares the
+/// reported `current_generation.closure_hash` against each rollout
+/// the host is currently recorded as Healthy in; on mismatch,
+/// clears the Healthy marker so the soak timer restarts on the
+/// next confirm. Best-effort: errors log + return without
+/// affecting dispatch — the reconciler re-derives on its next
+/// tick. Runs before `dispatch_target_for_checkin` so soak-state
+/// hygiene is in place before any new target is issued.
+async fn clear_left_healthy_for_checkin(state: &AppState, req: &CheckinRequest) {
+    let Some(db) = state.db.as_ref() else {
+        return;
+    };
+    let healthy = match db.healthy_rollouts_for_host(&req.hostname) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(
+                hostname = %req.hostname,
+                error = %err,
+                "checkin: healthy_rollouts_for_host query failed",
+            );
+            return;
+        }
+    };
+    for (rollout_id, target_closure) in healthy {
+        if req.current_generation.closure_hash == target_closure {
+            continue;
+        }
+        match db.clear_host_healthy(&req.hostname, &rollout_id) {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    target: "soak",
+                    hostname = %req.hostname,
+                    rollout = %rollout_id,
+                    target_closure = %target_closure,
+                    current_closure = %req.current_generation.closure_hash,
+                    "checkin: host left Healthy (closure mismatch); cleared soak timer",
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(
+                    hostname = %req.hostname,
+                    rollout = %rollout_id,
+                    error = %err,
+                    "checkin: clear_host_healthy failed",
+                );
+            }
+        }
+    }
 }
 
 /// Per-checkin dispatch decision. Reads the latest verified
@@ -607,6 +660,21 @@ pub(super) async fn confirm(
             .status(StatusCode::GONE)
             .body(Body::from(""))
             .unwrap_or_default());
+    }
+
+    // RFC-0002 §3.2 ConfirmWindow → Healthy transition. Stamp
+    // last_healthy_since so step 3's reconciler arm can gate
+    // Healthy → Soaked once `wave.soak_minutes` elapses. Failure
+    // is non-fatal: the confirm itself succeeded, so the agent
+    // hears 204; an operator alerts off the warn line if the
+    // soak-state write breaks.
+    if let Err(err) = db.record_host_healthy(&req.hostname, &req.rollout, Utc::now()) {
+        tracing::warn!(
+            hostname = %req.hostname,
+            rollout = %req.rollout,
+            error = %err,
+            "confirm: record_host_healthy failed; soak timer will skip this host",
+        );
     }
 
     tracing::info!(
