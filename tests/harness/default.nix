@@ -87,6 +87,26 @@
         inherit lib pkgs nixfleet-canonicalize;
       };
 
+  # Stale variant of the signed fixture (issue #13): deliberately
+  # signs the artifact a year and a half in the past so any sane
+  # freshness window puts the agent's clock-skewed `now − signedAt`
+  # well past `freshness_window + 60s`. Used by the
+  # stale-target-refusal scenario; CP runs with `--freshness-window-secs`
+  # large enough to accept the artifact (so it dispatches), and the
+  # agent's per-channel freshness check fires first.
+  staleFixture =
+    if nixfleet-canonicalize == null
+    then null
+    else
+      import ./fixtures/signed {
+        inherit lib pkgs nixfleet-canonicalize;
+        signedAt = "2025-01-01T00:00:00Z";
+        # Smallest mk-fleet-permissible window (2 × signingInterval=60).
+        freshnessWindowMinutes = 120;
+        seedSalt = "nixfleet-harness-stale-fixture-2025";
+        derivationName = "nixfleet-harness-stale-fixture";
+      };
+
   # Phase 2 PR(b): signed-roundtrip scenario. Depends on both
   # `signedFixture` (fixture bytes + trust.json) and
   # `nixfleet-verify-artifact` (the CLI the agent microVM runs).
@@ -125,6 +145,48 @@
           agentPkg = nixfleet-agent;
         });
 
+  # Issue #13 stale-target refusal scenario. Real CP serving a
+  # year-and-a-half-old fixture (CP accepts because its
+  # --freshness-window-secs is bumped huge); real agent receives the
+  # dispatched target, the `nixfleet_agent::freshness` gate fires
+  # because the channel's per-fleet freshness_window is much smaller
+  # than `now − signedAt`, agent posts `ReportEvent::StaleTarget`
+  # and skips activation.
+  staleTargetScenario =
+    if nixfleet-control-plane == null || nixfleet-agent == null || staleFixture == null
+    then
+      throw ''
+        tests/harness: fleet-harness-stale-target requires
+        `nixfleet-control-plane`, `nixfleet-agent`, and
+        `nixfleet-canonicalize` (for staleFixture) to be passed in.
+      ''
+    else
+      import ./scenarios/stale-target.nix (scenarioArgs
+        // {
+          staleFixture = staleFixture;
+          cpPkg = nixfleet-control-plane;
+          agentPkg = nixfleet-agent;
+        });
+
+  # Issue #2 step 5 deadline-expiry scenario. Real CP with a 3-second
+  # confirm deadline; testScript drives the wire flow via curl from
+  # the host VM (no agent microVM needed) — POST checkin → receive
+  # target → wait past deadline → POST confirm → assert HTTP 410.
+  # Validates the rollback_timer + handlers.rs:880-898 path.
+  deadlineExpiryScenario =
+    if nixfleet-control-plane == null
+    then
+      throw ''
+        tests/harness: fleet-harness-deadline-expiry requires
+        `nixfleet-control-plane` to be passed in.
+      ''
+    else
+      import ./scenarios/deadline-expiry.nix (scenarioArgs
+        // {
+          inherit signedFixture;
+          cpPkg = nixfleet-control-plane;
+        });
+
   # Helper for the parameterised fleet-N variants — same as smoke
   # but with N agents under the same stub-CP + stub-agent scaffolding.
   mkFleetNScenario = n:
@@ -139,6 +201,10 @@ in {
   fleet-harness-signed-roundtrip = signedRoundtripScenario;
 
   fleet-harness-teardown = teardownScenario;
+
+  fleet-harness-stale-target = staleTargetScenario;
+
+  fleet-harness-deadline-expiry = deadlineExpiryScenario;
 
   # Issue #5 fleet-N variants. fleet-2 is identical to smoke
   # under a different name, kept for criterion completeness.

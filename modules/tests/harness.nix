@@ -68,6 +68,17 @@
           # state recovery within one reconcile cycle.
           fleet-harness-teardown = harness.fleet-harness-teardown;
 
+          # Issue #2 step 5: confirm-deadline expiry → 410.
+          # Host-side curl drives the wire flow against cp-real
+          # with --confirm-deadline-secs 3.
+          fleet-harness-deadline-expiry = harness.fleet-harness-deadline-expiry;
+
+          # Issue #13: agent-side freshness gate wire-format. CP
+          # serves a year-and-a-half-old fixture; testScript asserts
+          # dispatched targets carry signedAt + freshnessWindowSecs
+          # such that the agent's freshness::check returns Stale.
+          fleet-harness-stale-target = harness.fleet-harness-stale-target;
+
           # Parameterised fleet-N variants (issue #5). Same
           # scenario as fleet-harness-smoke but with N agents.
           # CI runs fleet-2 on PR; fleet-10 / fleet-50 are

@@ -29,16 +29,32 @@
   # as an argument so harness plumbing can swap in a stubbed mkFleet
   # without rebuilding the framework.
   mkFleetPath ? ../../../../lib/mk-fleet.nix,
+  # Override `meta.signedAt` for forks that want a deliberately-stale
+  # artifact (issue #13 stale-target refusal scenario). Default keeps
+  # the original fresh stamp so existing scenarios are unchanged.
+  signedAt ? "2026-05-01T00:00:00Z",
+  # Override `channels.stable.freshnessWindow` (minutes). mk-fleet.nix
+  # invariant: must be ≥ 2 × signingIntervalMinutes (60), so the
+  # smallest sensible value is 120. Default is 60 days as before.
+  freshnessWindowMinutes ? 86400,
+  # Hash of the deterministic seed to use for the ed25519 keypair.
+  # Forks that want a distinct trust chain (e.g. signed-fixture +
+  # stale-fixture co-existing in the same harness without trust
+  # collision) override this. Default keeps the existing key.
+  seedSalt ? "nixfleet-harness-test-seed-2026",
+  # Output derivation name. Forks override so multiple fixture
+  # variants co-exist in the store with distinct paths.
+  derivationName ? "nixfleet-harness-signed-fixture",
 }: let
   # 32-byte seed derived from a fixed string per §12.2 of the Phase 2
   # entry spec. Changing the string forces a new keypair across every
   # consumer — intended for rotation scenarios that want a second seed.
-  seedHex = builtins.substring 0 64 (builtins.hashString "sha256" "nixfleet-harness-test-seed-2026");
+  seedHex = builtins.substring 0 64 (builtins.hashString "sha256" seedSalt);
 
   # Frozen CI-metadata stamps. Keep in sync with the scenario's
   # `--now` / `--freshness-window-secs` inputs so verify does not trip
   # the freshness gate against wall-clock time at harness runtime.
-  fixedSignedAt = "2026-05-01T00:00:00Z";
+  fixedSignedAt = signedAt;
   fixedCiCommit = "0000000000000000000000000000000000000000"; # obviously a placeholder
   fixedAlgorithm = "ed25519";
 
@@ -82,7 +98,7 @@
       rolloutPolicy = "all-at-once";
       reconcileIntervalMinutes = 30;
       signingIntervalMinutes = 60;
-      freshnessWindow = 86400; # 60 days — way above 2 × signingInterval.
+      freshnessWindow = freshnessWindowMinutes;
       compliance = {
         strict = false;
         frameworks = [];
@@ -151,7 +167,7 @@
         f.write("-----END PRIVATE KEY-----\n")
   '';
 in
-  pkgs.runCommand "nixfleet-harness-signed-fixture" {
+  pkgs.runCommand derivationName {
     nativeBuildInputs = [pkgs.openssl];
     # Pass the resolved+stamped JSON in as a file to keep the derivation
     # hermetic (no environment-variable size limits, same bytes on every
