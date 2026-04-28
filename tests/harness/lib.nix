@@ -11,10 +11,13 @@
 #   mkFleetScenario- wrap CP-on-host + N agent microVMs into a runNixOSTest
 #   mkHarnessCerts - builds a fleet CA + CP server cert + one client cert per hostname
 #
-# TODO(5): once v0.2 agent/CP skeletons (`crates/nixfleet-agent`, `crates/
-# nixfleet-control-plane`) exist and their service modules land, swap the
-# minimal systemd units in nodes/{cp,agent}.nix for the real binaries.
-# The node builders should keep the same signature.
+# Note: v0.2 agent/CP skeletons (`crates/nixfleet-agent`, `crates/nixfleet-
+# control-plane`) have landed, but no NixOS service modules
+# (`services.nixfleet-{agent,control-plane}`) wrap them yet. Until those
+# modules exist, the harness keeps its curl+jq+socat scaffolding in
+# nodes/{cp,agent}.nix. Swapping in real services is a follow-up project,
+# not a comment cleanup — when those service modules land, the node
+# builders should keep the same signature.
 {
   lib,
   pkgs,
@@ -100,9 +103,11 @@
   # VM lets every agent microVM reach it via the shared user-net
   # gateway without bridge/NAT plumbing.
   #
-  # TODO(5): when Stream C's v0.2 CP skeleton lands, the same host-VM
-  # placement still applies — just swap socat for
-  # services.nixfleet-control-plane inside nodes/cp.nix.
+  # The v0.2 CP skeleton has landed in `crates/nixfleet-control-plane`,
+  # but the harness still uses socat for TLS termination because no
+  # `services.nixfleet-control-plane` NixOS module exists yet. The same
+  # host-VM placement applies once that module lands; only the systemd
+  # unit body inside nodes/cp.nix needs to change.
   mkCpHostModule = {
     testCerts,
     resolvedJsonPath,

@@ -9,18 +9,17 @@
 # isolates every microVM from every other microVM (each VM's gateway
 # 10.0.2.2 is the host VM). Running CP on the host VM lets every agent
 # microVM reach it via that shared gateway with zero bridge/NAT setup.
-# When Stream C's v0.2 CP skeleton lands it keeps the same placement.
+# The same placement applies to a future real-CP harness; only the
+# systemd unit body in nodes/cp.nix would change.
 #
 # This is the substrate for every future Checkpoint 2 scenario (magic
 # rollback, compliance gate, freshness refusal). When those land, copy
 # this file, flip agent config (e.g. inject bad signature into the fixture
-# for freshness-refusal), and assert the opposite outcome.
-#
-# TODO(5): once Stream B's multi-algorithm signing lands, sign the
-# fixture at build time and assert the agent's verify path accepts it.
-# TODO(5): once Stream C's p256 verify path lands, add a twin scenario
-# that swaps the fixture's signature for a tampered one and asserts the
-# agent refuses to apply.
+# for freshness-refusal), and assert the opposite outcome. The
+# signed-fixture flow (build-time-signed canonical.json + verify via the
+# `nixfleet-verify-artifact` CLI) is already exercised by the sibling
+# `signed-roundtrip` scenario; tamper/refusal twin scenarios should fork
+# that file rather than this one.
 {
   lib,
   harnessLib,

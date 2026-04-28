@@ -6,15 +6,17 @@
 # log meta.signedAt via systemd. A successful fetch is recorded as a
 # `harness-agent-ok` journal line that the scenario testScript greps for.
 #
-# TODO(5): once the v0.2 agent skeleton lands, replace the curl+jq unit
-# with `services.nixfleet-agent` pointing at the harness CP. The mTLS
-# wiring, controlPlaneHost/Port args, and the "successful fetch" signal
-# stay the same — only the binary changes.
+# Note: the v0.2 agent skeleton has landed in `crates/nixfleet-agent`,
+# but no `services.nixfleet-agent` NixOS module exists yet, so the
+# harness keeps its curl+jq scaffolding here. When a service module
+# lands, the mTLS wiring, controlPlaneHost/Port args, and the
+# "successful fetch" signal stay the same — only the binary changes.
 #
-# TODO(5): Stream C's p256 signature verify path plugs in right here:
-# once `meta.signatureAlgorithm` is populated, the agent must refuse to
-# apply when the signature does not verify. For now we only log signedAt;
-# the assertion is a placeholder that always passes if the JSON parses.
+# This is the *smoke* path — it deliberately does not exercise signature
+# verification. The signed-roundtrip scenario (nodes/agent-verify.nix)
+# covers the p256/ed25519 verify path via the `nixfleet-verify-artifact`
+# CLI, which has landed in `crates/nixfleet-verify-artifact` and wraps
+# `nixfleet_reconciler::verify_artifact`.
 {
   lib,
   pkgs,
@@ -84,8 +86,9 @@
         echo "$msg" >&2
         echo "$msg" > /dev/console || true
 
-        # TODO(5): invoke Stream C's p256 verify step here once the meta
-        # signature block is populated. For the scaffold we just log.
+        # Smoke-path stub: just logs signedAt + signatureAlgorithm. The
+        # verify call site lives in nodes/agent-verify.nix, which invokes
+        # the `nixfleet-verify-artifact` CLI against the signed fixture.
       '';
       Restart = "on-failure";
       RestartSec = 5;
