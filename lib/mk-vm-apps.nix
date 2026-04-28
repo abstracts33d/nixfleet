@@ -20,7 +20,7 @@
 #
 # provision_identity_key HOST [KEY_PATH]
 #   Copies an identity key into a temp dir for nixos-anywhere --extra-files.
-#   Resolution order: explicit arg > ~/.keys/id_ed25519 > ~/.ssh/id_ed25519 > skip (warning).
+#   Resolution order: explicit arg > ~/.ssh/id_ed25519 > skip (warning).
 #   Sets: EXTRA_FILES_DIR, EXTRA_FILES_ARGS
 #
 # build_iso
@@ -139,8 +139,6 @@
           exit 1
         fi
         key_src="$explicit_key"
-      elif [ -f "''$HOME/.keys/id_ed25519" ]; then
-        key_src="''$HOME/.keys/id_ed25519"
       elif [ -f "''$HOME/.ssh/id_ed25519" ]; then
         key_src="''$HOME/.ssh/id_ed25519"
       fi
@@ -148,16 +146,20 @@
       if [ -n "$key_src" ]; then
         local vm_user
         vm_user="$(nix eval ".#nixosConfigurations.''${host}.config.hostSpec.userName" --raw 2>/dev/null || echo "root")"
+        # Mirror the secrets impl's default `userKey` path —
+        # `${hS.home}/.ssh/id_ed25519`. Both paths are written so
+        # impermanent hosts (key bind-mounted from /persist/home/...)
+        # and non-impermanent hosts (key in plain /home/...) work.
         for prefix in "persist/home/$vm_user" "home/$vm_user"; do
-          mkdir -p "''$EXTRA_FILES_DIR/$prefix/.keys"
-          cp "$key_src" "''$EXTRA_FILES_DIR/$prefix/.keys/id_ed25519"
-          chmod 600 "''$EXTRA_FILES_DIR/$prefix/.keys/id_ed25519"
+          mkdir -p "''$EXTRA_FILES_DIR/$prefix/.ssh"
+          cp "$key_src" "''$EXTRA_FILES_DIR/$prefix/.ssh/id_ed25519"
+          chmod 600 "''$EXTRA_FILES_DIR/$prefix/.ssh/id_ed25519"
         done
         EXTRA_FILES_ARGS="--extra-files ''$EXTRA_FILES_DIR"
         echo -e "''${GREEN}Provisioning identity key for ''$vm_user (from $key_src)''${NC}"
       else
         echo -e "''${YELLOW}No identity key found - secrets requiring host decryption will not work''${NC}"
-        echo -e "''${YELLOW}Provide one with --identity-key PATH, or place at ~/.keys/id_ed25519''${NC}"
+        echo -e "''${YELLOW}Provide one with --identity-key PATH, or place at ~/.ssh/id_ed25519''${NC}"
       fi
     }
 
