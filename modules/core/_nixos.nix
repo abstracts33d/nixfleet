@@ -1,22 +1,17 @@
-# Core NixOS module - framework mechanism only.
+# Core NixOS module - framework prerequisites only.
 #
-# Opinions (users, bootloader, programs, security, hardware) live in
-# the consuming fleet, not here:
-# - User creation: fleets wire `users.users.<name>` themselves, or
-#   layer their own operators schema on top of `hostSpec.userName`.
-# - Bootloader config (systemd-boot, initrd modules, kernelPackages):
-#   host-specific modules (hardware-configuration.nix, fleet-side
-#   disk templates).
-# - `programs.{zsh,git,gnupg,dconf}`, `security.sudo`,
-#   `hardware.ledger` etc.: fleet-side scopes or Home Manager.
+# What the framework needs every NixOS host to have:
+# - flake-mode nix (the framework is flake-only).
+# - hostSpec → standard NixOS option pass-through (hostName, locale,
+#   timezone, keymap, xkb).
+# - root authorizedKeys + hashed-password from hostSpec — the
+#   framework's identity contract.
+# - the trust contract schema (so `nixfleet.trust.*` typechecks).
 #
-# What stays here:
-# - nix settings (substituters, trusted keys, gc, experimental features)
-#   so every NixOS host gets the NixFleet cache wiring out of the box.
-# - openssh hardening (PermitRootLogin prohibit-password, password auth
-#   off) - universally applicable and required for remote deploys.
-# - Identity pass-through from hostSpec to NixOS options
-#   (hostName, timeZone, locale, keyMap, xkb).
+# Everything else — substituter lists, GC policy, openssh hardening,
+# nixpkgs.config opinions, the universal-tools package set, firewall
+# policy — is fleet-side. The framework's own runtime (agent, CP,
+# microvm-host) doesn't depend on any of it.
 {
   config,
   pkgs,
@@ -27,50 +22,24 @@
 in {
   imports = [../../contracts/trust.nix];
 
-  # --- nixpkgs ---
-  nixpkgs.config = lib.mkDefault {
-    allowUnfree = true;
-    allowBroken = false;
-    allowInsecure = false;
-    allowUnsupportedSystem = true;
-  };
-
-  # --- nix settings ---
+  # --- nix: framework prerequisites only ---
+  # nixPath empty because the framework is flake-only.
+  # experimental-features = "nix-command flakes" required for any
+  # flake-based deployment.
+  # `package` is mkDefault so distro forks (Lix, Determinate, ...)
+  # can swap without mkForce ceremony.
   nix = {
     nixPath = lib.mkDefault [];
-    settings = {
-      trusted-users = ["@admin"];
-      substituters = [
-        "https://nix-community.cachix.org"
-        "https://cache.nixos.org"
-      ];
-      trusted-public-keys = [
-        "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-      ];
-      auto-optimise-store = true;
-    };
-    # mkDefault so downstream distros (Sécurix uses Lix, etc.) can swap
-    # the Nix implementation without mkForce ceremony.
     package = lib.mkDefault pkgs.nix;
     extraOptions = ''
       experimental-features = nix-command flakes
     '';
-    gc = {
-      automatic = true;
-      dates = "weekly";
-      options = "--delete-older-than 7d";
-    };
   };
 
-  # --- identity passthrough from hostSpec ---
-  networking = {
-    hostName = hS.hostName;
-    useDHCP = false;
-    interfaces = lib.mkIf (hS.networking ? interface) {
-      "${hS.networking.interface}".useDHCP = true;
-    };
-    firewall.enable = lib.mkDefault true;
+  # --- identity pass-through from hostSpec ---
+  networking.hostName = hS.hostName;
+  networking.interfaces = lib.mkIf (hS.networking ? interface) {
+    "${hS.networking.interface}".useDHCP = lib.mkDefault true;
   };
 
   time.timeZone = hS.timeZone;
@@ -78,32 +47,15 @@ in {
   console.keyMap = lib.mkDefault hS.keyboardLayout;
   services.xserver.xkb.layout = lib.mkDefault hS.keyboardLayout;
 
-  # --- openssh (hardened; universally applicable for fleet deploys) ---
-  services.openssh = {
-    enable = lib.mkDefault true;
-    settings = {
-      PermitRootLogin = lib.mkDefault "prohibit-password";
-      PasswordAuthentication = lib.mkDefault false;
-      KbdInteractiveAuthentication = lib.mkDefault false;
-    };
-  };
-
-  # --- authorized_keys for root (identity-level access for deploys) ---
-  # Read from `hostSpec.rootSshKeys` so the framework stays decoupled
-  # from the operators-scope namespace. Fleets that use the operators
-  # scope have it populate `hostSpec.rootSshKeys` from the
-  # `nixfleet.operators.users.<name>` declarations; fleets that wire
-  # root keys directly just set `hostSpec.rootSshKeys` themselves.
+  # --- root identity (framework contract) ---
+  # The framework declares `hostSpec.rootSshKeys` and
+  # `hostSpec.rootHashedPasswordFile`; this materialises them onto
+  # `users.users.root`. Inert if sshd isn't enabled — fleets that
+  # don't want sshd just leave the keys ungranted.
   users.users.root = {
     openssh.authorizedKeys.keys = hS.rootSshKeys;
     hashedPasswordFile =
       lib.mkIf (hS.rootHashedPasswordFile != null)
       hS.rootHashedPasswordFile;
   };
-
-  # --- minimal package set for remote-deploy ergonomics ---
-  environment.systemPackages = with pkgs; [
-    git
-    inetutils
-  ];
 }
