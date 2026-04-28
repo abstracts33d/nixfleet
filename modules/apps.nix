@@ -118,15 +118,12 @@
         ${
           if isLinux
           then ''
-            EVAL_TESTS="eval-hostspec-defaults eval-ssh-hardening eval-username-override eval-locale-timezone eval-ssh-authorized eval-password-files"
-            EVAL_ATTRS=""
-            for t in $EVAL_TESTS; do
-              EVAL_ATTRS="$EVAL_ATTRS .#checks.${system}.$t"
-            done
-            prebuild_parallel $EVAL_ATTRS
-            for t in $EVAL_TESTS; do
-              check "$t" nix build ".#checks.${system}.$t" --no-link --quiet
-            done
+            # Per-host eval-* checks were removed during the framework
+            # decoupling (defined against an example fleet that no
+            # longer ships). The mkFleet-eval-tests check exercises
+            # the lib-level harness with every fixture under
+            # tests/lib/mk-fleet/.
+            check "mkFleet-eval-tests" nix build ".#checks.${system}.mkFleet-eval-tests" --no-link --quiet
           ''
           else ''
             echo -e "''${YELLOW}SKIP (Linux-only checks)''${NC}"

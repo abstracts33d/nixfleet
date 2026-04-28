@@ -15,12 +15,14 @@ nix fmt -- --no-cache --fail-on-change || {
 }
 
 echo "=== Eval tests ==="
-for check in eval-hostspec-defaults eval-ssh-hardening eval-username-override eval-locale-timezone eval-ssh-authorized eval-password-files; do
-  nix build ".#checks.x86_64-linux.$check" --no-link 2>/dev/null || {
-    echo "Eval test $check failed."
-    exit 1
-  }
-done
+# Per-host eval-* checks were removed during the framework decoupling
+# (defined against an example fleet that no longer ships). The
+# mkFleet-eval-tests check exercises the lib-level harness with every
+# fixture under tests/lib/mk-fleet/.
+nix build ".#checks.x86_64-linux.mkFleet-eval-tests" --no-link 2>/dev/null || {
+  echo "Eval test mkFleet-eval-tests failed."
+  exit 1
+}
 
 echo "=== Rust workspace tests ==="
 if [[ -f Cargo.toml ]]; then
