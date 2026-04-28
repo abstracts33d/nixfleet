@@ -97,10 +97,15 @@ curl -sk https://localhost:8443/healthz | jq '.last_tick_at != null'
 # expected: true (within 30s of CP restart)
 
 # 2. The verified-fleet snapshot's signed_at is fresh.
+# `/v1/channels/{name}` requires mTLS — any valid fleet client
+# cert + key pair works. Substitute the paths your operator
+# tooling uses (e.g. an admin's mTLS pair, or one of the agents'
+# certs for ad-hoc debugging — the framework does not yet ship a
+# dedicated operator-cert workflow; that lives in #29's CLI scope).
 curl -sk \
   --cacert /etc/nixfleet/cp/ca.pem \
-  --cert /etc/nixfleet/cp/operator-cert.pem \
-  --key /etc/nixfleet/cp/operator-key.pem \
+  --cert <CLIENT_CERT_PEM> \
+  --key <CLIENT_KEY_PEM> \
   https://localhost:8443/v1/channels/stable | jq '.signed_at'
 # expected: rfc3339 timestamp matching the latest signed fleet.resolved
 

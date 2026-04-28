@@ -27,37 +27,78 @@
   # Deterministic and cached — the same `hostnames` list yields the same
   # derivation across scenarios. Inlined here (was previously in the now-
   # retired modules/tests/_lib/helpers.nix that served v0.1 VM scenarios).
+  #
+  # X.509 extension posture (load-bearing for cycle-N+1 cp-real.nix):
+  # the CP's `WebPkiClientVerifier` strictly checks the chain's
+  # extensions — the CA needs basicConstraints CA:TRUE +
+  # keyCertSign; client certs need extendedKeyUsage clientAuth;
+  # server cert needs extendedKeyUsage serverAuth. The earlier
+  # smoke / signed-roundtrip scenarios used socat / Python
+  # http.server which did NOT enforce any of this; the real-CP
+  # node introduced by cycle N+1 is the first consumer that does.
+  # Explicit extensions below avoid relying on OpenSSL's default
+  # behaviour (which has shifted across versions).
   mkTlsCerts = {hostnames ? ["cp" "agent-01" "agent-02"]}:
     pkgs.runCommand "nixfleet-harness-test-certs" {
       nativeBuildInputs = [pkgs.openssl];
     } ''
       mkdir -p $out
 
-      # Fleet CA (self-signed, EC P-256)
+      # OpenSSL config snippets per cert type. Inlined as heredocs
+      # so we don't need a separate config file in the closure.
+      cat > $out/ca-ext.cnf <<'EOF'
+      basicConstraints = critical, CA:TRUE
+      keyUsage = critical, keyCertSign, cRLSign, digitalSignature
+      EOF
+      cat > $out/server-ext.cnf <<'EOF'
+      basicConstraints = critical, CA:FALSE
+      keyUsage = critical, digitalSignature, keyEncipherment
+      extendedKeyUsage = serverAuth
+      subjectAltName = DNS:cp, DNS:localhost
+      EOF
+      cat > $out/client-ext.cnf <<'EOF'
+      basicConstraints = critical, CA:FALSE
+      keyUsage = critical, digitalSignature, keyEncipherment
+      extendedKeyUsage = clientAuth
+      EOF
+
+      # Fleet CA (self-signed, EC P-256, explicit CA:TRUE).
       openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout $out/ca-key.pem -out $out/ca.pem -days 365 -nodes \
-        -subj '/CN=nixfleet-test-ca'
+        -subj '/CN=nixfleet-test-ca' \
+        -extensions @section -config <(echo '[req]'; \
+          echo 'distinguished_name=dn'; echo 'prompt=no'; \
+          echo '[dn]'; echo 'CN=nixfleet-test-ca'; \
+          echo '[section]'; cat $out/ca-ext.cnf)
 
-      # CP server cert (CN=cp, SAN includes cp + localhost for test curl)
+      # CP server cert (CN=cp, SAN includes cp + localhost for test curl).
       openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout $out/cp-key.pem -out $out/cp-csr.pem -nodes \
-        -subj '/CN=cp' \
-        -addext 'subjectAltName=DNS:cp,DNS:localhost'
+        -subj '/CN=cp'
       openssl x509 -req -in $out/cp-csr.pem -CA $out/ca.pem -CAkey $out/ca-key.pem \
         -CAcreateserial -out $out/cp-cert.pem -days 365 \
-        -copy_extensions copyall
+        -extfile $out/server-ext.cnf
 
-      # Agent client certs (CN = hostname)
+      # Agent client certs (CN = hostname). Filter "cp" — its
+      # cert is the server cert generated above; iterating "cp"
+      # here would overwrite the server's cp-key.pem +
+      # cp-cert.pem with a client cert that has no SANs, breaking
+      # rustls's RFC 6125 SAN-only hostname validation. The
+      # earlier smoke / signed-roundtrip scenarios survived this
+      # because curl falls back to CN matching when SANs are
+      # absent; reqwest + rustls (used by cp-real.nix's agents)
+      # is stricter and requires SANs.
       ${lib.concatMapStringsSep "\n" (h: ''
           openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
             -keyout $out/${h}-key.pem -out $out/${h}-csr.pem -nodes \
             -subj "/CN=${h}"
           openssl x509 -req -in $out/${h}-csr.pem -CA $out/ca.pem -CAkey $out/ca-key.pem \
-            -CAcreateserial -out $out/${h}-cert.pem -days 365
+            -CAcreateserial -out $out/${h}-cert.pem -days 365 \
+            -extfile $out/client-ext.cnf
         '')
-        hostnames}
+        (lib.filter (h: h != "cp") hostnames)}
 
-      rm -f $out/*-csr.pem $out/*.srl
+      rm -f $out/*-csr.pem $out/*.srl $out/*-ext.cnf
     '';
 
   # One cert set covering the harness hostnames. Additional hostnames get
@@ -249,13 +290,31 @@
   # Extension path: `agents` is an attrset of name -> <nix module>. For
   # fleet-N, the scenario file generates agent-01..agent-N programmatically
   # and passes them here. The CP host module is a single entry.
+  # Default budget per microVM guest. Mirrors microvmGuestDefaults.mem
+  # so callers can size the host RAM correctly without re-deriving
+  # the per-guest figure.
+  guestMemMB = 256;
+
   mkFleetScenario = {
     name,
     cpHostModule,
     agents,
     testScript,
     timeout ? 600,
-  }:
+    # Optional host-VM memory override. Default sizes per
+    # `agents`-count: 4GB host + (count × guestMemMB), with a
+    # 1GB minimum host overhead reservation. Fleet-2 lands at
+    # 4GB; fleet-10 lands at ~7GB; fleet-50 (if attempted) would
+    # land at ~17GB which hits issue #5's 16GB-dev-machine cap.
+    hostMemoryMB ? null,
+  }: let
+    agentCount = builtins.length (builtins.attrNames agents);
+    autoHostMemoryMB = lib.max 4096 (1024 + agentCount * guestMemMB + 2048);
+    resolvedHostMemoryMB =
+      if hostMemoryMB != null
+      then hostMemoryMB
+      else autoHostMemoryMB;
+  in
     pkgs.testers.runNixOSTest {
       inherit name;
       node.specialArgs = {inherit inputs;};
@@ -270,7 +329,7 @@
         # dirs + enough RAM to cover every guest's declared mem budget.
         virtualisation = {
           cores = 2;
-          memorySize = 4096;
+          memorySize = resolvedHostMemoryMB;
           diskSize = 8192;
           qemu.options = [
             "-cpu"

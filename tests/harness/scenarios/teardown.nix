@@ -139,8 +139,14 @@ in
       print("step 2: simulating CP destruction (stop + DB wipe + restart)…")
       host.succeed("systemctl stop nixfleet-control-plane.service")
       host.succeed("rm -rf /var/lib/nixfleet-cp/state.db /var/lib/nixfleet-cp/state.db-wal /var/lib/nixfleet-cp/state.db-shm")
-      # Cursor for the post-wipe assertion: any checkin line from
-      # before this moment is ignored.
+      # Sleep 2s before cursor capture so the cursor's wall-clock
+      # second is comfortably after every pre-wipe checkin's
+      # journal timestamp. journalctl --since='YYYY-MM-DD HH:MM:SS'
+      # rounds DOWN to the second, so a pre-wipe checkin at second
+      # T+0.5 and a cursor captured at second T+0.1 share the same
+      # `--since` second-bucket and would surface as a false-
+      # positive "post-wipe" line. The 2s gap eliminates the race.
+      host.succeed("sleep 2")
       post_wipe_cursor = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
       host.succeed("systemctl start nixfleet-control-plane.service")
       host.wait_for_unit("nixfleet-control-plane.service")
