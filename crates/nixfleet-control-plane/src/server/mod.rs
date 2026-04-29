@@ -17,10 +17,14 @@
 //! Originally this was one 1450-LOC file; split here for readability
 //! and to keep each piece focused.
 
+mod checkin_pipeline;
+mod enrollment_handlers;
 mod handlers;
 mod middleware;
 mod reconcile;
+mod report_handler;
 mod state;
+mod status_handlers;
 
 pub use state::{
     AppState, ClosureUpstream, HostCheckinRecord, IssuancePaths, ReportRecord, ServeArgs,
@@ -47,14 +51,14 @@ use crate::TickInputs;
 fn build_router(state: Arc<AppState>) -> Router {
     let v1_routes = Router::new()
         .route("/v1/whoami", get(handlers::whoami))
-        .route("/v1/agent/checkin", post(handlers::checkin))
-        .route("/v1/agent/report", post(handlers::report))
-        .route("/v1/agent/confirm", post(handlers::confirm))
-        .route("/v1/agent/closure/{hash}", get(handlers::closure_proxy))
-        .route("/v1/enroll", post(handlers::enroll))
-        .route("/v1/agent/renew", post(handlers::renew))
-        .route("/v1/channels/{name}", get(handlers::channel_status))
-        .route("/v1/hosts", get(handlers::hosts_status))
+        .route("/v1/agent/checkin", post(checkin_pipeline::checkin))
+        .route("/v1/agent/report", post(report_handler::report))
+        .route("/v1/agent/confirm", post(checkin_pipeline::confirm))
+        .route("/v1/agent/closure/{hash}", get(status_handlers::closure_proxy))
+        .route("/v1/enroll", post(enrollment_handlers::enroll))
+        .route("/v1/agent/renew", post(enrollment_handlers::renew))
+        .route("/v1/channels/{name}", get(status_handlers::channel_status))
+        .route("/v1/hosts", get(status_handlers::hosts_status))
         .layer(axum::middleware::from_fn(version_layer));
 
     Router::new()
