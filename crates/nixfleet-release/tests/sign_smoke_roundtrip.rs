@@ -6,7 +6,6 @@
 //! smoke-verify-with-real-pubkey end-to-end, asserting the
 //! pipeline produces an artifact `verify_artifact` accepts.
 
-use std::io::Write;
 use std::process::Command;
 use std::time::Duration;
 
