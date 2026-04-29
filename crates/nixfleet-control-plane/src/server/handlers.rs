@@ -192,6 +192,44 @@ async fn try_recover_orphan_confirm(
         return false;
     }
 
+    // Issue #54 — defensive rollout-id check. The closure_hash match
+    // above proves the agent activated the closure the fleet declares
+    // for this host, but it doesn't prove `req.rollout` is THIS
+    // fleet's rollout id. A future schema evolution where two
+    // rollouts target the same closure (e.g. a rollback-and-halt
+    // reissuing the prior rev) would let the agent's stale `req.rollout`
+    // synthesise a confirmed row for the wrong rollout and corrupt
+    // the audit trail. Compute the expected rollout id the same way
+    // `dispatch::decide_target` does (channel + 8-char ci_commit prefix
+    // or closure prefix as fallback) and refuse to synthesise on
+    // mismatch.
+    let expected_rollout_id = {
+        let truncate8 = |s: &str| -> String {
+            let t: String = s.chars().take(8).collect();
+            if t.is_empty() {
+                "unknown".to_string()
+            } else {
+                t
+            }
+        };
+        let suffix: String = fleet
+            .meta
+            .ci_commit
+            .as_deref()
+            .map(truncate8)
+            .unwrap_or_else(|| truncate8(target_closure));
+        format!("{}@{}", host_decl.channel, suffix)
+    };
+    if expected_rollout_id != req.rollout {
+        tracing::info!(
+            hostname = %req.hostname,
+            agent_rollout = %req.rollout,
+            expected_rollout = %expected_rollout_id,
+            "orphan-confirm recovery: rollout id mismatch — agent is on a stale rollout, genuine 410",
+        );
+        return false;
+    }
+
     let now = Utc::now();
     if let Err(err) = db.record_confirmed_pending(
         &req.hostname,
