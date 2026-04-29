@@ -5,28 +5,18 @@
 //! over TLS with reqwest (CA-pinned to the rcgen cert), asserts 200 +
 //! the documented JSON shape.
 
+mod common;
+
 use std::path::PathBuf;
-use std::sync::Once;
 use std::time::Duration;
 
+use common::{install_crypto_provider_once, pick_free_port, write_pem};
 use nixfleet_control_plane::server;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use reqwest::Certificate;
 use serde::Deserialize;
 use tempfile::TempDir;
-use tokio::net::TcpListener;
 use tokio::time::sleep;
-
-/// Once-per-process rustls CryptoProvider install. Mirrors the
-/// production `install_crypto_provider` in src/main.rs — without it,
-/// `tls::build_server_config`'s ServerConfig::builder() panics under
-/// the test harness.
-fn install_crypto_provider_once() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    });
-}
 
 #[derive(Debug, Deserialize)]
 struct HealthzBody {
@@ -34,20 +24,6 @@ struct HealthzBody {
     version: String,
     #[serde(rename = "lastTickAt")]
     last_tick_at: Option<String>,
-}
-
-/// Find a free TCP port by binding to :0 and reading the assigned
-/// port. The listener is dropped immediately; there's a small race
-/// window before the server takes the port, but it's fine for tests.
-async fn pick_free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    listener.local_addr().unwrap().port()
-}
-
-fn write_pem(dir: &TempDir, name: &str, contents: &str) -> PathBuf {
-    let path = dir.path().join(name);
-    std::fs::write(&path, contents).unwrap();
-    path
 }
 
 /// Minimal inputs the reconcile loop expects to find. `tick`

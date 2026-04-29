@@ -9,66 +9,25 @@
 //! The same agent checking in twice in quick succession must NOT
 //! create a second pending row (idempotency: `pending_confirm_exists`
 //! gate). A converged agent gets `target: null` and no DB row.
-//!
-//! Cert-minting + spawn helpers duplicate `confirm.rs` because cargo
-//! integration tests can't share a `mod common`.
+
+mod common;
 
 use std::path::PathBuf;
-use std::sync::Once;
 use std::time::Duration;
 
 use base64::Engine as _;
+use common::{
+    build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port,
+    write_bytes, write_pem,
+};
 use ed25519_dalek::{Signer, SigningKey};
 use nixfleet_control_plane::{db::Db, server};
 use nixfleet_proto::agent_wire::{
     CheckinRequest, CheckinResponse, FetchOutcome, FetchResult, GenerationRef,
 };
 use rand::rngs::OsRng;
-use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose,
-};
-use reqwest::{Certificate as ReqwestCert, Identity};
 use tempfile::TempDir;
-use tokio::net::TcpListener;
 use tokio::time::sleep;
-
-fn install_crypto_provider_once() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        // Cheap: lets RUST_LOG=info|debug surface dispatch / reconcile
-        // tracing during integration tests when triaging.
-        let _ = tracing_subscriber::fmt()
-            .with_test_writer()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-            )
-            .try_init();
-    });
-}
-
-async fn pick_free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-fn write_pem(dir: &TempDir, name: &str, contents: &str) -> PathBuf {
-    let path = dir.path().join(name);
-    std::fs::write(&path, contents).unwrap();
-    path
-}
-
-fn write_bytes(dir: &TempDir, name: &str, contents: &[u8]) -> PathBuf {
-    let path = dir.path().join(name);
-    std::fs::write(&path, contents).unwrap();
-    path
-}
 
 /// Build a minimal valid `fleet.resolved.json` declaring `test-host`'s
 /// channel + target closure. Returns the canonical bytes (sign these)
@@ -145,63 +104,6 @@ fn write_signed_fleet(
     let trust = write_pem(dir, "trust.json", &trust_json.to_string());
 
     (artifact, signature_path, trust)
-}
-
-fn mint_ca_and_certs(
-    dir: &TempDir,
-    client_cn: &str,
-) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
-    let mut ca_params = CertificateParams::default();
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, "test-fleet-ca");
-    ca_params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
-    let ca_key = KeyPair::generate().unwrap();
-    let ca_cert: Certificate = ca_params.self_signed(&ca_key).unwrap();
-
-    let mut server_params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-    server_params
-        .distinguished_name
-        .push(DnType::CommonName, "test-cp-server");
-    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let server_key = KeyPair::generate().unwrap();
-    let server_cert = server_params.signed_by(&server_key, &ca_cert, &ca_key).unwrap();
-
-    let mut client_params = CertificateParams::default();
-    client_params
-        .distinguished_name
-        .push(DnType::CommonName, client_cn);
-    client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-    let client_key = KeyPair::generate().unwrap();
-    let client_cert = client_params
-        .signed_by(&client_key, &ca_cert, &ca_key)
-        .unwrap();
-
-    (
-        write_pem(dir, "ca.pem", &ca_cert.pem()),
-        write_pem(dir, "server.pem", &server_cert.pem()),
-        write_pem(dir, "server.key", &server_key.serialize_pem()),
-        write_pem(dir, "client.pem", &client_cert.pem()),
-        write_pem(dir, "client.key", &client_key.serialize_pem()),
-    )
-}
-
-fn build_mtls_client(ca: &PathBuf, client_cert: &PathBuf, client_key: &PathBuf) -> reqwest::Client {
-    let mut pem = std::fs::read(client_cert).unwrap();
-    pem.extend_from_slice(&std::fs::read(client_key).unwrap());
-    let identity = Identity::from_pem(&pem).unwrap();
-    let ca_pem = std::fs::read(ca).unwrap();
-    let ca_cert = ReqwestCert::from_pem(&ca_pem).unwrap();
-    reqwest::Client::builder()
-        .use_rustls_tls()
-        .add_root_certificate(ca_cert)
-        .identity(identity)
-        .build()
-        .unwrap()
 }
 
 #[allow(clippy::too_many_arguments)]

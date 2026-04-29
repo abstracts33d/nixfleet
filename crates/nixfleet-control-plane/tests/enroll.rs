@@ -9,12 +9,14 @@
 //! 3. Replay — same nonce twice → 200 then 409.
 //! 4. Hostname-vs-CSR-CN mismatch → 401.
 
+mod common;
+
 use std::path::PathBuf;
-use std::sync::Once;
 use std::time::Duration;
 
 use base64::Engine;
 use chrono::{Duration as ChronoDuration, Utc};
+use common::{install_crypto_provider_once, pick_free_port};
 use ed25519_dalek::{Signer, SigningKey};
 use nixfleet_control_plane::server;
 use nixfleet_proto::enroll_wire::{
@@ -25,33 +27,7 @@ use rcgen::{
     ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PublicKeyData,
 };
 use tempfile::TempDir;
-use tokio::net::TcpListener;
 use tokio::time::sleep;
-
-fn install_crypto_provider_once() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        // Pipe handler tracing to stderr so test failures show why
-        // 401 came back. RUST_LOG=warn (default) is enough.
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-            )
-            .with_test_writer()
-            .try_init();
-    });
-}
-
-async fn pick_free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 fn write(path: &std::path::Path, contents: &str) {
     std::fs::write(path, contents).unwrap();

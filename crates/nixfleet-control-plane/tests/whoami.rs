@@ -8,27 +8,17 @@
 //! Also covers the negative case: same server, but a request
 //! without a client cert is rejected at the TLS handshake.
 
+mod common;
+
 use std::path::PathBuf;
-use std::sync::Once;
 use std::time::Duration;
 
+use common::{install_crypto_provider_once, mint_ca_and_certs, pick_free_port, write_pem};
 use nixfleet_control_plane::server;
-use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose,
-};
 use reqwest::{Certificate as ReqwestCert, Identity};
 use serde::Deserialize;
 use tempfile::TempDir;
-use tokio::net::TcpListener;
 use tokio::time::sleep;
-
-fn install_crypto_provider_once() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    });
-}
 
 #[derive(Debug, Deserialize)]
 struct WhoamiBody {
@@ -36,21 +26,6 @@ struct WhoamiBody {
     #[serde(rename = "issuedAt")]
     #[allow(dead_code)]
     issued_at: String,
-}
-
-async fn pick_free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-fn write_pem(dir: &TempDir, name: &str, contents: &str) -> PathBuf {
-    let path = dir.path().join(name);
-    std::fs::write(&path, contents).unwrap();
-    path
 }
 
 /// Minimal stub inputs the reconcile loop expects to find. See the
@@ -70,64 +45,6 @@ fn write_phase2_input_stubs(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBu
         r#"{"channelRefs":{},"lastRolledRefs":{},"hostState":{},"activeRollouts":[]}"#,
     );
     (artifact, signature, trust, observed)
-}
-
-/// Build a self-signed CA, a server cert signed by it (SAN=localhost),
-/// and a client cert signed by it (CN=`client_cn`). Returns the PEMs
-/// written to `dir` (ca, server-cert, server-key, client-cert,
-/// client-key) and the client CN string.
-fn mint_ca_and_certs(
-    dir: &TempDir,
-    client_cn: &str,
-) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
-    // CA
-    let mut ca_params = CertificateParams::default();
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, "test-fleet-ca");
-    ca_params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
-    let ca_key = KeyPair::generate().unwrap();
-    let ca_cert: Certificate = ca_params.self_signed(&ca_key).unwrap();
-    let ca_pem = ca_cert.pem();
-
-    // Server cert (SAN=localhost so rustls accepts the connection)
-    let mut server_params =
-        CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-    server_params
-        .distinguished_name
-        .push(DnType::CommonName, "test-cp-server");
-    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let server_key = KeyPair::generate().unwrap();
-    let server_cert = server_params.signed_by(&server_key, &ca_cert, &ca_key).unwrap();
-    let server_pem = server_cert.pem();
-
-    // Client cert (CN = client_cn, what /v1/whoami should return)
-    let mut client_params = CertificateParams::default();
-    client_params
-        .distinguished_name
-        .push(DnType::CommonName, client_cn);
-    client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-    let client_key = KeyPair::generate().unwrap();
-    let client_cert = client_params.signed_by(&client_key, &ca_cert, &ca_key).unwrap();
-    let client_pem = client_cert.pem();
-
-    let ca_path = write_pem(dir, "ca.pem", &ca_pem);
-    let server_cert_path = write_pem(dir, "server.pem", &server_pem);
-    let server_key_path = write_pem(dir, "server.key", &server_key.serialize_pem());
-    let client_cert_path = write_pem(dir, "client.pem", &client_pem);
-    let client_key_path = write_pem(dir, "client.key", &client_key.serialize_pem());
-
-    (
-        ca_path,
-        server_cert_path,
-        server_key_path,
-        client_cert_path,
-        client_key_path,
-    )
 }
 
 async fn spawn_server(args: server::ServeArgs) -> tokio::task::JoinHandle<anyhow::Result<()>> {

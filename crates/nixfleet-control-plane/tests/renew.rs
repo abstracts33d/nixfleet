@@ -19,15 +19,14 @@
 //!
 //! These are the regressions /enroll already guards against; /renew
 //! had no integration coverage before this file.
-//!
-//! Cert minting + spawn helpers are duplicated from enroll.rs —
-//! cargo integration tests can't share a `mod common`.
+
+mod common;
 
 use std::path::PathBuf;
-use std::sync::Once;
 use std::time::Duration;
 
 use chrono::Utc;
+use common::{install_crypto_provider_once, pick_free_port};
 use nixfleet_control_plane::{db::Db, server};
 use nixfleet_proto::enroll_wire::{RenewRequest, RenewResponse};
 use rcgen::{
@@ -36,31 +35,7 @@ use rcgen::{
 };
 use reqwest::Identity;
 use tempfile::TempDir;
-use tokio::net::TcpListener;
 use tokio::time::sleep;
-
-fn install_crypto_provider_once() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-            )
-            .with_test_writer()
-            .try_init();
-    });
-}
-
-async fn pick_free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 fn write_pem(path: &std::path::Path, contents: &str) {
     std::fs::write(path, contents).unwrap();

@@ -9,43 +9,20 @@
 //! The stub upstream is a tiny tokio TcpListener that handles one
 //! connection per test — minimal moving parts, no wiremock dep.
 
+mod common;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Once;
 use std::time::Duration;
 
-use nixfleet_control_plane::server;
-use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose,
+use common::{
+    build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port, write_pem,
 };
-use reqwest::{Certificate as ReqwestCert, Identity};
+use nixfleet_control_plane::server;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::sleep;
-
-fn install_crypto_provider_once() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    });
-}
-
-async fn pick_free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-fn write_pem(dir: &TempDir, name: &str, contents: &str) -> PathBuf {
-    let path = dir.path().join(name);
-    std::fs::write(&path, contents).unwrap();
-    path
-}
 
 fn write_phase2_input_stubs(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let artifact = write_pem(dir, "fleet.resolved.json", "{}");
@@ -61,62 +38,6 @@ fn write_phase2_input_stubs(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBu
         r#"{"channelRefs":{},"lastRolledRefs":{},"hostState":{},"activeRollouts":[]}"#,
     );
     (artifact, signature, trust, observed)
-}
-
-fn mint_ca_and_certs(
-    dir: &TempDir,
-    client_cn: &str,
-) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
-    let mut ca_params = CertificateParams::default();
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, "test-fleet-ca");
-    ca_params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
-    let ca_key = KeyPair::generate().unwrap();
-    let ca_cert: Certificate = ca_params.self_signed(&ca_key).unwrap();
-
-    let mut server_params =
-        CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-    server_params
-        .distinguished_name
-        .push(DnType::CommonName, "test-cp-server");
-    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let server_key = KeyPair::generate().unwrap();
-    let server_cert = server_params.signed_by(&server_key, &ca_cert, &ca_key).unwrap();
-
-    let mut client_params = CertificateParams::default();
-    client_params
-        .distinguished_name
-        .push(DnType::CommonName, client_cn);
-    client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-    let client_key = KeyPair::generate().unwrap();
-    let client_cert = client_params.signed_by(&client_key, &ca_cert, &ca_key).unwrap();
-
-    (
-        write_pem(dir, "ca.pem", &ca_cert.pem()),
-        write_pem(dir, "server.pem", &server_cert.pem()),
-        write_pem(dir, "server.key", &server_key.serialize_pem()),
-        write_pem(dir, "client.pem", &client_cert.pem()),
-        write_pem(dir, "client.key", &client_key.serialize_pem()),
-    )
-}
-
-fn build_mtls_client(ca: &PathBuf, client_cert: &PathBuf, client_key: &PathBuf) -> reqwest::Client {
-    let mut pem = std::fs::read(client_cert).unwrap();
-    pem.extend_from_slice(&std::fs::read(client_key).unwrap());
-    let identity = Identity::from_pem(&pem).unwrap();
-    let ca_pem = std::fs::read(ca).unwrap();
-    let ca_cert = ReqwestCert::from_pem(&ca_pem).unwrap();
-    reqwest::Client::builder()
-        .use_rustls_tls()
-        .add_root_certificate(ca_cert)
-        .identity(identity)
-        .build()
-        .unwrap()
 }
 
 async fn spawn_cp(
