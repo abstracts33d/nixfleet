@@ -17,6 +17,19 @@ pub struct Observed {
     pub last_rolled_refs: HashMap<String, String>,
     pub host_state: HashMap<String, HostState>,
     pub active_rollouts: Vec<Rollout>,
+    /// Issue #60 — hostname → outstanding (compliance-failure +
+    /// runtime-gate-error) event count, computed by the CP-side
+    /// projection from the durable `host_reports` SQLite table.
+    /// Hosts with zero outstanding events are absent from the map.
+    /// Drives `Action::WaveBlocked` emission in
+    /// `rollout_state::advance_rollout` when channel mode is
+    /// `enforce` and a wave-N host has outstanding events that
+    /// would block wave-(N+1) promotion.
+    ///
+    /// `#[serde(default)]` keeps file-backed `observed.json`
+    /// fixtures (which predate this field) deserialising cleanly.
+    #[serde(default)]
+    pub host_compliance_failures: HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

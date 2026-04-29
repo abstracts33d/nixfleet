@@ -93,7 +93,65 @@ pub(crate) fn advance_rollout(
     actions.extend(wave_actions);
 
     if wave_all_soaked {
-        if rollout.current_wave + 1 >= waves.len() {
+        // Issue #59 / #60 — wave-promotion gate. Before advancing
+        // wave N → N+1, check the durable host_reports projection
+        // for outstanding ComplianceFailure / RuntimeGateError
+        // events on hosts in waves 0..=N. Channel mode `enforce`
+        // converts the check into an `Action::WaveBlocked` that
+        // takes the place of `PromoteWave`. `permissive` /
+        // `disabled` ignore the events for gating but the events
+        // still flow to operators via the report log.
+        let channel_mode = fleet
+            .channels
+            .get(&rollout.channel)
+            .map(|c| nixfleet_proto::compliance::GateMode::from_wire_str(&c.compliance.mode))
+            .unwrap_or(nixfleet_proto::compliance::GateMode::Disabled);
+        let blocked_hosts: Vec<String> = if channel_mode.is_enforcing() {
+            // Hosts on this rollout's waves up-to-and-including the
+            // current wave. Wave promotion is to current_wave + 1,
+            // so an outstanding event on any host in [0..=current]
+            // holds the promotion.
+            let mut out = Vec::new();
+            for wave_idx in 0..=rollout.current_wave {
+                if let Some(w) = waves.get(wave_idx) {
+                    for host in &w.hosts {
+                        if observed
+                            .host_compliance_failures
+                            .get(host)
+                            .copied()
+                            .unwrap_or(0)
+                            > 0
+                        {
+                            out.push(host.clone());
+                        }
+                    }
+                }
+            }
+            out.sort_unstable();
+            out.dedup();
+            out
+        } else {
+            Vec::new()
+        };
+
+        if !blocked_hosts.is_empty() {
+            let total: usize = blocked_hosts
+                .iter()
+                .map(|h| {
+                    observed
+                        .host_compliance_failures
+                        .get(h)
+                        .copied()
+                        .unwrap_or(0)
+                })
+                .sum();
+            actions.push(Action::WaveBlocked {
+                rollout: rollout.id.clone(),
+                blocked_wave: rollout.current_wave + 1,
+                failing_hosts: blocked_hosts,
+                failing_events_count: total,
+            });
+        } else if rollout.current_wave + 1 >= waves.len() {
             actions.push(Action::ConvergeRollout {
                 rollout: rollout.id.clone(),
             });

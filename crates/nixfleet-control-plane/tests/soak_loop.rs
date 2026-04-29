@@ -123,7 +123,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
         "soak marker must surface for projection",
     );
 
-    let observed = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts);
+    let observed = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new());
     assert_eq!(observed.active_rollouts.len(), 1);
 
     // Step C: reconcile against a fleet whose wave has soak_minutes
@@ -156,7 +156,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
         Some("Soaked"),
         "host must surface as Soaked after the action processor",
     );
-    let observed2 = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts2);
+    let observed2 = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts2, HashMap::new());
     let actions2 = reconcile(&fleet, &observed2, now);
     assert!(
         actions2
@@ -195,7 +195,7 @@ fn soak_loop_skips_when_window_not_elapsed() {
     db.record_host_healthy(host, rollout_id, healthy_at).unwrap();
 
     let rollouts = db.active_rollouts_snapshot().unwrap();
-    let observed = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts);
+    let observed = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new());
     let fleet = fleet_with_single_wave_host(host, target_closure, 5);
     let actions = reconcile(&fleet, &observed, now);
     assert!(

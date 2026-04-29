@@ -663,6 +663,39 @@ pub(super) async fn report(
         report: req.clone(),
         signature_status,
     };
+
+    // Issue #60 — write through to SQLite alongside the in-memory
+    // ring buffer. Ring stays for hot-path latency in dispatch
+    // decisions; SQLite is the durable record that survives CP
+    // restart. DB write is best-effort: a failure logs warn + lets
+    // the in-memory write proceed (degraded == old in-memory-only
+    // behaviour, so no regression).
+    if let Some(db) = state.db.as_ref() {
+        let signature_status_str = signature_status.as_ref().and_then(|s| {
+            serde_json::to_value(s).ok().and_then(|v| {
+                v.as_str().map(String::from)
+            })
+        });
+        let report_json = serde_json::to_string(&req).unwrap_or_default();
+        if let Err(err) = db.record_host_report(&crate::db::HostReportInsert {
+            hostname: &req.hostname,
+            event_id: &event_id,
+            received_at,
+            event_kind: &event_str,
+            rollout: req.rollout.as_deref(),
+            signature_status: signature_status_str.as_deref(),
+            report_json: &report_json,
+        }) {
+            tracing::warn!(
+                target: "report",
+                hostname = %req.hostname,
+                event_id = %event_id,
+                error = %err,
+                "report SQLite write failed; in-memory ring buffer still updated",
+            );
+        }
+    }
+
     let mut reports = state.host_reports.write().await;
     let buf = reports.entry(req.hostname).or_default();
     if buf.len() >= REPORT_RING_CAP {

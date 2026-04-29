@@ -7,8 +7,10 @@
 //!   (`Db::prune_token_replay`)
 //! - `pending_confirms` — terminal rows (`rolled-back` / `cancelled`)
 //!   past 7 days (`Db::prune_pending_confirms`, issue #52)
+//! - `host_reports` — event log past 7 days (`Db::prune_host_reports`,
+//!   issue #60)
 //!
-//! Both helpers are idempotent — the task can be killed at any tick
+//! All helpers are idempotent — the task can be killed at any tick
 //! boundary without losing semantics. Mirrors the rollback-timer
 //! shape so operators see `prune` lines in the same JSON-line journal
 //! they already follow.
@@ -21,6 +23,7 @@ use crate::db::Db;
 const TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const TOKEN_REPLAY_RETENTION_HOURS: i64 = 24;
 const PENDING_CONFIRMS_RETENTION_HOURS: i64 = 24 * 7;
+const HOST_REPORTS_RETENTION_HOURS: i64 = 24 * 7;
 
 /// Spawn the periodic prune task. Runs forever; one INFO line per
 /// tick summarising what was pruned. Failures are non-fatal — the
@@ -47,10 +50,19 @@ pub fn spawn(db: Arc<Db>) -> tokio::task::JoinHandle<()> {
                         0
                     }
                 };
+            let reports_pruned =
+                match db.prune_host_reports(HOST_REPORTS_RETENTION_HOURS) {
+                    Ok(n) => n,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "prune timer: host_reports failed");
+                        0
+                    }
+                };
             tracing::info!(
                 target: "prune",
                 token_replay = token_pruned,
                 pending_confirms = pending_pruned,
+                host_reports = reports_pruned,
                 "prune timer: hourly sweep complete",
             );
         }

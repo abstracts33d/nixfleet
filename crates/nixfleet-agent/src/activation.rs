@@ -39,6 +39,34 @@
 //! no NoNewPrivileges hardening on the agent unit; the agent is a
 //! privileged system manager by design — see the agent module
 //! comment in modules/scopes/nixfleet/_agent.nix).
+//!
+//! ## Platform dispatch (darwin)
+//!
+//! aether (and future darwin hosts) run the same agent binary but
+//! the "fire" step diverges from the linux/systemd path:
+//!
+//! | step                  | linux (NixOS)                                  | darwin (nix-darwin)                                  |
+//! |-----------------------|------------------------------------------------|------------------------------------------------------|
+//! | switch-lock probe     | `flock(8)` on `/run/nixos/switch-to-configuration.lock` | n/a — darwin activation is sync, no concurrent races |
+//! | profile update        | `nix-env --profile … --set <store>`            | same                                                 |
+//! | fire                  | `systemd-run --unit=nixfleet-switch -- <store>/bin/switch-to-configuration switch` | `setsid()` detached `<store>/activate-user` (skip if absent) + `<store>/activate` |
+//! | poll                  | `/run/current-system` flips to expected basename | same (per v0.1 darwin-platform-notes.md)            |
+//! | unit-status triage    | `systemctl show --property=ExecMainStatus`     | n/a — returns None                                   |
+//!
+//! Approach: runtime `cfg!(target_os = "macos")` dispatch (NOT
+//! `#[cfg]`) so both code paths compile + type-check on every build.
+//! This catches "linux-only refactor accidentally broke darwin" at
+//! `cargo check` time on either host. Trait-based dispatch was
+//! considered (Activator trait, two impls, feature gate) but the
+//! incremental cost of a single platform check inside one helper
+//! per fire-step doesn't justify trait ceremony — most of the
+//! activation flow (realise, profile-set, poll, self-correct,
+//! profile-flip rollback) is already platform-agnostic.
+//!
+//! See `docs/mdbook/reference/darwin-platform-notes.md` (ported
+//! from v0.1.1) for the full rationale on why `setsid()` + a
+//! detached child process survives the agent's own SIGTERM during
+//! `activate`'s plist reload.
 
 use std::time::Duration;
 
@@ -70,7 +98,18 @@ const SWITCH_LOCK_PATH: &str = "/run/nixos/switch-to-configuration.lock";
 /// utility instead of a libc::flock FFI to avoid adding a libc
 /// direct dep just for this one syscall. flock(1) ships in
 /// util-linux, present on every NixOS host.
+///
+/// **Darwin:** there's no equivalent lock — `darwin-rebuild`
+/// activation is synchronous (single `activate` script invocation,
+/// no daemon coordination), so concurrent-switch races aren't a
+/// thing. Returns `false` early on macOS.
 pub async fn is_switch_in_progress() -> bool {
+    // Darwin: no equivalent lock; activation is synchronous. Skip
+    // the flock probe entirely so we don't shell out to `flock(1)`
+    // on a host that may not have it (util-linux is linux-only).
+    if cfg!(target_os = "macos") {
+        return false;
+    }
     if !std::path::Path::new(SWITCH_LOCK_PATH).exists() {
         return false;
     }
@@ -314,66 +353,21 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
         });
     }
 
-    // Step 3: fire switch-to-configuration as a detached transient
-    // service (ADR-011 fire-and-forget).
+    // Step 3: fire activation (platform-dispatched fire-and-forget).
     //
-    // Why systemd-run --unit (NOT --scope, NOT --pipe --wait):
+    // Linux: `systemd-run --unit=nixfleet-switch -- <store>/bin/
+    // switch-to-configuration switch` — detached transient service
+    // independent of the agent's cgroup so the agent can be SIGTERMed
+    // mid-fire without killing the activation.
     //
-    // - Direct `Command::spawn` makes switch-to-configuration a child
-    //   in the agent's cgroup. When the new closure changes the
-    //   nixfleet-agent.service unit definition, switch-to-configuration
-    //   stops the agent → systemd SIGTERMs the cgroup → switch dies
-    //   mid-run → /run/current-system never updates. This is what we
-    //   were hitting before.
-    // - `systemd-run --scope` was tried in v0.1 dev: scope is
-    //   created under the calling unit's cgroup and dies with it.
-    //   Same death.
-    // - `systemd-run --pipe --wait` was also tried: the pipe orphans
-    //   when the agent self-terminates mid-wait.
-    // - `systemd-run --unit=...` (default `--service` mode) creates
-    //   an *independent* transient service with its own cgroup. The
-    //   agent's death cannot kill it. Operator can `journalctl -u
-    //   nixfleet-switch` to read its logs.
+    // Darwin: `<store>/activate-user` (legacy, skip if absent) +
+    // `<store>/activate`, both spawned with `setsid()` so the child
+    // is in its own session — launchd's process-group SIGTERM during
+    // the agent plist reload doesn't propagate.
     //
-    // `--collect` removes the unit after it stops (success or
-    // failure), so the fixed name `nixfleet-switch` is reusable on
-    // the next activation without a manual `systemctl reset-failed`.
-    //
-    // Pre-emptive reset-failed best-effort guard: if a previous
-    // activation left the unit in a non-collected failed state,
-    // systemd-run rejects the new unit name. `reset-failed` is
-    // idempotent against a non-existent unit (exit 0), so unguarded.
-    let _ = Command::new("systemctl")
-        .arg("reset-failed")
-        .arg("nixfleet-switch.service")
-        .status()
-        .await;
-
-    let switch_bin = format!("{store_path}/bin/switch-to-configuration");
-    tracing::info!(
-        target_closure = %target.closure_hash,
-        "agent: firing switch via systemd-run --unit=nixfleet-switch (detached)",
-    );
-    let fire_status = Command::new("systemd-run")
-        .arg("--unit=nixfleet-switch")
-        .arg("--collect")
-        .arg("--")
-        .arg(&switch_bin)
-        .arg("switch")
-        .status()
-        .await
-        .with_context(|| "spawn systemd-run --unit=nixfleet-switch")?;
-
-    if !fire_status.success() {
-        tracing::error!(
-            target_closure = %target.closure_hash,
-            exit_code = ?fire_status.code(),
-            "agent: systemd-run failed to queue switch unit",
-        );
-        return Ok(ActivationOutcome::SwitchFailed {
-            phase: "systemd-run-fire".to_string(),
-            exit_code: fire_status.code(),
-        });
+    // See `fire_switch` for the per-platform rationale.
+    if let Some(outcome) = fire_switch(target, &store_path).await? {
+        return Ok(outcome);
     }
 
     // Step 4: poll /run/current-system for the expected basename.
@@ -674,7 +668,16 @@ fn profile_matches(expected_store_path: &str, profile_path: &str) -> bool {
 /// Returns `None` if the command fails or the property is empty/
 /// non-numeric — caller should treat exit status as unknown rather
 /// than synthesize a misleading 0.
+///
+/// **Darwin:** no transient unit exists (the activation runs in a
+/// detached `setsid()` child, not a systemd-run service), so there's
+/// no equivalent exit-status surface. Returns `None` early on macOS
+/// — same semantic as "unknown" on linux: the poll-timeout caller
+/// already declares SwitchFailed, the exit code is purely diagnostic.
 async fn read_unit_exit_code(unit_name: &str) -> Option<i32> {
+    if cfg!(target_os = "macos") {
+        return None;
+    }
     let output = Command::new("systemctl")
         .arg("show")
         .arg("--property=ExecMainStatus")
@@ -692,6 +695,382 @@ async fn read_unit_exit_code(unit_name: &str) -> Option<i32> {
         return None;
     }
     trimmed.parse::<i32>().ok()
+}
+
+/// Platform-dispatched fire-and-forget activation. Returns
+/// `Ok(None)` on a clean fire (caller proceeds to poll); returns
+/// `Ok(Some(outcome))` on a fire-step failure (caller short-circuits
+/// with that outcome); returns `Err` only on spawn-level I/O errors.
+///
+/// On linux: `systemd-run --unit=nixfleet-switch -- <store>/bin/
+/// switch-to-configuration switch`. The transient unit gets its own
+/// cgroup, so the agent's death cannot kill it. `--collect` removes
+/// the unit on exit so the fixed unit name is reusable.
+///
+/// On darwin: spawns `<store>/activate-user` (legacy, skipped if
+/// absent) followed by `<store>/activate`, both detached via
+/// `setsid()` so launchd's process-group SIGTERM during the agent's
+/// own plist reload doesn't propagate to the activation child. Per
+/// v0.1.1 darwin-platform-notes.md `nohup` doesn't work in a
+/// launchd daemon context (no controlling TTY), only `setsid()`
+/// gives the new session lifetime that survives the parent.
+async fn fire_switch(
+    target: &EvaluatedTarget,
+    store_path: &str,
+) -> Result<Option<ActivationOutcome>> {
+    if cfg!(target_os = "macos") {
+        fire_switch_darwin(target, store_path).await
+    } else {
+        fire_switch_systemd(target, store_path).await
+    }
+}
+
+/// Linux/systemd fire-and-forget. See `fire_switch` for shape;
+/// `Ok(None)` on clean fire, `Ok(Some(SwitchFailed))` on fire-step
+/// non-zero, `Err` on spawn I/O error.
+async fn fire_switch_systemd(
+    target: &EvaluatedTarget,
+    store_path: &str,
+) -> Result<Option<ActivationOutcome>> {
+    // Why systemd-run --unit (NOT --scope, NOT --pipe --wait):
+    //
+    // - Direct `Command::spawn` makes switch-to-configuration a child
+    //   in the agent's cgroup. When the new closure changes the
+    //   nixfleet-agent.service unit definition, switch-to-configuration
+    //   stops the agent → systemd SIGTERMs the cgroup → switch dies
+    //   mid-run → /run/current-system never updates. This is what we
+    //   were hitting before.
+    // - `systemd-run --scope` was tried in v0.1 dev: scope is
+    //   created under the calling unit's cgroup and dies with it.
+    //   Same death.
+    // - `systemd-run --pipe --wait` was also tried: the pipe orphans
+    //   when the agent self-terminates mid-wait.
+    // - `systemd-run --unit=...` (default `--service` mode) creates
+    //   an *independent* transient service with its own cgroup. The
+    //   agent's death cannot kill it. Operator can `journalctl -u
+    //   nixfleet-switch` to read its logs.
+    //
+    // `--collect` removes the unit after it stops (success or
+    // failure), so the fixed name `nixfleet-switch` is reusable on
+    // the next activation without a manual `systemctl reset-failed`.
+    //
+    // Pre-emptive reset-failed best-effort guard: if a previous
+    // activation left the unit in a non-collected failed state,
+    // systemd-run rejects the new unit name. `reset-failed` is
+    // idempotent against a non-existent unit (exit 0), so unguarded.
+    let _ = Command::new("systemctl")
+        .arg("reset-failed")
+        .arg("nixfleet-switch.service")
+        .status()
+        .await;
+
+    let switch_bin = format!("{store_path}/bin/switch-to-configuration");
+    tracing::info!(
+        target_closure = %target.closure_hash,
+        "agent: firing switch via systemd-run --unit=nixfleet-switch (detached)",
+    );
+    let fire_status = Command::new("systemd-run")
+        .arg("--unit=nixfleet-switch")
+        .arg("--collect")
+        .arg("--")
+        .arg(&switch_bin)
+        .arg("switch")
+        .status()
+        .await
+        .with_context(|| "spawn systemd-run --unit=nixfleet-switch")?;
+
+    if !fire_status.success() {
+        tracing::error!(
+            target_closure = %target.closure_hash,
+            exit_code = ?fire_status.code(),
+            "agent: systemd-run failed to queue switch unit",
+        );
+        return Ok(Some(ActivationOutcome::SwitchFailed {
+            phase: "systemd-run-fire".to_string(),
+            exit_code: fire_status.code(),
+        }));
+    }
+    Ok(None)
+}
+
+/// Darwin/launchd fire-and-forget. Spawns the activation script in a
+/// new session via `setsid()` so the agent's process group SIGTERM
+/// (which launchd issues during plist reload when the new closure
+/// changes the agent binary path) does not propagate to the
+/// activation child.
+///
+/// Sequence (matches `darwin-rebuild switch`):
+/// 1. `<store>/activate-user` — legacy user activation. Some darwin
+///    closures still ship it, others don't. Absent → skip silently.
+/// 2. `<store>/activate` — system activation script. Always present.
+///
+/// Both detach via `pre_exec(setsid)` and redirect stdout/stderr to
+/// `/var/log/nixfleet-activate.log` (best-effort: if the file isn't
+/// writable, fall back to inherit and let launchd's
+/// StandardOutPath/StandardErrorPath catch the output).
+///
+/// Returns immediately after spawning the second `activate`. Caller
+/// polls `/run/current-system` for the expected basename to detect
+/// completion. On macOS the activate script creates
+/// `/run/current-system` as a symlink to the new store path (per
+/// v0.1.1 darwin-platform-notes.md), so the polling contract is
+/// identical across platforms.
+#[cfg(unix)]
+async fn fire_switch_darwin(
+    target: &EvaluatedTarget,
+    store_path: &str,
+) -> Result<Option<ActivationOutcome>> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    tracing::info!(
+        target_closure = %target.closure_hash,
+        "agent: firing darwin activation (setsid-detached activate-user + activate)",
+    );
+
+    // Step 1: activate-user (legacy). Skip if the script doesn't
+    // exist in the new closure — modern darwin closures often omit
+    // it. Errors here are non-fatal in v0.1; same here.
+    let activate_user = format!("{store_path}/activate-user");
+    if std::path::Path::new(&activate_user).exists() {
+        let mut cmd = std::process::Command::new(&activate_user);
+        cmd.stdin(Stdio::null());
+        attach_activate_log(&mut cmd);
+        // SAFETY: setsid is async-signal-safe and the closure does
+        // no allocation / lock acquisition. The child inherits the
+        // pre_exec hook and runs it after fork before exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        match cmd.spawn() {
+            Ok(_child) => {
+                tracing::debug!(
+                    target_closure = %target.closure_hash,
+                    "agent: darwin activate-user fired (detached)",
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target_closure = %target.closure_hash,
+                    error = %err,
+                    "agent: darwin activate-user spawn failed (non-fatal); continuing to system activate",
+                );
+            }
+        }
+    } else {
+        tracing::debug!(
+            target_closure = %target.closure_hash,
+            "agent: darwin activate-user absent; skipping (modern closure shape)",
+        );
+    }
+
+    // Step 2: system activate. This is the script that may unload +
+    // reload the launchd plist, killing the agent mid-run if the
+    // binary path changed. setsid puts this child in its own session
+    // so launchd's process-group SIGTERM cannot reach it. The agent
+    // either survives (KeepAlive restart) and observes the new
+    // `/run/current-system` via the poll loop, OR dies and gets
+    // restarted by launchd, in which case `recovery::run_boot_recovery`
+    // detects "current matches last_dispatched" and posts the
+    // retroactive confirm.
+    let activate = format!("{store_path}/activate");
+    let mut cmd = std::process::Command::new(&activate);
+    cmd.stdin(Stdio::null());
+    attach_activate_log(&mut cmd);
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    match cmd.spawn() {
+        Ok(_child) => {
+            tracing::info!(
+                target_closure = %target.closure_hash,
+                "agent: darwin activate fired (setsid-detached); polling current-system",
+            );
+            Ok(None)
+        }
+        Err(err) => {
+            tracing::error!(
+                target_closure = %target.closure_hash,
+                error = %err,
+                "agent: darwin activate spawn failed",
+            );
+            Ok(Some(ActivationOutcome::SwitchFailed {
+                phase: "darwin-activate-spawn".to_string(),
+                exit_code: None,
+            }))
+        }
+    }
+}
+
+/// Non-unix stub — never reached at runtime since `cfg!(target_os =
+/// "macos")` is the only branch that calls this, and macOS is unix.
+/// Kept so the function exists for the dispatch site without an
+/// `#[cfg]` on the call. (No supported NixFleet platform is non-unix.)
+#[cfg(not(unix))]
+async fn fire_switch_darwin(
+    _target: &EvaluatedTarget,
+    _store_path: &str,
+) -> Result<Option<ActivationOutcome>> {
+    Err(anyhow!("fire_switch_darwin called on non-unix host"))
+}
+
+/// Best-effort: attach the activate log file as stdout + stderr.
+/// Falls back to inherit on permission/IO error so the spawn doesn't
+/// fail the whole activation; launchd's StandardOutPath/StandardError
+/// catch the inherited stream when redirection fails.
+#[cfg(unix)]
+fn attach_activate_log(cmd: &mut std::process::Command) {
+    use std::process::Stdio;
+    const ACTIVATE_LOG: &str = "/var/log/nixfleet-activate.log";
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(ACTIVATE_LOG)
+    {
+        Ok(out) => {
+            // Need two handles — stdout and stderr each consume one.
+            let err = match out.try_clone() {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        path = ACTIVATE_LOG,
+                        error = %e,
+                        "could not clone activate log handle; using inherit",
+                    );
+                    cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+                    return;
+                }
+            };
+            cmd.stdout(out).stderr(err);
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = ACTIVATE_LOG,
+                error = %e,
+                "could not open activate log; using inherit",
+            );
+            cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        }
+    }
+}
+
+/// Platform-dispatched fire-and-forget rollback. Symmetric to
+/// `fire_switch`. Returns `Ok(None)` on clean fire (caller proceeds
+/// to poll), `Ok(Some(failure))` on fire-step failure, `Err` on
+/// spawn-level I/O error.
+async fn fire_rollback(target_basename: &str) -> Result<Option<RollbackOutcome>> {
+    if cfg!(target_os = "macos") {
+        fire_rollback_darwin(target_basename).await
+    } else {
+        fire_rollback_systemd().await
+    }
+}
+
+/// Linux/systemd rollback fire. Mirrors `fire_switch_systemd` but
+/// fires `nixfleet-rollback.service` against
+/// `/run/current-system/bin/switch-to-configuration` (the symlink
+/// re-pointed by `nix-env --rollback` already, so this hits the
+/// rolled-back closure's switch script).
+async fn fire_rollback_systemd() -> Result<Option<RollbackOutcome>> {
+    let _ = Command::new("systemctl")
+        .arg("reset-failed")
+        .arg("nixfleet-rollback.service")
+        .status()
+        .await;
+
+    let switch_bin = "/run/current-system/bin/switch-to-configuration";
+    let fire_status = Command::new("systemd-run")
+        .arg("--unit=nixfleet-rollback")
+        .arg("--collect")
+        .arg("--")
+        .arg(switch_bin)
+        .arg("switch")
+        .status()
+        .await
+        .with_context(|| "spawn systemd-run --unit=nixfleet-rollback")?;
+
+    if !fire_status.success() {
+        tracing::error!(
+            exit_code = ?fire_status.code(),
+            "agent: systemd-run failed to queue rollback unit",
+        );
+        return Ok(Some(RollbackOutcome::Failed {
+            phase: "systemd-run-fire".to_string(),
+            exit_code: fire_status.code(),
+        }));
+    }
+    Ok(None)
+}
+
+/// Darwin rollback fire. Same setsid-detached pattern as
+/// `fire_switch_darwin`. The previously-rolled-back generation's
+/// store path is now pointed at by `/nix/var/nix/profiles/system`
+/// (because `rollback()` already ran `nix-env --rollback`), so we
+/// invoke `<resolved-store-path>/activate` to actually run the
+/// activation chain. Polling for `target_basename` in the caller
+/// observes completion.
+#[cfg(unix)]
+async fn fire_rollback_darwin(target_basename: &str) -> Result<Option<RollbackOutcome>> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    let store_path = format!("/nix/store/{target_basename}");
+    let activate = format!("{store_path}/activate");
+    if !std::path::Path::new(&activate).exists() {
+        tracing::error!(
+            activate = %activate,
+            "agent: darwin rollback target has no activate script",
+        );
+        return Ok(Some(RollbackOutcome::Failed {
+            phase: "darwin-activate-missing".to_string(),
+            exit_code: None,
+        }));
+    }
+
+    tracing::info!(
+        target = %target_basename,
+        "agent: firing darwin rollback (setsid-detached activate)",
+    );
+    let mut cmd = std::process::Command::new(&activate);
+    cmd.stdin(Stdio::null());
+    attach_activate_log(&mut cmd);
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    match cmd.spawn() {
+        Ok(_child) => Ok(None),
+        Err(err) => {
+            tracing::error!(
+                target = %target_basename,
+                error = %err,
+                "agent: darwin rollback activate spawn failed",
+            );
+            Ok(Some(RollbackOutcome::Failed {
+                phase: "darwin-activate-spawn".to_string(),
+                exit_code: None,
+            }))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn fire_rollback_darwin(_target_basename: &str) -> Result<Option<RollbackOutcome>> {
+    Err(anyhow!("fire_rollback_darwin called on non-unix host"))
 }
 
 /// Outcome of a `rollback()` call. Mirrors `ActivationOutcome`'s
@@ -820,35 +1199,11 @@ pub async fn rollback() -> Result<RollbackOutcome> {
         "agent: rollback target discovered; firing detached switch",
     );
 
-    // Step 3: fire-and-forget. Same `systemd-run --unit=...` pattern
-    // as activate(). Pre-emptive reset-failed in case a prior
-    // rollback left the unit in failed state.
-    let _ = Command::new("systemctl")
-        .arg("reset-failed")
-        .arg("nixfleet-rollback.service")
-        .status()
-        .await;
-
-    let switch_bin = "/run/current-system/bin/switch-to-configuration";
-    let fire_status = Command::new("systemd-run")
-        .arg("--unit=nixfleet-rollback")
-        .arg("--collect")
-        .arg("--")
-        .arg(switch_bin)
-        .arg("switch")
-        .status()
-        .await
-        .with_context(|| "spawn systemd-run --unit=nixfleet-rollback")?;
-
-    if !fire_status.success() {
-        tracing::error!(
-            exit_code = ?fire_status.code(),
-            "agent: systemd-run failed to queue rollback unit",
-        );
-        return Ok(RollbackOutcome::Failed {
-            phase: "systemd-run-fire".to_string(),
-            exit_code: fire_status.code(),
-        });
+    // Step 3: fire rollback (platform-dispatched fire-and-forget).
+    // Linux: `systemd-run --unit=nixfleet-rollback`. Darwin: detached
+    // `<store>/activate` via setsid. See `fire_rollback`.
+    if let Some(failure) = fire_rollback(&target_basename).await? {
+        return Ok(failure);
     }
 
     // Step 4: poll for the rolled-back target.
@@ -1081,11 +1436,17 @@ mod tests {
         // ReportEvent::ActivationFailed); locking them here ensures
         // any rename on the agent side surfaces as a test failure
         // rather than silently changing the report contract.
+        //
+        // Linux phases: nix-env-set, systemd-run-fire, switch-poll-*.
+        // Darwin phases: nix-env-set (shared), darwin-activate-spawn,
+        // switch-poll-* (shared — `/run/current-system` is the same
+        // signal on both).
         for phase in &[
             "nix-env-set",
             "systemd-run-fire",
             "switch-poll-timeout",
             "switch-poll-mismatch",
+            "darwin-activate-spawn",
         ] {
             let outcome = ActivationOutcome::SwitchFailed {
                 phase: (*phase).to_string(),
@@ -1095,6 +1456,70 @@ mod tests {
             // is that the strings compile + match the documented set.
             let _ = format!("{outcome:?}");
         }
+    }
+
+    /// Platform dispatch sanity check. The helper picks the right
+    /// fire impl based on `cfg!(target_os)`. We can't unit-test the
+    /// actual fire path (would need a real `nix-env`+`activate`/
+    /// `systemd-run` rig — that's the harness's job), but we CAN
+    /// assert that `is_switch_in_progress` short-circuits to false
+    /// on darwin (no flock probe) and goes through the file-existence
+    /// gate on linux.
+    #[tokio::test]
+    async fn is_switch_in_progress_short_circuits_on_darwin() {
+        // On darwin: always false (no equivalent lock).
+        // On linux: returns false when the lock file is absent.
+        // Either way, in CI / dev sandbox the lock file shouldn't
+        // exist, so the function returns false. The platform-specific
+        // assertion is that on darwin we never even *try* to run
+        // `flock(1)` — the function returns at the first line. We
+        // can't directly observe that without mocking, but we *can*
+        // assert the function returns false fast (well under the
+        // 1s timeout) on a clean dev machine.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            is_switch_in_progress(),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "is_switch_in_progress should return promptly on a host with no in-flight switch",
+        );
+        assert!(
+            !result.unwrap(),
+            "is_switch_in_progress: no switch in flight on a clean dev host",
+        );
+    }
+
+    /// Phase string returned on darwin when `<store>/activate` spawn
+    /// fails. Locked here separately from the linux phases since
+    /// it's part of the wire contract.
+    #[test]
+    fn darwin_activate_spawn_phase_string_is_stable() {
+        let outcome = ActivationOutcome::SwitchFailed {
+            phase: "darwin-activate-spawn".to_string(),
+            exit_code: None,
+        };
+        let s = format!("{outcome:?}");
+        assert!(s.contains("darwin-activate-spawn"));
+    }
+
+    /// Ensure `read_unit_exit_code` returns None on darwin without
+    /// shelling out to a non-existent `systemctl`. The mere fact
+    /// that the call returns (rather than hanging or panicking on
+    /// macOS) is the assertion — the function short-circuits on
+    /// `cfg!(target_os = "macos")`.
+    #[tokio::test]
+    async fn read_unit_exit_code_short_circuits_on_darwin() {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            read_unit_exit_code("definitely-not-a-real-unit.service"),
+        )
+        .await
+        .expect("must return promptly");
+        // On darwin: always None (no systemctl). On linux: None
+        // because the unit doesn't exist. Both branches converge.
+        assert!(result.is_none());
     }
 
     #[test]

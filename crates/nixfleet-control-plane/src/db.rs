@@ -59,6 +59,35 @@ pub struct RolloutDbSnapshot {
 /// (and clippy's `type_complexity` lint stays quiet).
 pub type ExpiredPendingConfirm = (i64, String, String, u32, String);
 
+/// Issue #60 — one row of the durable `host_reports` table.
+/// Carries the same fields the in-memory `ReportRecord` does,
+/// with `signature_status` left as the raw kebab-case string for
+/// the caller to deserialise into `evidence_verify::SignatureStatus`.
+#[derive(Debug, Clone)]
+pub struct HostReportRow {
+    pub event_id: String,
+    pub received_at: DateTime<Utc>,
+    pub event_kind: String,
+    pub rollout: Option<String>,
+    pub signature_status: Option<String>,
+    pub report_json: String,
+}
+
+/// Issue #60 — input to `Db::record_host_report`. Bundling the
+/// fields into a struct keeps the call-site readable (8-arg
+/// functions trip clippy's `too_many_arguments`) and lets the
+/// handler stage the row before calling the DB.
+#[derive(Debug, Clone)]
+pub struct HostReportInsert<'a> {
+    pub hostname: &'a str,
+    pub event_id: &'a str,
+    pub received_at: DateTime<Utc>,
+    pub event_kind: &'a str,
+    pub rollout: Option<&'a str>,
+    pub signature_status: Option<&'a str>,
+    pub report_json: &'a str,
+}
+
 /// SQLite-backed CP persistence.
 pub struct Db {
     conn: Mutex<Connection>,
@@ -743,6 +772,140 @@ impl Db {
             Err(e) => Err(e.into()),
         }
     }
+
+    // ===============================================================
+    // host_reports — issue #60 durable per-host event log
+    // ===============================================================
+
+    /// Persist an event report. Mirrors the in-memory ring buffer
+    /// write in `server::handlers::report` so survives CP restart.
+    /// `signature_status` is the kebab-case `SignatureStatus` serde
+    /// representation (or `None` for events that don't carry the
+    /// contract). `report_json` is the canonical JSON envelope of
+    /// the wire `ReportRequest`.
+    pub fn record_host_report(&self, row: &HostReportInsert<'_>) -> Result<()> {
+        let guard = self.conn()?;
+        guard
+            .execute(
+                "INSERT INTO host_reports
+                   (hostname, event_id, received_at, event_kind,
+                    rollout, signature_status, report_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    row.hostname,
+                    row.event_id,
+                    row.received_at.to_rfc3339(),
+                    row.event_kind,
+                    row.rollout,
+                    row.signature_status,
+                    row.report_json
+                ],
+            )
+            .context("insert host_reports")?;
+        Ok(())
+    }
+
+    /// Hydrate the in-memory ring buffer at CP startup. Returns up
+    /// to `limit_per_host` most-recent rows per `hostname`,
+    /// chronological order. Used by `server::serve` after migration
+    /// completes — the dispatch path consults the ring buffer for
+    /// hot-path latency, but durability lives in this table.
+    pub fn host_reports_recent_per_host(
+        &self,
+        hostname: &str,
+        limit_per_host: usize,
+    ) -> Result<Vec<HostReportRow>> {
+        let guard = self.conn()?;
+        let mut stmt = guard.prepare(
+            "SELECT event_id, received_at, event_kind, rollout, signature_status, report_json
+             FROM host_reports
+             WHERE hostname = ?1
+             ORDER BY received_at DESC
+             LIMIT ?2",
+        )?;
+        let rows: rusqlite::Result<Vec<HostReportRow>> = stmt
+            .query_map(params![hostname, limit_per_host as i64], |row| {
+                let received_str: String = row.get(1)?;
+                let received_at = received_str
+                    .parse::<DateTime<Utc>>()
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    ))?;
+                Ok(HostReportRow {
+                    event_id: row.get::<_, String>(0)?,
+                    received_at,
+                    event_kind: row.get::<_, String>(2)?,
+                    rollout: row.get::<_, Option<String>>(3)?,
+                    signature_status: row.get::<_, Option<String>>(4)?,
+                    report_json: row.get::<_, String>(5)?,
+                })
+            })?
+            .collect();
+        let mut rows = rows.context("query host_reports")?;
+        // Caller wants chronological (oldest first) for ring-buffer
+        // insertion order; DB returns newest first.
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// List every hostname that has at least one host_reports row.
+    /// Used at CP startup to drive the per-host hydration loop.
+    pub fn host_reports_known_hostnames(&self) -> Result<Vec<String>> {
+        let guard = self.conn()?;
+        let mut stmt = guard.prepare("SELECT DISTINCT hostname FROM host_reports")?;
+        let names: rusqlite::Result<Vec<String>> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect();
+        names.context("query host_reports hostnames")
+    }
+
+    /// Drop host_reports rows older than `max_age_hours`. Mirror of
+    /// `prune_pending_confirms`; same 7-day retention default. Wired
+    /// into `prune_timer.rs`.
+    pub fn prune_host_reports(&self, max_age_hours: i64) -> Result<usize> {
+        let guard = self.conn()?;
+        let n = guard
+            .execute(
+                "DELETE FROM host_reports
+                 WHERE received_at < datetime('now', ?1)",
+                params![format!("-{max_age_hours} hours")],
+            )
+            .context("prune host_reports")?;
+        Ok(n)
+    }
+
+    /// Count outstanding ComplianceFailure / RuntimeGateError events
+    /// per host, optionally filtered by current rollout (resolution-
+    /// by-replacement: events bound to rollout R are no longer
+    /// outstanding once the host has moved past R). Used by the
+    /// reconciler's wave-staging gate emission.
+    ///
+    /// Returns a map of `hostname → outstanding_count`. Hosts with
+    /// zero outstanding events are absent from the map.
+    pub fn outstanding_compliance_event_counts(
+        &self,
+    ) -> Result<HashMap<String, usize>> {
+        let guard = self.conn()?;
+        let mut stmt = guard.prepare(
+            "SELECT hostname, COUNT(*) FROM host_reports
+             WHERE event_kind IN ('compliance-failure', 'runtime-gate-error')
+               AND COALESCE(signature_status, '') NOT IN ('mismatch', 'malformed')
+             GROUP BY hostname",
+        )?;
+        let mut out = HashMap::new();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("query outstanding_compliance_event_counts")?;
+        for (h, n) in rows {
+            out.insert(h, n);
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -1237,5 +1400,88 @@ mod tests {
         db.revoke_cert("test-host", t2, None, None).unwrap();
         let r2 = db.cert_revoked_before("test-host").unwrap().unwrap();
         assert!(r2 >= r1);
+    }
+
+    // ===============================================================
+    // host_reports — issue #60 round-trip + outstanding-event query
+    // ===============================================================
+
+    fn fail_event<'a>(rollout: Option<&'a str>, sig: Option<&'a str>) -> HostReportInsert<'a> {
+        HostReportInsert {
+            hostname: "lab",
+            event_id: "evt-test",
+            received_at: Utc::now(),
+            event_kind: "compliance-failure",
+            rollout,
+            signature_status: sig,
+            report_json: r#"{"hostname":"lab","agentVersion":"test"}"#,
+        }
+    }
+
+    #[test]
+    fn host_reports_round_trip_preserves_envelope() {
+        let db = fresh_db();
+        let row = HostReportInsert {
+            hostname: "lab",
+            event_id: "evt-rt-1",
+            received_at: Utc::now(),
+            event_kind: "compliance-failure",
+            rollout: Some("edge-slow@abc"),
+            signature_status: Some("verified"),
+            report_json: r#"{"hostname":"lab","agentVersion":"0.2.0"}"#,
+        };
+        db.record_host_report(&row).unwrap();
+        let mut got = db.host_reports_recent_per_host("lab", 8).unwrap();
+        assert_eq!(got.len(), 1);
+        let r = got.pop().unwrap();
+        assert_eq!(r.event_id, "evt-rt-1");
+        assert_eq!(r.event_kind, "compliance-failure");
+        assert_eq!(r.rollout.as_deref(), Some("edge-slow@abc"));
+        assert_eq!(r.signature_status.as_deref(), Some("verified"));
+    }
+
+    #[test]
+    fn outstanding_compliance_event_counts_filters_tampered() {
+        // Verified + unsigned + no-pubkey count toward the gate;
+        // mismatch + malformed do NOT (defends against forged FAIL
+        // events from a compromised mTLS cert).
+        let db = fresh_db();
+        for (eid, sig) in [
+            ("e1", Some("verified")),
+            ("e2", Some("unsigned")),
+            ("e3", Some("no-pubkey")),
+            ("e4", Some("mismatch")),
+            ("e5", Some("malformed")),
+        ] {
+            let mut row = fail_event(Some("R1"), sig);
+            row.event_id = eid;
+            db.record_host_report(&row).unwrap();
+        }
+        let counts = db.outstanding_compliance_event_counts().unwrap();
+        // verified + unsigned + no-pubkey = 3; mismatch + malformed
+        // are filtered out.
+        assert_eq!(counts.get("lab").copied(), Some(3));
+    }
+
+    #[test]
+    fn prune_host_reports_drops_old_rows() {
+        let db = fresh_db();
+        // Insert with a past received_at so the prune sweep matches.
+        let past = Utc::now() - chrono::Duration::hours(48);
+        let row = HostReportInsert {
+            hostname: "lab",
+            event_id: "evt-old",
+            received_at: past,
+            event_kind: "compliance-failure",
+            rollout: None,
+            signature_status: None,
+            report_json: "{}",
+        };
+        db.record_host_report(&row).unwrap();
+        // 24h retention drops the past row.
+        let n = db.prune_host_reports(24).unwrap();
+        assert_eq!(n, 1);
+        let names = db.host_reports_known_hostnames().unwrap();
+        assert!(names.is_empty(), "old row should be pruned");
     }
 }

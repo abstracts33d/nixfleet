@@ -28,6 +28,7 @@ pub fn project(
     host_checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
     rollouts: &[RolloutDbSnapshot],
+    host_compliance_failures: HashMap<String, usize>,
 ) -> Observed {
     let mut host_state: HashMap<String, HostState> = HashMap::new();
     for (host, record) in host_checkins {
@@ -82,6 +83,7 @@ pub fn project(
         last_rolled_refs: HashMap::new(),
         host_state,
         active_rollouts,
+        host_compliance_failures,
     }
 }
 
@@ -118,7 +120,7 @@ mod tests {
         checkins.insert("ohm".to_string(), checkin_for("ohm", "def"));
 
         let channel_refs = HashMap::from([("dev".to_string(), "deadbeef".to_string())]);
-        let observed = project(&checkins, &channel_refs, &[]);
+        let observed = project(&checkins, &channel_refs, &[], HashMap::new());
 
         assert_eq!(observed.host_state.len(), 2);
         assert_eq!(
@@ -131,7 +133,7 @@ mod tests {
 
     #[test]
     fn projection_with_no_checkins_yields_empty_host_state() {
-        let observed = project(&HashMap::new(), &HashMap::new(), &[]);
+        let observed = project(&HashMap::new(), &HashMap::new(), &[], HashMap::new());
         assert!(observed.host_state.is_empty());
         assert!(observed.channel_refs.is_empty());
         assert!(observed.active_rollouts.is_empty());
@@ -157,7 +159,12 @@ mod tests {
             host_states,
             last_healthy_since: last_healthy,
         };
-        let observed = project(&HashMap::new(), &HashMap::new(), std::slice::from_ref(&snap));
+        let observed = project(
+            &HashMap::new(),
+            &HashMap::new(),
+            std::slice::from_ref(&snap),
+            HashMap::new(),
+        );
         assert_eq!(observed.active_rollouts.len(), 1);
         let r = &observed.active_rollouts[0];
         assert_eq!(r.id, "stable@abc12345");

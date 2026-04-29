@@ -104,6 +104,26 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                 None => Vec::new(),
             };
 
+            // Issue #60 — fold the durable per-host outstanding-event
+            // counts into Observed so the reconciler can emit
+            // Action::WaveBlocked. Empty map on missing DB or query
+            // failure (degraded == old behaviour).
+            let host_compliance_failures = match state
+                .db
+                .as_deref()
+                .map(|db| db.outstanding_compliance_event_counts())
+            {
+                Some(Ok(m)) => m,
+                Some(Err(err)) => {
+                    tracing::warn!(
+                        error = %err,
+                        "reconcile: outstanding_compliance_event_counts failed; treating as empty",
+                    );
+                    HashMap::new()
+                }
+                None => HashMap::new(),
+            };
+
             // Live projection: in-memory checkins + cached channel-refs
             // + DB-derived rollouts. When the Forgejo poll hasn't
             // succeeded yet AND no agents have checked in, fall
@@ -116,7 +136,13 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             let (result, verified_fleet) = if checkins.is_empty() && channel_refs.is_empty() {
                 (tick(&inputs_now), verify_fleet_only(&inputs_now))
             } else {
-                run_tick_with_projection(&inputs_now, &checkins, &channel_refs, &rollouts)
+                run_tick_with_projection(
+                    &inputs_now,
+                    &checkins,
+                    &channel_refs,
+                    &rollouts,
+                    host_compliance_failures,
+                )
             };
 
             // Snapshot the verified fleet so the dispatch path can
@@ -225,6 +251,7 @@ fn run_tick_with_projection(
     checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
     rollouts: &[crate::db::RolloutDbSnapshot],
+    host_compliance_failures: HashMap<String, usize>,
 ) -> (anyhow::Result<crate::TickOutput>, Option<FleetResolved>) {
     use anyhow::Context;
     let read_inputs = || -> anyhow::Result<(Vec<u8>, Vec<u8>, nixfleet_proto::TrustConfig)> {
@@ -258,7 +285,12 @@ fn run_tick_with_projection(
         Ok(fleet) => {
             let signed_at = fleet.meta.signed_at.expect("verified artifact carries meta.signedAt");
             let ci_commit = fleet.meta.ci_commit.clone();
-            let observed = crate::observed_projection::project(checkins, channel_refs, rollouts);
+            let observed = crate::observed_projection::project(
+                checkins,
+                channel_refs,
+                rollouts,
+                host_compliance_failures,
+            );
             let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
             (
                 crate::VerifyOutcome::Ok(Box::new(crate::VerifyOk {

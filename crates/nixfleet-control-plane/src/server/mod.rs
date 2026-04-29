@@ -108,9 +108,84 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let state = Arc::new(app_state);
 
     // Magic-rollback timer + hourly prune sweep (issue #52).
-    if let Some(db_arc) = db {
+    if let Some(db_arc) = db.clone() {
         crate::rollback_timer::spawn(db_arc.clone());
         crate::prune_timer::spawn(db_arc);
+    }
+
+    // Issue #60 — hydrate the in-memory `host_reports` ring from
+    // SQLite at startup. Without this, the wave-staging gate
+    // silently unlocks any held wave promotion across CP restart
+    // until each agent re-fires its compliance gate. The DB write
+    // happens write-through in the report handler, so as long as
+    // SQLite has the rows, the in-memory ring buffer can be
+    // reconstructed.
+    if let Some(db_arc) = db.clone() {
+        match db_arc.host_reports_known_hostnames() {
+            Ok(hostnames) => {
+                let mut total = 0usize;
+                let mut reports_w = state.host_reports.write().await;
+                for hostname in &hostnames {
+                    match db_arc.host_reports_recent_per_host(
+                        hostname,
+                        crate::server::state::REPORT_RING_CAP,
+                    ) {
+                        Ok(rows) => {
+                            for row in rows {
+                                let req: nixfleet_proto::agent_wire::ReportRequest =
+                                    match serde_json::from_str(&row.report_json) {
+                                        Ok(r) => r,
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                hostname = %hostname,
+                                                event_id = %row.event_id,
+                                                error = %err,
+                                                "host_reports hydration: unparseable row, skipping"
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                let signature_status = row.signature_status.and_then(|s| {
+                                    serde_json::from_value::<
+                                        crate::evidence_verify::SignatureStatus,
+                                    >(serde_json::Value::String(s))
+                                    .ok()
+                                });
+                                let buf = reports_w
+                                    .entry(hostname.clone())
+                                    .or_default();
+                                buf.push_back(crate::server::ReportRecord {
+                                    event_id: row.event_id,
+                                    received_at: row.received_at,
+                                    report: req,
+                                    signature_status,
+                                });
+                                total += 1;
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                hostname = %hostname,
+                                error = %err,
+                                "host_reports hydration: per-host query failed",
+                            );
+                        }
+                    }
+                }
+                tracing::info!(
+                    target: "boot",
+                    hosts = hostnames.len(),
+                    rows_loaded = total,
+                    "host_reports hydration complete",
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "host_reports hydration: failed to enumerate hostnames; ring buffer starts empty",
+                );
+            }
+        }
     }
 
     // Seed issuance config.
