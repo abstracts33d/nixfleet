@@ -167,8 +167,17 @@ pub fn render_plan(out: &TickOutput) -> String {
             s.push('\n');
         }
         if !offline_hosts.is_empty() {
-            // Stable order so logs diff cleanly across ticks.
+            // Stable order + dedup. The reconciler emits one
+            // Skip-offline action per (rollout, host), so with N
+            // active rollouts × M offline hosts we collect N×M
+            // entries here; the operator-facing summary wants the
+            // distinct host set, not the per-rollout multiplicity.
+            // (Lab caught this on the first audit-fix redeploy:
+            // 14 active rollouts × 4 offline hosts produced 56
+            // entries with each host repeated 12–15 times in the
+            // JSON line.)
             offline_hosts.sort_unstable();
+            offline_hosts.dedup();
             s.push_str(
                 &json!({
                     "action": "skip_summary",
@@ -346,6 +355,46 @@ mod tests {
         assert_eq!(
             summary_action["hosts"],
             serde_json::json!(["host-a", "host-b"])
+        );
+    }
+
+    #[test]
+    fn render_plan_skip_summary_dedups_across_rollouts() {
+        // Hardware-caught regression: the reconciler emits one
+        // Skip-offline action per (rollout, host), so a fleet with
+        // 14 active rollouts and 4 offline hosts produces 56 raw
+        // skip-actions. The summary's `hosts` field must contain
+        // each hostname ONCE, not N times. Without `dedup()`
+        // following `sort_unstable()`, the JSON line on lab carried
+        // `["aether","aether",…14×]`; this test prevents that
+        // recurring.
+        let actions: Vec<Action> = (0..14)
+            .flat_map(|_| {
+                ["host-a", "host-b", "host-c"].iter().map(|h| Action::Skip {
+                    host: (*h).to_string(),
+                    reason: "offline".into(),
+                })
+            })
+            .collect();
+        let out = TickOutput {
+            now: Utc::now(),
+            verify: VerifyOutcome::Ok(Box::new(VerifyOk {
+                signed_at: Utc::now(),
+                ci_commit: None,
+                observed: observed_no_rollouts(),
+                actions,
+            })),
+        };
+        let body = render_plan(&out);
+        let lines: Vec<&str> = body.lines().collect();
+        // summary + ONE skip_summary line (no per-host skip lines).
+        assert_eq!(lines.len(), 2, "expected 1 summary + 1 skip_summary, got: {body}");
+        let summary_action: serde_json::Value =
+            serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(
+            summary_action["hosts"],
+            serde_json::json!(["host-a", "host-b", "host-c"]),
+            "hosts must be deduped despite 14 rollouts × 3 hosts of input",
         );
     }
 }
