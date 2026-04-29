@@ -205,15 +205,23 @@
               type = types.bool;
               default = true;
               description = ''
-                Legacy boolean form of `mode` (issue #58). Kept for
-                backward compatibility with existing fleets and the
-                wire-level `Compliance.strict: bool` consumed by the
-                Rust control plane. Prefer `mode` for new code.
+                **DEPRECATED (slated for removal in v0.3).** Legacy
+                boolean form of `mode` (issue #58). Kept for backward
+                compatibility with existing fleets and the wire-level
+                `Compliance.strict: bool` consumed by the Rust
+                control plane. Prefer `mode` for new code.
 
-                When `mode` is set, this field is ignored for gate
-                decisions but still flows through to the resolved
-                output (computed from the effective mode:
-                `enforce → true`, otherwise `false`).
+                Setting both `strict` and `mode` with conflicting
+                values emits a `lib.warn` at fleet eval time; `mode`
+                wins for gate decisions. When only one is set, no
+                warning fires.
+
+                Removal will land alongside the static-gate refactor
+                that follows the runtime-gate work hitting lab
+                successfully — both gates share `GateMode` (typed in
+                nixfleet-proto::compliance), so deleting `strict`
+                from the schema is a wire-additive cleanup once
+                fleets have migrated.
               '';
             };
             frameworks = mkOption {
@@ -563,7 +571,49 @@
         )
         hostsOnChannels;
 
-      allWarnings = emptySelectorWarnings ++ budgetWarnings ++ compliancePermissiveWarnings;
+      # Issue I (#58 follow-up) — deprecation warning for
+      # `compliance.strict` when both `mode` and `strict` are
+      # set with conflicting intent. The legacy field is retained
+      # for one minor-version cycle; planned removal at v0.3
+      # alongside the static-gate refactor that follows the
+      # runtime-gate work landing on lab. No warning when only
+      # one of the two is set (covered cases) or when both are
+      # set consistently (no operator confusion).
+      complianceStrictDeprecationWarnings =
+        lib.concatMap (
+          channelName: let
+            c = cfg.channels.${channelName}.compliance;
+            modeImpliedStrict =
+              if c.mode == "enforce"
+              then true
+              else if c.mode == null
+              then null # mode unset → not in scope
+              else false; # disabled or permissive
+            stricExplicitlyTrue = c.strict == true;
+            # `strict.default = true`, so we can't distinguish
+            # "operator wrote true" from "default kicked in".
+            # Conservatively warn only when `mode` is explicitly
+            # set AND it disagrees with `strict`.
+            conflicts =
+              c.mode
+              != null
+              && modeImpliedStrict != null
+              && stricExplicitlyTrue != modeImpliedStrict;
+          in
+            lib.optional conflicts
+            "channel '${channelName}': compliance.mode=\"${c.mode}\" but compliance.strict=${
+              if c.strict
+              then "true"
+              else "false"
+            }; mode wins. Drop the explicit `strict` setting — the field is deprecated and slated for removal in the next minor release."
+        )
+        (lib.attrNames cfg.channels);
+
+      allWarnings =
+        emptySelectorWarnings
+        ++ budgetWarnings
+        ++ compliancePermissiveWarnings
+        ++ complianceStrictDeprecationWarnings;
 
       # Force the warnings side effect before returning the resolved value.
       # `lib.warn` prints to stderr during eval and returns its second arg.

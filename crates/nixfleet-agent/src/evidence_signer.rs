@@ -34,6 +34,15 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use serde::Serialize;
 
+// Re-export the canonical signing-payload shapes from
+// nixfleet-proto so existing callers (main.rs) don't need to
+// rewrite their imports. The proto crate is the single source of
+// truth — agent and CP both import from there.
+pub use nixfleet_proto::evidence_signing::{
+    ActivationFailedSignedPayload, ComplianceFailureSignedPayload,
+    RollbackTriggeredSignedPayload, RuntimeGateErrorSignedPayload,
+};
+
 /// Default OpenSSH host ed25519 private key path. Same path NixOS
 /// generates by default (`services.openssh` / `sshd-pre-start`); same
 /// path `ssh-keygen -A` writes to. Override-able via
@@ -108,47 +117,11 @@ impl EvidenceSigner {
     }
 }
 
-/// Build the canonical signing payload for `ComplianceFailure`.
-/// Public so the CP-side verifier reconstructs the exact same shape.
-///
-/// IMPORTANT: any change to this struct's field set or names is a
-/// signature-incompatible change — the wire envelope evolves
-/// independently (additive Optional fields), but the *signed* shape
-/// must stay stable across versions. New fields here force a signing
-/// version bump.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ComplianceFailureSignedPayload<'a> {
-    /// Hostname per the agent's `--machine-id`. Binds the signature
-    /// to the host's identity (defense vs. cross-host replay).
-    pub hostname: &'a str,
-    /// Rollout id this event is bound to (matches the
-    /// `EvaluatedTarget.rollout_id`). Binds the signature to a
-    /// specific dispatch (defense vs. cross-rollout replay).
-    pub rollout: Option<&'a str>,
-    pub control_id: &'a str,
-    pub status: &'a str,
-    pub framework_articles: &'a [String],
-    pub evidence_collected_at: chrono::DateTime<chrono::Utc>,
-    /// Hash of `evidence_snippet` rather than the snippet itself —
-    /// keeps the signed payload bounded even when the snippet is
-    /// truncated to ~1KB. SHA-256 hex-lowercase of the JCS-canonical
-    /// snippet bytes (or empty hash `e3b0...` when None).
-    pub evidence_snippet_sha256: String,
-}
-
-/// Same shape rationale as `ComplianceFailureSignedPayload` — public
-/// so CP rebuilds it.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeGateErrorSignedPayload<'a> {
-    pub hostname: &'a str,
-    pub rollout: Option<&'a str>,
-    pub reason: &'a str,
-    pub collector_exit_code: Option<i32>,
-    pub evidence_collected_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub activation_completed_at: chrono::DateTime<chrono::Utc>,
-}
+// Signed-payload struct definitions live in `nixfleet-proto::evidence_signing`
+// (re-exported above). Earlier revisions of this cycle had two parallel
+// definitions — one here, one in CP's `evidence_verify` — and any silent
+// drift between them would break verification across the wire without a
+// compile error. The proto crate is now the single source of truth.
 
 /// SHA-256 hex-lowercase of an arbitrary serializable payload, after
 /// JCS canonicalisation. Used to bind `evidence_snippet` to the

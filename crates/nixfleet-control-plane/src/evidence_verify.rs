@@ -30,33 +30,14 @@ use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Serialize;
 
-/// Reconstructible signing-payload shape for `ComplianceFailure`.
-/// Mirrors the agent's `evidence_signer::ComplianceFailureSignedPayload`
-/// — change one and you break signature compatibility, so they live
-/// next to each other in spirit (wire shape is in proto, payload
-/// shape is duplicated by-value here for de-coupling).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ComplianceFailureSignedPayload<'a> {
-    pub hostname: &'a str,
-    pub rollout: Option<&'a str>,
-    pub control_id: &'a str,
-    pub status: &'a str,
-    pub framework_articles: &'a [String],
-    pub evidence_collected_at: chrono::DateTime<chrono::Utc>,
-    pub evidence_snippet_sha256: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeGateErrorSignedPayload<'a> {
-    pub hostname: &'a str,
-    pub rollout: Option<&'a str>,
-    pub reason: &'a str,
-    pub collector_exit_code: Option<i32>,
-    pub evidence_collected_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub activation_completed_at: chrono::DateTime<chrono::Utc>,
-}
+// Signed-payload struct definitions are canonical in
+// `nixfleet-proto::evidence_signing`. Re-exported here so CP-internal
+// callers don't need to chase the proto crate import — the agent
+// signs and the CP verifies through the same struct definitions.
+pub use nixfleet_proto::evidence_signing::{
+    ActivationFailedSignedPayload, ComplianceFailureSignedPayload,
+    RollbackTriggeredSignedPayload, RuntimeGateErrorSignedPayload,
+};
 
 /// Verification verdict. Recorded on the CP's `ReportRecord` so the
 /// wave-staging gate (#59) and operator dashboards can distinguish
@@ -86,11 +67,41 @@ pub enum SignatureStatus {
 
 impl SignatureStatus {
     /// Whether the wave-staging gate should honour an event with
-    /// this status. Currently *all* statuses count for the gate
-    /// decision because mTLS already authenticated the host;
-    /// signatures are defense-in-depth. The verdict is recorded for
-    /// the auditor chain. Operators wanting "only block on verified
-    /// events" can flip this in a follow-up.
+    /// this status.
+    ///
+    /// ## Decision-boundary rationale (issue H of cycle quality pass)
+    ///
+    /// The CP's gating trust comes from **mTLS**: the report handler
+    /// rejects any post whose cert CN doesn't match the body
+    /// hostname (`server::handlers::report` enforces this before
+    /// any verifier runs). So a record reaching this function has
+    /// already been authenticated as coming from the named host.
+    ///
+    /// The probe-output **signature** is *defense-in-depth* and
+    /// the *auditor-chain seam*, not the gate's primary trust
+    /// root:
+    /// - **Defense-in-depth:** if an attacker steals an agent's
+    ///   mTLS cert+key but not its SSH host key, they can post
+    ///   on the host's behalf but their forgeries surface as
+    ///   `Mismatch`/`Malformed` and don't gate the rollout.
+    /// - **Auditor chain:** a third party with `fleet.nix`
+    ///   (carrying the host's pubkey) can independently verify
+    ///   probe outputs without trusting the CP — closes
+    ///   ARCHITECTURE.md done-criterion #2.
+    ///
+    /// `counts_for_gate` therefore returns `true` for every
+    /// status *except* the two that signal active tampering
+    /// (`Mismatch`, `Malformed`). `Verified`, `Unsigned`,
+    /// `NoPubkey`, and `WrongAlgorithm` all weight equally — they
+    /// are *mTLS-authenticated* events that simply don't have a
+    /// verifiable secondary signature.
+    ///
+    /// **Future tightening.** A "strict" channel mode that
+    /// requires `Verified` for gate participation would belong
+    /// here as a new `GateMode` variant, not a flip of this
+    /// boolean. The current decision boundary is intentional —
+    /// don't change it without crossing that explicit gate-mode
+    /// extension.
     pub fn counts_for_gate(self) -> bool {
         !matches!(self, SignatureStatus::Mismatch | SignatureStatus::Malformed)
     }

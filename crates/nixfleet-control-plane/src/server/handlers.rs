@@ -448,18 +448,15 @@ async fn dispatch_target_for_checkin(
     // wave N's outstanding failures hold wave N+1.
     if let Some(channel_name) = fleet.hosts.get(&req.hostname).map(|h| &h.channel) {
         if let Some(channel) = fleet.channels.get(channel_name) {
-            // Resolve the legacy `strict` bool through the same
-            // priority the agent uses: `mode` wins; fallback maps
-            // `strict=true→enforce`, `strict=false→disabled`.
-            let resolved_mode: &str = channel
-                .compliance
-                .mode
-                .as_deref()
-                .unwrap_or(if channel.compliance.strict {
-                    "enforce"
-                } else {
-                    "disabled"
-                });
+            // Resolve channel.compliance into a typed GateMode in
+            // one place — `mode` wins, `strict` is the legacy
+            // fallback. Centralised in `nixfleet_proto::compliance::
+            // GateMode::resolve` so static + runtime + CP layers
+            // can't drift on the precedence rule.
+            let resolved_mode = nixfleet_proto::compliance::GateMode::resolve(
+                channel.compliance.mode.as_deref(),
+                channel.compliance.strict,
+            );
             // Gather per-host (records, current_rollout) for every
             // host on this channel.
             let reports_guard = state.host_reports.read().await;
@@ -469,36 +466,59 @@ async fn dispatch_target_for_checkin(
                 .iter()
                 .filter_map(|(n, h)| (h.channel == *channel_name).then_some(n))
                 .collect();
-            // Stage data into owned slices first so the iterator
-            // passed into evaluate_channel_gate has stable lifetimes.
-            let staged: Vec<(String, Vec<crate::server::ReportRecord>, Option<String>)> = channel_hosts
+            // Stage data into owned slices so the iterator passed
+            // into evaluate_channel_gate has stable lifetimes. Each
+            // entry carries the host's wave_index for the per-wave
+            // gate decision (#59 issue E).
+            let staged: Vec<(
+                String,
+                Vec<crate::server::ReportRecord>,
+                Option<String>,
+                Option<u32>,
+            )> = channel_hosts
                 .iter()
                 .map(|n| {
                     let buf: Vec<crate::server::ReportRecord> = reports_guard
                         .get(*n)
                         .map(|q| q.iter().cloned().collect())
                         .unwrap_or_default();
-                    // Treat the host's last-checkin pendingGeneration
-                    // as the "current rollout" indicator. Falls back
-                    // to currentGeneration's channel_ref when no
-                    // pending. The agent echoes the rollout id on
-                    // confirm; we look at *what the host is now
-                    // running* via checkin, mapped through the most
-                    // recent dispatch the CP has knowledge of.
                     let cur_rollout = checkins_guard
                         .get(*n)
                         .and_then(|c| c.checkin.last_evaluated_target.as_ref())
                         .and_then(|t| t.rollout_id.clone());
-                    (n.to_string(), buf, cur_rollout)
+                    let wave_idx = fleet
+                        .waves
+                        .get(channel_name)
+                        .and_then(|waves| {
+                            waves
+                                .iter()
+                                .position(|w| w.hosts.iter().any(|h| h == *n))
+                                .map(|i| i as u32)
+                        });
+                    (n.to_string(), buf, cur_rollout, wave_idx)
                 })
                 .collect();
             drop(reports_guard);
             drop(checkins_guard);
 
+            // Wave the requesting host belongs to.
+            let requesting_wave = fleet.waves.get(channel_name).and_then(|waves| {
+                waves
+                    .iter()
+                    .position(|w| w.hosts.iter().any(|h| h == &req.hostname))
+                    .map(|i| i as u32)
+            });
+
             let outcome = crate::wave_gate::evaluate_channel_gate(
-                Some(resolved_mode),
-                staged.iter().map(|(n, recs, rollout)| {
-                    (n.as_str(), recs.as_slice(), rollout.as_deref())
+                resolved_mode,
+                requesting_wave,
+                staged.iter().map(|(n, recs, rollout, wave_idx)| {
+                    crate::wave_gate::HostGateInput {
+                        hostname: n.as_str(),
+                        records: recs.as_slice(),
+                        current_rollout: rollout.as_deref(),
+                        wave_index: *wave_idx,
+                    }
                 }),
             );
             if outcome.blocks() {
@@ -506,8 +526,9 @@ async fn dispatch_target_for_checkin(
                     target: "dispatch",
                     hostname = %req.hostname,
                     channel = %channel_name,
+                    requesting_wave = ?requesting_wave,
                     outcome = ?outcome,
-                    "dispatch: wave-staging gate blocked target (outstanding compliance failures on channel)",
+                    "dispatch: wave-staging gate blocked target (outstanding compliance failures)",
                 );
                 return None;
             }

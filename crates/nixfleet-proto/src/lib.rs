@@ -24,7 +24,9 @@
 //! not the serde level.
 
 pub mod agent_wire;
+pub mod compliance;
 pub mod enroll_wire;
+pub mod evidence_signing;
 pub mod fleet_resolved;
 pub mod revocations;
 pub mod trust;

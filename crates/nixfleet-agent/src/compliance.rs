@@ -60,49 +60,12 @@ pub const COLLECTOR_TIMEOUT: Duration = Duration::from_secs(120);
 /// activation_completed_at" rather than clock skew per se.
 pub const TIMESTAMP_SLACK_SECS: i64 = 60;
 
-/// Operator-controlled gate policy. See issue #57 for the rationale
-/// and rollout pattern. Operators introducing compliance to an
-/// existing fleet typically: deploy `Permissive` first to see what
-/// would fail without breaking deploys; flip to `Enforce` once the
-/// fleet's compliance posture is healthy.
-///
-/// `Auto` is the default — it picks `Permissive` when the collector
-/// unit is present on the host and `Disabled` when absent. This
-/// makes the agent compatible with fleets that haven't deployed
-/// `nixfleet-compliance` (no events posted, no journal warnings,
-/// no rollouts blocked).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GateMode {
-    /// Gate skipped entirely. No events, no journal lines. Default
-    /// when the collector unit is absent on the host.
-    Disabled,
-    /// Gate runs, posts events on failure, but does NOT block
-    /// confirm. Default when the collector is present.
-    Permissive,
-    /// Gate runs, posts events. `RuntimeGateError` blocks confirm
-    /// and triggers local rollback (state-divergence-safe).
-    /// `ComplianceFailure` events flow to CP for wave-staging
-    /// decisions but do not block confirm directly (per #4).
-    Enforce,
-}
-
-impl GateMode {
-    /// Parse the wire-form string the CP relays in
-    /// `EvaluatedTarget.compliance_mode`. Unknown / unset values
-    /// fall back to `Auto` semantics (handled by the caller); the
-    /// parser itself returns Permissive as a safe default for any
-    /// unrecognised string.
-    pub fn from_wire_str(s: &str) -> Self {
-        match s {
-            "disabled" => GateMode::Disabled,
-            "enforce" => GateMode::Enforce,
-            // permissive | auto | unknown → Permissive. Auto-detect
-            // (collector presence) is layered on top in
-            // `resolve_auto`.
-            _ => GateMode::Permissive,
-        }
-    }
-}
+// Re-export the canonical `GateMode` from nixfleet-proto. Earlier
+// revisions had three parallel definitions (Nix enum / agent enum /
+// CP `&str` matching) — the proto crate is now the single source of
+// truth for the policy vocabulary, and every layer parses + matches
+// against the same variants.
+pub use nixfleet_proto::compliance::GateMode;
 
 /// Wire-shape of `evidence.json` written by the
 /// nixfleet-compliance probe-runner. Public because callers may
@@ -477,22 +440,9 @@ mod tests {
         assert!(out["_preview_"].as_str().unwrap().len() <= 900);
     }
 
-    #[test]
-    fn gate_mode_from_wire_str_known_values() {
-        assert_eq!(GateMode::from_wire_str("disabled"), GateMode::Disabled);
-        assert_eq!(GateMode::from_wire_str("enforce"), GateMode::Enforce);
-        assert_eq!(GateMode::from_wire_str("permissive"), GateMode::Permissive);
-    }
-
-    #[test]
-    fn gate_mode_from_wire_str_unknown_falls_back_permissive() {
-        // "auto" + unrecognised inputs map to Permissive at the parser
-        // layer; auto-detect (collector presence) is then layered on
-        // top by `resolve_mode`.
-        assert_eq!(GateMode::from_wire_str("auto"), GateMode::Permissive);
-        assert_eq!(GateMode::from_wire_str(""), GateMode::Permissive);
-        assert_eq!(GateMode::from_wire_str("garbage"), GateMode::Permissive);
-    }
+    // GateMode parsing tests live in `nixfleet-proto::compliance::tests`
+    // (single source of truth). The agent re-exports the type and inherits
+    // the parsing behaviour by definition.
 
     #[tokio::test]
     async fn run_runtime_gate_disabled_short_circuits_without_io() {

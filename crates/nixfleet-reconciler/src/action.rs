@@ -47,4 +47,37 @@ pub enum Action {
         host: String,
         reason: String,
     },
+    /// Issue #59 — wave-staging compliance gate held this wave's
+    /// promotion because at least one host *in an earlier wave*
+    /// has outstanding `ComplianceFailure` / `RuntimeGateError`
+    /// events under enforce mode. The CP-side dispatch handler
+    /// returns `target: null` to hosts in `blocked_wave`; this
+    /// action surfaces the same decision in the reconciler's
+    /// action plan so operators reading `nixfleet plan` see the
+    /// gate as a first-class event rather than only a journal
+    /// log line.
+    ///
+    /// **Wired but not yet emitted.** This variant is reachable
+    /// over the wire today (CP→agent action streams round-trip
+    /// it) and is the contract surface for the operator-visible
+    /// gate event. Reconciler-side emission is gated on extending
+    /// `Observed` with the per-host outstanding-event projection,
+    /// which couples to the host_reports SQLite migration tracked
+    /// in roadmap-0002 (the in-memory ring buffer's classification
+    /// gap). Until then, the dispatch handler's `tracing::warn`
+    /// at `target=dispatch` carries the same information for
+    /// operators tailing the journal.
+    ///
+    /// `blocked_wave` is the wave whose promotion is held;
+    /// `failing_hosts` is the set of hosts (on earlier waves)
+    /// whose outstanding events triggered the hold;
+    /// `failing_events_count` is the total number of unresolved
+    /// events across those hosts (1 per failing control or
+    /// runtime-gate error).
+    WaveBlocked {
+        rollout: String,
+        blocked_wave: usize,
+        failing_hosts: Vec<String>,
+        failing_events_count: usize,
+    },
 }
