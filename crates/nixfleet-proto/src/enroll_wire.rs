@@ -1,27 +1,20 @@
-//! Bootstrap token + enrollment + renewal wire types (RFC-0003 §5).
+//! Bootstrap token + enrollment + renewal wire types.
 //!
-//! Token format is JSON: `{version, claims, signature}` where
-//! `signature` is a detached ed25519 signature over the JCS canonical
-//! bytes of `claims` (the `nixfleet-canonicalize` crate produces the
-//! same bytes consumers verify against). The org root pubkey lives in
-//! `trust.json` under `orgRootKey.current`.
-//!
-//! All types are wire-only: no crypto primitives leak from this
-//! module — the CP and `nixfleet-mint-token` consume them via the
-//! issuance and signing helpers in their own crates.
+//! Token format: `{version, claims, signature}` where `signature` is
+//! a detached ed25519 signature over the JCS canonical bytes of
+//! `claims`. The org root pubkey lives in `trust.json` under
+//! `orgRootKey.current`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-// =====================================================================
-// Bootstrap token — operator-minted, signed by org root key
-// =====================================================================
+// ─── Bootstrap token (operator-minted, signed by org root key) ────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapToken {
-    /// Schema version. Bump on incompatible claim changes; consumers
-    /// MUST refuse unknown versions.
+    /// Bumped on incompatible claim changes; consumers MUST refuse
+    /// unknown versions.
     pub version: u32,
     pub claims: TokenClaims,
     /// Base64-encoded ed25519 signature over the JCS canonical bytes
@@ -32,8 +25,6 @@ pub struct BootstrapToken {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenClaims {
-    /// The hostname this token authorises enrollment for. CP rejects
-    /// the enrollment if the CSR's CN doesn't match.
     pub hostname: String,
     /// SHA-256 fingerprint of the expected CSR public key, base64-
     /// encoded. Binds the token to a specific keypair so a leaked
@@ -41,24 +32,18 @@ pub struct TokenClaims {
     pub expected_pubkey_fingerprint: String,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
-    /// Random 16-byte nonce, hex-encoded. Lets the CP detect token
-    /// replay (backed by an in-memory replay set plus SQLite
-    /// persistence when a DB is configured).
+    /// Random 16-byte nonce, hex-encoded. Backs replay detection.
     pub nonce: String,
 }
 
-// =====================================================================
-// /v1/enroll — first-boot enrollment
-// =====================================================================
+// ─── /v1/enroll ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrollRequest {
-    /// Operator-minted bootstrap token (signed by org root key).
     pub token: BootstrapToken,
-    /// PEM-encoded CSR (as `rcgen::CertificateSigningRequest::pem()`
-    /// emits it). The CP validates the CSR's CN against
-    /// `token.claims.hostname` and the CSR's pubkey against
+    /// PEM-encoded CSR. CP validates CN against
+    /// `token.claims.hostname` and pubkey against
     /// `token.claims.expected_pubkey_fingerprint`.
     pub csr_pem: String,
 }
@@ -66,25 +51,18 @@ pub struct EnrollRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrollResponse {
-    /// PEM-encoded signed certificate. Agent writes to
-    /// `--client-cert` path.
     pub cert_pem: String,
-    /// Validity not-after, in case the agent wants to schedule
-    /// renewal without re-parsing the cert.
     pub not_after: DateTime<Utc>,
 }
 
-// =====================================================================
-// /v1/agent/renew — periodic cert renewal
-// =====================================================================
+// ─── /v1/agent/renew ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenewRequest {
-    /// PEM-encoded CSR. CP validates the CSR's CN matches the
-    /// requesting agent's verified mTLS CN, and that the CSR's
-    /// pubkey differs from the existing cert's pubkey (key rotation
-    /// is the point of /renew).
+    /// PEM-encoded CSR. CP validates CN matches the requesting
+    /// agent's verified mTLS CN, and the CSR pubkey differs from the
+    /// existing cert's pubkey (key rotation is the point of /renew).
     pub csr_pem: String,
 }
 

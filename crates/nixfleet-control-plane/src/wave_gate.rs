@@ -1,51 +1,27 @@
-//! Wave-staging compliance gate (issue #59).
+//! Wave-staging compliance gate.
 //!
-//! Pure decision: given a host's report buffer, the channel's
-//! compliance mode, and the host's current generation, return whether
-//! dispatch should be blocked because outstanding `ComplianceFailure`
-//! / `RuntimeGateError` events have not been resolved.
+//! Pure decision: should dispatch be blocked because outstanding
+//! `ComplianceFailure` / `RuntimeGateError` events haven't been
+//! resolved? An event is **outstanding** until the host moves to a
+//! strictly newer rollout — events bound to `rollout` other than
+//! `current_rollout` are resolved-by-replacement.
 //!
-//! ## Resolution semantics
+//! `Mismatch` / `Malformed` signature statuses disqualify events
+//! from the gate so an attacker with a forged sig can't grief
+//! deploys; every other status counts (mTLS already authenticated
+//! the post).
 //!
-//! An event is **outstanding** until the host has moved on to a
-//! strictly newer closure than the one the event was bound to. The
-//! "newness" check uses `rollout` (the dispatch identifier the agent
-//! echoes back on confirm) — events with `rollout != current_generation
-//! rollout` are considered resolved-by-replacement (the host upgraded
-//! past the failing closure).
-//!
-//! A `Mismatch` or `Malformed` signature status disqualifies the
-//! event from the gate (see `evidence_verify::SignatureStatus::counts_for_gate`):
-//! an attacker who can forge a sig can't grief the rollout by
-//! injecting fake FAIL events for a host they've compromised the
-//! mTLS cert of. Real FAIL events posted with valid signatures or
-//! no signatures (legacy / no-pubkey) DO count.
-//!
-//! ## Per-wave scope
-//!
-//! The gate is per-wave (issue E in the cycle quality pass). A
-//! host on wave N with outstanding events blocks dispatch only to
-//! hosts on waves > N. Hosts on wave N or earlier still get
-//! dispatched — they're either the failing host itself (which is
-//! free to receive a *fixed* closure under operator control, since
-//! that's the resolution path) or other hosts in the same wave
-//! that haven't yet been dispatched.
-//!
-//! Earlier revisions blocked the entire channel on any failing
-//! host. That over-aggressive semantic mattered nothing for the
-//! lab's single-wave canary but would freeze a real fleet's
-//! wave-0 progress on a wave-0 partial failure — exactly the
-//! opposite of "wave-staging".
-//!
-//! Permissive mode never blocks dispatch; events are still recorded.
+//! Per-wave: a failing host on wave N blocks only waves > N.
+//! Same-wave or earlier-wave dispatches still flow — either the
+//! failing host itself (free to receive a fixed closure) or other
+//! hosts in the same wave. Permissive never blocks; events still
+//! recorded.
 
 use nixfleet_proto::agent_wire::ReportEvent;
 use nixfleet_proto::compliance::GateMode;
 
 use crate::server::ReportRecord;
 
-/// Returns true iff this report record carries a compliance failure
-/// that counts toward the wave-staging gate.
 fn record_is_compliance_failure(record: &ReportRecord) -> bool {
     let is_fail_event = matches!(
         record.report.event,
@@ -54,27 +30,15 @@ fn record_is_compliance_failure(record: &ReportRecord) -> bool {
     if !is_fail_event {
         return false;
     }
-    // Tampered events don't gate the rollout (defense vs. an
-    // attacker forging FAIL events to block deploys). All other
-    // statuses — Verified, Unsigned, NoPubkey, WrongAlgorithm —
-    // count.
     match record.signature_status.as_ref() {
         Some(status) => status.counts_for_gate(),
         None => true,
     }
 }
 
-/// Filter a host's report ring buffer down to outstanding compliance
-/// failures relative to `current_rollout`. An event is outstanding
-/// if its `rollout` matches the host's current rollout — i.e. the
-/// host is still running the closure the failure was reported for.
-/// Events with `rollout != current_rollout` are resolved-by-
-/// replacement (the host upgraded past the failing closure).
-///
-/// `current_rollout` is `None` when the host has never been seen on
-/// this channel under a wave-aware dispatch (legacy or first
-/// checkin) — in that case all failure events are treated as
-/// outstanding (conservative: assume not-yet-resolved).
+/// Filter to outstanding failures relative to `current_rollout`.
+/// `None` current_rollout (legacy / first checkin) is conservative:
+/// all failure events count.
 pub fn outstanding_failures<'a>(
     records: &'a [ReportRecord],
     current_rollout: Option<&str>,
@@ -83,31 +47,22 @@ pub fn outstanding_failures<'a>(
         .iter()
         .filter(|r| record_is_compliance_failure(r))
         .filter(|r| match (current_rollout, r.report.rollout.as_deref()) {
-            // Host has moved on to a newer rollout than the event's
-            // rollout → event resolved.
             (Some(cur), Some(ev_r)) if cur != ev_r => false,
-            // Host's current rollout matches the event's rollout, or
-            // we don't know the host's current rollout — outstanding.
             _ => true,
         })
         .collect()
 }
 
-/// Verdict from `evaluate_channel_gate`. Reasoning is exposed for
-/// journal logging + operator visibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WaveGateOutcome {
-    /// Channel mode is `disabled` (or compliance.mode=null and
-    /// strict=false); gate did not run.
+    /// Mode `disabled`; gate did not run.
     NotApplicable,
-    /// Channel mode is `permissive`; events recorded but never
-    /// block dispatch.
+    /// Mode `permissive`; events recorded but never block dispatch.
     Permissive { failing_events_count: usize },
-    /// Channel mode is `enforce` and no host on the channel has
-    /// outstanding events; dispatch may proceed.
+    /// Mode `enforce`, no outstanding events; proceed.
     EnforcePass,
-    /// Channel mode is `enforce` and at least one host on the
-    /// channel has outstanding events; dispatch blocked.
+    /// Mode `enforce`, at least one host has outstanding events;
+    /// dispatch blocked.
     EnforceBlock {
         failing_hosts: Vec<String>,
         failing_events_count: usize,
@@ -115,43 +70,24 @@ pub enum WaveGateOutcome {
 }
 
 impl WaveGateOutcome {
-    /// True iff dispatch should be blocked at the wave level.
     pub fn blocks(&self) -> bool {
         matches!(self, WaveGateOutcome::EnforceBlock { .. })
     }
 }
 
-/// One host's contribution to the channel gate decision: its name,
-/// its report buffer, the rollout id the host is currently
-/// converged on (used for resolution-by-replacement), and its
-/// wave index in the channel's rollout policy. `requesting_wave`
-/// (the wave the dispatch decision is for) is compared against
-/// this `wave_index` to decide whether the host's outstanding
-/// events apply.
 pub struct HostGateInput<'a> {
     pub hostname: &'a str,
     pub records: &'a [ReportRecord],
     pub current_rollout: Option<&'a str>,
-    /// 0-based wave the host belongs to in
-    /// `fleet.waves[channel]`. `None` for fleets without a wave
-    /// plan (the lab's single-wave canary stays `None`); under
-    /// `None`, every host counts toward the gate (no wave
-    /// granularity available).
+    /// 0-based wave in `fleet.waves[channel]`. None for fleets
+    /// without a wave plan; under None every host counts toward
+    /// the gate (no wave granularity available).
     pub wave_index: Option<u32>,
 }
 
-/// Compute the channel-level gate verdict for a dispatch decision.
-///
-/// `mode` is the channel's already-resolved `GateMode`. `requesting_wave`
-/// is the wave the dispatch is being decided for (the wave of the
-/// host whose checkin is being processed). `hosts` is every host on
-/// the channel + its report buffer + its wave assignment.
-///
-/// Per-wave semantic (issue E): a failing host on wave N blocks
-/// dispatch only to hosts on waves > N. Same-wave or earlier-wave
-/// dispatches go through. When wave assignment is unknown
-/// (`None` either side), the gate falls back to channel-wide
-/// blocking — conservative under uncertainty.
+/// `requesting_wave` is the wave being dispatched to. A failing
+/// host on wave N blocks only when `requesting_wave > N`. Unknown
+/// wave on either side → conservative (count toward gate).
 pub fn evaluate_channel_gate<'a, I>(
     mode: GateMode,
     requesting_wave: Option<u32>,
@@ -172,14 +108,8 @@ where
         if outstanding.is_empty() {
             continue;
         }
-        // Per-wave decision: a failing host on wave H blocks
-        // dispatch only when the requesting host's wave is
-        // strictly greater (we're trying to advance past H).
-        // Same wave / earlier wave / unknown-on-either-side falls
-        // back to "counts for the gate".
         let counts_for_request = match (requesting_wave, host.wave_index) {
             (Some(req), Some(h)) => req > h,
-            // Either side unknown → conservative, count toward gate.
             _ => true,
         };
         if counts_for_request {
@@ -189,7 +119,7 @@ where
     }
 
     match mode {
-        GateMode::Disabled => WaveGateOutcome::NotApplicable, // unreachable; covered above
+        GateMode::Disabled => WaveGateOutcome::NotApplicable, // unreachable
         GateMode::Permissive => WaveGateOutcome::Permissive {
             failing_events_count,
         },
