@@ -416,6 +416,20 @@ pub enum ReportEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         evidence_snippet: Option<serde_json::Value>,
         evidence_collected_at: DateTime<Utc>,
+        /// Issue #12 root-3 / #59 — base64 ed25519 signature over
+        /// the JCS-canonical `ComplianceFailureSignedPayload`
+        /// (hostname, rollout, control_id, status,
+        /// framework_articles, evidence_collected_at, sha256 of
+        /// evidence_snippet). Signed with the host's
+        /// `/etc/ssh/ssh_host_ed25519_key`. The CP verifies
+        /// against `hosts.<hostname>.pubkey` from
+        /// `fleet.resolved.json`. `None` from agents on hosts
+        /// without an SSH host key (impermanent first-boot, etc.)
+        /// or older agents that pre-date this field — those events
+        /// are accepted but flagged as unverified in the CP's
+        /// event store.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 
     /// Runtime compliance gate could not produce a verdict — the
@@ -435,6 +449,13 @@ pub enum ReportEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         evidence_collected_at: Option<DateTime<Utc>>,
         activation_completed_at: DateTime<Utc>,
+        /// Same shape rationale as `ComplianceFailure.signature` —
+        /// base64 ed25519 over the JCS-canonical
+        /// `RuntimeGateErrorSignedPayload`. See issue #12 root-3 /
+        /// #59. Wire-additive; `None` for hosts without an SSH
+        /// host key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 
     /// Catch-all for events that don't yet have a typed variant.

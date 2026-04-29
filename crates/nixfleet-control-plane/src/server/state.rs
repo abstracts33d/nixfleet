@@ -123,11 +123,18 @@ pub struct HostCheckinRecord {
 
 /// In-memory record of an event report. Bounded ring buffer per
 /// host (cap = `REPORT_RING_CAP`). DB-backed persistence is deferred.
+///
+/// `signature_status` is the verdict from `evidence_verify` for
+/// `ComplianceFailure` / `RuntimeGateError` events (auditor-chain
+/// closure per #12 root-3). `None` for events that don't carry a
+/// signature contract (ActivationFailed / RealiseFailed / etc.) or
+/// that pre-date the field.
 #[derive(Debug, Clone)]
 pub struct ReportRecord {
     pub event_id: String,
     pub received_at: DateTime<Utc>,
     pub report: ReportRequest,
+    pub signature_status: Option<crate::evidence_verify::SignatureStatus>,
 }
 
 /// Closure-proxy upstream client + URL. Captured at serve() time

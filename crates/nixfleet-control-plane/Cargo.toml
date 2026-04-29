@@ -69,6 +69,14 @@ rcgen = { version = "0.13", features = ["x509-parser"] }
 ed25519-dalek = "2"
 sha2 = "0.10"
 nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }
+# Issue #12 root-3 / #59 — host probe-output signature verification.
+# The CP parses `hosts.<hostname>.pubkey` from fleet.resolved
+# (OpenSSH ed25519 format) and verifies signatures on
+# ComplianceFailure / RuntimeGateError event details. Auditor chain
+# closure: pubkey from fleet.nix → JCS canonical event → 64-byte
+# ed25519 sig.
+ssh-key = { version = "0.6", features = ["ed25519"] }
+serde_jcs = "0.2"
 # Phase 4 PR-1: SQLite persistence for cross-restart state. v0.1 used
 # the same rusqlite + refinery stack (crates/control-plane on
 # v0.1.1) — same versions, same posture (WAL + FK on at startup).

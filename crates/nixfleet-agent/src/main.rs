@@ -117,6 +117,22 @@ struct Args {
     /// fleets that haven't deployed `nixfleet-compliance`.
     #[arg(long, env = "NIXFLEET_AGENT_COMPLIANCE_GATE_MODE")]
     compliance_gate_mode: Option<String>,
+
+    /// Path to the host's OpenSSH ed25519 private key, used to sign
+    /// `ComplianceFailure` / `RuntimeGateError` event payloads
+    /// (issue #12 root-3 / #59). The CP verifies the signature
+    /// against `hosts.<hostname>.pubkey` from `fleet.resolved.json`,
+    /// closing the auditor chain `host_pubkey → JCS event → 64-byte
+    /// ed25519 sig`. Default `/etc/ssh/ssh_host_ed25519_key` matches
+    /// the path NixOS' sshd module generates. Missing file is fine
+    /// — signing is best-effort; events without signatures are
+    /// accepted by the CP but flagged unverified.
+    #[arg(
+        long,
+        env = "NIXFLEET_AGENT_SSH_HOST_KEY_FILE",
+        default_value = "/etc/ssh/ssh_host_ed25519_key"
+    )]
+    ssh_host_key_file: PathBuf,
 }
 
 #[tokio::main]
@@ -142,6 +158,31 @@ async fn main() -> anyhow::Result<()> {
     })?;
     let _trust: nixfleet_proto::TrustConfig =
         serde_json::from_str(&trust_raw).context("parse trust file")?;
+
+    // Load the host's SSH ed25519 private key for evidence signing
+    // (#12 root-3 / #59). Best-effort: missing or unreadable key →
+    // signer is None → events post unsigned. Hard-fail only on
+    // actual parse errors (corrupt key file).
+    let evidence_signer =
+        match nixfleet_agent::evidence_signer::EvidenceSigner::load(&args.ssh_host_key_file) {
+            Ok(Some(s)) => {
+                tracing::info!(
+                    path = %args.ssh_host_key_file.display(),
+                    "loaded SSH host key — evidence signing active",
+                );
+                Some(s)
+            }
+            Ok(None) => None,
+            Err(err) => {
+                tracing::warn!(
+                    path = %args.ssh_host_key_file.display(),
+                    error = %format!("{err:#}"),
+                    "ssh host key parse error — evidence signing disabled",
+                );
+                None
+            }
+        };
+    let evidence_signer = std::sync::Arc::new(evidence_signer);
 
     // First-boot enrollment. When the agent starts and finds no
     // client cert at the configured path, AND a bootstrap token is
@@ -466,6 +507,34 @@ async fn main() -> anyhow::Result<()> {
                                         "compliance gate: failures — posting per-control events",
                                     );
                                     for ctrl in failures {
+                                        let articles =
+                                            nixfleet_agent::compliance::flatten_framework_articles(
+                                                &ctrl.framework_articles,
+                                            );
+                                        let snippet = nixfleet_agent::compliance::truncate_evidence_snippet(
+                                            &ctrl.checks,
+                                        );
+                                        // Build the signed payload (#12 root-3 / #59).
+                                        // The CP rebuilds an identical struct from
+                                        // the wire ReportEvent + cert-CN hostname
+                                        // and verifies against fleet.nix pubkey.
+                                        let snippet_sha = nixfleet_agent::evidence_signer::sha256_jcs(
+                                            &snippet,
+                                        )
+                                        .unwrap_or_default();
+                                        let signed_payload = nixfleet_agent::evidence_signer::ComplianceFailureSignedPayload {
+                                            hostname: &args.machine_id,
+                                            rollout: Some(&target.channel_ref),
+                                            control_id: &ctrl.control,
+                                            status: &ctrl.status,
+                                            framework_articles: &articles,
+                                            evidence_collected_at: evidence.timestamp,
+                                            evidence_snippet_sha256: snippet_sha,
+                                        };
+                                        let signature = evidence_signer
+                                            .as_ref()
+                                            .as_ref()
+                                            .and_then(|s| s.sign(&signed_payload).ok());
                                         post_report(
                                             &client_handle,
                                             &args.control_plane_url,
@@ -474,16 +543,10 @@ async fn main() -> anyhow::Result<()> {
                                             ReportEvent::ComplianceFailure {
                                                 control_id: ctrl.control.clone(),
                                                 status: ctrl.status.clone(),
-                                                framework_articles:
-                                                    nixfleet_agent::compliance::flatten_framework_articles(
-                                                        &ctrl.framework_articles,
-                                                    ),
-                                                evidence_snippet: Some(
-                                                    nixfleet_agent::compliance::truncate_evidence_snippet(
-                                                        &ctrl.checks,
-                                                    ),
-                                                ),
+                                                framework_articles: articles,
+                                                evidence_snippet: Some(snippet),
                                                 evidence_collected_at: evidence.timestamp,
+                                                signature,
                                             },
                                         )
                                         .await;
@@ -519,6 +582,18 @@ async fn main() -> anyhow::Result<()> {
                                             "compliance gate: ERROR — posting event, allowing confirm (permissive mode)",
                                         );
                                     }
+                                    let signed_payload = nixfleet_agent::evidence_signer::RuntimeGateErrorSignedPayload {
+                                        hostname: &args.machine_id,
+                                        rollout: Some(&target.channel_ref),
+                                        reason,
+                                        collector_exit_code: *collector_exit_code,
+                                        evidence_collected_at: *evidence_collected_at,
+                                        activation_completed_at,
+                                    };
+                                    let signature = evidence_signer
+                                        .as_ref()
+                                        .as_ref()
+                                        .and_then(|s| s.sign(&signed_payload).ok());
                                     post_report(
                                         &client_handle,
                                         &args.control_plane_url,
@@ -529,6 +604,7 @@ async fn main() -> anyhow::Result<()> {
                                             collector_exit_code: *collector_exit_code,
                                             evidence_collected_at: *evidence_collected_at,
                                             activation_completed_at,
+                                            signature,
                                         },
                                     )
                                     .await;

@@ -15,6 +15,7 @@ pub mod auth_cn;
 pub mod channel_refs_poll;
 pub mod db;
 pub mod dispatch;
+pub mod evidence_verify;
 pub mod issuance;
 pub mod observed_projection;
 pub mod revocations_poll;
@@ -22,6 +23,7 @@ pub mod rollback_timer;
 pub mod server;
 pub mod signed_fetch;
 pub mod tls;
+pub mod wave_gate;
 
 use std::fs;
 use std::path::PathBuf;
