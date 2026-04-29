@@ -147,6 +147,7 @@ const BOOTED_SYSTEM: &str = "/run/booted-system";
 /// reboot. Used by the CP to detect that a host actually rebooted
 /// (e.g. correlated with `pendingGeneration` clearing on next
 /// checkin).
+#[cfg(target_os = "linux")]
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
 
 /// Read `/run/current-system`'s symlink target and extract the
@@ -191,12 +192,55 @@ fn closure_hash_from_path(p: &Path) -> String {
         .unwrap_or_else(|| s.to_string())
 }
 
-/// Read `/proc/sys/kernel/random/boot_id`. The file is a single
-/// UUID + newline; we trim and return.
+/// Per-boot identifier: stable for the lifetime of the running
+/// kernel, rotates on reboot. The CP uses it to detect that a host
+/// actually rebooted (correlates with `pendingGeneration` clearing
+/// on the next checkin) — the only operation performed against the
+/// value is string-equality, so any stable per-boot string suffices.
+///
+/// Linux: read `/proc/sys/kernel/random/boot_id`, a single UUID +
+/// newline.
+///
+/// macOS: read `kern.boottime` via sysctl and format as
+/// `<sec>.<usec>`. The sysctl returns a `struct timeval` carrying
+/// the boot timestamp, which is stable for the boot session and
+/// changes across reboots — same semantics as Linux's
+/// `boot_id`. (macOS has no equivalent of `/proc`; `IOPlatformUUID`
+/// is a HARDWARE id that does NOT rotate on reboot, so it's the
+/// wrong primitive here.)
+#[cfg(target_os = "linux")]
 pub fn boot_id() -> Result<String> {
     let raw = std::fs::read_to_string(BOOT_ID_PATH)
         .with_context(|| format!("read {BOOT_ID_PATH}"))?;
     Ok(raw.trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+pub fn boot_id() -> Result<String> {
+    use std::mem::MaybeUninit;
+
+    let name = std::ffi::CString::new("kern.boottime").expect("static CStr");
+    let mut tv: MaybeUninit<libc::timeval> = MaybeUninit::uninit();
+    let mut size = std::mem::size_of::<libc::timeval>();
+    // SAFETY: sysctlbyname is async-signal-safe; we pass a valid
+    // mut pointer to a stack-allocated `timeval` and the matching
+    // size. On success the kernel initialises the buffer; we
+    // gate the `assume_init` on rc == 0.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            tv.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return Err(anyhow::Error::new(std::io::Error::last_os_error())
+            .context("sysctl kern.boottime"));
+    }
+    let tv = unsafe { tv.assume_init() };
+    Ok(format!("{}.{:06}", tv.tv_sec, tv.tv_usec))
 }
 
 /// Build the `currentGeneration` GenerationRef. `channel_ref` is
@@ -440,5 +484,28 @@ mod tests {
         let p: PathBuf = "/some/odd/path".into();
         let got = closure_hash_from_path(&p);
         assert_eq!(got, "path", "rsplit/next still returns the leaf");
+    }
+
+    #[test]
+    fn boot_id_returns_a_non_empty_string() {
+        // Smoke test: the per-OS implementation must produce a
+        // non-empty per-boot identifier on the host running the
+        // tests. Catches the regression caught on aether
+        // (2026-04-29) where darwin agents tried to read
+        // `/proc/sys/kernel/random/boot_id` and failed every
+        // checkin.
+        let id = boot_id().expect("boot_id() must succeed on the test host");
+        assert!(!id.is_empty(), "boot_id() returned an empty string");
+    }
+
+    #[test]
+    fn boot_id_is_stable_within_a_process() {
+        // The CP compares boot_ids by string equality across
+        // checkins. Any non-determinism within a single process
+        // (e.g. re-reading a moving timestamp) would make every
+        // checkin look like a fresh boot.
+        let a = boot_id().unwrap();
+        let b = boot_id().unwrap();
+        assert_eq!(a, b, "boot_id must be stable within the running process");
     }
 }
