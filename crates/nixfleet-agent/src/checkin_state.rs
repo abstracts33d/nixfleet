@@ -1,8 +1,12 @@
-//! System introspection for checkin body assembly.
+//! Persistence + shared closure-hash helpers for the checkin body.
 //!
-//! Reads what the agent reports about itself: closure hash, pending
-//! generation, boot ID. All file I/O is `std::fs::*` — these are
-//! tiny reads of /run + /proc, no async needed.
+//! Platform-specific introspection (`boot_id`, `pending_generation`)
+//! lives behind the `HostFacts` trait in `crate::host_facts`. This
+//! module owns:
+//!
+//! - the `/run/current-system` reader (works the same on Linux and
+//!   nix-darwin), and
+//! - the on-disk persistence of last-confirm + last-dispatch state.
 
 use std::path::Path;
 #[cfg(test)]
@@ -11,7 +15,6 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::agent_wire::{GenerationRef, PendingGeneration};
 
 /// Filename inside `--state-dir` that carries the agent's most
 /// recent successful confirm. Two-line plaintext format:
@@ -138,41 +141,16 @@ pub fn clear_last_dispatched(state_dir: &Path) -> Result<()> {
 /// is on the declared closure.
 const CURRENT_SYSTEM: &str = "/run/current-system";
 
-/// Path to the symlink pointing at the system that booted. When
-/// this differs from `/run/current-system`, the host has a pending
-/// generation queued for next reboot. Linux-only: nix-darwin has no
-/// equivalent because `darwin-rebuild switch` activates without a
-/// kernel boot (no kernel involved at all), so the
-/// "booted vs activated" distinction doesn't exist there.
-#[cfg(target_os = "linux")]
-const BOOTED_SYSTEM: &str = "/run/booted-system";
-
-/// Linux's per-boot UUID. Stable for a single boot; rotates on
-/// reboot. Used by the CP to detect that a host actually rebooted
-/// (e.g. correlated with `pendingGeneration` clearing on next
-/// checkin).
-#[cfg(target_os = "linux")]
-const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
-
 /// Read `/run/current-system`'s symlink target and extract the
 /// store-path closure hash (the 32-char nix-store hash before the
 /// `-` separator). Returns the full store path on platforms where
 /// the symlink target shape doesn't match the expected pattern, so
 /// the agent still reports something rather than failing the
-/// checkin.
+/// checkin. Works on both NixOS and nix-darwin — both materialise
+/// `/run/current-system` as a symlink into `/nix/store`.
 pub fn current_closure_hash() -> Result<String> {
     let target = std::fs::read_link(CURRENT_SYSTEM)
         .with_context(|| format!("readlink {CURRENT_SYSTEM}"))?;
-    Ok(closure_hash_from_path(&target))
-}
-
-/// Same as [`current_closure_hash`] for `/run/booted-system`. The
-/// caller compares the two to decide whether to populate
-/// `pendingGeneration`. Linux-only — see `BOOTED_SYSTEM`.
-#[cfg(target_os = "linux")]
-fn booted_closure_hash() -> Result<String> {
-    let target = std::fs::read_link(BOOTED_SYSTEM)
-        .with_context(|| format!("readlink {BOOTED_SYSTEM}"))?;
     Ok(closure_hash_from_path(&target))
 }
 
@@ -189,99 +167,12 @@ fn booted_closure_hash() -> Result<String> {
 ///
 /// Falls back to the full path string if the shape doesn't match,
 /// so the field is always populated.
-fn closure_hash_from_path(p: &Path) -> String {
+pub(crate) fn closure_hash_from_path(p: &Path) -> String {
     let s = p.to_string_lossy();
     s.rsplit('/')
         .next()
         .map(str::to_string)
         .unwrap_or_else(|| s.to_string())
-}
-
-/// Per-boot identifier: stable for the lifetime of the running
-/// kernel, rotates on reboot. The CP uses it to detect that a host
-/// actually rebooted (correlates with `pendingGeneration` clearing
-/// on the next checkin) — the only operation performed against the
-/// value is string-equality, so any stable per-boot string suffices.
-///
-/// Linux: read `/proc/sys/kernel/random/boot_id`, a single UUID +
-/// newline.
-///
-/// macOS: read `kern.boottime` via sysctl and format as
-/// `<sec>.<usec>`. The sysctl returns a `struct timeval` carrying
-/// the boot timestamp, which is stable for the boot session and
-/// changes across reboots — same semantics as Linux's
-/// `boot_id`. (macOS has no equivalent of `/proc`; `IOPlatformUUID`
-/// is a HARDWARE id that does NOT rotate on reboot, so it's the
-/// wrong primitive here.)
-#[cfg(target_os = "linux")]
-pub fn boot_id() -> Result<String> {
-    let raw = std::fs::read_to_string(BOOT_ID_PATH)
-        .with_context(|| format!("read {BOOT_ID_PATH}"))?;
-    Ok(raw.trim().to_string())
-}
-
-#[cfg(target_os = "macos")]
-pub fn boot_id() -> Result<String> {
-    use std::mem::MaybeUninit;
-
-    let name = std::ffi::CString::new("kern.boottime").expect("static CStr");
-    let mut tv: MaybeUninit<libc::timeval> = MaybeUninit::uninit();
-    let mut size = std::mem::size_of::<libc::timeval>();
-    // SAFETY: sysctlbyname is async-signal-safe; we pass a valid
-    // mut pointer to a stack-allocated `timeval` and the matching
-    // size. On success the kernel initialises the buffer; we
-    // gate the `assume_init` on rc == 0.
-    let rc = unsafe {
-        libc::sysctlbyname(
-            name.as_ptr(),
-            tv.as_mut_ptr() as *mut libc::c_void,
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc != 0 {
-        return Err(anyhow::Error::new(std::io::Error::last_os_error())
-            .context("sysctl kern.boottime"));
-    }
-    let tv = unsafe { tv.assume_init() };
-    Ok(format!("{}.{:06}", tv.tv_sec, tv.tv_usec))
-}
-
-/// Build the `currentGeneration` GenerationRef. `channel_ref` is
-/// `None` until the agent's channel is correlated by the projection.
-pub fn current_generation_ref() -> Result<GenerationRef> {
-    Ok(GenerationRef {
-        closure_hash: current_closure_hash()?,
-        channel_ref: None,
-        boot_id: boot_id()?,
-    })
-}
-
-/// Build the `pendingGeneration` PendingGeneration when
-/// `/run/booted-system` differs from `/run/current-system`. Returns
-/// `Ok(None)` when they match (no pending), `Err` only on read
-/// failures of either symlink.
-#[cfg(target_os = "linux")]
-pub fn pending_generation() -> Result<Option<PendingGeneration>> {
-    let current = current_closure_hash()?;
-    let booted = booted_closure_hash()?;
-    if current == booted {
-        return Ok(None);
-    }
-    Ok(Some(PendingGeneration {
-        closure_hash: current,
-        scheduled_for: None,
-    }))
-}
-
-/// Darwin always reports no pending generation: nix-darwin activates
-/// in-process via `darwin-rebuild switch` with no kernel reboot, so
-/// there is no "booted vs activated" delta to surface. Mirrors the
-/// per-OS split already in place for `boot_id`.
-#[cfg(target_os = "macos")]
-pub fn pending_generation() -> Result<Option<PendingGeneration>> {
-    Ok(None)
 }
 
 /// Wall-clock seconds since the agent process started. The caller
@@ -499,28 +390,5 @@ mod tests {
         let p: PathBuf = "/some/odd/path".into();
         let got = closure_hash_from_path(&p);
         assert_eq!(got, "path", "rsplit/next still returns the leaf");
-    }
-
-    #[test]
-    fn boot_id_returns_a_non_empty_string() {
-        // Smoke test: the per-OS implementation must produce a
-        // non-empty per-boot identifier on the host running the
-        // tests. Catches the regression caught on aether
-        // (2026-04-29) where darwin agents tried to read
-        // `/proc/sys/kernel/random/boot_id` and failed every
-        // checkin.
-        let id = boot_id().expect("boot_id() must succeed on the test host");
-        assert!(!id.is_empty(), "boot_id() returned an empty string");
-    }
-
-    #[test]
-    fn boot_id_is_stable_within_a_process() {
-        // The CP compares boot_ids by string equality across
-        // checkins. Any non-determinism within a single process
-        // (e.g. re-reading a moving timestamp) would make every
-        // checkin look like a fresh boot.
-        let a = boot_id().unwrap();
-        let b = boot_id().unwrap();
-        assert_eq!(a, b, "boot_id must be stable within the running process");
     }
 }

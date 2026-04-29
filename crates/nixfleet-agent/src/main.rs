@@ -633,7 +633,9 @@ async fn main() -> anyhow::Result<()> {
                                 continue;
                             }
 
-                            let boot_id = nixfleet_agent::checkin_state::boot_id()
+                            use nixfleet_agent::host_facts::{Host, HostFacts};
+                            let boot_id = Host::new()
+                                .boot_id()
                                 .unwrap_or_else(|_| "unknown".to_string());
                             // Rollout id round-trips via target.channel_ref
                             // (CP populates it in the dispatch loop).
@@ -892,8 +894,10 @@ async fn send_checkin(
     args: &Args,
     started_at: Instant,
 ) -> anyhow::Result<nixfleet_proto::agent_wire::CheckinResponse> {
-    let current_generation = checkin_state::current_generation_ref()?;
-    let pending_generation = checkin_state::pending_generation()?;
+    use nixfleet_agent::host_facts::{Host, HostFacts};
+    let host = Host::new();
+    let current_generation = host.current_generation_ref()?;
+    let pending_generation = host.pending_generation()?;
     let uptime_secs = checkin_state::uptime_secs(started_at);
 
     // Gap B: attest the most recent confirm timestamp when it

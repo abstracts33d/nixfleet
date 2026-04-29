@@ -17,4 +17,5 @@ pub mod compliance;
 pub mod enrollment;
 pub mod evidence_signer;
 pub mod freshness;
+pub mod host_facts;
 pub mod recovery;
