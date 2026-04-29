@@ -84,9 +84,9 @@
       cargoExtraArgs = "-p nixfleet-cli";
       src = fileSetForCrate {crate = ./crates/nixfleet-cli;};
       meta = {
-        description = "NixFleet v0.2 operator CLI";
+        description = "NixFleet operator-workstation helper binaries (mint-token, derive-pubkey)";
         license = lib.licenses.mit;
-        mainProgram = "nixfleet";
+        mainProgram = "nixfleet-mint-token";
       };
     });
 
