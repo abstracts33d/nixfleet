@@ -310,7 +310,7 @@ async fn main() -> anyhow::Result<()> {
                     // 410 from /confirm independently triggers rollback.
                     use nixfleet_agent::activation::ActivationOutcome;
                     match nixfleet_agent::activation::activate(target).await {
-                        Ok(ActivationOutcome::Success) => {
+                        Ok(ActivationOutcome::FiredAndPolled) => {
                             let boot_id = nixfleet_agent::checkin_state::boot_id()
                                 .unwrap_or_else(|_| "unknown".to_string());
                             // Rollout id round-trips via target.channel_ref
@@ -412,10 +412,10 @@ async fn main() -> anyhow::Result<()> {
                             )
                             .await;
                         }
-                        Ok(ActivationOutcome::SwitchFailed { phase, exit_status }) => {
+                        Ok(ActivationOutcome::SwitchFailed { phase, exit_code }) => {
                             tracing::error!(
                                 phase = %phase,
-                                exit_code = ?exit_status.code(),
+                                exit_code = ?exit_code,
                                 "activation: switch failed; rolling back",
                             );
                             post_report(
@@ -425,7 +425,7 @@ async fn main() -> anyhow::Result<()> {
                                 Some(&target.channel_ref),
                                 ReportEvent::ActivationFailed {
                                     phase: phase.clone(),
-                                    exit_code: exit_status.code(),
+                                    exit_code,
                                     stderr_tail: None,
                                 },
                             )

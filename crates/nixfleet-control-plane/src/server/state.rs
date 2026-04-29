@@ -35,12 +35,27 @@ pub(super) const NEXT_CHECKIN_SECS: u32 = 60;
 pub(super) const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Default `--confirm-deadline-secs` when the operator doesn't pass
-/// a flag. 120s is the spec-D1 default — enough headroom for a
-/// closure download + activation, short enough that a stuck agent
-/// surfaces in the journal within one rollback-timer tick. The
-/// effective per-server value is held on `AppState.confirm_deadline_secs`,
-/// configured via clap (`--confirm-deadline-secs`) at start-up.
-pub const DEFAULT_CONFIRM_DEADLINE_SECS: i64 = 120;
+/// a flag.
+///
+/// 360s sits comfortably above the agent's fire-and-forget activation
+/// budget (ADR-011: 300s of `/run/current-system` polling after the
+/// detached `systemd-run --unit=nixfleet-switch` is fired) plus 60s
+/// of slack for clock skew + closure download tail latency. The
+/// coupling matters:
+///
+/// - Confirm deadline < poll budget → CP magic-rollback fires while
+///   agent is still polling. Agent eventually polls success, posts
+///   confirm, CP returns 410 (deadline expired), agent triggers
+///   local rollback. Chaos cascade.
+/// - Confirm deadline ≥ poll budget + slack → poll finishes first;
+///   agent posts confirm in time; rollback timer never trips on a
+///   healthy activation.
+///
+/// Operators tuning per-channel `activate.confirmWindowSecs` should
+/// preserve the same `≥ poll_budget + slack` invariant. See
+/// `crates/nixfleet-agent/src/activation.rs` for the current poll
+/// budget.
+pub const DEFAULT_CONFIRM_DEADLINE_SECS: i64 = 360;
 
 /// Inputs the `serve` subcommand receives from clap.
 #[derive(Debug, Clone)]

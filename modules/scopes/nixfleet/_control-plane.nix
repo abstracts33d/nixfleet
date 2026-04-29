@@ -155,14 +155,22 @@ in {
 
     confirmDeadlineSecs = lib.mkOption {
       type = lib.types.ints.positive;
-      default = 120;
+      default = 360;
       description = ''
         Seconds the dispatch loop gives an agent to fetch + activate
         + confirm a target before the magic-rollback timer marks the
-        pending row as `rolled-back`. 120s is the spec default —
-        tune up for slow-link channels (large closures over
-        residential uplinks) or down for tight rollout windows.
-        Wraps the binary's `--confirm-deadline-secs`.
+        pending row as `rolled-back`.
+
+        Default 360s: agents activate via fire-and-forget (ADR-011,
+        ~300s polling `/run/current-system` after the detached
+        `systemd-run` is fired) plus 60s slack. Dropping below ~310s
+        creates a chaos cascade — CP rolls back while the agent is
+        still polling, agent eventually polls success, posts confirm,
+        CP returns 410, agent triggers local rollback.
+
+        Tune up for slow-link channels (large closures over residential
+        uplinks); avoid tuning down without first lowering the
+        agent-side poll budget. Wraps the binary's `--confirm-deadline-secs`.
       '';
     };
 

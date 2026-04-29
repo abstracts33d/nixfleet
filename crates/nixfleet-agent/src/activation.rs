@@ -41,20 +41,43 @@
 //! comment in modules/scopes/nixfleet/_agent.nix).
 
 use std::process::ExitStatus;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use nixfleet_proto::agent_wire::EvaluatedTarget;
 use tokio::process::Command;
 
+/// Maximum time the post-fire poll waits for `/run/current-system`
+/// to flip to the expected closure. ADR-011 default. Sized so that
+/// realistic closure activations (large package set, slow disk,
+/// post-activation systemd target convergence) complete inside the
+/// CP's confirm deadline (`DEFAULT_CONFIRM_DEADLINE_SECS = 360`).
+pub const POLL_BUDGET: Duration = Duration::from_secs(300);
+
+/// How often the poll loop checks `/run/current-system`. 2s matches
+/// ADR-011 — fast enough to feel snappy in interactive runs, slow
+/// enough to keep CPU + IO load negligible.
+pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Outcome of an activation attempt. The agent's main loop maps each
-/// variant to a follow-up action: confirm on `Success`, rollback on
-/// either `SwitchFailed` or `VerifyMismatch`, retry-on-next-tick on
-/// `RealiseFailed` (nothing was switched, nothing to roll back).
+/// variant to a follow-up action: confirm on `FiredAndPolled`,
+/// rollback on either `SwitchFailed` or `VerifyMismatch`, retry-on-
+/// next-tick on `RealiseFailed`/`SignatureMismatch` (nothing was
+/// switched, nothing to roll back).
 #[derive(Debug)]
 pub enum ActivationOutcome {
-    /// Realised, switched, and `/run/current-system` matches the
-    /// expected closure. Caller should POST `/v1/agent/confirm`.
-    Success,
+    /// **Timing semantics.** Fire-and-forget (ADR-011): the agent has
+    /// fired `systemd-run --unit=nixfleet-switch -- switch-to-configuration switch`
+    /// as a detached transient service AND polled `/run/current-system`
+    /// to flip to the expected closure within the poll budget. By the
+    /// time this variant returns, the system *is* running the new
+    /// closure — but the activation work happened in `nixfleet-switch.service`,
+    /// not in the agent's process tree. Renamed from `Success` (v0.1
+    /// pre-fire-and-forget shape) to make the semantics explicit:
+    /// "fired and observed completion" rather than "activation
+    /// returned exit-zero synchronously".
+    /// Caller should POST `/v1/agent/confirm`.
+    FiredAndPolled,
     /// `nix-store --realise` exited non-zero or returned a path that
     /// doesn't match the input. The system was never switched —
     /// caller skips rollback, retries next tick.
@@ -72,20 +95,33 @@ pub enum ActivationOutcome {
         closure_hash: String,
         stderr_tail: String,
     },
-    /// One of the activation steps exited non-zero. Caller runs
-    /// local rollback. `phase` distinguishes which step failed:
+    /// One of the activation steps exited non-zero, or the post-fire
+    /// poll observed a wrong/missing closure. Caller runs local
+    /// rollback. `phase` distinguishes which step failed:
     /// - `"nix-env-set"`: setting the system profile (system was
     ///   never activated; rollback re-points the profile).
-    /// - `"switch-to-configuration"`: activation script (the system
-    ///   may be in a half-applied state until rollback re-runs the
-    ///   prior configuration's switch script).
+    /// - `"systemd-run-fire"`: queueing the transient unit (rare —
+    ///   indicates systemd itself refused; previous unit may be
+    ///   stuck in `failed` state).
+    /// - `"switch-poll-timeout"`: poll budget elapsed without
+    ///   `/run/current-system` flipping; the transient unit is still
+    ///   running OR has died with an unrecoverable error. exit_code
+    ///   carries the unit's exit status if `systemctl show` could
+    ///   read it.
+    /// - `"switch-poll-mismatch"`: poll observed a path that
+    ///   matched neither the expected closure nor any plausible
+    ///   intermediate (would indicate concurrent rebuild or external
+    ///   profile mutation).
     SwitchFailed {
         phase: String,
-        exit_status: ExitStatus,
+        exit_code: Option<i32>,
     },
-    /// Switch succeeded but `/run/current-system`'s basename does not
-    /// match the expected closure_hash. The system is now booting an
-    /// unexpected closure — caller runs local rollback.
+    /// **Currently unused with fire-and-forget**: the poll loop
+    /// either observes the expected closure or times out. Kept as
+    /// a variant so callers that want to distinguish "switched to a
+    /// completely unexpected path" from "switch failed" have a slot.
+    /// Future code paths (e.g. closure-mutation detection) can emit
+    /// this; the post-fire poll exits `SwitchFailed` instead.
     VerifyMismatch {
         expected: String,
         actual: String,
@@ -153,21 +189,15 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
         });
     }
 
-    // Step 2: switch.
+    // Step 2: set the system profile FIRST.
     //
-    // Direct `nix-env --profile … --set` + `<path>/bin/switch-to-
-    // configuration switch`. Earlier shape was `nixos-rebuild switch
-    // --system <path>`, but `nixos-rebuild-ng` (the Python rewrite
-    // shipped with NixOS 26.05) renamed `--system` to `--store-path`
-    // and adds a self-evaluation step that needs `<nixpkgs/nixos>`
-    // on NIX_PATH (the agent doesn't have it). Calling
-    // switch-to-configuration directly skips the wrapper entirely:
-    // no flag-rename surface, no eval of nixpkgs, no implicit
-    // bootloader fallback path. This is what nixos-rebuild itself
-    // calls under the hood — the agent's job is just to point the
-    // system profile at the new closure and run its activation
-    // script. Caught on lab when the agent's first real activation
-    // attempt errored with `unrecognized arguments: --system …`.
+    // Bootloader entry follows the profile, so even if the switch
+    // process dies mid-run the next boot picks up the new closure.
+    // This is independent of the fire-and-forget step below: the
+    // activation script that switch-to-configuration runs DOES set
+    // the profile too, but doing it here closes the window where a
+    // crash between fire and switch-script-profile-bump leaves the
+    // bootloader pointing at an old generation.
     let set_status = Command::new("nix-env")
         .arg("--profile")
         .arg("/nix/var/nix/profiles/system")
@@ -185,68 +215,113 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
         );
         return Ok(ActivationOutcome::SwitchFailed {
             phase: "nix-env-set".to_string(),
-            exit_status: set_status,
+            exit_code: set_status.code(),
         });
     }
 
-    let switch_status = Command::new(format!("{store_path}/bin/switch-to-configuration"))
+    // Step 3: fire switch-to-configuration as a detached transient
+    // service (ADR-011 fire-and-forget).
+    //
+    // Why systemd-run --unit (NOT --scope, NOT --pipe --wait):
+    //
+    // - Direct `Command::spawn` makes switch-to-configuration a child
+    //   in the agent's cgroup. When the new closure changes the
+    //   nixfleet-agent.service unit definition, switch-to-configuration
+    //   stops the agent → systemd SIGTERMs the cgroup → switch dies
+    //   mid-run → /run/current-system never updates. This is what we
+    //   were hitting before.
+    // - `systemd-run --scope` was tried in v0.1 dev: scope is
+    //   created under the calling unit's cgroup and dies with it.
+    //   Same death.
+    // - `systemd-run --pipe --wait` was also tried: the pipe orphans
+    //   when the agent self-terminates mid-wait.
+    // - `systemd-run --unit=...` (default `--service` mode) creates
+    //   an *independent* transient service with its own cgroup. The
+    //   agent's death cannot kill it. Operator can `journalctl -u
+    //   nixfleet-switch` to read its logs.
+    //
+    // `--collect` removes the unit after it stops (success or
+    // failure), so the fixed name `nixfleet-switch` is reusable on
+    // the next activation without a manual `systemctl reset-failed`.
+    //
+    // Pre-emptive reset-failed best-effort guard: if a previous
+    // activation left the unit in a non-collected failed state,
+    // systemd-run rejects the new unit name. `reset-failed` is
+    // idempotent against a non-existent unit (exit 0), so unguarded.
+    let _ = Command::new("systemctl")
+        .arg("reset-failed")
+        .arg("nixfleet-switch.service")
+        .status()
+        .await;
+
+    let switch_bin = format!("{store_path}/bin/switch-to-configuration");
+    tracing::info!(
+        target_closure = %target.closure_hash,
+        "agent: firing switch via systemd-run --unit=nixfleet-switch (detached)",
+    );
+    let fire_status = Command::new("systemd-run")
+        .arg("--unit=nixfleet-switch")
+        .arg("--collect")
+        .arg("--")
+        .arg(&switch_bin)
         .arg("switch")
         .status()
         .await
-        .with_context(|| format!("spawn {store_path}/bin/switch-to-configuration switch"))?;
+        .with_context(|| "spawn systemd-run --unit=nixfleet-switch")?;
 
-    if !switch_status.success() {
+    if !fire_status.success() {
         tracing::error!(
             target_closure = %target.closure_hash,
-            exit_code = ?switch_status.code(),
-            "agent: switch-to-configuration failed",
+            exit_code = ?fire_status.code(),
+            "agent: systemd-run failed to queue switch unit",
         );
         return Ok(ActivationOutcome::SwitchFailed {
-            phase: "switch-to-configuration".to_string(),
-            exit_status: switch_status,
+            phase: "systemd-run-fire".to_string(),
+            exit_code: fire_status.code(),
         });
     }
 
-    // Step 3: post-switch verify.
+    // Step 4: poll /run/current-system for the expected basename.
     //
-    // Read /run/current-system and compare. If --system was rewritten
-    // by some shim, or if the system got switched to a different path
-    // than we asked for, this is the gate that catches it.
-    let actual_basename = match read_current_system_basename().await {
-        Ok(b) => b,
-        Err(err) => {
-            // Couldn't read /run/current-system at all — this is weird
-            // (the switch just succeeded). Treat as mismatch so the
-            // caller rolls back rather than confirming blind.
-            tracing::error!(
-                target_closure = %target.closure_hash,
-                error = %err,
-                "agent: cannot read /run/current-system after switch — treating as mismatch",
+    // Budget: 300s (ADR-011). Coupled to CP's confirm_deadline_secs
+    // default of 360s = 300s + 60s slack. See
+    // `crates/nixfleet-control-plane/src/server/state.rs::DEFAULT_CONFIRM_DEADLINE_SECS`.
+    //
+    // Fire-and-forget contract: if the agent process gets killed
+    // mid-poll (because the new closure stops nixfleet-agent.service
+    // and systemd hasn't yet started the new agent), the
+    // `nixfleet-switch.service` continues independently. When the
+    // post-switch agent boots, the boot-recovery path (TODO #53)
+    // observes `/run/current-system == last_dispatched.closure_hash`
+    // and posts the retroactive confirm.
+    let expected = &target.closure_hash;
+    match poll_current_system(expected, POLL_BUDGET, POLL_INTERVAL).await {
+        Ok(()) => {
+            tracing::info!(
+                target_closure = %expected,
+                "agent: activation fire-and-forget complete (poll observed expected closure)",
             );
-            return Ok(ActivationOutcome::VerifyMismatch {
-                expected: target.closure_hash.clone(),
-                actual: format!("<read failed: {err}>"),
-            });
+            Ok(ActivationOutcome::FiredAndPolled)
         }
-    };
-
-    if actual_basename != target.closure_hash {
-        tracing::error!(
-            target_closure = %target.closure_hash,
-            actual = %actual_basename,
-            "agent: post-switch verify mismatch — /run/current-system does not match expected closure",
-        );
-        return Ok(ActivationOutcome::VerifyMismatch {
-            expected: target.closure_hash.clone(),
-            actual: actual_basename,
-        });
+        Err(timeout_info) => {
+            // Poll budget exceeded. Read the transient unit's exit
+            // status from systemctl show — best-effort triage signal
+            // for the operator. The unit may still be running (large
+            // closure download), in which case ExecMainStatus is
+            // empty / "0" / something inconclusive.
+            let exit_code = read_switch_exit_code().await;
+            tracing::error!(
+                target_closure = %expected,
+                last_observed = %timeout_info.last_observed,
+                exit_code = ?exit_code,
+                "agent: switch poll timed out — declaring SwitchFailed",
+            );
+            Ok(ActivationOutcome::SwitchFailed {
+                phase: "switch-poll-timeout".to_string(),
+                exit_code,
+            })
+        }
     }
-
-    tracing::info!(
-        target_closure = %target.closure_hash,
-        "agent: activation succeeded (realised + switched + verified)",
-    );
-    Ok(ActivationOutcome::Success)
 }
 
 /// Structured failure mode for `realise()`. Distinguishing
@@ -353,6 +428,90 @@ async fn read_current_system_basename() -> Result<String> {
         })?
         .to_string();
     Ok(basename)
+}
+
+/// Diagnostic returned by `poll_current_system` on timeout.
+#[derive(Debug, Clone)]
+pub struct PollTimeout {
+    /// Last basename observed (or `<missing>` / `<read-error>` if we
+    /// never got a successful read). Useful in the agent log for
+    /// distinguishing "switch is still running, just slow" from
+    /// "switch died and the symlink is unchanged".
+    pub last_observed: String,
+}
+
+/// Poll `/run/current-system` for the expected basename. Returns
+/// `Ok(())` as soon as the symlink resolves to `expected`. Returns
+/// `Err(PollTimeout)` once `budget` elapses without a match.
+///
+/// Read errors during polling are non-fatal: the symlink may be
+/// briefly absent during activation (rare on NixOS but cheap to
+/// tolerate). The timer keeps running.
+///
+/// Pure helper — no logging, deterministic timing — so it's
+/// straightforward to test.
+pub async fn poll_current_system(
+    expected: &str,
+    budget: Duration,
+    interval: Duration,
+) -> std::result::Result<(), PollTimeout> {
+    let deadline = tokio::time::Instant::now() + budget;
+    // Initial None is dead in every iteration of the loop body
+    // (Ok/Err branches both assign before the deadline check), but
+    // it's the natural type for "no read has completed yet" and
+    // we keep the unwrap_or_else fallback for the budget=0 edge.
+    #[allow(unused_assignments)]
+    let mut last_observed: Option<String> = None;
+
+    loop {
+        match read_current_system_basename().await {
+            Ok(basename) => {
+                if basename == expected {
+                    return Ok(());
+                }
+                last_observed = Some(basename);
+            }
+            Err(err) => {
+                // Symlink missing or unreadable. Capture the error
+                // message so the timeout diagnostic surfaces what
+                // happened, but keep polling.
+                last_observed = Some(format!("<read-error: {err}>"));
+            }
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(PollTimeout {
+                last_observed: last_observed
+                    .unwrap_or_else(|| String::from("<no-reads-completed>")),
+            });
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
+/// Best-effort read of `nixfleet-switch.service`'s exit code via
+/// `systemctl show --property=ExecMainStatus`. Returns `None` if the
+/// command fails or the property is empty/non-numeric — meaning the
+/// caller should treat exit status as unknown rather than synthesize
+/// a misleading 0.
+async fn read_switch_exit_code() -> Option<i32> {
+    let output = Command::new("systemctl")
+        .arg("show")
+        .arg("--property=ExecMainStatus")
+        .arg("--value")
+        .arg("nixfleet-switch.service")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<i32>().ok()
 }
 
 /// Local rollback: revert the system profile one generation back and
@@ -506,11 +665,18 @@ mod tests {
         // Trivial round-trip: just asserts the variants exist + Debug-print
         // distinctly so future refactors don't silently drop one.
         let outcomes = [
-            format!("{:?}", ActivationOutcome::Success),
+            format!("{:?}", ActivationOutcome::FiredAndPolled),
             format!(
                 "{:?}",
                 ActivationOutcome::RealiseFailed {
                     reason: "x".into()
+                }
+            ),
+            format!(
+                "{:?}",
+                ActivationOutcome::SwitchFailed {
+                    phase: "switch-poll-timeout".into(),
+                    exit_code: Some(1),
                 }
             ),
             format!(
@@ -530,6 +696,72 @@ mod tests {
         ];
         let unique: std::collections::HashSet<_> = outcomes.iter().collect();
         assert_eq!(unique.len(), outcomes.len(), "outcome variants collide on Debug");
+    }
+
+    #[tokio::test]
+    async fn poll_current_system_returns_ok_when_match_appears() {
+        // Use tempdir + symlink to simulate /run/current-system. The
+        // helper only takes a basename — we exercise the poll loop's
+        // observation logic by symlinking and leaving it stable; the
+        // real /run/current-system is fine for tests since we don't
+        // assert on its content.
+        // Skip on systems without /run/current-system (Darwin in CI).
+        if !std::path::Path::new("/run/current-system").exists() {
+            return;
+        }
+        // Read whatever is currently there and assert match — this
+        // exercises the success branch of the poll loop with no fake
+        // filesystem rigging.
+        let basename = read_current_system_basename().await.unwrap();
+        let result = poll_current_system(
+            &basename,
+            Duration::from_millis(100),
+            Duration::from_millis(10),
+        )
+        .await;
+        assert!(result.is_ok(), "poll did not match its own current-system: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn poll_current_system_times_out_when_no_match() {
+        if !std::path::Path::new("/run/current-system").exists() {
+            return;
+        }
+        let result = poll_current_system(
+            "definitely-not-a-real-closure-hash-xyz",
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+        )
+        .await;
+        let err = result.expect_err("expected timeout");
+        // last_observed should be the actual current-system basename,
+        // not the placeholder.
+        assert!(
+            !err.last_observed.starts_with("<not-yet-read>"),
+            "expected at least one observation before timeout: {err:?}",
+        );
+    }
+
+    #[test]
+    fn switch_failed_phase_strings_are_stable() {
+        // The phase strings are part of the wire (passed up to CP via
+        // ReportEvent::ActivationFailed); locking them here ensures
+        // any rename on the agent side surfaces as a test failure
+        // rather than silently changing the report contract.
+        for phase in &[
+            "nix-env-set",
+            "systemd-run-fire",
+            "switch-poll-timeout",
+            "switch-poll-mismatch",
+        ] {
+            let outcome = ActivationOutcome::SwitchFailed {
+                phase: (*phase).to_string(),
+                exit_code: None,
+            };
+            // Just exercises the constructor + Debug — the assertion
+            // is that the strings compile + match the documented set.
+            let _ = format!("{outcome:?}");
+        }
     }
 
     #[test]

@@ -92,10 +92,14 @@ struct ServeFlags {
 
     /// Time the dispatch loop gives an agent to fetch + activate +
     /// confirm a target before the magic-rollback timer marks the
-    /// pending row as `rolled-back`. 120s is the spec default — tune
-    /// up for slow-link channels (large closures over residential
-    /// uplinks) or down for tight rollout windows. Issue #2 step 5.
-    #[arg(long, default_value_t = 120)]
+    /// pending row as `rolled-back`. Default 360s: agents activate
+    /// via fire-and-forget (ADR-011, ~300s poll budget) + 60s slack;
+    /// dropping below ~310s creates a chaos cascade (CP rolls back
+    /// while agent is still polling). Tune up for slow-link channels
+    /// (large closures over residential uplinks); avoid tuning down
+    /// without first lowering the agent-side poll budget. Issue #2
+    /// step 5; coupling notes on `DEFAULT_CONFIRM_DEADLINE_SECS`.
+    #[arg(long, default_value_t = 360)]
     confirm_deadline_secs: i64,
 
     // Channel-refs poll. The artifact + signature URLs together gate
