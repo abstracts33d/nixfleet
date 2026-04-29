@@ -888,24 +888,21 @@ pub(super) async fn enroll(
 
     let now = chrono::Utc::now();
 
+    let db = state.db.as_ref().ok_or_else(|| {
+        tracing::warn!("enroll: no db configured — endpoint unusable");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
     // 1. Replay defense.
-    if let Some(db) = &state.db {
-        match db.token_seen(&req.token.claims.nonce) {
-            Ok(true) => {
-                tracing::warn!(nonce = %req.token.claims.nonce, "enroll: token replay rejected (db)");
-                return Err(StatusCode::CONFLICT);
-            }
-            Ok(false) => {}
-            Err(err) => {
-                tracing::error!(error = %err, "enroll: db token_seen failed");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    } else {
-        let seen = state.seen_token_nonces.read().await;
-        if seen.contains(&req.token.claims.nonce) {
-            tracing::warn!(nonce = %req.token.claims.nonce, "enroll: token replay rejected (mem)");
+    match db.token_seen(&req.token.claims.nonce) {
+        Ok(true) => {
+            tracing::warn!(nonce = %req.token.claims.nonce, "enroll: token replay rejected");
             return Err(StatusCode::CONFLICT);
+        }
+        Ok(false) => {}
+        Err(err) => {
+            tracing::error!(error = %err, "enroll: db token_seen failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
 
@@ -1021,16 +1018,8 @@ pub(super) async fn enroll(
     }
 
     // All checks passed — commit the nonce as seen.
-    if let Some(db) = &state.db {
-        if let Err(err) = db.record_token_nonce(&req.token.claims.nonce, &req.token.claims.hostname) {
-            tracing::warn!(error = %err, "enroll: db record_token_nonce failed; proceeding");
-        }
-    } else {
-        state
-            .seen_token_nonces
-            .write()
-            .await
-            .insert(req.token.claims.nonce.clone());
+    if let Err(err) = db.record_token_nonce(&req.token.claims.nonce, &req.token.claims.hostname) {
+        tracing::warn!(error = %err, "enroll: db record_token_nonce failed; proceeding");
     }
 
     // Issue the cert.

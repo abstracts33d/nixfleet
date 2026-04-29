@@ -6,7 +6,7 @@
 //! surface along. Public re-export from `server::mod` keeps the
 //! crate's external API unchanged.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -171,7 +171,6 @@ pub struct AppState {
     pub host_checkins: RwLock<HashMap<String, HostCheckinRecord>>,
     pub host_reports: RwLock<HashMap<String, VecDeque<ReportRecord>>>,
     pub channel_refs_cache: Arc<RwLock<crate::channel_refs_poll::ChannelRefsCache>>,
-    pub seen_token_nonces: RwLock<HashSet<String>>,
     pub issuance_paths: RwLock<IssuancePaths>,
     pub db: Option<Arc<crate::db::Db>>,
     pub closure_upstream: Option<ClosureUpstream>,
@@ -192,7 +191,6 @@ impl Default for AppState {
             channel_refs_cache: Arc::new(RwLock::new(
                 crate::channel_refs_poll::ChannelRefsCache::default(),
             )),
-            seen_token_nonces: RwLock::new(HashSet::new()),
             issuance_paths: RwLock::new(IssuancePaths::default()),
             db: None,
             closure_upstream: None,

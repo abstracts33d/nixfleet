@@ -191,6 +191,9 @@ async fn spawn_server(
         &observed,
         r#"{"channelRefs":{},"lastRolledRefs":{},"hostState":{},"activeRollouts":[]}"#,
     );
+    // Tempdir-backed SQLite — enroll uses it for token replay defense.
+    // Same pattern as tests/confirm.rs / wave_gate.rs / dispatch.rs.
+    let db_path = obs_dir.path().join("state.db");
 
     let args = server::ServeArgs {
         listen,
@@ -208,7 +211,7 @@ async fn spawn_server(
         confirm_deadline_secs: 120,
         channel_refs: None,
         revocations: None,
-        db_path: None,
+        db_path: Some(db_path),
         closure_upstream: None,
     };
     let handle = tokio::spawn(server::serve(args));
