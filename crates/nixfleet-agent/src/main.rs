@@ -161,6 +161,24 @@ async fn main() -> anyhow::Result<()> {
         args.client_key.as_deref(),
     )?;
 
+    // ADR-011 boot recovery path. Runs once at startup, BEFORE the
+    // poll loop. Detects the post-self-switch case where the agent
+    // got SIGTERMed mid-fire-and-forget poll: the new closure
+    // restarted nixfleet-agent.service, and on the new agent's boot
+    // /run/current-system points at the closure we were trying to
+    // dispatch. In that case, post the retroactive `/v1/agent/confirm`
+    // so the CP doesn't run out the deadline and roll us back on a
+    // success.
+    //
+    // Best-effort: failures are logged but not fatal. The next
+    // regular checkin re-converges via dispatch decision either way.
+    if let Err(err) = check_boot_recovery(&client, &args).await {
+        tracing::warn!(
+            error = %err,
+            "boot-recovery path errored (non-fatal); main loop will re-converge",
+        );
+    }
+
     tracing::info!(
         machine_id = %args.machine_id,
         cp = %args.control_plane_url,
@@ -301,13 +319,38 @@ async fn main() -> anyhow::Result<()> {
                         FreshnessCheck::Fresh => {}
                     }
 
+                    // Persist the dispatch BEFORE firing so the
+                    // post-self-switch boot-recovery path
+                    // (`check_boot_recovery`) can detect "the new
+                    // closure is live, send the retroactive confirm".
+                    // Best-effort: failures log but do not block
+                    // activation. The next regular checkin will
+                    // re-dispatch if recovery can't find the record.
+                    let dispatch_record = nixfleet_agent::checkin_state::LastDispatchRecord {
+                        closure_hash: target.closure_hash.clone(),
+                        channel_ref: target.channel_ref.clone(),
+                        rollout_id: target.rollout_id.clone(),
+                        dispatched_at: chrono::Utc::now(),
+                    };
+                    if let Err(err) = nixfleet_agent::checkin_state::write_last_dispatched(
+                        &args.state_dir,
+                        &dispatch_record,
+                    ) {
+                        tracing::warn!(
+                            error = %err,
+                            state_dir = %args.state_dir.display(),
+                            "write_last_dispatched failed; boot-recovery path will fall back to next-checkin re-dispatch",
+                        );
+                    }
+
                     // Realise + switch + verify the target.
-                    // On full Success → POST /v1/agent/confirm. On any
-                    // outcome that left the system in an unexpected
-                    // state (SwitchFailed, VerifyMismatch) → local
-                    // rollback. RealiseFailed left nothing switched —
-                    // skip rollback, retry next tick. CP returning
-                    // 410 from /confirm independently triggers rollback.
+                    // On full FiredAndPolled → POST /v1/agent/confirm.
+                    // On any outcome that left the system in an
+                    // unexpected state (SwitchFailed, VerifyMismatch)
+                    // → local rollback. RealiseFailed left nothing
+                    // switched — skip rollback, retry next tick.
+                    // CP returning 410 from /confirm independently
+                    // triggers rollback.
                     use nixfleet_agent::activation::ActivationOutcome;
                     match nixfleet_agent::activation::activate(target).await {
                         Ok(ActivationOutcome::FiredAndPolled) => {
@@ -365,6 +408,20 @@ async fn main() -> anyhow::Result<()> {
                                             error = %err,
                                             state_dir = %args.state_dir.display(),
                                             "write_last_confirmed failed; soak attestation will be missing on next checkin",
+                                        );
+                                    }
+                                    // Confirm landed → the dispatch
+                                    // record's job is done. Remove it
+                                    // so a future agent restart's
+                                    // boot-recovery path doesn't try
+                                    // to re-confirm an already-confirmed
+                                    // generation. Best-effort.
+                                    if let Err(err) = nixfleet_agent::checkin_state::clear_last_dispatched(
+                                        &args.state_dir,
+                                    ) {
+                                        tracing::warn!(
+                                            error = %err,
+                                            "clear_last_dispatched failed (non-fatal)",
                                         );
                                     }
                                 }
@@ -579,3 +636,52 @@ async fn send_checkin(
 
     comms::checkin(client, &args.control_plane_url, &req).await
 }
+
+/// ADR-011 boot recovery path. Closes the timing window where
+/// fire-and-forget activation gets self-killed mid-poll.
+///
+/// Sequence:
+///   1. Read `<state-dir>/last_dispatched`. Absent → no in-flight
+///      dispatch from a prior agent run, nothing to recover.
+///   2. Read `/run/current-system`. Compare basename to
+///      `last_dispatched.closure_hash`.
+///   3. **Match**: the prior agent fired a switch, got SIGTERMed by
+///      the new closure's unit-restart, but `nixfleet-switch.service`
+///      kept running and successfully activated the new closure.
+///      Post the retroactive `/v1/agent/confirm`. On Acknowledged →
+///      clear the dispatch record + write the confirm timestamp. On
+///      410 → CP already deadline-rolled-back; we should rollback
+///      locally too. On error → leave the record so a future cycle
+///      can retry.
+///   4. **Mismatch**: either we crashed before the switch took
+///      effect (system stayed on old closure), or rollback fired and
+///      we're back on the previous gen. Either way the dispatch
+///      record describes a transient state the agent is no longer
+///      in — clear it and let the next checkin re-decide.
+///
+/// All paths are best-effort: returns `Ok(())` on logical decisions
+/// (mismatch, no-record, post-failure-but-not-a-bug); `Err` only on
+/// genuinely-unexpected I/O failures. The main loop's normal poll
+/// cadence is the safety net — even total recovery failure means
+/// the agent eventually re-dispatches and converges.
+async fn check_boot_recovery(client: &reqwest::Client, args: &Args) -> anyhow::Result<()> {
+    let current = match checkin_state::current_closure_hash() {
+        Ok(c) => Some(c),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "boot-recovery: cannot read /run/current-system; skipping recovery this boot",
+            );
+            None
+        }
+    };
+    nixfleet_agent::recovery::run_boot_recovery(
+        client,
+        &args.state_dir,
+        &args.control_plane_url,
+        &args.machine_id,
+        current,
+    )
+    .await
+}
+

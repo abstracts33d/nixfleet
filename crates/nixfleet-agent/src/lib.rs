@@ -15,3 +15,4 @@ pub mod checkin_state;
 pub mod comms;
 pub mod enrollment;
 pub mod freshness;
+pub mod recovery;

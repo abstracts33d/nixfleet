@@ -79,6 +79,11 @@
           # such that the agent's freshness::check returns Stale.
           fleet-harness-stale-target = harness.fleet-harness-stale-target;
 
+          # ADR-011 boot-recovery: agent boots with a pre-staged
+          # stale last_dispatched file; check_boot_recovery clears
+          # it before the regular poll loop fires.
+          fleet-harness-boot-recovery = harness.fleet-harness-boot-recovery;
+
           # Parameterised fleet-N variants (issue #5). Same
           # scenario as fleet-harness-smoke but with N agents.
           # CI runs fleet-2 on PR; fleet-10 / fleet-50 are

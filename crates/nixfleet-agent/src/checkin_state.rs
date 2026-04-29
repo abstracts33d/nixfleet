@@ -28,6 +28,102 @@ use nixfleet_proto::agent_wire::{GenerationRef, PendingGeneration};
 /// clamped to `min(now, attested)`.
 pub const LAST_CONFIRM_FILENAME: &str = "last_confirmed_at";
 
+/// Filename inside `--state-dir` that carries the most-recently
+/// dispatched target. Written by `main.rs` after a checkin response
+/// returns a target, BEFORE `activate()` is called. Read at agent
+/// startup by `check_boot_recovery()` to detect "we got killed
+/// mid-self-switch but the new closure is now live" — in which case
+/// the agent posts the retroactive `/v1/agent/confirm` instead of
+/// waiting for the next checkin to re-dispatch.
+///
+/// Format is JSON-serialized [`LastDispatchRecord`] (atomic
+/// tempfile + rename write, same as `last_confirmed_at`). JSON over
+/// the line-oriented format used by `last_confirmed_at` because the
+/// dispatch record carries multiple fields whose sizes/escaping
+/// would be awkward to line-encode (channel_ref containing `@`,
+/// future fields).
+///
+/// Closes the agent half of ADR-011's "boot recovery" path. With
+/// fire-and-forget activation, the agent commonly gets killed
+/// mid-poll when the new closure restarts `nixfleet-agent.service`
+/// — the post-self-switch agent boots into the new closure and
+/// needs to know "what was I dispatching" to confirm it.
+pub const LAST_DISPATCH_FILENAME: &str = "last_dispatched";
+
+/// Persisted record of the most-recently dispatched target.
+///
+/// Carries enough fields to reconstruct a `confirm_target()` call
+/// after an agent restart. Channel + closure are the wire-essential
+/// keys; `rollout_id` is included for diagnostic correlation but
+/// the CP also re-derives it from the channel + closure on confirm.
+/// `dispatched_at` is the agent's wall-clock at write time —
+/// purely diagnostic.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct LastDispatchRecord {
+    pub closure_hash: String,
+    pub channel_ref: String,
+    /// The rollout id the CP populated on the EvaluatedTarget.
+    /// `None` for legacy/synthetic targets (matches the proto's
+    /// optional shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout_id: Option<String>,
+    pub dispatched_at: DateTime<Utc>,
+}
+
+/// Persist a freshly-dispatched target before firing activation.
+/// Atomic via tempfile + rename so a crash mid-write doesn't leave
+/// a partial file. Best-effort on the caller's side: failures log,
+/// non-fatal — the worst case is the boot-recovery path can't
+/// retroactively confirm and the next regular checkin re-dispatches
+/// (which is correct behavior, just one cycle slower).
+pub fn write_last_dispatched(state_dir: &Path, record: &LastDispatchRecord) -> Result<()> {
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("create state dir {}", state_dir.display()))?;
+    let final_path = state_dir.join(LAST_DISPATCH_FILENAME);
+    let tmp_path = state_dir.join(format!("{LAST_DISPATCH_FILENAME}.tmp"));
+    let body = serde_json::to_string(record).context("serialize LastDispatchRecord")?;
+    std::fs::write(&tmp_path, body)
+        .with_context(|| format!("write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &final_path).with_context(|| {
+        format!(
+            "rename {} -> {}",
+            tmp_path.display(),
+            final_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Read the persisted last-dispatch record, if present and well-formed.
+/// Returns `Ok(None)` for both "file absent" (first boot, never
+/// dispatched) and "file malformed" (treat as if we'd never written
+/// it — the next checkin will re-dispatch). Errors only on
+/// filesystem I/O failures.
+pub fn read_last_dispatched(state_dir: &Path) -> Result<Option<LastDispatchRecord>> {
+    let path = state_dir.join(LAST_DISPATCH_FILENAME);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    match serde_json::from_str::<LastDispatchRecord>(&raw) {
+        Ok(rec) => Ok(Some(rec)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Remove the persisted last-dispatch record. Called after a
+/// successful confirm so the file doesn't linger past its useful
+/// lifetime. Idempotent — absent file returns `Ok`.
+pub fn clear_last_dispatched(state_dir: &Path) -> Result<()> {
+    let path = state_dir.join(LAST_DISPATCH_FILENAME);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("remove {}", path.display())),
+    }
+}
+
 /// Path to the symlink pointing at the currently active system
 /// closure. Reading it as a symlink target gives us the store
 /// path; the basename of that path IS the closure_hash on the
@@ -260,6 +356,54 @@ mod write_read_tests {
         std::fs::write(dir.path().join(LAST_CONFIRM_FILENAME), "only-one-line").unwrap();
         let got = read_last_confirmed(dir.path(), "anything", Utc::now()).unwrap();
         assert!(got.is_none());
+    }
+
+    fn sample_dispatch() -> LastDispatchRecord {
+        LastDispatchRecord {
+            closure_hash: "abc-nixos-system".into(),
+            channel_ref: "stable@deadbeef".into(),
+            rollout_id: Some("stable@deadbeef".into()),
+            dispatched_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn last_dispatched_round_trips() {
+        let dir = TempDir::new().unwrap();
+        let r = sample_dispatch();
+        write_last_dispatched(dir.path(), &r).unwrap();
+        let got = read_last_dispatched(dir.path()).unwrap().expect("present");
+        assert_eq!(got.closure_hash, r.closure_hash);
+        assert_eq!(got.channel_ref, r.channel_ref);
+        assert_eq!(got.rollout_id, r.rollout_id);
+    }
+
+    #[test]
+    fn last_dispatched_absent_returns_none() {
+        let dir = TempDir::new().unwrap();
+        assert!(read_last_dispatched(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn last_dispatched_malformed_returns_none() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(LAST_DISPATCH_FILENAME), "{not-json").unwrap();
+        // Caller treats malformed identically to absent — next checkin
+        // re-dispatches.
+        assert!(read_last_dispatched(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn clear_last_dispatched_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        // Absent file: ok.
+        clear_last_dispatched(dir.path()).unwrap();
+        // Present file: ok + removed.
+        write_last_dispatched(dir.path(), &sample_dispatch()).unwrap();
+        clear_last_dispatched(dir.path()).unwrap();
+        assert!(read_last_dispatched(dir.path()).unwrap().is_none());
+        // Calling again on absent: still ok.
+        clear_last_dispatched(dir.path()).unwrap();
     }
 }
 

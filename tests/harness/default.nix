@@ -168,6 +168,26 @@
           agentPkg = nixfleet-agent;
         });
 
+  # ADR-011 boot-recovery scenario. Pre-stages a stale `last_dispatched`
+  # file on the agent microVM, asserts the agent's check_boot_recovery
+  # path clears it before the regular poll loop. Exercises the
+  # StaleClearedMismatch branch (Acknowledged path is unit-tested in
+  # crates/nixfleet-agent/src/recovery.rs::tests).
+  bootRecoveryScenario =
+    if nixfleet-control-plane == null || nixfleet-agent == null
+    then
+      throw ''
+        tests/harness: fleet-harness-boot-recovery requires both
+        `nixfleet-control-plane` and `nixfleet-agent` to be passed in.
+      ''
+    else
+      import ./scenarios/boot-recovery.nix (scenarioArgs
+        // {
+          inherit signedFixture;
+          cpPkg = nixfleet-control-plane;
+          agentPkg = nixfleet-agent;
+        });
+
   # Issue #2 step 5 deadline-expiry scenario. Real CP with a 3-second
   # confirm deadline; testScript drives the wire flow via curl from
   # the host VM (no agent microVM needed) — POST checkin → receive
@@ -203,6 +223,8 @@ in {
   fleet-harness-teardown = teardownScenario;
 
   fleet-harness-stale-target = staleTargetScenario;
+
+  fleet-harness-boot-recovery = bootRecoveryScenario;
 
   fleet-harness-deadline-expiry = deadlineExpiryScenario;
 
