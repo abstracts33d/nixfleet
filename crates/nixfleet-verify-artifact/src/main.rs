@@ -1,9 +1,9 @@
-//! Harness CLI for `nixfleet_reconciler::verify_artifact`.
+//! `nixfleet-verify-artifact` — thin CLI wrapping
+//! `nixfleet_reconciler::verify_artifact`.
 //!
-//! Shell-friendly entry point used by the harness scenarios
-//! (`tests/harness/scenarios/signed-roundtrip.nix`) and by operators
-//! verifying `fleet.resolved` against a `trust.json` outside the
-//! agent process.
+//! Harness scaffold so the signed-roundtrip scenario can call
+//! `verify_artifact` from a shell-friendly entry point. Retire this
+//! crate once the agent inlines `verify_artifact` internally.
 //!
 //! Exit codes (per spec §6):
 //! - 0 — artifact verified

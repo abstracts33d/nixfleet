@@ -12,22 +12,12 @@ authors = ["nixfleet contributors"]
 name = "nixfleet_reconciler"
 path = "src/lib.rs"
 
-# Harness CLI for `verify_artifact`. Lives here (not in `nixfleet-cli`)
-# because reconciler is the natural semantic owner of the function and
-# already pulls every dep the binary needs except `clap`. Consumed by
-# `tests/harness/scenarios/signed-roundtrip.nix` via the
-# `nixfleet-verify-artifact` flake-output (see `crane-workspace.nix`).
-[[bin]]
-name = "nixfleet-verify-artifact"
-path = "src/bin/verify_artifact.rs"
-
 [dependencies]
 nixfleet-proto = { path = "../nixfleet-proto" }
 nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
 ed25519-dalek = "2"
 p256 = { version = "0.13", features = ["ecdsa"] }
 anyhow = "1"
