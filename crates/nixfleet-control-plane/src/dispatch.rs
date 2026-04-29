@@ -119,12 +119,30 @@ pub fn decide_target(
     // are deterministic from `fleet.resolved` so two checkins of the
     // same fleet produce the same rollout id — required for idempotent
     // INSERT into `pending_confirms`.
+    //
+    // Issue #53 — defensive fallback when both ci_commit and
+    // target_closure are empty strings. Today's mk-fleet schema
+    // doesn't admit empty ci_commit or closure_hash (validated at
+    // eval time), but the proto types are `String` not `NonEmptyString`,
+    // so a future loosening of those invariants would silently produce
+    // a rollout_id of `"<channel>@"` (idempotent INSERT into the same
+    // bogus row across all hosts). Substituting `"unknown"` makes the
+    // pathology visible in operator dashboards rather than silently
+    // collapsing distinct rollouts together.
+    let truncate8 = |s: &str| -> String {
+        let t: String = s.chars().take(8).collect();
+        if t.is_empty() {
+            "unknown".to_string()
+        } else {
+            t
+        }
+    };
     let suffix: String = fleet
         .meta
         .ci_commit
         .as_deref()
-        .map(|c| c.chars().take(8).collect::<String>())
-        .unwrap_or_else(|| target_closure.chars().take(8).collect::<String>());
+        .map(truncate8)
+        .unwrap_or_else(|| truncate8(target_closure));
     let rollout_id = format!("{}@{}", host.channel, suffix);
 
     // Wave-plan lookup: which entry in `fleet.waves[host.channel]`

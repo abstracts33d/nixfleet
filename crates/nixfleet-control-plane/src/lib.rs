@@ -18,6 +18,7 @@ pub mod dispatch;
 pub mod evidence_verify;
 pub mod issuance;
 pub mod observed_projection;
+pub mod prune_timer;
 pub mod revocations_poll;
 pub mod rollback_timer;
 pub mod server;
@@ -138,13 +139,44 @@ fn classify_verify_error(err: &VerifyError) -> String {
 /// Render a tick result as one summary JSON line plus one JSON line per
 /// action. Each line is intended for the systemd journal — `journalctl
 /// -o cat` produces the raw JSON; `jq` filters trivially.
+///
+/// Issue #50 — `Skip { reason: "offline" }` actions are coalesced into
+/// a single `skip_summary` line per tick. With N active rollouts × M
+/// offline hosts the journal previously flooded (lab observed 28+
+/// skip-offline lines per 30s tick); coalescing drops that to 1.
+/// Other `Skip` reasons (edge predecessor / disruption budget) keep
+/// per-line semantics — those carry per-host context the operator
+/// needs to triage.
 pub fn render_plan(out: &TickOutput) -> String {
     let mut s = String::new();
     s.push_str(&render_summary(out));
     s.push('\n');
     if let VerifyOutcome::Ok(ok) = &out.verify {
+        let mut offline_hosts: Vec<&str> = Vec::new();
         for action in &ok.actions {
+            // Skip { reason="offline" } gets folded into one summary
+            // line emitted at the end. Every other action emits its
+            // own JSON line as before.
+            if let Action::Skip { host, reason } = action {
+                if reason == "offline" {
+                    offline_hosts.push(host.as_str());
+                    continue;
+                }
+            }
             s.push_str(&serde_json::to_string(action).expect("Action serialises"));
+            s.push('\n');
+        }
+        if !offline_hosts.is_empty() {
+            // Stable order so logs diff cleanly across ticks.
+            offline_hosts.sort_unstable();
+            s.push_str(
+                &json!({
+                    "action": "skip_summary",
+                    "reason": "offline",
+                    "hosts": offline_hosts,
+                })
+                .to_string(),
+            );
             s.push('\n');
         }
     }
@@ -250,7 +282,12 @@ mod tests {
         };
         let body = render_plan(&out);
         let lines: Vec<&str> = body.lines().collect();
-        assert_eq!(lines.len(), 3, "one summary + two actions");
+        // Issue #50: skip-offline actions now coalesce into one
+        // `skip_summary` line. The fixture has 1 OpenRollout + 1
+        // offline-Skip → 3 lines total (summary + open_rollout +
+        // skip_summary), same total as before but with different
+        // shape on the third line.
+        assert_eq!(lines.len(), 3, "one summary + open_rollout + skip_summary");
 
         let summary: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(summary["event"], "tick");
@@ -259,6 +296,55 @@ mod tests {
         assert_eq!(action0["action"], "open_rollout");
 
         let action1: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
-        assert_eq!(action1["action"], "skip");
+        assert_eq!(action1["action"], "skip_summary");
+        assert_eq!(action1["reason"], "offline");
+        assert_eq!(action1["hosts"], serde_json::json!(["test-host"]));
+    }
+
+    #[test]
+    fn render_plan_offline_skips_coalesce_other_skips_keep_per_line() {
+        // Mixed-reason fixture: 2 offline skips + 1 budget-exhausted
+        // skip + 1 OpenRollout. Offline-pair coalesces to one
+        // skip_summary; the budget skip keeps its per-line shape so
+        // the operator can read the per-host context.
+        let out = TickOutput {
+            now: Utc::now(),
+            verify: VerifyOutcome::Ok(Box::new(VerifyOk {
+                signed_at: Utc::now(),
+                ci_commit: None,
+                observed: observed_no_rollouts(),
+                actions: vec![
+                    Action::OpenRollout {
+                        channel: "stable".into(),
+                        target_ref: "abc".into(),
+                    },
+                    Action::Skip {
+                        host: "host-a".into(),
+                        reason: "offline".into(),
+                    },
+                    Action::Skip {
+                        host: "host-b".into(),
+                        reason: "offline".into(),
+                    },
+                    Action::Skip {
+                        host: "host-c".into(),
+                        reason: "disruption budget (1/1 in flight)".into(),
+                    },
+                ],
+            })),
+        };
+        let body = render_plan(&out);
+        let lines: Vec<&str> = body.lines().collect();
+        // summary + open_rollout + budget-skip + skip_summary = 4
+        assert_eq!(lines.len(), 4);
+        let summary_action: serde_json::Value =
+            serde_json::from_str(lines[3]).unwrap();
+        assert_eq!(summary_action["action"], "skip_summary");
+        assert_eq!(summary_action["reason"], "offline");
+        // Stable sort.
+        assert_eq!(
+            summary_action["hosts"],
+            serde_json::json!(["host-a", "host-b"])
+        );
     }
 }

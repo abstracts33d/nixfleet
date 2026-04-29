@@ -78,21 +78,20 @@ pub fn spawn(db: Arc<Db>, config: RevocationsSource) -> tokio::task::JoinHandle<
                             ),
                         }
                     }
-                    if applied > 0 {
-                        tracing::info!(
-                            target: "revocations",
-                            entries = n,
-                            applied = applied,
-                            signed_at = ?revs.meta.signed_at,
-                            ci_commit = ?revs.meta.ci_commit,
-                            "revocations poll: replayed signed list into cert_revocations",
-                        );
-                    } else {
-                        tracing::debug!(
-                            entries = n,
-                            "revocations poll: list verified, no changes applied",
-                        );
-                    }
+                    // Issue #49 — heartbeat at INFO on every successful
+                    // tick (not just when applied > 0). Operators tailing
+                    // the journal need a positive signal that the poll
+                    // is alive; cross-checking forgejo access logs to
+                    // prove cadence isn't sustainable. One INFO line per
+                    // 60s tick is cheap and load-bearing for ops.
+                    tracing::info!(
+                        target: "revocations",
+                        entries = n,
+                        applied = applied,
+                        signed_at = ?revs.meta.signed_at,
+                        ci_commit = ?revs.meta.ci_commit,
+                        "revocations poll: list verified",
+                    );
                 }
                 Err(err) => {
                     tracing::warn!(

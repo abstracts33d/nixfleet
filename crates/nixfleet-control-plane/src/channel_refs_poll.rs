@@ -123,21 +123,19 @@ pub fn spawn(
                     guard.last_refreshed_at = Some(chrono::Utc::now());
                     drop(guard);
 
-                    if changed {
-                        tracing::info!(
-                            count = refs.len(),
-                            signed_at = ?new_signed_at,
-                            ci_commit = ?new_ci_commit,
-                            "channel-refs poll: verified-fleet snapshot refreshed (channels changed)",
-                        );
-                    } else {
-                        tracing::debug!(
-                            count = refs.len(),
-                            signed_at = ?new_signed_at,
-                            ci_commit = ?new_ci_commit,
-                            "channel-refs poll: verified-fleet snapshot refreshed (channels unchanged)",
-                        );
-                    }
+                    // Issue #49 — heartbeat at INFO on every successful
+                    // tick (`changed` and `unchanged` both visible).
+                    // Operators tailing `journalctl -u
+                    // nixfleet-control-plane` need a positive signal
+                    // that the poll is alive without cross-checking
+                    // Forgejo access logs.
+                    tracing::info!(
+                        count = refs.len(),
+                        changed = changed,
+                        signed_at = ?new_signed_at,
+                        ci_commit = ?new_ci_commit,
+                        "channel-refs poll: verified-fleet snapshot refreshed",
+                    );
                 }
                 Err(err) => {
                     // Cache + snapshot retained — reconcile loop

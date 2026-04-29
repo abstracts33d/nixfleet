@@ -107,9 +107,10 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     let state = Arc::new(app_state);
 
-    // Magic-rollback timer.
+    // Magic-rollback timer + hourly prune sweep (issue #52).
     if let Some(db_arc) = db {
-        crate::rollback_timer::spawn(db_arc);
+        crate::rollback_timer::spawn(db_arc.clone());
+        crate::prune_timer::spawn(db_arc);
     }
 
     // Seed issuance config.

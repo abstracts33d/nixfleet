@@ -170,6 +170,34 @@ impl Db {
         Ok(n)
     }
 
+    /// Issue #52 — prune terminal `pending_confirms` rows older than
+    /// `max_age`. Mirror of `prune_token_replay`. `pending_confirms`
+    /// is soft-state (ARCHITECTURE.md §6 Phase 10) and rows in
+    /// terminal states `RolledBack` / `Cancelled` carry no
+    /// load-bearing semantics — they accumulate one row per
+    /// dispatch + churn cycle and bloat the table indefinitely
+    /// without retention. Lab observed 39 such rows from 3 days of
+    /// deploy thrash. Default retention 7 days (caller chooses).
+    /// Returns number of pruned rows.
+    pub fn prune_pending_confirms(&self, max_age_hours: i64) -> Result<usize> {
+        let rolled_back = PendingConfirmState::RolledBack.as_db_str();
+        let cancelled = PendingConfirmState::Cancelled.as_db_str();
+        let guard = self.conn()?;
+        let n = guard
+            .execute(
+                "DELETE FROM pending_confirms
+                 WHERE state IN (?1, ?2)
+                   AND dispatched_at < datetime('now', ?3)",
+                params![
+                    rolled_back,
+                    cancelled,
+                    format!("-{max_age_hours} hours")
+                ],
+            )
+            .context("prune pending_confirms")?;
+        Ok(n)
+    }
+
     // =================================================================
     // cert_revocations — RFC-0003 §2
     // =================================================================
