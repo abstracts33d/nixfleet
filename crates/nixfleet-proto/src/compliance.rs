@@ -67,30 +67,6 @@ impl GateMode {
         }
     }
 
-    /// Coerce the legacy `compliance.strict: bool` into a
-    /// `GateMode`. `true → Enforce`, `false → Disabled`. Used by
-    /// both `mk-fleet.nix` resolution and the CP wave_gate when
-    /// `compliance.mode` is unset on a fleet.resolved channel.
-    /// Centralising the mapping ensures every layer agrees on
-    /// what legacy strict means.
-    pub fn from_legacy_strict(strict: bool) -> Self {
-        if strict {
-            GateMode::Enforce
-        } else {
-            GateMode::Disabled
-        }
-    }
-
-    /// Resolve a channel's effective mode given a typed `mode`
-    /// (when present) and the legacy `strict` flag (when not).
-    /// Encodes the issue-#58 precedence rule in one place.
-    pub fn resolve(mode: Option<&str>, legacy_strict: bool) -> Self {
-        match mode {
-            Some(s) => Self::from_wire_str(s),
-            None => Self::from_legacy_strict(legacy_strict),
-        }
-    }
-
     /// True iff the mode treats failures as confirm/dispatch
     /// blockers (vs. observability-only).
     pub fn is_enforcing(self) -> bool {
@@ -114,25 +90,6 @@ mod tests {
         assert_eq!(GateMode::from_wire_str("auto"), GateMode::Permissive);
         assert_eq!(GateMode::from_wire_str(""), GateMode::Permissive);
         assert_eq!(GateMode::from_wire_str("garbage"), GateMode::Permissive);
-    }
-
-    #[test]
-    fn from_legacy_strict_maps_correctly() {
-        assert_eq!(GateMode::from_legacy_strict(true), GateMode::Enforce);
-        assert_eq!(GateMode::from_legacy_strict(false), GateMode::Disabled);
-    }
-
-    #[test]
-    fn resolve_prefers_mode_over_strict() {
-        assert_eq!(GateMode::resolve(Some("permissive"), true), GateMode::Permissive);
-        assert_eq!(GateMode::resolve(Some("disabled"), true), GateMode::Disabled);
-        assert_eq!(GateMode::resolve(Some("enforce"), false), GateMode::Enforce);
-    }
-
-    #[test]
-    fn resolve_falls_back_to_strict_when_mode_absent() {
-        assert_eq!(GateMode::resolve(None, true), GateMode::Enforce);
-        assert_eq!(GateMode::resolve(None, false), GateMode::Disabled);
     }
 
     #[test]

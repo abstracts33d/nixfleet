@@ -96,7 +96,7 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
                 "reconcileIntervalMinutes": 5,
                 "freshnessWindow": 60,
                 "signingIntervalMinutes": 30,
-                "compliance": { "strict": false, "frameworks": [] },
+                "compliance": { "mode": "disabled", "frameworks": [] },
             }
         },
         "rolloutPolicies": {},

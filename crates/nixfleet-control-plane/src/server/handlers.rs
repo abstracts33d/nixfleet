@@ -448,15 +448,11 @@ async fn dispatch_target_for_checkin(
     // wave N's outstanding failures hold wave N+1.
     if let Some(channel_name) = fleet.hosts.get(&req.hostname).map(|h| &h.channel) {
         if let Some(channel) = fleet.channels.get(channel_name) {
-            // Resolve channel.compliance into a typed GateMode in
-            // one place — `mode` wins, `strict` is the legacy
-            // fallback. Centralised in `nixfleet_proto::compliance::
-            // GateMode::resolve` so static + runtime + CP layers
-            // can't drift on the precedence rule.
-            let resolved_mode = nixfleet_proto::compliance::GateMode::resolve(
-                channel.compliance.mode.as_deref(),
-                channel.compliance.strict,
-            );
+            // Channel mode is a plain enum-string after the
+            // strict-removal cleanup; `from_wire_str` is forward-
+            // compat for unknown strings (fall back to Permissive).
+            let resolved_mode =
+                nixfleet_proto::compliance::GateMode::from_wire_str(&channel.compliance.mode);
             // Gather per-host (records, current_rollout) for every
             // host on this channel.
             let reports_guard = state.host_reports.read().await;
@@ -1175,6 +1171,171 @@ pub(super) async fn channel_status(
     }))
 }
 
+#[derive(Debug, Serialize)]
+pub(super) struct HostsResponse {
+    hosts: Vec<HostStatusEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct HostStatusEntry {
+    /// Hostname per `fleet.resolved.hosts`.
+    hostname: String,
+    /// Channel the host is on (declarative).
+    channel: String,
+    /// Closure declared as the host's target on the most recent
+    /// verified `fleet.resolved.json` snapshot. Null when the
+    /// fleet hasn't been signed since CI started stamping
+    /// closure hashes.
+    declared_closure_hash: Option<String>,
+    /// Closure the host is currently running, per its most recent
+    /// checkin. `None` when the host has never checked in.
+    current_closure_hash: Option<String>,
+    /// Closure queued for next boot, if any. Null when current ==
+    /// pending (the typical converged-and-rebooted state).
+    pending_closure_hash: Option<String>,
+    /// Wall-clock of the most recent checkin (rfc3339). `None`
+    /// when the host has never checked in.
+    last_checkin_at: Option<String>,
+    /// Rollout id the host most recently confirmed against, per
+    /// the agent's last `last_evaluated_target` echo. Useful for
+    /// operators to see "host X is on rollout Y" without
+    /// scraping the journal.
+    last_rollout_id: Option<String>,
+    /// True iff the host's current closure matches the declared
+    /// closure on the verified fleet snapshot. Mirrors the
+    /// dispatch decision `Decision::Converged`.
+    converged: bool,
+    /// Count of outstanding `ComplianceFailure` events in the
+    /// host's report buffer (events whose rollout matches the
+    /// host's current rollout — i.e. events not yet
+    /// resolved-by-replacement). 0 when the host has no
+    /// outstanding events.
+    outstanding_compliance_failures: usize,
+    /// Count of outstanding `RuntimeGateError` events (same
+    /// resolution semantics as `outstanding_compliance_failures`).
+    outstanding_runtime_gate_errors: usize,
+    /// Count of `signature_status = Verified` events in the
+    /// host's report buffer. Auditor-chain visibility metric —
+    /// when this matches `outstanding_compliance_failures +
+    /// outstanding_runtime_gate_errors`, every outstanding
+    /// failure has a verified signature against the host's
+    /// `fleet.resolved.hosts.<n>.pubkey`.
+    verified_event_count: usize,
+}
+
+/// `GET /v1/hosts` — fleet-wide observed state, per host.
+///
+/// Joins the verified fleet snapshot's host declarations with the
+/// CP's per-host checkin record + report buffer. Replaces the
+/// brittle journal-scraping path that fleet-status' render.sh
+/// previously used (the JSON tracing subscriber emits structured
+/// fields that don't match the bash awk parser's `key=value`
+/// expectation).
+pub(super) async fn hosts_status(
+    State(state): State<Arc<AppState>>,
+    Extension(peer_certs): Extension<PeerCertificates>,
+) -> Result<Json<HostsResponse>, StatusCode> {
+    let _cn = require_cn(&state, &peer_certs).await?;
+
+    let fleet = state
+        .verified_fleet
+        .read()
+        .await
+        .clone()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let checkins = state.host_checkins.read().await;
+    let reports = state.host_reports.read().await;
+
+    let mut entries: Vec<HostStatusEntry> = fleet
+        .hosts
+        .iter()
+        .map(|(hostname, host_decl)| {
+            let checkin = checkins.get(hostname);
+            let last_checkin_at = checkin.map(|c| c.last_checkin.to_rfc3339());
+            let current = checkin.map(|c| c.checkin.current_generation.closure_hash.clone());
+            let pending = checkin.and_then(|c| {
+                c.checkin
+                    .pending_generation
+                    .as_ref()
+                    .map(|p| p.closure_hash.clone())
+            });
+            let last_rollout_id = checkin.and_then(|c| {
+                c.checkin
+                    .last_evaluated_target
+                    .as_ref()
+                    .and_then(|t| t.rollout_id.clone())
+            });
+            let converged = match (&host_decl.closure_hash, &current) {
+                (Some(declared), Some(running)) => declared == running,
+                _ => false,
+            };
+
+            // Walk the host's report buffer, counting outstanding
+            // ComplianceFailure / RuntimeGateError events scoped to
+            // the host's current rollout id (resolution-by-
+            // replacement: events for older rollouts are considered
+            // resolved).
+            let host_buf = reports.get(hostname);
+            let cur_rollout = last_rollout_id.as_deref();
+            let mut compliance_failures = 0usize;
+            let mut runtime_gate_errors = 0usize;
+            let mut verified_count = 0usize;
+            if let Some(buf) = host_buf {
+                use nixfleet_proto::agent_wire::ReportEvent;
+                for record in buf.iter() {
+                    let is_compliance =
+                        matches!(record.report.event, ReportEvent::ComplianceFailure { .. });
+                    let is_runtime_gate =
+                        matches!(record.report.event, ReportEvent::RuntimeGateError { .. });
+                    if !is_compliance && !is_runtime_gate {
+                        continue;
+                    }
+                    // Resolution-by-replacement check: skip events
+                    // whose rollout the host has moved past.
+                    let event_rollout = record.report.rollout.as_deref();
+                    let outstanding = match (cur_rollout, event_rollout) {
+                        (Some(cur), Some(ev_r)) if cur != ev_r => false,
+                        _ => true,
+                    };
+                    if !outstanding {
+                        continue;
+                    }
+                    if is_compliance {
+                        compliance_failures += 1;
+                    }
+                    if is_runtime_gate {
+                        runtime_gate_errors += 1;
+                    }
+                    if matches!(
+                        record.signature_status,
+                        Some(crate::evidence_verify::SignatureStatus::Verified)
+                    ) {
+                        verified_count += 1;
+                    }
+                }
+            }
+
+            HostStatusEntry {
+                hostname: hostname.clone(),
+                channel: host_decl.channel.clone(),
+                declared_closure_hash: host_decl.closure_hash.clone(),
+                current_closure_hash: current,
+                pending_closure_hash: pending,
+                last_checkin_at,
+                last_rollout_id,
+                converged,
+                outstanding_compliance_failures: compliance_failures,
+                outstanding_runtime_gate_errors: runtime_gate_errors,
+                verified_event_count: verified_count,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.hostname.cmp(&b.hostname));
+
+    Ok(Json(HostsResponse { hosts: entries }))
+}
+
 /// `GET /v1/agent/closure/{hash}` — closure proxy fallback for hosts
 /// that can't reach the binary cache directly. Forwards narinfo
 /// requests to the configured cache upstream (any nix-cache-protocol
@@ -1272,9 +1433,8 @@ mod tests {
                 freshness_window: 60,
                 signing_interval_minutes: 30,
                 compliance: Compliance {
-                    strict: false,
                     frameworks: vec![],
-                    mode: None,
+                    mode: "disabled".to_string(),
                 },
             },
         );

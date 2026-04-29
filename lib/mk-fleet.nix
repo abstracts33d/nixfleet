@@ -179,49 +179,23 @@
           options = {
             # Issue #58 — tri-state policy mode shared by the static
             # gate (this file) and the runtime gate (#57 agent-side).
-            # `null` falls back to the legacy `strict` mapping below
-            # so existing fleets with `strict = true|false` keep
-            # working unchanged.
+            # Default `enforce` matches the original `strict = true`
+            # default the legacy boolean form had — fleets that
+            # didn't opt out of compliance keep being gated.
             mode = mkOption {
-              type = types.nullOr (types.enum ["disabled" "permissive" "enforce"]);
-              default = null;
+              type = types.enum ["disabled" "permissive" "enforce"];
+              default = "enforce";
               description = ''
-                Compliance gate policy. When set, overrides the legacy
-                `strict` field for both the static gate (mk-fleet eval)
-                and the runtime gate (agent post-activation).
+                Compliance gate policy shared by the static gate
+                (mk-fleet eval) and the runtime gate (agent
+                post-activation).
 
                 - `disabled`: gate not run.
                 - `permissive`: failing static evidence emits a
                   `lib.warn` per failing host/control; eval succeeds.
                 - `enforce`: failing static evidence throws at fleet
-                  eval. Same wire-shape as `strict = true`.
-
-                When `null` (default), behaviour is derived from
-                `strict`: `true → enforce`, `false → disabled`. Set
-                `mode` explicitly to opt into permissive.
-              '';
-            };
-            strict = mkOption {
-              type = types.bool;
-              default = true;
-              description = ''
-                **DEPRECATED (slated for removal in v0.3).** Legacy
-                boolean form of `mode` (issue #58). Kept for backward
-                compatibility with existing fleets and the wire-level
-                `Compliance.strict: bool` consumed by the Rust
-                control plane. Prefer `mode` for new code.
-
-                Setting both `strict` and `mode` with conflicting
-                values emits a `lib.warn` at fleet eval time; `mode`
-                wins for gate decisions. When only one is set, no
-                warning fires.
-
-                Removal will land alongside the static-gate refactor
-                that follows the runtime-gate work hitting lab
-                successfully — both gates share `GateMode` (typed in
-                nixfleet-proto::compliance), so deleting `strict`
-                from the schema is a wire-additive cleanup once
-                fleets have migrated.
+                  eval. Default — matches the prior `strict = true`
+                  semantics.
               '';
             };
             frameworks = mkOption {
@@ -418,19 +392,11 @@
       )
       (lib.attrNames cfg.channels);
 
-    # Resolve the effective compliance mode for a channel, honouring
-    # the issue #58 unification: explicit `mode` wins; falling back to
-    # the legacy `strict` mapping (`true → enforce`, `false →
-    # disabled`). Both fields stay in the schema so existing fleets
-    # keep working; new code should set `mode` explicitly.
-    resolvedComplianceMode = channelName: let
-      c = cfg.channels.${channelName}.compliance;
-    in
-      if c.mode != null
-      then c.mode
-      else if c.strict
-      then "enforce"
-      else "disabled";
+    # Effective compliance mode is just `compliance.mode` — the
+    # legacy `strict` boolean was removed once issue #58's unified
+    # vocabulary stabilised. Schema default is `enforce`, matching
+    # the prior `strict = true` default.
+    resolvedComplianceMode = channelName: cfg.channels.${channelName}.compliance.mode;
 
     # Compute the (host, control) failure tuples for a channel's
     # static-or-both controls. Shared by the enforce + permissive
@@ -534,14 +500,8 @@
       # outer `assert`), so we know the resolved fleet is otherwise
       # valid — this is purely informational.
       compliancePermissiveWarnings = let
-        resolveMode = c:
-          if c.mode != null
-          then c.mode
-          else if c.strict
-          then "enforce"
-          else "disabled";
         permissiveChannels =
-          lib.filter (n: resolveMode cfg.channels.${n}.compliance == "permissive") (lib.attrNames cfg.channels);
+          lib.filter (n: cfg.channels.${n}.compliance.mode == "permissive") (lib.attrNames cfg.channels);
         hostsOnChannels =
           lib.filter (n: builtins.elem cfg.hosts.${n}.channel permissiveChannels) (lib.attrNames cfg.hosts);
       in
@@ -571,49 +531,10 @@
         )
         hostsOnChannels;
 
-      # Issue I (#58 follow-up) — deprecation warning for
-      # `compliance.strict` when both `mode` and `strict` are
-      # set with conflicting intent. The legacy field is retained
-      # for one minor-version cycle; planned removal at v0.3
-      # alongside the static-gate refactor that follows the
-      # runtime-gate work landing on lab. No warning when only
-      # one of the two is set (covered cases) or when both are
-      # set consistently (no operator confusion).
-      complianceStrictDeprecationWarnings =
-        lib.concatMap (
-          channelName: let
-            c = cfg.channels.${channelName}.compliance;
-            modeImpliedStrict =
-              if c.mode == "enforce"
-              then true
-              else if c.mode == null
-              then null # mode unset → not in scope
-              else false; # disabled or permissive
-            stricExplicitlyTrue = c.strict == true;
-            # `strict.default = true`, so we can't distinguish
-            # "operator wrote true" from "default kicked in".
-            # Conservatively warn only when `mode` is explicitly
-            # set AND it disagrees with `strict`.
-            conflicts =
-              c.mode
-              != null
-              && modeImpliedStrict != null
-              && stricExplicitlyTrue != modeImpliedStrict;
-          in
-            lib.optional conflicts
-            "channel '${channelName}': compliance.mode=\"${c.mode}\" but compliance.strict=${
-              if c.strict
-              then "true"
-              else "false"
-            }; mode wins. Drop the explicit `strict` setting — the field is deprecated and slated for removal in the next minor release."
-        )
-        (lib.attrNames cfg.channels);
-
       allWarnings =
         emptySelectorWarnings
         ++ budgetWarnings
-        ++ compliancePermissiveWarnings
-        ++ complianceStrictDeprecationWarnings;
+        ++ compliancePermissiveWarnings;
 
       # Force the warnings side effect before returning the resolved value.
       # `lib.warn` prints to stderr during eval and returns its second arg.
@@ -635,13 +556,7 @@
           cfg.hosts;
         channels =
           lib.mapAttrs (_: c: {
-            inherit (c) rolloutPolicy reconcileIntervalMinutes signingIntervalMinutes freshnessWindow;
-            # Strip `mode = null` from the resolved output so existing
-            # JSON goldens (and roundtrip tests in the proto crate)
-            # stay byte-identical for fleets that don't opt into the
-            # new `mode` field. Non-null modes flow through normally
-            # for downstream consumers (CP dispatch, agent gate).
-            compliance = lib.filterAttrs (_: v: v != null) c.compliance;
+            inherit (c) rolloutPolicy reconcileIntervalMinutes signingIntervalMinutes freshnessWindow compliance;
           })
           cfg.channels;
         rolloutPolicies = cfg.rolloutPolicies;

@@ -132,7 +132,6 @@ fn write_signed_fleet(
                 "freshnessWindow": 60,
                 "signingIntervalMinutes": 30,
                 "compliance": {
-                    "strict": compliance_mode == "enforce",
                     "frameworks": [],
                     "mode": compliance_mode,
                 },

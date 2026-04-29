@@ -779,9 +779,8 @@ mod tests {
                 freshness_window: 60,
                 signing_interval_minutes: 30,
                 compliance: Compliance {
-                    strict: false,
                     frameworks: vec![],
-                    mode: None,
+                    mode: "disabled".to_string(),
                 },
             },
         );

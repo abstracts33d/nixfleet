@@ -55,9 +55,8 @@ fn fleet_with_single_wave_host(hostname: &str, closure: &str, soak_minutes: u32)
             freshness_window: 60,
             signing_interval_minutes: 30,
             compliance: Compliance {
-                strict: false,
                 frameworks: vec![],
-                mode: None,
+                mode: "disabled".to_string(),
             },
         },
     );

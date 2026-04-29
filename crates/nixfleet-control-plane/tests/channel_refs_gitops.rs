@@ -43,7 +43,7 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
                 "reconcileIntervalMinutes": 5,
                 "freshnessWindow": 60,
                 "signingIntervalMinutes": 30,
-                "compliance": { "strict": false, "frameworks": [] },
+                "compliance": { "mode": "disabled", "frameworks": [] },
             }
         },
         "rolloutPolicies": {},
@@ -253,7 +253,7 @@ async fn poll_retains_snapshot_on_verify_failure() {
     let sentinel: FleetResolved = serde_json::from_str(&serde_json::json!({
         "schemaVersion": 1,
         "hosts": { "sentinel": { "system": "x86_64-linux", "tags": [], "channel": "stable", "closureHash": "sentinel-hash", "pubkey": null } },
-        "channels": { "stable": { "rolloutPolicy": "x", "reconcileIntervalMinutes": 1, "freshnessWindow": 1, "signingIntervalMinutes": 1, "compliance": { "strict": false, "frameworks": [] } } },
+        "channels": { "stable": { "rolloutPolicy": "x", "reconcileIntervalMinutes": 1, "freshnessWindow": 1, "signingIntervalMinutes": 1, "compliance": { "mode": "disabled", "frameworks": [] } } },
         "rolloutPolicies": {},
         "waves": {},
         "edges": [],

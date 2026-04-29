@@ -3,7 +3,7 @@
     "edge": {
       "compliance": {
         "frameworks": [],
-        "strict": true
+        "mode": "enforce"
       },
       "freshnessWindow": 240,
       "reconcileIntervalMinutes": 30,
@@ -13,7 +13,7 @@
     "stable": {
       "compliance": {
         "frameworks": [],
-        "strict": true
+        "mode": "enforce"
       },
       "freshnessWindow": 180,
       "reconcileIntervalMinutes": 30,
@@ -23,12 +23,16 @@
   },
   "disruptionBudgets": [
     {
-      "hosts": ["paris-1"],
+      "hosts": [
+        "paris-1"
+      ],
       "maxInFlight": 1,
       "maxInFlightPct": null
     },
     {
-      "hosts": ["lyon-1"],
+      "hosts": [
+        "lyon-1"
+      ],
       "maxInFlight": 1,
       "maxInFlightPct": null
     }
@@ -40,14 +44,20 @@
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": ["lyon", "eu-fr"]
+      "tags": [
+        "lyon",
+        "eu-fr"
+      ]
     },
     "paris-1": {
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": ["paris", "eu-fr"]
+      "tags": [
+        "paris",
+        "eu-fr"
+      ]
     }
   },
   "meta": {
@@ -80,13 +90,19 @@
   "waves": {
     "edge": [
       {
-        "hosts": ["lyon-1", "paris-1"],
+        "hosts": [
+          "lyon-1",
+          "paris-1"
+        ],
         "soakMinutes": 0
       }
     ],
     "stable": [
       {
-        "hosts": ["lyon-1", "paris-1"],
+        "hosts": [
+          "lyon-1",
+          "paris-1"
+        ],
         "soakMinutes": 0
       }
     ]

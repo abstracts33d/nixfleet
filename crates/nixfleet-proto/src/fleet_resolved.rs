@@ -69,19 +69,15 @@ impl Channel {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Compliance {
-    pub strict: bool,
     pub frameworks: Vec<String>,
-    /// Issue #58 — tri-state policy mode (`"disabled"` /
-    /// `"permissive"` / `"enforce"`) shared by the static gate
-    /// (mk-fleet eval) and the runtime gate (#57 agent-side). When
-    /// `None`, downstream consumers fall back to `strict`:
-    /// `true → enforce`, `false → disabled`. Wire-additive — old
-    /// fleets without this field parse with `mode = None` and
-    /// behaviour matches the legacy `strict` mapping. mk-fleet
-    /// strips `mode = null` from the resolved JSON so byte-level
-    /// roundtrip is preserved for fleets that don't opt in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    /// Tri-state policy mode (`"disabled"` / `"permissive"` /
+    /// `"enforce"`) shared by the static gate (mk-fleet eval) and
+    /// the runtime gate (`nixfleet-agent::compliance`). Default
+    /// `"enforce"` matches the prior `strict = true` semantics —
+    /// fleets that didn't opt out of compliance keep being gated.
+    /// (Issue #58 / #59. The legacy `strict: bool` field was
+    /// removed once the unified vocabulary stabilised.)
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

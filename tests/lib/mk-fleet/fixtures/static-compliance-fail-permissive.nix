@@ -42,11 +42,6 @@ mkFleet {
     freshnessWindow = 180;
     compliance = {
       mode = "permissive";
-      # Note: legacy `strict` defaults to true here, but `mode` is
-      # explicitly set, so the resolution prefers `mode`. This is
-      # the "both set" case acceptance criterion — explicit mode
-      # wins; warning text would mention the conflict (planned
-      # follow-up; current implementation just prefers mode silently).
       frameworks = [];
     };
   };

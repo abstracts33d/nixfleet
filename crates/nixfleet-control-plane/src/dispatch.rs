@@ -164,14 +164,14 @@ pub fn decide_target(
             freshness_window_secs,
             // Issue #58 — relay the channel's compliance mode so the
             // agent's runtime gate (#57) honours fleet-wide policy
-            // pushes without needing per-host CLI flags. `None` here
-            // (channel didn't set `mode` and didn't set `strict =
-            // true`) means agent auto-detects from collector unit
-            // presence.
+            // pushes without needing per-host CLI flags. `None` only
+            // on degenerate fleet-snapshot state where the channel
+            // lookup itself misses; the wire field stays Optional
+            // for backward compat with agents that pre-date it.
             compliance_mode: fleet
                 .channels
                 .get(&host.channel)
-                .and_then(|ch| ch.compliance.mode.clone()),
+                .map(|ch| ch.compliance.mode.clone()),
         },
         rollout_id,
         wave_index,
@@ -200,9 +200,8 @@ mod tests {
                 freshness_window: 60,
                 signing_interval_minutes: 30,
                 compliance: Compliance {
-                    strict: false,
                     frameworks: vec![],
-                    mode: None,
+                    mode: "disabled".to_string(),
                 },
             },
         );

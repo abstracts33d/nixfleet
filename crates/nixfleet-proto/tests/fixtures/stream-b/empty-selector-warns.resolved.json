@@ -3,7 +3,7 @@
     "stable": {
       "compliance": {
         "frameworks": [],
-        "strict": true
+        "mode": "enforce"
       },
       "freshnessWindow": 180,
       "reconcileIntervalMinutes": 30,
@@ -19,7 +19,9 @@
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": ["role-a"]
+      "tags": [
+        "role-a"
+      ]
     }
   },
   "meta": {
@@ -38,7 +40,9 @@
             "all": false,
             "channel": null,
             "hosts": [],
-            "tags": ["role-b"],
+            "tags": [
+              "role-b"
+            ],
             "tagsAny": []
           },
           "soakMinutes": 10
@@ -64,7 +68,9 @@
         "soakMinutes": 10
       },
       {
-        "hosts": ["m"],
+        "hosts": [
+          "m"
+        ],
         "soakMinutes": 0
       }
     ]

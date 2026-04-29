@@ -40,7 +40,7 @@ mkFleet {
     signingIntervalMinutes = 60;
     freshnessWindow = 180;
     compliance = {
-      strict = true;
+      mode = "enforce";
       frameworks = [];
     };
   };

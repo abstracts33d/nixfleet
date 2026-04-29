@@ -3,7 +3,7 @@
     "stable": {
       "compliance": {
         "frameworks": [],
-        "strict": true
+        "mode": "enforce"
       },
       "freshnessWindow": 180,
       "reconcileIntervalMinutes": 30,
@@ -19,28 +19,40 @@
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": ["eu-fr", "server"]
+      "tags": [
+        "eu-fr",
+        "server"
+      ]
     },
     "eu-workstation": {
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": ["eu-fr", "workstation"]
+      "tags": [
+        "eu-fr",
+        "workstation"
+      ]
     },
     "sensor": {
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
       "system": "aarch64-linux",
-      "tags": ["eu-fr", "sensor"]
+      "tags": [
+        "eu-fr",
+        "sensor"
+      ]
     },
     "us-server": {
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": ["us-east", "server"]
+      "tags": [
+        "us-east",
+        "server"
+      ]
     }
   },
   "meta": {
@@ -64,7 +76,9 @@
                 "channel": null,
                 "hosts": [],
                 "not": null,
-                "tags": ["eu-fr"],
+                "tags": [
+                  "eu-fr"
+                ],
                 "tagsAny": []
               },
               {
@@ -73,7 +87,9 @@
                 "channel": null,
                 "hosts": [],
                 "not": null,
-                "tags": ["server"],
+                "tags": [
+                  "server"
+                ],
                 "tagsAny": []
               }
             ],
@@ -92,7 +108,9 @@
   "waves": {
     "stable": [
       {
-        "hosts": ["eu-server"],
+        "hosts": [
+          "eu-server"
+        ],
         "soakMinutes": 0
       }
     ]
