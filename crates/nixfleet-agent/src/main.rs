@@ -416,9 +416,8 @@ async fn main() -> anyhow::Result<()> {
 
                     // Realise + switch + verify the target.
                     // On full FiredAndPolled → POST /v1/agent/confirm.
-                    // On any outcome that left the system in an
-                    // unexpected state (SwitchFailed, VerifyMismatch)
-                    // → local rollback. RealiseFailed left nothing
+                    // On SwitchFailed (system in unexpected state) →
+                    // local rollback. RealiseFailed left nothing
                     // switched — skip rollback, retry next tick.
                     // CP returning 410 from /confirm independently
                     // triggers rollback.
@@ -807,50 +806,6 @@ async fn main() -> anyhow::Result<()> {
                                     error = %err,
                                     "rollback after failed switch also failed — manual intervention required",
                                 );
-                            }
-                        }
-                        Ok(ActivationOutcome::VerifyMismatch { expected, actual }) => {
-                            tracing::error!(
-                                expected = %expected,
-                                actual = %actual,
-                                "activation: post-switch verify mismatch; rolling back to defend against tampered closure",
-                            );
-                            post_report(
-                                &client_handle,
-                                &args.control_plane_url,
-                                &args.machine_id,
-                                Some(&target.channel_ref),
-                                ReportEvent::VerifyMismatch {
-                                    expected: expected.clone(),
-                                    actual: actual.clone(),
-                                },
-                            )
-                            .await;
-                            let rb_outcome =
-                                nixfleet_agent::activation::rollback().await;
-                            post_report(
-                                &client_handle,
-                                &args.control_plane_url,
-                                &args.machine_id,
-                                Some(&target.channel_ref),
-                                ReportEvent::RollbackTriggered {
-                                    reason: format!(
-                                        "post-switch verify mismatch (expected={expected}, actual={actual})"
-                                    ),
-                                },
-                            )
-                            .await;
-                            match &rb_outcome {
-                                Ok(o) if o.success() => {}
-                                Ok(o) => tracing::error!(
-                                    phase = ?o.phase(),
-                                    exit_code = ?o.exit_code(),
-                                    "rollback after verify mismatch failed (poll/fire layer) — manual intervention required",
-                                ),
-                                Err(err) => tracing::error!(
-                                    error = %err,
-                                    "rollback after verify mismatch transport-failed — manual intervention required",
-                                ),
                             }
                         }
                         Err(err) => {

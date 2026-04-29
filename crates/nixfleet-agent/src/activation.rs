@@ -144,9 +144,9 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Outcome of an activation attempt. The agent's main loop maps each
 /// variant to a follow-up action: confirm on `FiredAndPolled`,
-/// rollback on either `SwitchFailed` or `VerifyMismatch`, retry-on-
-/// next-tick on `RealiseFailed`/`SignatureMismatch` (nothing was
-/// switched, nothing to roll back).
+/// rollback on `SwitchFailed`, retry-on-next-tick on
+/// `RealiseFailed`/`SignatureMismatch` (nothing was switched, nothing
+/// to roll back).
 #[derive(Debug)]
 pub enum ActivationOutcome {
     /// **Timing semantics.** Fire-and-forget (ADR-011): the agent has
@@ -198,16 +198,6 @@ pub enum ActivationOutcome {
     SwitchFailed {
         phase: String,
         exit_code: Option<i32>,
-    },
-    /// **Currently unused with fire-and-forget**: the poll loop
-    /// either observes the expected closure or times out. Kept as
-    /// a variant so callers that want to distinguish "switched to a
-    /// completely unexpected path" from "switch failed" have a slot.
-    /// Future code paths (e.g. closure-mutation detection) can emit
-    /// this; the post-fire poll exits `SwitchFailed` instead.
-    VerifyMismatch {
-        expected: String,
-        actual: String,
     },
 }
 
@@ -1128,7 +1118,7 @@ impl RollbackOutcome {
 ///
 /// Used when:
 /// - `activate()` returned a non-success outcome that requires
-///   rollback (`SwitchFailed`, `VerifyMismatch`).
+///   rollback (`SwitchFailed`).
 /// - The agent's confirm window expired before the CP acknowledged
 ///   the activation (magic rollback, RFC-0003 §4.2).
 ///
@@ -1365,13 +1355,6 @@ mod tests {
                 ActivationOutcome::SwitchFailed {
                     phase: "switch-poll-timeout".into(),
                     exit_code: Some(1),
-                }
-            ),
-            format!(
-                "{:?}",
-                ActivationOutcome::VerifyMismatch {
-                    expected: "a".into(),
-                    actual: "b".into()
                 }
             ),
             format!(
