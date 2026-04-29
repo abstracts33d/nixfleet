@@ -8,10 +8,14 @@ use chrono::{DateTime, Utc};
 use nixfleet_proto::FleetResolved;
 use std::str::FromStr;
 
+// `FromStr` is still used by the proto-side / DB-side string
+// boundary; keep it on the public API even though the reconciler
+// itself now reads `Rollout.state` as the typed variant directly.
+
 /// RFC-0002 §3.1 rollout-level state. Persisted on the wire as a
-/// string in `Rollout.state` (`HashMap` JSON survives schema-light
-/// fixtures) and parsed via [`Self::from_str`] before pattern-
-/// matching. Lifecycle:
+/// string in `Rollout.state` JSON (a serde shim on the struct
+/// round-trips through [`Self::as_str`] / [`Self::from_str`] so
+/// fixtures stay byte-identical). Lifecycle:
 ///
 /// - [`Planning`](Self::Planning): rollout opened but not yet
 ///   executing — reserved; the current CP transitions Planning →
@@ -62,10 +66,9 @@ pub(crate) fn advance_rollout(
 ) -> Vec<Action> {
     let mut actions = Vec::new();
 
-    // Parse rollout.state into the typed enum and only advance
-    // when Executing. Unknown / Planning / Halted: nothing to do
-    // — reconciler waits.
-    if RolloutState::from_str(&rollout.state).ok() != Some(RolloutState::Executing) {
+    // Only advance when Executing. Planning / Halted: nothing to do
+    // — reconciler waits for the next state transition.
+    if rollout.state != RolloutState::Executing {
         return actions;
     }
 

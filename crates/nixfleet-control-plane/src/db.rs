@@ -660,10 +660,16 @@ impl Db {
                     // the upsert failed-but-confirm-succeeded
                     // window), surface as Healthy.
                     PendingConfirmState::Confirmed => "Healthy".to_string(),
-                    // Pending / Confirmed are the only states
-                    // surviving the WHERE filter; RolledBack and
-                    // Cancelled never reach this branch.
-                    other => other.as_db_str().to_string(),
+                    // The CTE's WHERE clause filters pc.state to
+                    // ('pending', 'confirmed') — see V002 migration
+                    // for the lifecycle. Other variants cannot reach
+                    // this match.
+                    PendingConfirmState::RolledBack | PendingConfirmState::Cancelled => {
+                        unreachable!(
+                            "WHERE pc.state IN ('pending','confirmed') filters here; \
+                             see migration V002"
+                        )
+                    }
                 },
             };
 

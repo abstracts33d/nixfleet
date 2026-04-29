@@ -33,7 +33,7 @@ pub mod trust;
 
 pub use fleet_resolved::{
     Channel, Compliance, ComplianceProbes, DisruptionBudget, Edge, FleetResolved, HealthGate, Host,
-    Meta, PolicyWave, RolloutPolicy, Selector, SystemdFailedUnits, Wave,
+    Meta, OnHealthFailure, PolicyWave, RolloutPolicy, Selector, SystemdFailedUnits, Wave,
 };
 pub use revocations::{RevocationEntry, Revocations};
 pub use trust::{KeySlot, TrustConfig, TrustedPubkey};

@@ -50,16 +50,17 @@ mod tests {
         }
     }
 
-    fn rollout_with_states(states: Vec<(&str, &str)>) -> Rollout {
+    fn rollout_with_states(states: Vec<(&str, HostRolloutState)>) -> Rollout {
+        use crate::rollout_state::RolloutState;
         let mut host_states = HashMap::new();
         for (h, s) in states {
-            host_states.insert(h.to_string(), s.to_string());
+            host_states.insert(h.to_string(), s);
         }
         Rollout {
             id: "r".into(),
             channel: "c".into(),
             target_ref: "ref".into(),
-            state: "Executing".into(),
+            state: RolloutState::Executing,
             current_wave: 0,
             host_states,
             last_healthy_since: HashMap::new(),
@@ -80,7 +81,7 @@ mod tests {
             after: "h2".into(),
             reason: None,
         }]);
-        let rollout = rollout_with_states(vec![("h2", "Soaked")]);
+        let rollout = rollout_with_states(vec![("h2", HostRolloutState::Soaked)]);
         assert!(predecessor_blocking(&fleet, &rollout, "h1").is_none());
     }
 
@@ -91,7 +92,7 @@ mod tests {
             after: "h2".into(),
             reason: None,
         }]);
-        let rollout = rollout_with_states(vec![("h2", "Queued")]);
+        let rollout = rollout_with_states(vec![("h2", HostRolloutState::Queued)]);
         let blocker = predecessor_blocking(&fleet, &rollout, "h1");
         assert_eq!(blocker.as_deref(), Some("h2"));
     }

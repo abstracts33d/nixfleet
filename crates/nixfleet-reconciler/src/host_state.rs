@@ -12,10 +12,9 @@ use nixfleet_proto::{FleetResolved, Wave};
 use std::str::FromStr;
 
 /// RFC-0002 §3.2 per-host rollout state. The reconciler reads
-/// these from `Rollout.host_states: HashMap<String, String>` (the
-/// wire-shape stays stringly-typed so file-backed `observed.json`
-/// fixtures keep deserialising) and parses through this enum
-/// before pattern-matching.
+/// these from `Rollout.host_states: HashMap<String, HostRolloutState>`
+/// (a serde shim on the wire keeps file-backed `observed.json`
+/// fixtures byte-identical) and pattern-matches directly.
 ///
 /// `Queued` is the implicit default for hosts absent from the
 /// `host_states` map — they have not been dispatched yet. The
@@ -51,15 +50,14 @@ impl HostRolloutState {
     }
 
     /// Look up `host`'s state in `rollout.host_states`, defaulting
-    /// to [`Queued`](Self::Queued) when absent. Unknown strings
-    /// fall back to `Queued` so a future state name can land
-    /// without panicking the reconciler — matches the existing
-    /// behaviour of the `_ => {}` arm before this typed pass.
+    /// to [`Queued`](Self::Queued) when absent. Hosts not yet
+    /// dispatched have no row in `host_rollout_state`; the
+    /// reconciler treats them as fresh Queued work.
     pub fn lookup(rollout: &Rollout, host: &str) -> Self {
         rollout
             .host_states
             .get(host)
-            .and_then(|s| Self::from_str(s).ok())
+            .copied()
             .unwrap_or(HostRolloutState::Queued)
     }
 }
@@ -214,36 +212,18 @@ mod tests {
 
     #[test]
     fn lookup_defaults_absent_to_queued() {
+        use crate::rollout_state::RolloutState;
         let rollout = Rollout {
             id: "r".into(),
             channel: "c".into(),
             target_ref: "ref".into(),
-            state: "Executing".into(),
+            state: RolloutState::Executing,
             current_wave: 0,
             host_states: std::collections::HashMap::new(),
             last_healthy_since: std::collections::HashMap::new(),
         };
         assert_eq!(
             HostRolloutState::lookup(&rollout, "missing"),
-            HostRolloutState::Queued
-        );
-    }
-
-    #[test]
-    fn lookup_defaults_unknown_to_queued() {
-        let mut host_states = std::collections::HashMap::new();
-        host_states.insert("h".to_string(), "garbage".to_string());
-        let rollout = Rollout {
-            id: "r".into(),
-            channel: "c".into(),
-            target_ref: "ref".into(),
-            state: "Executing".into(),
-            current_wave: 0,
-            host_states,
-            last_healthy_since: std::collections::HashMap::new(),
-        };
-        assert_eq!(
-            HostRolloutState::lookup(&rollout, "h"),
             HostRolloutState::Queued
         );
     }

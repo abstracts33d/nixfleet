@@ -87,7 +87,33 @@ pub struct RolloutPolicy {
     pub waves: Vec<PolicyWave>,
     #[serde(default)]
     pub health_gate: HealthGate,
-    pub on_health_failure: String,
+    pub on_health_failure: OnHealthFailure,
+}
+
+/// Recovery action when a host fails its health gate during a
+/// rollout (RFC-0002 §3.2 / §3.3). `mk-fleet` constrains the wire
+/// values to `"halt" | "rollback-and-halt"`; the typed wrapper
+/// catches typos at compile time across the reconciler's match
+/// sites. Wire JSON stays kebab-case via `rename_all`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OnHealthFailure {
+    /// Stop advancing the rollout. The failed host stays in
+    /// `Failed`; operator intervention required.
+    Halt,
+    /// Roll the failed host back to its previous closure, then
+    /// halt as above.
+    RollbackAndHalt,
+}
+
+impl std::fmt::Display for OnHealthFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            OnHealthFailure::Halt => "halt",
+            OnHealthFailure::RollbackAndHalt => "rollback-and-halt",
+        };
+        f.write_str(s)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

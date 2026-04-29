@@ -4,7 +4,6 @@ use crate::rollout_state::{self, RolloutState};
 use crate::{Action, Observed};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::FleetResolved;
-use std::str::FromStr;
 
 pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>) -> Vec<Action> {
     let mut actions = Vec::new();
@@ -16,10 +15,7 @@ pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>)
         }
         let has_active = observed.active_rollouts.iter().any(|r| {
             &r.channel == channel
-                && matches!(
-                    RolloutState::from_str(&r.state).ok(),
-                    Some(RolloutState::Executing) | Some(RolloutState::Planning)
-                )
+                && matches!(r.state, RolloutState::Executing | RolloutState::Planning)
         });
         if !has_active && fleet.channels.contains_key(channel) {
             actions.push(Action::OpenRollout {

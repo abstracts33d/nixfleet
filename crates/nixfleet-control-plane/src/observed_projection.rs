@@ -13,8 +13,10 @@
 //! before this PR.
 
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use nixfleet_reconciler::observed::{HostState, Observed, Rollout};
+use nixfleet_reconciler::{HostRolloutState, RolloutState};
 
 use crate::db::RolloutDbSnapshot;
 use crate::server::HostCheckinRecord;
@@ -53,9 +55,22 @@ pub fn project(
             id: snap.rollout_id.clone(),
             channel: snap.channel.clone(),
             target_ref: snap.target_channel_ref.clone(),
-            state: "Executing".to_string(),
+            state: RolloutState::Executing,
             current_wave: 0,
-            host_states: snap.host_states.clone(),
+            // String → typed conversion at the DB → reconciler seam.
+            // Unknown strings fall back to Queued (matches the prior
+            // `from_str(..).ok().unwrap_or(Queued)` behaviour in
+            // `HostRolloutState::lookup` before the typed-map pass).
+            host_states: snap
+                .host_states
+                .iter()
+                .map(|(h, s)| {
+                    (
+                        h.clone(),
+                        HostRolloutState::from_str(s).unwrap_or(HostRolloutState::Queued),
+                    )
+                })
+                .collect(),
             last_healthy_since: snap.last_healthy_since.clone(),
         })
         .collect();
@@ -148,12 +163,15 @@ mod tests {
         assert_eq!(r.id, "stable@abc12345");
         assert_eq!(r.channel, "stable");
         assert_eq!(r.target_ref, "stable@abc12345");
-        assert_eq!(r.state, "Executing");
+        assert_eq!(r.state, RolloutState::Executing);
         assert_eq!(r.current_wave, 0);
-        assert_eq!(r.host_states.get("ohm").map(String::as_str), Some("Healthy"));
         assert_eq!(
-            r.host_states.get("krach").map(String::as_str),
-            Some("ConfirmWindow"),
+            r.host_states.get("ohm").copied(),
+            Some(HostRolloutState::Healthy),
+        );
+        assert_eq!(
+            r.host_states.get("krach").copied(),
+            Some(HostRolloutState::ConfirmWindow),
         );
         assert_eq!(r.last_healthy_since.len(), 1);
         assert_eq!(r.last_healthy_since["ohm"].timestamp(), now.timestamp());

@@ -3,7 +3,6 @@
 use crate::host_state::HostRolloutState;
 use crate::observed::Observed;
 use nixfleet_proto::FleetResolved;
-use std::str::FromStr;
 
 /// Count hosts currently in-flight across all active rollouts.
 pub(crate) fn in_flight_count(observed: &Observed, budget_hosts: &[String]) -> u32 {
@@ -18,11 +17,11 @@ pub(crate) fn in_flight_count(observed: &Observed, budget_hosts: &[String]) -> u
                         return false;
                     }
                     matches!(
-                        HostRolloutState::from_str(st).ok(),
-                        Some(HostRolloutState::Dispatched)
-                            | Some(HostRolloutState::Activating)
-                            | Some(HostRolloutState::ConfirmWindow)
-                            | Some(HostRolloutState::Healthy)
+                        st,
+                        HostRolloutState::Dispatched
+                            | HostRolloutState::Activating
+                            | HostRolloutState::ConfirmWindow
+                            | HostRolloutState::Healthy
                     )
                 })
                 .count() as u32
@@ -52,9 +51,10 @@ pub(crate) fn budget_max(
 mod tests {
     use super::*;
     use crate::observed::Rollout;
+    use crate::rollout_state::RolloutState;
     use std::collections::HashMap;
 
-    fn observed_with(rollout_hosts: Vec<(String, String)>) -> Observed {
+    fn observed_with(rollout_hosts: Vec<(String, HostRolloutState)>) -> Observed {
         let mut host_states = HashMap::new();
         for (h, s) in rollout_hosts {
             host_states.insert(h, s);
@@ -67,7 +67,7 @@ mod tests {
                 id: "r".into(),
                 channel: "c".into(),
                 target_ref: "ref".into(),
-                state: "Executing".into(),
+                state: RolloutState::Executing,
                 current_wave: 0,
                 host_states,
                 last_healthy_since: HashMap::new(),
@@ -84,11 +84,11 @@ mod tests {
     #[test]
     fn in_flight_count_counts_only_in_flight_states() {
         let obs = observed_with(vec![
-            ("a".into(), "Queued".into()),
-            ("b".into(), "Dispatched".into()),
-            ("c".into(), "Activating".into()),
-            ("d".into(), "Soaked".into()),
-            ("e".into(), "Healthy".into()),
+            ("a".into(), HostRolloutState::Queued),
+            ("b".into(), HostRolloutState::Dispatched),
+            ("c".into(), HostRolloutState::Activating),
+            ("d".into(), HostRolloutState::Soaked),
+            ("e".into(), HostRolloutState::Healthy),
         ]);
         let budget = vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()];
         assert_eq!(in_flight_count(&obs, &budget), 3);
@@ -97,8 +97,8 @@ mod tests {
     #[test]
     fn in_flight_count_filters_by_budget_hosts() {
         let obs = observed_with(vec![
-            ("a".into(), "Dispatched".into()),
-            ("b".into(), "Dispatched".into()),
+            ("a".into(), HostRolloutState::Dispatched),
+            ("b".into(), HostRolloutState::Dispatched),
         ]);
         assert_eq!(in_flight_count(&obs, &["a".into()]), 1);
     }
