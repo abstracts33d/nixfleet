@@ -6,8 +6,84 @@
 
 use crate::observed::{Observed, Rollout};
 use crate::{budgets, edges, Action};
+use anyhow::{anyhow, Error, Result};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::{FleetResolved, Wave};
+use std::str::FromStr;
+
+/// RFC-0002 §3.2 per-host rollout state. The reconciler reads
+/// these from `Rollout.host_states: HashMap<String, String>` (the
+/// wire-shape stays stringly-typed so file-backed `observed.json`
+/// fixtures keep deserialising) and parses through this enum
+/// before pattern-matching.
+///
+/// `Queued` is the implicit default for hosts absent from the
+/// `host_states` map — they have not been dispatched yet. The
+/// other variants reflect the post-dispatch lifecycle the CP
+/// writes into `host_rollout_state.host_state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostRolloutState {
+    Queued,
+    Dispatched,
+    Activating,
+    ConfirmWindow,
+    Healthy,
+    Soaked,
+    Converged,
+    Failed,
+}
+
+impl HostRolloutState {
+    /// Canonical wire-string for this variant. Stays in sync with
+    /// `host_rollout_state.host_state` CHECK constraint and the
+    /// fixture JSON in `tests/fixtures/`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HostRolloutState::Queued => "Queued",
+            HostRolloutState::Dispatched => "Dispatched",
+            HostRolloutState::Activating => "Activating",
+            HostRolloutState::ConfirmWindow => "ConfirmWindow",
+            HostRolloutState::Healthy => "Healthy",
+            HostRolloutState::Soaked => "Soaked",
+            HostRolloutState::Converged => "Converged",
+            HostRolloutState::Failed => "Failed",
+        }
+    }
+
+    /// Look up `host`'s state in `rollout.host_states`, defaulting
+    /// to [`Queued`](Self::Queued) when absent. Unknown strings
+    /// fall back to `Queued` so a future state name can land
+    /// without panicking the reconciler — matches the existing
+    /// behaviour of the `_ => {}` arm before this typed pass.
+    pub fn lookup(rollout: &Rollout, host: &str) -> Self {
+        rollout
+            .host_states
+            .get(host)
+            .and_then(|s| Self::from_str(s).ok())
+            .unwrap_or(HostRolloutState::Queued)
+    }
+}
+
+impl FromStr for HostRolloutState {
+    type Err = Error;
+
+    /// Parse a wire-string into the typed variant. Returns an
+    /// error on unknown strings — surfaces as a reconciler input
+    /// error rather than silently mis-classifying a host.
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "Queued" => Ok(HostRolloutState::Queued),
+            "Dispatched" => Ok(HostRolloutState::Dispatched),
+            "Activating" => Ok(HostRolloutState::Activating),
+            "ConfirmWindow" => Ok(HostRolloutState::ConfirmWindow),
+            "Healthy" => Ok(HostRolloutState::Healthy),
+            "Soaked" => Ok(HostRolloutState::Soaked),
+            "Converged" => Ok(HostRolloutState::Converged),
+            "Failed" => Ok(HostRolloutState::Failed),
+            other => Err(anyhow!("unknown host_rollout_state: {other:?}")),
+        }
+    }
+}
 
 pub(crate) struct WaveOutcome {
     pub actions: Vec<Action>,
@@ -27,13 +103,9 @@ pub(crate) fn handle_wave(
     };
 
     for host in &wave.hosts {
-        let state = rollout
-            .host_states
-            .get(host)
-            .map(String::as_str)
-            .unwrap_or("Queued");
+        let state = HostRolloutState::lookup(rollout, host);
         match state {
-            "Queued" => {
+            HostRolloutState::Queued => {
                 out.wave_all_soaked = false;
                 let online = observed
                     .host_state
@@ -69,10 +141,12 @@ pub(crate) fn handle_wave(
                     target_ref: rollout.target_ref.clone(),
                 });
             }
-            "Dispatched" | "Activating" | "ConfirmWindow" => {
+            HostRolloutState::Dispatched
+            | HostRolloutState::Activating
+            | HostRolloutState::ConfirmWindow => {
                 out.wave_all_soaked = false;
             }
-            "Healthy" => {
+            HostRolloutState::Healthy => {
                 // RFC-0002 §3.2: Healthy → Soaked once the host has
                 // remained Healthy for `wave.soak_minutes`. Without
                 // a `last_healthy_since` marker the soak gate stays
@@ -90,8 +164,8 @@ pub(crate) fn handle_wave(
                     }
                 }
             }
-            "Soaked" | "Converged" => {}
-            "Failed" => {
+            HostRolloutState::Soaked | HostRolloutState::Converged => {}
+            HostRolloutState::Failed => {
                 out.wave_all_soaked = false;
                 if let Some(chan) = fleet.channels.get(&rollout.channel) {
                     if let Some(policy) = fleet.rollout_policies.get(&chan.rollout_policy) {
@@ -105,9 +179,72 @@ pub(crate) fn handle_wave(
                     }
                 }
             }
-            _ => {}
         }
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_known_values() {
+        for v in [
+            HostRolloutState::Queued,
+            HostRolloutState::Dispatched,
+            HostRolloutState::Activating,
+            HostRolloutState::ConfirmWindow,
+            HostRolloutState::Healthy,
+            HostRolloutState::Soaked,
+            HostRolloutState::Converged,
+            HostRolloutState::Failed,
+        ] {
+            assert_eq!(HostRolloutState::from_str(v.as_str()).unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn unknown_strings_error() {
+        assert!(HostRolloutState::from_str("").is_err());
+        assert!(HostRolloutState::from_str("queued").is_err()); // case-sensitive
+        assert!(HostRolloutState::from_str("garbage").is_err());
+    }
+
+    #[test]
+    fn lookup_defaults_absent_to_queued() {
+        let rollout = Rollout {
+            id: "r".into(),
+            channel: "c".into(),
+            target_ref: "ref".into(),
+            state: "Executing".into(),
+            current_wave: 0,
+            host_states: std::collections::HashMap::new(),
+            last_healthy_since: std::collections::HashMap::new(),
+        };
+        assert_eq!(
+            HostRolloutState::lookup(&rollout, "missing"),
+            HostRolloutState::Queued
+        );
+    }
+
+    #[test]
+    fn lookup_defaults_unknown_to_queued() {
+        let mut host_states = std::collections::HashMap::new();
+        host_states.insert("h".to_string(), "garbage".to_string());
+        let rollout = Rollout {
+            id: "r".into(),
+            channel: "c".into(),
+            target_ref: "ref".into(),
+            state: "Executing".into(),
+            current_wave: 0,
+            host_states,
+            last_healthy_since: std::collections::HashMap::new(),
+        };
+        assert_eq!(
+            HostRolloutState::lookup(&rollout, "h"),
+            HostRolloutState::Queued
+        );
+    }
 }

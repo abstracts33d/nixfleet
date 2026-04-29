@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
+use crate::state::PendingConfirmState;
+
 mod embedded {
     use refinery::embed_migrations;
     embed_migrations!("migrations");
@@ -266,7 +268,7 @@ impl Db {
                                               confirm_deadline,
                                               confirmed_at,
                                               state)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'confirmed')",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     hostname,
                     rollout_id,
@@ -275,6 +277,7 @@ impl Db {
                     target_channel_ref,
                     &ts,
                     &ts,
+                    PendingConfirmState::Confirmed.as_db_str(),
                 ],
             )
             .context("insert pending_confirms (orphan recovery)")?;
@@ -290,8 +293,8 @@ impl Db {
         let n: i64 = guard
             .query_row(
                 "SELECT COUNT(*) FROM pending_confirms
-                 WHERE hostname = ?1 AND state = 'pending'",
-                params![hostname],
+                 WHERE hostname = ?1 AND state = ?2",
+                params![hostname, PendingConfirmState::Pending.as_db_str()],
                 |row| row.get(0),
             )
             .context("count pending_confirms")?;
@@ -309,11 +312,16 @@ impl Db {
             .execute(
                 "UPDATE pending_confirms
                  SET confirmed_at = datetime('now'),
-                     state = 'confirmed'
+                     state = ?3
                  WHERE hostname = ?1
                    AND rollout_id = ?2
-                   AND state = 'pending'",
-                params![hostname, rollout_id],
+                   AND state = ?4",
+                params![
+                    hostname,
+                    rollout_id,
+                    PendingConfirmState::Confirmed.as_db_str(),
+                    PendingConfirmState::Pending.as_db_str(),
+                ],
             )
             .context("update pending_confirms confirmed")?;
         Ok(n)
@@ -341,11 +349,11 @@ impl Db {
         let mut stmt = guard.prepare(
             "SELECT id, hostname, rollout_id, wave, target_closure_hash
              FROM pending_confirms
-             WHERE state = 'pending'
+             WHERE state = ?1
                AND datetime(confirm_deadline) < datetime('now')",
         )?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params![PendingConfirmState::Pending.as_db_str()], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -367,18 +375,28 @@ impl Db {
             return Ok(0);
         }
         let guard = self.conn()?;
-        // SQLite IN clause via repeated `?` placeholders.
+        // SQLite IN clause via repeated `?` placeholders. The state
+        // literals come from the typed enum so a future variant rename
+        // can't drift between this UPDATE and the rest of db.rs.
         let placeholders = (1..=ids.len())
             .map(|i| format!("?{i}"))
             .collect::<Vec<_>>()
             .join(",");
+        let new_state_idx = ids.len() + 1;
+        let pending_idx = ids.len() + 2;
         let sql = format!(
             "UPDATE pending_confirms
-             SET state = 'rolled-back'
-             WHERE state = 'pending' AND id IN ({placeholders})"
+             SET state = ?{new_state_idx}
+             WHERE state = ?{pending_idx} AND id IN ({placeholders})"
         );
         let mut stmt = guard.prepare(&sql)?;
-        let n = stmt.execute(rusqlite::params_from_iter(ids.iter()))?;
+        let mut bound: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rolled_back = PendingConfirmState::RolledBack.as_db_str();
+        let pending = PendingConfirmState::Pending.as_db_str();
+        bound.push(&rolled_back);
+        bound.push(&pending);
+        let n = stmt.execute(rusqlite::params_from_iter(bound.iter()))?;
         Ok(n)
     }
 
@@ -545,12 +563,13 @@ impl Db {
               AND pc.rollout_id = hrs.rollout_id
              WHERE hrs.hostname = ?1
                AND hrs.last_healthy_since IS NOT NULL
-               AND pc.state = 'confirmed'",
+               AND pc.state = ?2",
         )?;
         let rows = stmt
-            .query_map(params![hostname], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
+            .query_map(
+                params![hostname, PendingConfirmState::Confirmed.as_db_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -583,7 +602,7 @@ impl Db {
                         pc.target_closure_hash, pc.target_channel_ref,
                         pc.state AS pc_state
                  FROM pending_confirms pc
-                 WHERE pc.state IN ('pending', 'confirmed')
+                 WHERE pc.state IN (?1, ?2)
                    AND pc.dispatched_at = (
                      SELECT MAX(p2.dispatched_at)
                      FROM pending_confirms p2
@@ -602,17 +621,23 @@ impl Db {
              ORDER BY lph.rollout_id, lph.hostname",
         )?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?, // rollout_id
-                    row.get::<_, String>(1)?, // hostname
-                    row.get::<_, String>(2)?, // target_closure_hash
-                    row.get::<_, String>(3)?, // target_channel_ref
-                    row.get::<_, String>(4)?, // pc_state
-                    row.get::<_, Option<String>>(5)?, // hrs.host_state
-                    row.get::<_, Option<String>>(6)?, // hrs.last_healthy_since
-                ))
-            })?
+            .query_map(
+                params![
+                    PendingConfirmState::Pending.as_db_str(),
+                    PendingConfirmState::Confirmed.as_db_str(),
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?, // rollout_id
+                        row.get::<_, String>(1)?, // hostname
+                        row.get::<_, String>(2)?, // target_closure_hash
+                        row.get::<_, String>(3)?, // target_channel_ref
+                        row.get::<_, String>(4)?, // pc_state
+                        row.get::<_, Option<String>>(5)?, // hrs.host_state
+                        row.get::<_, Option<String>>(6)?, // hrs.last_healthy_since
+                    ))
+                },
+            )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         // BTreeMap keeps rollout_ids ordered without an extra sort.
@@ -625,20 +650,20 @@ impl Db {
             // Otherwise infer from pending_confirms.state.
             let host_state = match hrs_state {
                 Some(s) => s,
-                None => match pc_state.as_str() {
+                None => match PendingConfirmState::from_db_str(&pc_state)? {
                     // Dispatched but pre-confirm: agent is in the
                     // ConfirmWindow per RFC §3.2.
-                    "pending" => "ConfirmWindow".to_string(),
+                    PendingConfirmState::Pending => "ConfirmWindow".to_string(),
                     // Defensive: should not happen — confirm
                     // handler upserts a host_rollout_state row on
                     // success. If it does (pre-existing data, or
                     // the upsert failed-but-confirm-succeeded
                     // window), surface as Healthy.
-                    "confirmed" => "Healthy".to_string(),
-                    // 'pending' / 'confirmed' are the only states
-                    // surviving the WHERE filter; anything else
-                    // here is a SQLite anomaly.
-                    other => other.to_string(),
+                    PendingConfirmState::Confirmed => "Healthy".to_string(),
+                    // Pending / Confirmed are the only states
+                    // surviving the WHERE filter; RolledBack and
+                    // Cancelled never reach this branch.
+                    other => other.as_db_str().to_string(),
                 },
             };
 

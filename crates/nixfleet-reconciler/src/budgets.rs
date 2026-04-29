@@ -1,7 +1,9 @@
 //! Disruption budget evaluation (RFC-0002 §4.2).
 
+use crate::host_state::HostRolloutState;
 use crate::observed::Observed;
 use nixfleet_proto::FleetResolved;
+use std::str::FromStr;
 
 /// Count hosts currently in-flight across all active rollouts.
 pub(crate) fn in_flight_count(observed: &Observed, budget_hosts: &[String]) -> u32 {
@@ -12,11 +14,16 @@ pub(crate) fn in_flight_count(observed: &Observed, budget_hosts: &[String]) -> u
             r.host_states
                 .iter()
                 .filter(|(h, st)| {
-                    budget_hosts.iter().any(|b| b == *h)
-                        && matches!(
-                            st.as_str(),
-                            "Dispatched" | "Activating" | "ConfirmWindow" | "Healthy"
-                        )
+                    if !budget_hosts.iter().any(|b| b == *h) {
+                        return false;
+                    }
+                    matches!(
+                        HostRolloutState::from_str(st).ok(),
+                        Some(HostRolloutState::Dispatched)
+                            | Some(HostRolloutState::Activating)
+                            | Some(HostRolloutState::ConfirmWindow)
+                            | Some(HostRolloutState::Healthy)
+                    )
                 })
                 .count() as u32
         })

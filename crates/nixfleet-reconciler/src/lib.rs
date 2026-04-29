@@ -13,19 +13,21 @@
 //! independently. Both are stateless: state lives in the inputs.
 
 pub mod action;
+pub mod host_state;
 pub mod observed;
 pub mod reconcile;
+pub mod rollout_state;
 pub mod verify;
 
 // Internal modules — logic lives here, extracted from reconcile::reconcile
 // after the initial TDD pass (see plan Phase E).
 pub(crate) mod budgets;
 pub(crate) mod edges;
-pub(crate) mod host_state;
-pub(crate) mod rollout_state;
 
 pub use action::Action;
+pub use host_state::HostRolloutState;
 pub use nixfleet_proto::FleetResolved;
 pub use observed::{HostState, Observed, Rollout};
 pub use reconcile::reconcile;
+pub use rollout_state::RolloutState;
 pub use verify::{verify_artifact, verify_revocations, VerifyError};

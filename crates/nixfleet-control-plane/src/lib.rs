@@ -22,6 +22,7 @@ pub mod revocations_poll;
 pub mod rollback_timer;
 pub mod server;
 pub mod signed_fetch;
+pub mod state;
 pub mod tls;
 pub mod wave_gate;
 

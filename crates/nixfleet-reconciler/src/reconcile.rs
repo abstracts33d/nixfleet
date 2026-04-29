@@ -1,8 +1,10 @@
 //! Top-level `reconcile`: RFC-0002 §4 steps 1–6 orchestration.
 
-use crate::{rollout_state, Action, Observed};
+use crate::rollout_state::{self, RolloutState};
+use crate::{Action, Observed};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::FleetResolved;
+use std::str::FromStr;
 
 pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>) -> Vec<Action> {
     let mut actions = Vec::new();
@@ -12,10 +14,13 @@ pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>)
         if observed.last_rolled_refs.get(channel) == Some(current_ref) {
             continue;
         }
-        let has_active = observed
-            .active_rollouts
-            .iter()
-            .any(|r| &r.channel == channel && (r.state == "Executing" || r.state == "Planning"));
+        let has_active = observed.active_rollouts.iter().any(|r| {
+            &r.channel == channel
+                && matches!(
+                    RolloutState::from_str(&r.state).ok(),
+                    Some(RolloutState::Executing) | Some(RolloutState::Planning)
+                )
+        });
         if !has_active && fleet.channels.contains_key(channel) {
             actions.push(Action::OpenRollout {
                 channel: channel.clone(),
