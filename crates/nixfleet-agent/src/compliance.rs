@@ -373,7 +373,8 @@ pub fn flatten_framework_articles(value: &serde_json::Value) -> Vec<String> {
 /// per-event payloads small avoids unbounded growth in the agent's
 /// in-memory ring buffer + the proto wire shape.
 pub fn truncate_evidence_snippet(checks: &serde_json::Value) -> serde_json::Value {
-    let serialized = serde_json::to_string(checks).unwrap_or_default();
+    let serialized = serde_json::to_string(checks)
+        .expect("serde_json::to_string on a serde_json::Value is infallible");
     if serialized.len() <= 1024 {
         return checks.clone();
     }

@@ -208,7 +208,8 @@ pub fn audit_log(
         "not_after": not_after.to_rfc3339(),
         "context": context_str,
     });
-    let line = serde_json::to_string(&record).unwrap_or_default();
+    let line = serde_json::to_string(&record)
+        .expect("serde_json::to_string on a json!() Value is infallible");
     if let Err(err) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
