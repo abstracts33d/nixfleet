@@ -556,7 +556,24 @@
           cfg.hosts;
         channels =
           lib.mapAttrs (_: c: {
-            inherit (c) rolloutPolicy reconcileIntervalMinutes signingIntervalMinutes freshnessWindow compliance;
+            inherit (c) rolloutPolicy reconcileIntervalMinutes signingIntervalMinutes freshnessWindow;
+            # Wire-compat shim: synthesize `strict` from `mode` so CP
+            # binaries that pre-date the strict-removal cleanup keep
+            # parsing newly-signed artifacts. The new proto has no
+            # `strict` field and ignores it on deserialise (serde
+            # default-ignore-unknown). Drop this synthesis in the
+            # follow-up cycle that confirms every host's CP closure
+            # has rolled forward.
+            #
+            # See lessons-from-2026-04-29-strict-removal in the
+            # cycle-quality-pass docs: future wire-format removals
+            # MUST go through a 2-stage migration (Optional first,
+            # remove later) — not the hard-removal taken here.
+            compliance =
+              c.compliance
+              // {
+                strict = c.compliance.mode == "enforce";
+              };
           })
           cfg.channels;
         rolloutPolicies = cfg.rolloutPolicies;

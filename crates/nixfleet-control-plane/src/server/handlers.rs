@@ -466,12 +466,13 @@ async fn dispatch_target_for_checkin(
             // into evaluate_channel_gate has stable lifetimes. Each
             // entry carries the host's wave_index for the per-wave
             // gate decision (#59 issue E).
-            let staged: Vec<(
-                String,
-                Vec<crate::server::ReportRecord>,
-                Option<String>,
-                Option<u32>,
-            )> = channel_hosts
+            type StagedHost = (
+                String,                              // hostname
+                Vec<crate::server::ReportRecord>,    // report buffer (cloned)
+                Option<String>,                       // current rollout id
+                Option<u32>,                          // wave index
+            );
+            let staged: Vec<StagedHost> = channel_hosts
                 .iter()
                 .map(|n| {
                     let buf: Vec<crate::server::ReportRecord> = reports_guard
@@ -1294,10 +1295,10 @@ pub(super) async fn hosts_status(
                     // Resolution-by-replacement check: skip events
                     // whose rollout the host has moved past.
                     let event_rollout = record.report.rollout.as_deref();
-                    let outstanding = match (cur_rollout, event_rollout) {
-                        (Some(cur), Some(ev_r)) if cur != ev_r => false,
-                        _ => true,
-                    };
+                    let outstanding = !matches!(
+                        (cur_rollout, event_rollout),
+                        (Some(cur), Some(ev_r)) if cur != ev_r
+                    );
                     if !outstanding {
                         continue;
                     }
