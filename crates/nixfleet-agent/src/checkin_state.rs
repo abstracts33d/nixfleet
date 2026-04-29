@@ -140,7 +140,11 @@ const CURRENT_SYSTEM: &str = "/run/current-system";
 
 /// Path to the symlink pointing at the system that booted. When
 /// this differs from `/run/current-system`, the host has a pending
-/// generation queued for next reboot.
+/// generation queued for next reboot. Linux-only: nix-darwin has no
+/// equivalent because `darwin-rebuild switch` activates without a
+/// kernel boot (no kernel involved at all), so the
+/// "booted vs activated" distinction doesn't exist there.
+#[cfg(target_os = "linux")]
 const BOOTED_SYSTEM: &str = "/run/booted-system";
 
 /// Linux's per-boot UUID. Stable for a single boot; rotates on
@@ -164,7 +168,8 @@ pub fn current_closure_hash() -> Result<String> {
 
 /// Same as [`current_closure_hash`] for `/run/booted-system`. The
 /// caller compares the two to decide whether to populate
-/// `pendingGeneration`.
+/// `pendingGeneration`. Linux-only — see `BOOTED_SYSTEM`.
+#[cfg(target_os = "linux")]
 fn booted_closure_hash() -> Result<String> {
     let target = std::fs::read_link(BOOTED_SYSTEM)
         .with_context(|| format!("readlink {BOOTED_SYSTEM}"))?;
@@ -257,6 +262,7 @@ pub fn current_generation_ref() -> Result<GenerationRef> {
 /// `/run/booted-system` differs from `/run/current-system`. Returns
 /// `Ok(None)` when they match (no pending), `Err` only on read
 /// failures of either symlink.
+#[cfg(target_os = "linux")]
 pub fn pending_generation() -> Result<Option<PendingGeneration>> {
     let current = current_closure_hash()?;
     let booted = booted_closure_hash()?;
@@ -267,6 +273,15 @@ pub fn pending_generation() -> Result<Option<PendingGeneration>> {
         closure_hash: current,
         scheduled_for: None,
     }))
+}
+
+/// Darwin always reports no pending generation: nix-darwin activates
+/// in-process via `darwin-rebuild switch` with no kernel reboot, so
+/// there is no "booted vs activated" delta to surface. Mirrors the
+/// per-OS split already in place for `boot_id`.
+#[cfg(target_os = "macos")]
+pub fn pending_generation() -> Result<Option<PendingGeneration>> {
+    Ok(None)
 }
 
 /// Wall-clock seconds since the agent process started. The caller
