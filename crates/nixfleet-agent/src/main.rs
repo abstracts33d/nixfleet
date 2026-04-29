@@ -570,7 +570,7 @@ async fn handle_activation_outcome(
                             .as_ref()
                             .and_then(|s| s.sign(&signed_payload).ok());
                         post_report(
-                            &client_handle,
+                            client_handle,
                             &args.control_plane_url,
                             &args.machine_id,
                             Some(&target.channel_ref),
@@ -629,7 +629,7 @@ async fn handle_activation_outcome(
                         .as_ref()
                         .and_then(|s| s.sign(&signed_payload).ok());
                     post_report(
-                        &client_handle,
+                        client_handle,
                         &args.control_plane_url,
                         &args.machine_id,
                         Some(&target.channel_ref),
@@ -645,7 +645,7 @@ async fn handle_activation_outcome(
                     if enforcing {
                         let _ = nixfleet_agent::activation::rollback().await;
                         post_report(
-                            &client_handle,
+                            client_handle,
                             &args.control_plane_url,
                             &args.machine_id,
                             Some(&target.channel_ref),
@@ -677,7 +677,7 @@ async fn handle_activation_outcome(
             let rollout = &target.channel_ref;
             let wave: u32 = 0;
             match nixfleet_agent::activation::confirm_target(
-                &client_handle,
+                client_handle,
                 &args.control_plane_url,
                 &args.machine_id,
                 target,
@@ -692,7 +692,7 @@ async fn handle_activation_outcome(
                     let rb_outcome =
                         nixfleet_agent::activation::rollback().await;
                     post_report(
-                        &client_handle,
+                        client_handle,
                         &args.control_plane_url,
                         &args.machine_id,
                         Some(rollout),
@@ -758,7 +758,7 @@ async fn handle_activation_outcome(
                 "activation: realise failed; nothing switched, retrying next tick",
             );
             post_report(
-                &client_handle,
+                client_handle,
                 &args.control_plane_url,
                 &args.machine_id,
                 Some(&target.channel_ref),
@@ -779,7 +779,7 @@ async fn handle_activation_outcome(
                 "activation: closure signature mismatch — refused by nix substituter trust",
             );
             post_report(
-                &client_handle,
+                client_handle,
                 &args.control_plane_url,
                 &args.machine_id,
                 Some(&target.channel_ref),
@@ -797,7 +797,7 @@ async fn handle_activation_outcome(
                 "activation: switch failed; rolling back",
             );
             post_report(
-                &client_handle,
+                client_handle,
                 &args.control_plane_url,
                 &args.machine_id,
                 Some(&target.channel_ref),
@@ -829,7 +829,7 @@ async fn handle_activation_outcome(
                 },
             };
             post_report(
-                &client_handle,
+                client_handle,
                 &args.control_plane_url,
                 &args.machine_id,
                 Some(&target.channel_ref),
@@ -850,7 +850,7 @@ async fn handle_activation_outcome(
             // and let next tick retry.
             tracing::error!(error = %err, "activation spawn failed");
             post_report(
-                &client_handle,
+                client_handle,
                 &args.control_plane_url,
                 &args.machine_id,
                 Some(&target.channel_ref),
