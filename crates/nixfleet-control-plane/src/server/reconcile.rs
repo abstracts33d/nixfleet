@@ -108,16 +108,16 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             // counts into Observed so the reconciler can emit
             // Action::WaveBlocked. Empty map on missing DB or query
             // failure (degraded == old behaviour).
-            let host_compliance_failures = match state
+            let compliance_failures_by_rollout = match state
                 .db
                 .as_deref()
-                .map(|db| db.outstanding_compliance_event_counts())
+                .map(|db| db.outstanding_compliance_events_by_rollout())
             {
                 Some(Ok(m)) => m,
                 Some(Err(err)) => {
                     tracing::warn!(
                         error = %err,
-                        "reconcile: outstanding_compliance_event_counts failed; treating as empty",
+                        "reconcile: outstanding_compliance_events_by_rollout failed; treating as empty",
                     );
                     HashMap::new()
                 }
@@ -141,7 +141,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                     &checkins,
                     &channel_refs,
                     &rollouts,
-                    host_compliance_failures,
+                    compliance_failures_by_rollout,
                 )
             };
 
@@ -251,7 +251,7 @@ fn run_tick_with_projection(
     checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
     rollouts: &[crate::db::RolloutDbSnapshot],
-    host_compliance_failures: HashMap<String, usize>,
+    compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
 ) -> (anyhow::Result<crate::TickOutput>, Option<FleetResolved>) {
     use anyhow::Context;
     let read_inputs = || -> anyhow::Result<(Vec<u8>, Vec<u8>, nixfleet_proto::TrustConfig)> {
@@ -289,7 +289,7 @@ fn run_tick_with_projection(
                 checkins,
                 channel_refs,
                 rollouts,
-                host_compliance_failures,
+                compliance_failures_by_rollout,
             );
             let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
             (

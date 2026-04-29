@@ -217,7 +217,7 @@ mod tests {
             last_rolled_refs: HashMap::new(),
             host_state: HashMap::new(),
             active_rollouts: vec![],
-            host_compliance_failures: HashMap::new(),
+            compliance_failures_by_rollout: HashMap::new(),
         }
     }
 

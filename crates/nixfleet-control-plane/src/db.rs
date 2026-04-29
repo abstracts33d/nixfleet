@@ -877,32 +877,51 @@ impl Db {
     }
 
     /// Count outstanding ComplianceFailure / RuntimeGateError events
-    /// per host, optionally filtered by current rollout (resolution-
-    /// by-replacement: events bound to rollout R are no longer
-    /// outstanding once the host has moved past R). Used by the
-    /// reconciler's wave-staging gate emission.
+    /// per `(rollout_id, hostname)`. Used by the reconciler's
+    /// wave-staging gate emission (issue #60). The per-rollout
+    /// grouping is what enforces resolution-by-replacement: an
+    /// event posted against rollout R₀ contributes to `(R₀, host)`
+    /// not to `host`-globally, so once the host moves to R₁ and the
+    /// reconciler iterates active rollouts, R₀'s events don't
+    /// appear under R₁'s key — correct behaviour.
     ///
-    /// Returns a map of `hostname → outstanding_count`. Hosts with
-    /// zero outstanding events are absent from the map.
-    pub fn outstanding_compliance_event_counts(
+    /// Events with `rollout IS NULL` (enrollment errors, trust-root
+    /// problems — pre-cert-bound paths) are excluded; those are
+    /// not rollout-scoped and don't gate wave promotion.
+    ///
+    /// `signature_status` filter mirrors the
+    /// `evidence_verify::SignatureStatus::counts_for_gate` rule:
+    /// `mismatch` and `malformed` are forged FAIL events from a
+    /// compromised mTLS cert and don't count; everything else
+    /// (verified, unsigned, no-pubkey, wrong-algorithm, NULL) does.
+    ///
+    /// Returns a nested map keyed first by rollout id, then by
+    /// hostname → count. Empty inner maps are absent (rollouts with
+    /// zero outstanding events don't appear at all).
+    pub fn outstanding_compliance_events_by_rollout(
         &self,
-    ) -> Result<HashMap<String, usize>> {
+    ) -> Result<HashMap<String, HashMap<String, usize>>> {
         let guard = self.conn()?;
         let mut stmt = guard.prepare(
-            "SELECT hostname, COUNT(*) FROM host_reports
-             WHERE event_kind IN ('compliance-failure', 'runtime-gate-error')
+            "SELECT rollout, hostname, COUNT(*) FROM host_reports
+             WHERE rollout IS NOT NULL
+               AND event_kind IN ('compliance-failure', 'runtime-gate-error')
                AND COALESCE(signature_status, '') NOT IN ('mismatch', 'malformed')
-             GROUP BY hostname",
+             GROUP BY rollout, hostname",
         )?;
-        let mut out = HashMap::new();
+        let mut out: HashMap<String, HashMap<String, usize>> = HashMap::new();
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)? as usize,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .context("query outstanding_compliance_event_counts")?;
-        for (h, n) in rows {
-            out.insert(h, n);
+            .context("query outstanding_compliance_events_by_rollout")?;
+        for (rollout, host, n) in rows {
+            out.entry(rollout).or_default().insert(host, n);
         }
         Ok(out)
     }
@@ -1441,7 +1460,7 @@ mod tests {
     }
 
     #[test]
-    fn outstanding_compliance_event_counts_filters_tampered() {
+    fn outstanding_events_by_rollout_filters_tampered() {
         // Verified + unsigned + no-pubkey count toward the gate;
         // mismatch + malformed do NOT (defends against forged FAIL
         // events from a compromised mTLS cert).
@@ -1457,10 +1476,53 @@ mod tests {
             row.event_id = eid;
             db.record_host_report(&row).unwrap();
         }
-        let counts = db.outstanding_compliance_event_counts().unwrap();
+        let by_rollout = db.outstanding_compliance_events_by_rollout().unwrap();
         // verified + unsigned + no-pubkey = 3; mismatch + malformed
         // are filtered out.
-        assert_eq!(counts.get("lab").copied(), Some(3));
+        assert_eq!(
+            by_rollout.get("R1").and_then(|m| m.get("lab")).copied(),
+            Some(3),
+        );
+    }
+
+    #[test]
+    fn outstanding_events_by_rollout_groups_per_rollout() {
+        // Resolution-by-replacement test: events for R0 stay under R0,
+        // events for R1 stay under R1. The reconciler iterates active
+        // rollouts and looks up its own ID's outstanding events; an
+        // R0-bound event must NOT contaminate R1's count.
+        let db = fresh_db();
+        let mut e0 = fail_event(Some("R0"), Some("verified"));
+        e0.event_id = "evt-r0-1";
+        db.record_host_report(&e0).unwrap();
+        let mut e1 = fail_event(Some("R1"), Some("verified"));
+        e1.event_id = "evt-r1-1";
+        db.record_host_report(&e1).unwrap();
+        let by_rollout = db.outstanding_compliance_events_by_rollout().unwrap();
+        assert_eq!(
+            by_rollout.get("R0").and_then(|m| m.get("lab")).copied(),
+            Some(1),
+        );
+        assert_eq!(
+            by_rollout.get("R1").and_then(|m| m.get("lab")).copied(),
+            Some(1),
+        );
+    }
+
+    #[test]
+    fn outstanding_events_by_rollout_excludes_null_rollout() {
+        // Events with rollout=NULL (enrollment, trust-root errors)
+        // are not rollout-scoped and don't appear in the projection.
+        let db = fresh_db();
+        let mut row = fail_event(None, Some("verified"));
+        row.event_id = "evt-orphan";
+        db.record_host_report(&row).unwrap();
+        let by_rollout = db.outstanding_compliance_events_by_rollout().unwrap();
+        assert!(
+            by_rollout.is_empty(),
+            "rollout=NULL events should not appear: {:?}",
+            by_rollout,
+        );
     }
 
     #[test]

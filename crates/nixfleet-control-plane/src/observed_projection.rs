@@ -28,7 +28,7 @@ pub fn project(
     host_checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
     rollouts: &[RolloutDbSnapshot],
-    host_compliance_failures: HashMap<String, usize>,
+    compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
 ) -> Observed {
     let mut host_state: HashMap<String, HostState> = HashMap::new();
     for (host, record) in host_checkins {
@@ -83,7 +83,7 @@ pub fn project(
         last_rolled_refs: HashMap::new(),
         host_state,
         active_rollouts,
-        host_compliance_failures,
+        compliance_failures_by_rollout,
     }
 }
 

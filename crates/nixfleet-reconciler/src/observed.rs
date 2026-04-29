@@ -17,19 +17,29 @@ pub struct Observed {
     pub last_rolled_refs: HashMap<String, String>,
     pub host_state: HashMap<String, HostState>,
     pub active_rollouts: Vec<Rollout>,
-    /// Issue #60 — hostname → outstanding (compliance-failure +
-    /// runtime-gate-error) event count, computed by the CP-side
-    /// projection from the durable `host_reports` SQLite table.
-    /// Hosts with zero outstanding events are absent from the map.
+    /// Issue #60 — outstanding (compliance-failure + runtime-gate-
+    /// error) event counts, keyed first by rollout id then by
+    /// hostname. The per-rollout grouping enforces resolution-by-
+    /// replacement at the projection layer: events posted against
+    /// rollout R₀ live under `[R₀][host]`; once the host moves to
+    /// R₁, the reconciler iterates active rollouts and looks up
+    /// `[R₁][host]` — R₀'s old events don't contaminate R₁'s gate
+    /// decision.
+    ///
+    /// Computed by the CP-side projection from
+    /// `Db::outstanding_compliance_events_by_rollout`. Empty inner
+    /// maps (rollouts with zero outstanding events) are absent.
+    ///
     /// Drives `Action::WaveBlocked` emission in
-    /// `rollout_state::advance_rollout` when channel mode is
-    /// `enforce` and a wave-N host has outstanding events that
-    /// would block wave-(N+1) promotion.
+    /// `rollout_state::advance_rollout` when the channel mode is
+    /// `enforce` AND there's at least one outstanding event under
+    /// the rollout's id for a host on a wave that the gate is
+    /// trying to promote past.
     ///
     /// `#[serde(default)]` keeps file-backed `observed.json`
     /// fixtures (which predate this field) deserialising cleanly.
     #[serde(default)]
-    pub host_compliance_failures: HashMap<String, usize>,
+    pub compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -1444,6 +1444,7 @@ dependencies = [
  "chrono",
  "clap",
  "ed25519-dalek",
+ "libc",
  "nixfleet-proto",
  "nixfleet-reconciler",
  "rand 0.8.6",

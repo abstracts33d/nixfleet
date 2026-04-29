@@ -203,6 +203,20 @@ async fn try_recover_orphan_confirm(
     // `dispatch::decide_target` does (channel + 8-char ci_commit prefix
     // or closure prefix as fallback) and refuse to synthesise on
     // mismatch.
+    //
+    // KNOWN EDGE CASE — fleet-forward with closure-stable rollout-id
+    // change: if CI signs a new fleet.resolved (new ci_commit) between
+    // the agent's dispatch and its orphan confirm, AND the host's
+    // declared closure is unchanged across both fleets, the
+    // expected_rollout_id derived from the *current* fleet won't match
+    // the agent's *historical* rollout id. We'll return a 410, the
+    // agent will roll back a healthy activation, and the next dispatch
+    // will pick up the new rollout id cleanly. Operationally rare
+    // (CI re-signing without a closure change is unusual: lab's CI
+    // rebuilds + re-signs only on commit) and recoverable in one
+    // poll cycle. Documenting here rather than gating on it because
+    // a fix would require persisting the dispatch-time rollout id
+    // across CP rebuilds — out of scope for gap A.
     let expected_rollout_id = {
         let truncate8 = |s: &str| -> String {
             let t: String = s.chars().take(8).collect();
@@ -714,23 +728,44 @@ pub(super) async fn report(
                 v.as_str().map(String::from)
             })
         });
-        let report_json = serde_json::to_string(&req).unwrap_or_default();
-        if let Err(err) = db.record_host_report(&crate::db::HostReportInsert {
-            hostname: &req.hostname,
-            event_id: &event_id,
-            received_at,
-            event_kind: &event_str,
-            rollout: req.rollout.as_deref(),
-            signature_status: signature_status_str.as_deref(),
-            report_json: &report_json,
-        }) {
-            tracing::warn!(
-                target: "report",
-                hostname = %req.hostname,
-                event_id = %event_id,
-                error = %err,
-                "report SQLite write failed; in-memory ring buffer still updated",
-            );
+        // Best-effort SQLite persistence. Two failure modes, both
+        // handled the same way: log + skip the DB write, let the
+        // in-memory ring buffer below absorb the event regardless.
+        // The serde failure path is what matters here — previously
+        // `unwrap_or_default()` would write `""` into report_json,
+        // and on next CP startup the hydration parse would fail and
+        // skip the row, leaving a phantom DB row that could never
+        // be replayed. Now we never write the row at all on serde
+        // failure.
+        match serde_json::to_string(&req) {
+            Ok(report_json) => {
+                if let Err(err) = db.record_host_report(&crate::db::HostReportInsert {
+                    hostname: &req.hostname,
+                    event_id: &event_id,
+                    received_at,
+                    event_kind: &event_str,
+                    rollout: req.rollout.as_deref(),
+                    signature_status: signature_status_str.as_deref(),
+                    report_json: &report_json,
+                }) {
+                    tracing::warn!(
+                        target: "report",
+                        hostname = %req.hostname,
+                        event_id = %event_id,
+                        error = %err,
+                        "report SQLite write failed; in-memory ring buffer still updated",
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "report",
+                    hostname = %req.hostname,
+                    event_id = %event_id,
+                    error = %err,
+                    "report serialisation to JSON failed; skipping SQLite persistence (in-memory ring still updated)",
+                );
+            }
         }
     }
 

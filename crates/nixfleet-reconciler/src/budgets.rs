@@ -72,7 +72,7 @@ mod tests {
                 host_states,
                 last_healthy_since: HashMap::new(),
             }],
-            host_compliance_failures: HashMap::new(),
+            compliance_failures_by_rollout: HashMap::new(),
         }
     }
 
