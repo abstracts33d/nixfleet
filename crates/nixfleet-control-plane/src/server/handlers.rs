@@ -855,19 +855,12 @@ async fn compute_signature_status(
 /// 8-char lowercase-alnum suffix for event IDs. Not crypto-grade —
 /// just enough to make IDs visually distinct in journal output.
 fn rand_suffix(n: usize) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    let alphabet: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-    let mut out = String::with_capacity(n);
-    let mut x = nanos.wrapping_mul(0x9e3779b97f4a7c15);
-    for _ in 0..n {
-        let idx = (x % alphabet.len() as u64) as usize;
-        out.push(alphabet[idx] as char);
-        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    }
-    out
+    use rand::Rng;
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..n)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect()
 }
 
 /// `POST /v1/enroll` — bootstrap a new fleet host.
