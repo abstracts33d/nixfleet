@@ -343,6 +343,24 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
 
+                    // ADR-011 pre-fire signal. Lets operators see
+                    // "agent X started activating closure Y at
+                    // timestamp T" in the CP report log, deterministic
+                    // bookend to the post-poll success/failure event.
+                    // Best-effort — failure to post doesn't block the
+                    // activation itself.
+                    post_report(
+                        &client_handle,
+                        &args.control_plane_url,
+                        &args.machine_id,
+                        Some(&target.channel_ref),
+                        ReportEvent::ActivationStarted {
+                            closure_hash: target.closure_hash.clone(),
+                            channel_ref: target.channel_ref.clone(),
+                        },
+                    )
+                    .await;
+
                     // Realise + switch + verify the target.
                     // On full FiredAndPolled → POST /v1/agent/confirm.
                     // On any outcome that left the system in an
@@ -386,11 +404,17 @@ async fn main() -> anyhow::Result<()> {
                                         },
                                     )
                                     .await;
-                                    if let Err(err) = rb_outcome {
-                                        tracing::error!(
+                                    match &rb_outcome {
+                                        Ok(o) if o.success() => {}
+                                        Ok(o) => tracing::error!(
+                                            phase = ?o.phase(),
+                                            exit_code = ?o.exit_code(),
+                                            "rollback after CP-410 failed (poll/fire layer)",
+                                        ),
+                                        Err(err) => tracing::error!(
                                             error = %err,
-                                            "rollback after CP-410 also failed",
-                                        );
+                                            "rollback after CP-410 transport-failed",
+                                        ),
                                     }
                                 }
                                 Ok(nixfleet_agent::comms::ConfirmOutcome::Acknowledged) => {
@@ -490,12 +514,15 @@ async fn main() -> anyhow::Result<()> {
                             let rb_outcome =
                                 nixfleet_agent::activation::rollback().await;
                             let rollback_event = match &rb_outcome {
-                                Ok(s) if s.success() => ReportEvent::RollbackTriggered {
+                                Ok(o) if o.success() => ReportEvent::RollbackTriggered {
                                     reason: format!("activation phase {phase} failed"),
                                 },
-                                Ok(s) => ReportEvent::ActivationFailed {
-                                    phase: format!("rollback-after-{phase}"),
-                                    exit_code: s.code(),
+                                Ok(o) => ReportEvent::ActivationFailed {
+                                    phase: format!(
+                                        "rollback-after-{phase}/{}",
+                                        o.phase().unwrap_or("unknown")
+                                    ),
+                                    exit_code: o.exit_code(),
                                     stderr_tail: None,
                                 },
                                 Err(err) => ReportEvent::ActivationFailed {
@@ -550,11 +577,17 @@ async fn main() -> anyhow::Result<()> {
                                 },
                             )
                             .await;
-                            if let Err(err) = rb_outcome {
-                                tracing::error!(
+                            match &rb_outcome {
+                                Ok(o) if o.success() => {}
+                                Ok(o) => tracing::error!(
+                                    phase = ?o.phase(),
+                                    exit_code = ?o.exit_code(),
+                                    "rollback after verify mismatch failed (poll/fire layer) — manual intervention required",
+                                ),
+                                Err(err) => tracing::error!(
                                     error = %err,
-                                    "rollback after verify mismatch also failed — manual intervention required",
-                                );
+                                    "rollback after verify mismatch transport-failed — manual intervention required",
+                                ),
                             }
                         }
                         Err(err) => {

@@ -288,6 +288,21 @@ pub struct ReportRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", content = "details", rename_all = "kebab-case")]
 pub enum ReportEvent {
+    /// Pre-fire signal from the agent that it has *started* a
+    /// fire-and-forget activation cycle (ADR-011). Posted before
+    /// `systemd-run --unit=nixfleet-switch` queues the detached
+    /// switch-to-configuration unit, so operators reading the CP
+    /// report log get a deterministic "host X is now mid-activation
+    /// targeting closure Y" timestamp instead of inferring it from
+    /// the dispatch + confirm timing window. Purely observability —
+    /// the CP doesn't gate any decision on this event (dispatch
+    /// already happened at checkin time, confirm/410 happens after
+    /// the poll either succeeds or times out).
+    ActivationStarted {
+        closure_hash: String,
+        channel_ref: String,
+    },
+
     /// Activation step exited non-zero — `nix-env --set`,
     /// `switch-to-configuration`, or any subsequent boot-time
     /// activation. `phase` names the failing step; `exitCode` and
