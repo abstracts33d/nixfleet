@@ -131,3 +131,27 @@ fn trust_config_parses_populated_org_root_key_matching_nix_emission() {
     assert_eq!(current.public, "BBBB");
     assert!(org.previous.is_none());
 }
+
+/// Sanity check: the exact `test-trust.json` shape emitted by
+/// `tests/harness/fixtures/signed/default.nix` must deserialize with
+/// `TrustConfig`. Pins the contract between the harness fixture and
+/// the proto crate. If the fixture HEREDOC changes, update here.
+#[test]
+fn trust_json_from_harness_fixture_shape_parses() {
+    let raw = r#"
+    {
+      "schemaVersion": 1,
+      "ciReleaseKey": {
+        "current": { "algorithm": "ed25519", "public": "PLACEHOLDER_PUBKEY_BASE64" },
+        "previous": null,
+        "rejectBefore": null
+      },
+      "cacheKeys": [],
+      "orgRootKey": { "current": null }
+    }
+    "#;
+
+    let parsed: TrustConfig = serde_json::from_str(raw).expect("trust.json parses");
+    assert_eq!(parsed.schema_version, 1);
+    assert!(parsed.ci_release_key.current.is_some());
+}

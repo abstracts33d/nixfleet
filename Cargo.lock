@@ -1556,6 +1556,7 @@ dependencies = [
  "anyhow",
  "base64",
  "chrono",
+ "clap",
  "ed25519-dalek",
  "nixfleet-canonicalize",
  "nixfleet-proto",
@@ -1584,17 +1585,6 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "nixfleet-verify-artifact"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "clap",
- "nixfleet-proto",
- "nixfleet-reconciler",
- "serde_json",
 ]
 
 [[package]]

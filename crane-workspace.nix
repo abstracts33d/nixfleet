@@ -102,13 +102,18 @@
       };
     });
 
+  # The verify-artifact CLI now lives inside the reconciler crate as
+  # a `[[bin]]` entry — see `crates/nixfleet-reconciler/Cargo.toml`.
+  # The flake-output attribute name stays `nixfleet-verify-artifact`
+  # so the harness scenarios + module wiring don't have to move; only
+  # the build recipe changed.
   nixfleet-verify-artifact = craneLib.buildPackage (commonArgs
     // {
-      pname = "nixfleet-verify-artifact";
-      cargoExtraArgs = "-p nixfleet-verify-artifact";
-      src = fileSetForCrate {crate = ./crates/nixfleet-verify-artifact;};
+      pname = "nixfleet-reconciler";
+      cargoExtraArgs = "-p nixfleet-reconciler --bin nixfleet-verify-artifact";
+      src = fileSetForCrate {crate = ./crates/nixfleet-reconciler;};
       meta = {
-        description = "Phase 2 harness CLI wrapping nixfleet_reconciler::verify_artifact";
+        description = "Harness CLI wrapping nixfleet_reconciler::verify_artifact";
         license = lib.licenses.mit;
         mainProgram = "nixfleet-verify-artifact";
       };
