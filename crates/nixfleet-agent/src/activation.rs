@@ -1,72 +1,30 @@
-//! Agent-side activation logic.
+//! Agent-side activation: install + boot the closure the CP issued.
 //!
-//! The CP issues a closure hash via `CheckinResponse.target`; the
-//! agent's job is to install + boot that closure. Per ARCHITECTURE.md
-//! the agent is the *last line of defense* against a misbehaving
-//! substituter or a tampered CP, so activation runs three checks
-//! around `nixos-rebuild switch`:
+//! Three checks around `nixos-rebuild switch` make the agent the
+//! last line of defense against a misbehaving substituter or
+//! tampered CP:
 //!
-//! 1. **Pre-realise**: `nix-store --realise <path>` forces nix to
-//!   fetch from the configured substituter (any nix-cache-protocol
-//!   backend the fleet wires — harmonia, attic, cachix, etc.) and
-//!   validate its signature *before* we commit to switching. If the
-//!   closure isn't locally available and substituter trust is
-//!   misconfigured, this fails closed — we never call
-//!   `nixos-rebuild` against an unverifiable path. Also catches
-//!   "closure-proxy returned a valid-looking narinfo for a path
-//!   that doesn't actually exist upstream" (the proxy-fallback
-//!   path is fundamentally less audited than direct substituter
-//!   fetch).
-//! 2. **Switch**: `nixos-rebuild switch --system <verified-path>`.
-//!   nix's own substituter signature checks fire here too; the
-//!   pre-realise is belt-and-suspenders.
-//! 3. **Post-verify**: read `/run/current-system` (resolve symlink),
-//!   compare basename against the expected closure_hash. If they
-//!   differ — switched to the wrong path, or `--system` got rewritten
-//!   somewhere — refuse to confirm and trigger local rollback.
+//! 1. **Pre-realise** (`nix-store --realise`) — forces substituter
+//!    fetch + signature validation before we commit to switching.
+//! 2. **Switch** (`nixos-rebuild switch --system <verified>`).
+//! 3. **Post-verify** — `/run/current-system` basename must match
+//!    the expected closure_hash; mismatch → local rollback.
 //!
-//! Pre-realise + post-verify together close the property "the agent
-//! either confirms the *exact* closure the CP told it about, or rolls
-//! back" — without trusting the substituter or the CP to be honest
-//! about which path was activated.
+//! Together these close: "the agent either confirms the *exact*
+//! closure the CP told it about, or rolls back" — without trusting
+//! the substituter or the CP. CP-side magic rollback (deadline →
+//! 410) is independent and additive.
 //!
-//! On rebuild failure or post-verify mismatch the caller runs
-//! `nixos-rebuild --rollback` to revert to the previous boot
-//! generation. CP-side magic rollback (deadline expiry → 410 on
-//! `/confirm`) is independent and additive.
+//! Platform dispatch uses runtime `cfg!(target_os = "macos")` (not
+//! `#[cfg]`) so both paths type-check on every build. The "fire"
+//! step diverges:
 //!
-//! All commands run as root via the systemd unit (StateDirectory +
-//! no NoNewPrivileges hardening on the agent unit; the agent is a
-//! privileged system manager by design — see the agent module
-//! comment in modules/scopes/nixfleet/_agent.nix).
+//! - linux: `systemd-run --unit=nixfleet-switch -- switch-to-configuration switch`
+//! - darwin: `setsid` detached `<store>/activate-user` + `<store>/activate`
 //!
-//! ## Platform dispatch (darwin)
-//!
-//! aether (and future darwin hosts) run the same agent binary but
-//! the "fire" step diverges from the linux/systemd path:
-//!
-//! | step | linux (NixOS) | darwin (nix-darwin) |
-//! |-----------------------|------------------------------------------------|------------------------------------------------------|
-//! | switch-lock probe | `flock(8)` on `/run/nixos/switch-to-configuration.lock` | n/a — darwin activation is sync, no concurrent races |
-//! | profile update | `nix-env --profile … --set <store>` | same |
-//! | fire | `systemd-run --unit=nixfleet-switch -- <store>/bin/switch-to-configuration switch` | `setsid ` detached `<store>/activate-user` (skip if absent) + `<store>/activate` |
-//! | poll | `/run/current-system` flips to expected basename | same (per v0.1 darwin-platform-notes.md) |
-//! | unit-status triage | `systemctl show --property=ExecMainStatus` | n/a — returns None |
-//!
-//! Approach: runtime `cfg!(target_os = "macos")` dispatch (NOT
-//! `#[cfg]`) so both code paths compile + type-check on every build.
-//! This catches "linux-only refactor accidentally broke darwin" at
-//! `cargo check` time on either host. Trait-based dispatch was
-//! considered (Activator trait, two impls, feature gate) but the
-//! incremental cost of a single platform check inside one helper
-//! per fire-step doesn't justify trait ceremony — most of the
-//! activation flow (realise, profile-set, poll, self-correct,
-//! profile-flip rollback) is already platform-agnostic.
-//!
-//! See `docs/mdbook/reference/darwin-platform-notes.md` (ported
-//! from v0.1.1) for the full rationale on why `setsid ` + a
-//! detached child process survives the agent's own SIGTERM during
-//! `activate`'s plist reload.
+//! See `docs/mdbook/reference/darwin-platform-notes.md` for why
+//! `setsid` + detached child survives the agent's own SIGTERM
+//! during plist reload.
 
 use std::time::Duration;
 
@@ -74,39 +32,14 @@ use anyhow::{anyhow, Context, Result};
 use nixfleet_proto::agent_wire::EvaluatedTarget;
 use tokio::process::Command;
 
-/// Path of the NixOS-side activation lock. Held exclusive by any
-/// running `switch-to-configuration` (nixos-rebuild, our own
-/// systemd-run, an operator running it manually, an Ansible/SSH
-/// orchestration, etc.). Probed non-blockingly via `flock(8)` before
-/// the agent fires its own switch — if the lock is held, another
-/// activator is in flight and the agent skips this tick rather than
-/// racing.
+/// Held exclusive by any running `switch-to-configuration`
+/// (nixos-rebuild, our own systemd-run, operator manual run, etc.).
 const SWITCH_LOCK_PATH: &str = "/run/nixos/switch-to-configuration.lock";
 
-/// Non-blocking check: is some other process currently holding the
-/// NixOS activation lock?
-///
 /// Returns `true` only when the lock file exists AND a non-blocking
-/// shared `flock` attempt fails (lock contended). Lock file absent
-/// or `flock` binary unavailable returns `false` — fail-open. The
-/// agent's own activate flow is guarded by the agent unit's own
-/// concurrency model (single-threaded poll loop), so the false case
-/// is "no operator-visible third-party switch is racing us".
-///
-/// Ports v0.1's `nix::is_switch_in_progress` (deleted at afb5e18^:
-/// crates/agent/src/nix.rs:11-47), but uses the `flock(1)` shell
-/// utility instead of a libc::flock FFI to avoid adding a libc
-/// direct dep just for this one syscall. flock(1) ships in
-/// util-linux, present on every NixOS host.
-///
-/// **Darwin:** there's no equivalent lock — `darwin-rebuild`
-/// activation is synchronous (single `activate` script invocation,
-/// no daemon coordination), so concurrent-switch races aren't a
-/// thing. Returns `false` early on macOS.
+/// `flock(1)` attempt fails. Absent file / missing binary → false
+/// (fail-open). Darwin: no equivalent lock; returns false early.
 pub async fn is_switch_in_progress() -> bool {
-    // Darwin: no equivalent lock; activation is synchronous. Skip
-    // the flock probe entirely so we don't shell out to `flock(1)`
-    // on a host that may not have it (util-linux is linux-only).
     if cfg!(target_os = "macos") {
         return false;
     }
@@ -130,106 +63,45 @@ pub async fn is_switch_in_progress() -> bool {
     }
 }
 
-/// Maximum time the post-fire poll waits for `/run/current-system`
-/// to flip to the expected closure. default. Sized so that
-/// realistic closure activations (large package set, slow disk,
-/// post-activation systemd target convergence) complete inside the
-/// CP's confirm deadline (`DEFAULT_CONFIRM_DEADLINE_SECS = 360`).
+/// 300s sized to fit inside the CP's `DEFAULT_CONFIRM_DEADLINE_SECS = 360`.
 pub const POLL_BUDGET: Duration = Duration::from_secs(300);
 
-/// How often the poll loop checks `/run/current-system`. 2s matches
-/// — fast enough to feel snappy in interactive runs, slow
-/// enough to keep CPU + IO load negligible.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Outcome of an activation attempt. The agent's main loop maps each
-/// variant to a follow-up action: confirm on `FiredAndPolled`,
-/// rollback on `SwitchFailed`, retry-on-next-tick on
-/// `RealiseFailed`/`SignatureMismatch` (nothing was switched, nothing
-/// to roll back).
 #[derive(Debug)]
 pub enum ActivationOutcome {
-    /// **Timing semantics.** Fire-and-forget : the agent has
-    /// fired `systemd-run --unit=nixfleet-switch -- switch-to-configuration switch`
-    /// as a detached transient service AND polled `/run/current-system`
-    /// to flip to the expected closure within the poll budget. By the
-    /// time this variant returns, the system *is* running the new
-    /// closure — but the activation work happened in `nixfleet-switch.service`,
-    /// not in the agent's process tree. Renamed from `Success` (v0.1
-    /// pre-fire-and-forget shape) to make the semantics explicit:
-    /// "fired and observed completion" rather than "activation
-    /// returned exit-zero synchronously".
+    /// Fire-and-forget completed: switch fired AND
+    /// `/run/current-system` flipped to expected. By the time this
+    /// returns the system *is* running the new closure, but the
+    /// activation work happened in `nixfleet-switch.service`.
     /// Caller should POST `/v1/agent/confirm`.
     FiredAndPolled,
-    /// `nix-store --realise` exited non-zero or returned a path that
-    /// doesn't match the input. The system was never switched
-    /// caller skips rollback, retries next tick.
+    /// `nix-store --realise` failed (non-signature). System never
+    /// switched; caller skips rollback, retries next tick.
     RealiseFailed { reason: String },
-    /// `nix-store --realise` failed specifically because the closure's
-    /// narinfo signature did not match any key in
-    /// `nixfleet.trust.cacheKeys` ( root #2). Distinct from
-    /// the generic RealiseFailed so the operator dashboard can route
-    /// "trust violation" alerts separately from "transient fetch
-    /// failure". The system was never switched. Cache-substituter-
-    /// agnostic — fires for harmonia, attic, cachix, or any other
-    /// nix-cache-protocol backend; nix's substituter trust check is
-    /// the gate, this just classifies its failure.
+    /// `nix-store --realise` failed because the closure's narinfo
+    /// signature didn't match any key in `nixfleet.trust.cacheKeys`.
+    /// Distinct so dashboards can route trust violations separately
+    /// from transient fetch failures. System never switched.
     SignatureMismatch {
         closure_hash: String,
         stderr_tail: String,
     },
-    /// One of the activation steps exited non-zero, or the post-fire
-    /// poll observed a wrong/missing closure. Caller runs local
-    /// rollback. `phase` distinguishes which step failed:
-    /// - `"nix-env-set"`: setting the system profile (system was
-    ///   never activated; rollback re-points the profile).
-    /// - `"systemd-run-fire"`: queueing the transient unit (rare
-    ///   indicates systemd itself refused; previous unit may be
-    ///   stuck in `failed` state).
-    /// - `"switch-poll-timeout"`: poll budget elapsed without
-    ///   `/run/current-system` flipping; the transient unit is still
-    ///   running OR has died with an unrecoverable error. exit_code
-    ///   carries the unit's exit status if `systemctl show` could
-    ///   read it.
-    /// - `"switch-poll-mismatch"`: poll observed a path that
-    ///   matched neither the expected closure nor any plausible
-    ///   intermediate (would indicate concurrent rebuild or external
-    ///   profile mutation).
+    /// `phase`:
+    /// - `nix-env-set` — setting the system profile (rollback re-points it)
+    /// - `systemd-run-fire` — queueing the transient unit (systemd refused)
+    /// - `switch-poll-timeout` — budget elapsed without `/run/current-system` flip
+    /// - `switch-poll-mismatch` — observed a path that matched neither expected nor plausible
     SwitchFailed {
         phase: String,
         exit_code: Option<i32>,
     },
 }
 
-/// Activate `target` via realise → set-profile → fire-and-forget
-/// switch → poll → self-correct.
-///
-/// `tracing` events at every step share a `target_closure = <hash>`
-/// field, so `journalctl | grep target_closure=<hash>` follows one
-/// activation end to end without parsing JSON.
-///
-/// **Retry semantics (v0.2 trade-off vs §5).** 's
-/// original wording allowed up to 3 in-call retries before giving
-/// up to rollback. v0.2 takes a different path: a single
-/// fire-and-forget attempt per call, with the agent's main poll
-/// loop providing the retry cadence (one retry every
-/// `--poll-interval` seconds, default 60s; backoff applies on
-/// transport errors).
-///
-/// Why: the in-call retry budget assumed a synchronous activation
-/// model where the agent could retry quickly. With fire-and-forget,
-/// each attempt is gated by the 300s `POLL_BUDGET`, so 3 in-call
-/// attempts could trip the CP's confirm deadline before any
-/// actually succeeded. Tick-cadence retry instead keeps each
-/// attempt within its own deadline window. The cost: slower
-/// failure detection (60s tick vs ~5s per 's intent), but
-/// the failure surface is fundamentally smaller because each
-/// systemd-run unit is independent and observed via `systemctl
-/// show ExecMainStatus`.
-///
-/// Per-closure quarantine to prevent infinite retry loops on a
-/// genuinely-bad closure is tracked in
-/// <https://github.com/abstracts33d/nixfleet/issues/55>.
+/// Activate via realise → set-profile → fire-and-forget switch →
+/// poll → self-correct. Single attempt per call; retry comes from
+/// the agent's main poll loop (in-call retry would trip the CP's
+/// confirm deadline because each attempt is gated by `POLL_BUDGET`).
 pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
     tracing::info!(
         target_closure = %target.closure_hash,

@@ -1,15 +1,8 @@
-//! SQLite persistence for the control plane.
+//! SQLite persistence (rusqlite + refinery, WAL + FK).
 //!
-//! Built on the rusqlite + refinery stack with WAL + FK posture.
-//! The schema lives under `migrations/` and grows additively.
-//!
-//! Concurrency: a `Mutex<Connection>` guards a single SQLite
-//! connection. SQLite scales fine for fleet sizes O(100) under WAL;
-//! a connection pool is unnecessary. Mutex poisoning is converted
-//! to anyhow errors instead of panicking.
-//!
-//! All schema-modifying operations go through `migrate ` which
-//! refinery makes idempotent + version-tracked.
+//! A single `Mutex<Connection>` is sufficient for fleet sizes O(100).
+//! Schema lives under `migrations/`; `migrate()` is idempotent +
+//! version-tracked. Mutex poisoning surfaces as anyhow errors.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -25,44 +18,30 @@ mod embedded {
     embed_migrations!("migrations");
 }
 
-/// One active rollout's worth of state, joined from
-/// `pending_confirms` + `host_rollout_state`. Returned by
-/// [`Db::active_rollouts_snapshot`] for the observed-state
-/// projection (step 2 of gap #2 in
-/// docs/roadmap/0002-v0.2-completeness-gaps.md). The CP keeps no
-/// dedicated rollouts table yet (the migration in V002 flagged a
-/// follow-up); rollouts are derived from the union of dispatched
-/// targets + per-host soak markers, scoped to those still in
-/// `pending` or `confirmed` state — `rolled-back` and `cancelled`
-/// rows are filtered out so dead rollouts don't surface as empty-
-/// host-states bundles that the reconciler would treat as fresh
-/// Queued work.
+/// Joined snapshot of `pending_confirms` + `host_rollout_state` for
+/// the observed-state projection. Rollouts are derived (no dedicated
+/// table); `rolled-back`/`cancelled` rows are filtered out so dead
+/// rollouts don't surface as empty-host-states the reconciler would
+/// re-dispatch.
 #[derive(Debug, Clone)]
 pub struct RolloutDbSnapshot {
     pub rollout_id: String,
     pub channel: String,
     pub target_closure_hash: String,
     pub target_channel_ref: String,
-    /// hostname → state name. `host_rollout_state`
-    /// wins when present (carries Soaked / Converged / Failed once
-    /// step 3 lands). Otherwise derived from the latest
-    /// `pending_confirms.state` for that (rollout, host).
+    /// `host_rollout_state` wins when present; otherwise derived
+    /// from the latest `pending_confirms.state`.
     pub host_states: HashMap<String, String>,
-    /// hostname → moment the host most recently entered Healthy.
     /// Excludes hosts whose marker is NULL (not currently Healthy).
     pub last_healthy_since: HashMap<String, DateTime<Utc>>,
 }
 
-/// One row of `pending_confirms_expired` — the magic-rollback
-/// timer's input. `(id, hostname, rollout_id, wave, target_closure_hash)`.
-/// Aliased so the function signature stays readable
-/// (and clippy's `type_complexity` lint stays quiet).
+/// `(id, hostname, rollout_id, wave, target_closure_hash)`. Aliased
+/// to keep the signature readable and silence `type_complexity`.
 pub type ExpiredPendingConfirm = (i64, String, String, u32, String);
 
-/// — one row of the durable `host_reports` table.
-/// Carries the same fields the in-memory `ReportRecord` does,
-/// with `signature_status` left as the raw kebab-case string for
-/// the caller to deserialise into `evidence_verify::SignatureStatus`.
+/// `signature_status` is the raw kebab-case string; caller
+/// deserialises into `evidence_verify::SignatureStatus`.
 #[derive(Debug, Clone)]
 pub struct HostReportRow {
     pub event_id: String,
@@ -73,10 +52,7 @@ pub struct HostReportRow {
     pub report_json: String,
 }
 
-/// — input to `Db::record_host_report`. Bundling the
-/// fields into a struct keeps the call-site readable (8-arg
-/// functions trip clippy's `too_many_arguments`) and lets the
-/// handler stage the row before calling the DB.
+/// Bundled to keep call sites readable (avoids `too_many_arguments`).
 #[derive(Debug, Clone)]
 pub struct HostReportInsert<'a> {
     pub hostname: &'a str,
