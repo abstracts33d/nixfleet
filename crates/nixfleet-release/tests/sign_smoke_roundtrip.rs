@@ -40,6 +40,7 @@ fn dummy_resolved() -> FleetResolved {
             compliance: Compliance {
                 strict: false,
                 frameworks: vec![],
+                mode: None,
             },
         },
     );

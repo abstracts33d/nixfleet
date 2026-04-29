@@ -130,6 +130,43 @@ in {
         `systemd-tmpfiles --remove` style wipes.
       '';
     };
+
+    # Issue #57 — runtime compliance gate policy.
+    # `auto` (default) auto-detects from collector unit presence:
+    # Permissive when present, Disabled when absent. Operators
+    # introducing compliance to an existing fleet typically: deploy
+    # `permissive` while observing what would fail; flip to `enforce`
+    # once the fleet's compliance posture is healthy. The CP can
+    # relay a per-channel override via `EvaluatedTarget.compliance_mode`
+    # — when present, the relay wins over this local default.
+    complianceGate.mode = lib.mkOption {
+      type = lib.types.enum ["auto" "disabled" "permissive" "enforce"];
+      default = "auto";
+      description = ''
+        Local default for the runtime compliance gate (issue #57).
+
+        - `auto` (default): permissive when the
+          `compliance-evidence-collector.service` unit is present on
+          this host, disabled when absent. Safe for fleets that
+          haven't deployed `nixfleet-compliance` — no events posted,
+          no rollouts blocked.
+        - `permissive`: the gate runs and posts `RuntimeGateError`
+          and `ComplianceFailure` events on failure, but does NOT
+          block the activation confirm. Use during incremental
+          rollout to observe what would fail without breaking
+          deploys.
+        - `enforce`: same events posted; additionally a
+          `RuntimeGateError` (collector failed / stale evidence)
+          triggers a local rollback and skips confirm. Same severity
+          class as a SwitchFailed.
+        - `disabled`: gate skipped entirely. No events, no journal
+          warnings.
+
+        The CP can relay a per-channel
+        `EvaluatedTarget.compliance_mode` to override this; when
+        absent (or set to `auto`), this value is used.
+      '';
+    };
   };
 
   config = lib.mkMerge [
@@ -206,6 +243,10 @@ in {
             ++ [
               "--state-dir"
               (lib.escapeShellArg cfg.stateDir)
+            ]
+            ++ [
+              "--compliance-gate-mode"
+              (lib.escapeShellArg cfg.complianceGate.mode)
             ]
           );
           Restart = "always";

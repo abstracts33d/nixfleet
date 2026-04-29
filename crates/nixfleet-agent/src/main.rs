@@ -105,6 +105,18 @@ struct Args {
     /// sets `StateDirectory=` to this path.
     #[arg(long, env = "NIXFLEET_AGENT_STATE_DIR", default_value = "/var/lib/nixfleet-agent")]
     state_dir: PathBuf,
+
+    /// Local default for the runtime compliance gate (issue #57). One
+    /// of `"disabled"`, `"permissive"`, `"enforce"`, `"auto"` (or
+    /// unset / empty → treated as `"auto"`). The CP can relay a
+    /// per-channel `compliance_mode` on the dispatched
+    /// `EvaluatedTarget`; if present, the relay wins. Otherwise this
+    /// flag's value is used. `auto` resolves to `permissive` when the
+    /// `compliance-evidence-collector.service` unit is present on
+    /// this host and `disabled` when absent — the safe default for
+    /// fleets that haven't deployed `nixfleet-compliance`.
+    #[arg(long, env = "NIXFLEET_AGENT_COMPLIANCE_GATE_MODE")]
+    compliance_gate_mode: Option<String>,
 }
 
 #[tokio::main]
@@ -372,6 +384,179 @@ async fn main() -> anyhow::Result<()> {
                     use nixfleet_agent::activation::ActivationOutcome;
                     match nixfleet_agent::activation::activate(target).await {
                         Ok(ActivationOutcome::FiredAndPolled) => {
+                            let activation_completed_at = chrono::Utc::now();
+
+                            // Runtime compliance gate (#57). Triggers
+                            // the evidence collector synchronously,
+                            // verifies fresh evidence, classifies into
+                            // Pass/Failures/Skipped/GateError. Mirrors
+                            // ADR-011's freshness-after-async-trigger
+                            // pattern.
+                            //
+                            // mode resolution: if the EvaluatedTarget
+                            // carries a `compliance_mode` from CP
+                            // (channel-level config), parse it; else
+                            // fall through to None which means "auto-
+                            // detect based on collector presence".
+                            // Auto resolves to Permissive when present,
+                            // Disabled when absent — the safe default
+                            // for fleets that haven't deployed
+                            // nixfleet-compliance. Resolved mode is
+                            // captured separately so the GateError
+                            // arm below can differentiate Permissive
+                            // (post + continue) from Enforce
+                            // (post + rollback + skip confirm).
+                            use nixfleet_agent::compliance::{GateMode, GateOutcome};
+                            // Precedence: CP-relayed (fleet-wide
+                            // policy push, channel-level) wins over
+                            // the agent's local CLI default. Both
+                            // strings are parsed via the same
+                            // `from_wire_str`; an empty / "auto"
+                            // string from either source falls through
+                            // to auto-detect (None → resolve_mode).
+                            let cli_default_mode = args
+                                .compliance_gate_mode
+                                .as_deref()
+                                .filter(|s| !s.is_empty() && *s != "auto")
+                                .map(GateMode::from_wire_str);
+                            let input_mode = target
+                                .compliance_mode
+                                .as_deref()
+                                .filter(|s| !s.is_empty() && *s != "auto")
+                                .map(GateMode::from_wire_str)
+                                .or(cli_default_mode);
+                            let resolved_mode =
+                                nixfleet_agent::compliance::resolve_mode(input_mode).await;
+                            let gate_outcome =
+                                nixfleet_agent::compliance::run_runtime_gate(
+                                    activation_completed_at,
+                                    &nixfleet_agent::compliance::default_evidence_path(),
+                                    resolved_mode,
+                                )
+                                .await;
+
+                            // Decision:
+                            // - Pass / Skipped: continue to confirm.
+                            // - Failures: post ComplianceFailure events
+                            //   per failing control, then confirm. CP
+                            //   rollout engine decides whether to block
+                            //   wave promotion. Host stays on new gen.
+                            // - GateError: post RuntimeGateError, run
+                            //   local rollback (avoid CP-vs-host state
+                            //   divergence), skip confirm. Same
+                            //   recovery class as SwitchFailed.
+                            let gate_blocks_confirm = match &gate_outcome {
+                                GateOutcome::Pass { .. } => {
+                                    tracing::info!(
+                                        "compliance gate: PASS (all controls compliant)",
+                                    );
+                                    false
+                                }
+                                GateOutcome::Skipped { reason } => {
+                                    tracing::debug!(
+                                        %reason,
+                                        ?resolved_mode,
+                                        "compliance gate: skipped",
+                                    );
+                                    false
+                                }
+                                GateOutcome::Failures { evidence, failures } => {
+                                    tracing::warn!(
+                                        count = failures.len(),
+                                        "compliance gate: failures — posting per-control events",
+                                    );
+                                    for ctrl in failures {
+                                        post_report(
+                                            &client_handle,
+                                            &args.control_plane_url,
+                                            &args.machine_id,
+                                            Some(&target.channel_ref),
+                                            ReportEvent::ComplianceFailure {
+                                                control_id: ctrl.control.clone(),
+                                                status: ctrl.status.clone(),
+                                                framework_articles:
+                                                    nixfleet_agent::compliance::flatten_framework_articles(
+                                                        &ctrl.framework_articles,
+                                                    ),
+                                                evidence_snippet: Some(
+                                                    nixfleet_agent::compliance::truncate_evidence_snippet(
+                                                        &ctrl.checks,
+                                                    ),
+                                                ),
+                                                evidence_collected_at: evidence.timestamp,
+                                            },
+                                        )
+                                        .await;
+                                    }
+                                    false
+                                }
+                                GateOutcome::GateError {
+                                    reason,
+                                    collector_exit_code,
+                                    evidence_collected_at,
+                                } => {
+                                    // Always post the event so CP +
+                                    // operators see the measurement
+                                    // failure. Whether to roll back
+                                    // depends on the resolved mode:
+                                    // Enforce treats GateError as a
+                                    // confirm-blocker (same severity
+                                    // class as SwitchFailed); Permissive
+                                    // logs + posts but lets confirm
+                                    // proceed so a flaky collector
+                                    // doesn't break the rollout.
+                                    let enforcing = resolved_mode == GateMode::Enforce;
+                                    if enforcing {
+                                        tracing::error!(
+                                            %reason,
+                                            ?collector_exit_code,
+                                            "compliance gate: ERROR — refusing confirm + rolling back (enforce mode)",
+                                        );
+                                    } else {
+                                        tracing::warn!(
+                                            %reason,
+                                            ?collector_exit_code,
+                                            "compliance gate: ERROR — posting event, allowing confirm (permissive mode)",
+                                        );
+                                    }
+                                    post_report(
+                                        &client_handle,
+                                        &args.control_plane_url,
+                                        &args.machine_id,
+                                        Some(&target.channel_ref),
+                                        ReportEvent::RuntimeGateError {
+                                            reason: reason.clone(),
+                                            collector_exit_code: *collector_exit_code,
+                                            evidence_collected_at: *evidence_collected_at,
+                                            activation_completed_at,
+                                        },
+                                    )
+                                    .await;
+                                    if enforcing {
+                                        let _ = nixfleet_agent::activation::rollback().await;
+                                        post_report(
+                                            &client_handle,
+                                            &args.control_plane_url,
+                                            &args.machine_id,
+                                            Some(&target.channel_ref),
+                                            ReportEvent::RollbackTriggered {
+                                                reason: format!(
+                                                    "compliance gate error: {reason}"
+                                                ),
+                                            },
+                                        )
+                                        .await;
+                                    }
+                                    enforcing
+                                }
+                            };
+
+                            if gate_blocks_confirm {
+                                // Skip confirm; agent already rolled
+                                // back. Don't reach confirm_target.
+                                continue;
+                            }
+
                             let boot_id = nixfleet_agent::checkin_state::boot_id()
                                 .unwrap_or_else(|_| "unknown".to_string());
                             // Rollout id round-trips via target.channel_ref

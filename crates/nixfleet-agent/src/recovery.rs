@@ -135,6 +135,7 @@ async fn decide_and_run(
         activate: None,
         signed_at: None,
         freshness_window_secs: None,
+        compliance_mode: None,
     };
 
     match activation::confirm_target(

@@ -177,9 +177,44 @@
       compliance = mkOption {
         type = types.submodule {
           options = {
+            # Issue #58 — tri-state policy mode shared by the static
+            # gate (this file) and the runtime gate (#57 agent-side).
+            # `null` falls back to the legacy `strict` mapping below
+            # so existing fleets with `strict = true|false` keep
+            # working unchanged.
+            mode = mkOption {
+              type = types.nullOr (types.enum ["disabled" "permissive" "enforce"]);
+              default = null;
+              description = ''
+                Compliance gate policy. When set, overrides the legacy
+                `strict` field for both the static gate (mk-fleet eval)
+                and the runtime gate (agent post-activation).
+
+                - `disabled`: gate not run.
+                - `permissive`: failing static evidence emits a
+                  `lib.warn` per failing host/control; eval succeeds.
+                - `enforce`: failing static evidence throws at fleet
+                  eval. Same wire-shape as `strict = true`.
+
+                When `null` (default), behaviour is derived from
+                `strict`: `true → enforce`, `false → disabled`. Set
+                `mode` explicitly to opt into permissive.
+              '';
+            };
             strict = mkOption {
               type = types.bool;
               default = true;
+              description = ''
+                Legacy boolean form of `mode` (issue #58). Kept for
+                backward compatibility with existing fleets and the
+                wire-level `Compliance.strict: bool` consumed by the
+                Rust control plane. Prefer `mode` for new code.
+
+                When `mode` is set, this field is ignored for gate
+                decisions but still flows through to the resolved
+                output (computed from the effective mode:
+                `enforce → true`, otherwise `false`).
+              '';
             };
             frameworks = mkOption {
               type = types.listOf types.str;
@@ -375,25 +410,27 @@
       )
       (lib.attrNames cfg.channels);
 
-    # Static compliance gate (issue #4). For every host on a channel
-    # with `compliance.strict = true`, walk the host's evaluated
-    # `compliance.evidence.probes.*` (populated by the
-    # nixfleet-compliance modules each host imports) and collect any
-    # whose `type ∈ {static, both}` and whose `staticEvidence.passed`
-    # is explicitly false. Failures throw at fleet-eval time, before
-    # CI ever signs a release.
-    #
-    # Hosts on non-strict channels skip the gate entirely — evidence
-    # collection still runs, but a failed static control is a warning
-    # rather than a build break. Channels that don't import
-    # nixfleet-compliance (or import it without enabling controls)
-    # have empty `compliance.evidence.probes` and contribute zero
-    # errors. Forward-compatible: schema additions on the
-    # nixfleet-compliance side don't require a fleet-side bump.
-    staticComplianceErrors = let
-      strictChannels = lib.filter (n: cfg.channels.${n}.compliance.strict) (lib.attrNames cfg.channels);
-      hostsOnStrictChannels =
-        lib.filter (n: builtins.elem cfg.hosts.${n}.channel strictChannels) (lib.attrNames cfg.hosts);
+    # Resolve the effective compliance mode for a channel, honouring
+    # the issue #58 unification: explicit `mode` wins; falling back to
+    # the legacy `strict` mapping (`true → enforce`, `false →
+    # disabled`). Both fields stay in the schema so existing fleets
+    # keep working; new code should set `mode` explicitly.
+    resolvedComplianceMode = channelName: let
+      c = cfg.channels.${channelName}.compliance;
+    in
+      if c.mode != null
+      then c.mode
+      else if c.strict
+      then "enforce"
+      else "disabled";
+
+    # Compute the (host, control) failure tuples for a channel's
+    # static-or-both controls. Shared by the enforce + permissive
+    # branches below — the difference between the two is only what
+    # we DO with the failures (throw vs. lib.warn).
+    staticFailuresForChannels = channelNames: let
+      hostsOnChannels =
+        lib.filter (n: builtins.elem cfg.hosts.${n}.channel channelNames) (lib.attrNames cfg.hosts);
     in
       lib.concatMap (
         hostName: let
@@ -419,10 +456,27 @@
                 ev != null && (ev.passed or true) == false
             )
             staticOrBoth;
+          mode = resolvedComplianceMode host.channel;
         in
-          map (p: "host '${hostName}' (channel '${host.channel}', strict): static control '${p}' failed — ${lib.generators.toPretty {} (probes.${p}.staticEvidence.evidence or {})}") failures
+          map (p: "host '${hostName}' (channel '${host.channel}', ${mode}): static control '${p}' failed — ${lib.generators.toPretty {} (probes.${p}.staticEvidence.evidence or {})}") failures
       )
-      hostsOnStrictChannels;
+      hostsOnChannels;
+
+    # Static compliance gate (issue #4 / #58). For every host on a
+    # channel whose effective mode is `enforce`, walk
+    # `compliance.evidence.probes.*` (populated by the
+    # nixfleet-compliance modules each host imports) and collect
+    # static/both probes whose `staticEvidence.passed` is explicitly
+    # false. Failures throw at fleet-eval time, before CI ever signs
+    # a release.
+    #
+    # Hosts on `permissive` channels emit `lib.warn` per failure but
+    # don't block eval — operators can introduce compliance to an
+    # existing fleet incrementally. `disabled` skips the gate
+    # entirely (no traversal, no warnings).
+    enforceChannels =
+      lib.filter (n: resolvedComplianceMode n == "enforce") (lib.attrNames cfg.channels);
+    staticComplianceErrors = staticFailuresForChannels enforceChannels;
 
     errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ configurationErrors ++ complianceErrors ++ cycleErrors ++ freshnessErrors ++ staticComplianceErrors;
   in
@@ -463,7 +517,53 @@
         )
         cfg.disruptionBudgets;
 
-      allWarnings = emptySelectorWarnings ++ budgetWarnings;
+      # Issue #58 — permissive-mode compliance warnings. Mirrors
+      # the staticComplianceErrors accumulator in checkInvariants but
+      # selects channels whose effective mode is `permissive` instead
+      # of `enforce`. Failures emit `lib.warn` and let eval succeed,
+      # so operators see what would fail without breaking
+      # `nix flake check`. checkInvariants already ran (via the
+      # outer `assert`), so we know the resolved fleet is otherwise
+      # valid — this is purely informational.
+      compliancePermissiveWarnings = let
+        resolveMode = c:
+          if c.mode != null
+          then c.mode
+          else if c.strict
+          then "enforce"
+          else "disabled";
+        permissiveChannels =
+          lib.filter (n: resolveMode cfg.channels.${n}.compliance == "permissive") (lib.attrNames cfg.channels);
+        hostsOnChannels =
+          lib.filter (n: builtins.elem cfg.hosts.${n}.channel permissiveChannels) (lib.attrNames cfg.hosts);
+      in
+        lib.concatMap (
+          hostName: let
+            host = cfg.hosts.${hostName};
+            probes = host.configuration.config.compliance.evidence.probes or {};
+            probeNames = lib.attrNames probes;
+            staticOrBoth =
+              lib.filter (
+                p: let
+                  t = probes.${p}.type or "runtime";
+                in
+                  t == "static" || t == "both"
+              )
+              probeNames;
+            failures =
+              lib.filter (
+                p: let
+                  ev = probes.${p}.staticEvidence or null;
+                in
+                  ev != null && (ev.passed or true) == false
+              )
+              staticOrBoth;
+          in
+            map (p: "[compliance:permissive] host '${hostName}' (channel '${host.channel}'): static control '${p}' failed — ${lib.generators.toPretty {} (probes.${p}.staticEvidence.evidence or {})}") failures
+        )
+        hostsOnChannels;
+
+      allWarnings = emptySelectorWarnings ++ budgetWarnings ++ compliancePermissiveWarnings;
 
       # Force the warnings side effect before returning the resolved value.
       # `lib.warn` prints to stderr during eval and returns its second arg.
@@ -485,7 +585,13 @@
           cfg.hosts;
         channels =
           lib.mapAttrs (_: c: {
-            inherit (c) rolloutPolicy reconcileIntervalMinutes signingIntervalMinutes freshnessWindow compliance;
+            inherit (c) rolloutPolicy reconcileIntervalMinutes signingIntervalMinutes freshnessWindow;
+            # Strip `mode = null` from the resolved output so existing
+            # JSON goldens (and roundtrip tests in the proto crate)
+            # stay byte-identical for fleets that don't opt into the
+            # new `mode` field. Non-null modes flow through normally
+            # for downstream consumers (CP dispatch, agent gate).
+            compliance = lib.filterAttrs (_: v: v != null) c.compliance;
           })
           cfg.channels;
         rolloutPolicies = cfg.rolloutPolicies;

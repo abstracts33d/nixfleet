@@ -143,6 +143,15 @@ pub struct EvaluatedTarget {
     /// the CP enforces at tick start. `None` from older CPs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freshness_window_secs: Option<u32>,
+    /// Operator-controlled runtime compliance gate policy (issue #57).
+    /// Wire-form string, one of `"disabled"`, `"permissive"`,
+    /// `"enforce"`, or `"auto"`. `None` means the CP didn't set a
+    /// policy and the agent should auto-detect (Permissive when the
+    /// `compliance-evidence-collector.service` unit is present,
+    /// Disabled when absent). Wire-additive — old CPs leave it None
+    /// and agent behaviour matches the auto-detect default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compliance_mode: Option<String>,
 }
 
 /// Activation policy embedded in `EvaluatedTarget` per RFC-0003
@@ -384,6 +393,48 @@ pub enum ReportEvent {
         signed_at: DateTime<Utc>,
         freshness_window_secs: u32,
         age_secs: i64,
+    },
+
+    /// Runtime compliance gate refused the activation: a control's
+    /// post-activation probe reported `non-compliant` or `error`.
+    /// Posted by the agent for every failed control found in the
+    /// freshly-collected `evidence.json`. The CP rollout engine
+    /// uses these events as wave-promotion gates (a host with
+    /// outstanding ComplianceFailure events stays in its current
+    /// wave). Issue arcanesys/nixfleet#4 / abstracts33d/nixfleet#57.
+    ///
+    /// `evidence_snippet` is the probe's `checks` JSON object (the
+    /// same the runtime probe writes into evidence.json),
+    /// truncated to ~1KB to bound report size. `frameworkArticles`
+    /// lists the article references (e.g. `["nis2:21(b)",
+    /// "iso27001:A.8.15"]`) so the CP / audit log carry regulatory
+    /// context without a separate framework lookup.
+    ComplianceFailure {
+        control_id: String,
+        status: String,
+        framework_articles: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence_snippet: Option<serde_json::Value>,
+        evidence_collected_at: DateTime<Utc>,
+    },
+
+    /// Runtime compliance gate could not produce a verdict — the
+    /// `compliance-evidence-collector` service failed, timed out,
+    /// or wrote evidence with a timestamp older than the moment
+    /// activation completed. Distinct from `ComplianceFailure`
+    /// (a per-control negative result on fresh evidence): this
+    /// event signals "we couldn't measure", which the CP must
+    /// treat as a confirm-blocker — same severity class as
+    /// `SwitchFailed`. The freshness-verify-after-async-trigger
+    /// pattern mirrors ADR-011 fire-and-forget: don't trust an
+    /// async trigger ran; verify the observable post-condition.
+    RuntimeGateError {
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collector_exit_code: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence_collected_at: Option<DateTime<Utc>>,
+        activation_completed_at: DateTime<Utc>,
     },
 
     /// Catch-all for events that don't yet have a typed variant.

@@ -162,6 +162,16 @@ pub fn decide_target(
             }),
             signed_at,
             freshness_window_secs,
+            // Issue #58 — relay the channel's compliance mode so the
+            // agent's runtime gate (#57) honours fleet-wide policy
+            // pushes without needing per-host CLI flags. `None` here
+            // (channel didn't set `mode` and didn't set `strict =
+            // true`) means agent auto-detects from collector unit
+            // presence.
+            compliance_mode: fleet
+                .channels
+                .get(&host.channel)
+                .and_then(|ch| ch.compliance.mode.clone()),
         },
         rollout_id,
         wave_index,
@@ -192,6 +202,7 @@ mod tests {
                 compliance: Compliance {
                     strict: false,
                     frameworks: vec![],
+                    mode: None,
                 },
             },
         );

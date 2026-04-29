@@ -1069,6 +1069,7 @@ mod tests {
                 compliance: Compliance {
                     strict: false,
                     frameworks: vec![],
+                    mode: None,
                 },
             },
         );

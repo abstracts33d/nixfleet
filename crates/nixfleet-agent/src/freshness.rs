@@ -80,6 +80,7 @@ mod tests {
             activate: None,
             signed_at,
             freshness_window_secs: window,
+            compliance_mode: None,
         }
     }
 
