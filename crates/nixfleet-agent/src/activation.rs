@@ -201,15 +201,12 @@ pub enum ActivationOutcome {
     },
 }
 
-/// Activate `target` via realise → switch → verify.
-///
-/// `tracing` events at every step give operators a grep-friendly
-/// breadcrumb trail without parsing the systemd journal in JSON. The
-/// `target_closure` field is consistent across all three log lines so
-/// `journalctl | grep target_closure=<hash>` follows one activation
-/// end to end.
 /// Activate `target` via realise → set-profile → fire-and-forget
 /// switch → poll → self-correct.
+///
+/// `tracing` events at every step share a `target_closure = <hash>`
+/// field, so `journalctl | grep target_closure=<hash>` follows one
+/// activation end to end without parsing JSON.
 ///
 /// **Retry semantics (v0.2 trade-off vs ADR-011 §5).** ADR-011's
 /// original wording allowed up to 3 in-call retries before giving
