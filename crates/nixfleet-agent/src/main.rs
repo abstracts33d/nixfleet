@@ -444,11 +444,8 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Dispatch on the result of `activation::activate` for a dispatched
-/// target — posts the appropriate report event, handles the runtime
-/// compliance gate, calls `/v1/agent/confirm` (or rolls back) on
-/// success, and rolls back on switch failure. Best-effort throughout:
-/// telemetry failures are logged but never propagated.
+/// Dispatch on the result of `activation::activate`. Telemetry-only
+/// failures are logged, never propagated.
 async fn handle_activation_outcome(
     outcome: anyhow::Result<nixfleet_agent::activation::ActivationOutcome>,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
@@ -459,412 +456,459 @@ async fn handle_activation_outcome(
     use nixfleet_agent::activation::ActivationOutcome;
     match outcome {
         Ok(ActivationOutcome::FiredAndPolled) => {
-            let activation_completed_at = chrono::Utc::now();
-
-            // Runtime compliance gate (#57). Triggers
-            // the evidence collector synchronously,
-            // verifies fresh evidence, classifies into
-            // Pass/Failures/Skipped/GateError. Mirrors
-            // ADR-011's freshness-after-async-trigger
-            // pattern.
-            //
-            // mode resolution: if the EvaluatedTarget
-            // carries a `compliance_mode` from CP
-            // (channel-level config), parse it; else
-            // fall through to None which means "auto-
-            // detect based on collector presence".
-            // Auto resolves to Permissive when present,
-            // Disabled when absent — the safe default
-            // for fleets that haven't deployed
-            // nixfleet-compliance. Resolved mode is
-            // captured separately so the GateError
-            // arm below can differentiate Permissive
-            // (post + continue) from Enforce
-            // (post + rollback + skip confirm).
-            use nixfleet_agent::compliance::{GateMode, GateOutcome};
-            // Precedence: CP-relayed (fleet-wide
-            // policy push, channel-level) wins over
-            // the agent's local CLI default. Both
-            // strings are parsed via the same
-            // `from_wire_str`; an empty / "auto"
-            // string from either source falls through
-            // to auto-detect (None → resolve_mode).
-            let cli_default_mode = args
-                .compliance_gate_mode
-                .as_deref()
-                .filter(|s| !s.is_empty() && *s != "auto")
-                .map(GateMode::from_wire_str);
-            let input_mode = target
-                .compliance_mode
-                .as_deref()
-                .filter(|s| !s.is_empty() && *s != "auto")
-                .map(GateMode::from_wire_str)
-                .or(cli_default_mode);
-            let resolved_mode =
-                nixfleet_agent::compliance::resolve_mode(input_mode).await;
-            let gate_outcome =
-                nixfleet_agent::compliance::run_runtime_gate(
-                    activation_completed_at,
-                    &nixfleet_agent::compliance::default_evidence_path(),
-                    resolved_mode,
-                )
-                .await;
-
-            // Decision:
-            // - Pass / Skipped: continue to confirm.
-            // - Failures: post ComplianceFailure events
-            //   per failing control, then confirm. CP
-            //   rollout engine decides whether to block
-            //   wave promotion. Host stays on new gen.
-            // - GateError: post RuntimeGateError, run
-            //   local rollback (avoid CP-vs-host state
-            //   divergence), skip confirm. Same
-            //   recovery class as SwitchFailed.
-            let gate_blocks_confirm = match &gate_outcome {
-                GateOutcome::Pass { .. } => {
-                    tracing::info!(
-                        "compliance gate: PASS (all controls compliant)",
-                    );
-                    false
-                }
-                GateOutcome::Skipped { reason } => {
-                    tracing::debug!(
-                        %reason,
-                        ?resolved_mode,
-                        "compliance gate: skipped",
-                    );
-                    false
-                }
-                GateOutcome::Failures { evidence, failures } => {
-                    tracing::warn!(
-                        count = failures.len(),
-                        "compliance gate: failures — posting per-control events",
-                    );
-                    for ctrl in failures {
-                        let articles =
-                            nixfleet_agent::compliance::flatten_framework_articles(
-                                &ctrl.framework_articles,
-                            );
-                        let snippet = nixfleet_agent::compliance::truncate_evidence_snippet(
-                            &ctrl.checks,
-                        );
-                        // Build the signed payload (#12 root-3 / #59).
-                        // The CP rebuilds an identical struct from
-                        // the wire ReportEvent + cert-CN hostname
-                        // and verifies against fleet.nix pubkey.
-                        let snippet_sha = nixfleet_agent::evidence_signer::sha256_jcs(
-                            &snippet,
-                        )
-                        .unwrap_or_default();
-                        let signed_payload = nixfleet_agent::evidence_signer::ComplianceFailureSignedPayload {
-                            hostname: &args.machine_id,
-                            rollout: Some(&target.channel_ref),
-                            control_id: &ctrl.control,
-                            status: &ctrl.status,
-                            framework_articles: &articles,
-                            evidence_collected_at: evidence.timestamp,
-                            evidence_snippet_sha256: snippet_sha,
-                        };
-                        let signature = evidence_signer
-                            .as_ref()
-                            .as_ref()
-                            .and_then(|s| s.sign(&signed_payload).ok());
-                        post_report(
-                            client_handle,
-                            &args.control_plane_url,
-                            &args.machine_id,
-                            Some(&target.channel_ref),
-                            ReportEvent::ComplianceFailure {
-                                control_id: ctrl.control.clone(),
-                                status: ctrl.status.clone(),
-                                framework_articles: articles,
-                                evidence_snippet: Some(snippet),
-                                evidence_collected_at: evidence.timestamp,
-                                signature,
-                            },
-                        )
-                        .await;
-                    }
-                    false
-                }
-                GateOutcome::GateError {
-                    reason,
-                    collector_exit_code,
-                    evidence_collected_at,
-                } => {
-                    // Always post the event so CP +
-                    // operators see the measurement
-                    // failure. Whether to roll back
-                    // depends on the resolved mode:
-                    // Enforce treats GateError as a
-                    // confirm-blocker (same severity
-                    // class as SwitchFailed); Permissive
-                    // logs + posts but lets confirm
-                    // proceed so a flaky collector
-                    // doesn't break the rollout.
-                    let enforcing = resolved_mode == GateMode::Enforce;
-                    if enforcing {
-                        tracing::error!(
-                            %reason,
-                            ?collector_exit_code,
-                            "compliance gate: ERROR — refusing confirm + rolling back (enforce mode)",
-                        );
-                    } else {
-                        tracing::warn!(
-                            %reason,
-                            ?collector_exit_code,
-                            "compliance gate: ERROR — posting event, allowing confirm (permissive mode)",
-                        );
-                    }
-                    let signed_payload = nixfleet_agent::evidence_signer::RuntimeGateErrorSignedPayload {
-                        hostname: &args.machine_id,
-                        rollout: Some(&target.channel_ref),
-                        reason,
-                        collector_exit_code: *collector_exit_code,
-                        evidence_collected_at: *evidence_collected_at,
-                        activation_completed_at,
-                    };
-                    let signature = evidence_signer
-                        .as_ref()
-                        .as_ref()
-                        .and_then(|s| s.sign(&signed_payload).ok());
-                    post_report(
-                        client_handle,
-                        &args.control_plane_url,
-                        &args.machine_id,
-                        Some(&target.channel_ref),
-                        ReportEvent::RuntimeGateError {
-                            reason: reason.clone(),
-                            collector_exit_code: *collector_exit_code,
-                            evidence_collected_at: *evidence_collected_at,
-                            activation_completed_at,
-                            signature,
-                        },
-                    )
-                    .await;
-                    if enforcing {
-                        let _ = nixfleet_agent::activation::rollback().await;
-                        post_report(
-                            client_handle,
-                            &args.control_plane_url,
-                            &args.machine_id,
-                            Some(&target.channel_ref),
-                            ReportEvent::RollbackTriggered {
-                                reason: format!(
-                                    "compliance gate error: {reason}"
-                                ),
-                            },
-                        )
-                        .await;
-                    }
-                    enforcing
-                }
-            };
-
-            if gate_blocks_confirm {
-                // Skip confirm; agent already rolled
-                // back. Don't reach confirm_target.
-                return;
-            }
-
-            use nixfleet_agent::host_facts::{Host, HostFacts};
-            let boot_id = Host::new()
-                .boot_id()
-                .unwrap_or_else(|_| "unknown".to_string());
-            // Rollout id round-trips via target.channel_ref
-            // (CP populates it in the dispatch loop).
-            // Wave 0 — wave/soak staging is deferred.
-            let rollout = &target.channel_ref;
-            let wave: u32 = 0;
-            match nixfleet_agent::activation::confirm_target(
-                client_handle,
-                &args.control_plane_url,
-                &args.machine_id,
-                target,
-                rollout,
-                wave,
-                &boot_id,
-            )
-            .await
-            {
-                Ok(nixfleet_agent::comms::ConfirmOutcome::Cancelled) => {
-                    // CP says rollback — run it.
-                    let rb_outcome =
-                        nixfleet_agent::activation::rollback().await;
-                    post_report(
-                        client_handle,
-                        &args.control_plane_url,
-                        &args.machine_id,
-                        Some(rollout),
-                        ReportEvent::RollbackTriggered {
-                            reason: "cp-410: rollout cancelled or deadline expired".to_string(),
-                        },
-                    )
-                    .await;
-                    match &rb_outcome {
-                        Ok(o) if o.success() => {}
-                        Ok(o) => tracing::error!(
-                            phase = ?o.phase(),
-                            exit_code = ?o.exit_code(),
-                            "rollback after CP-410 failed (poll/fire layer)",
-                        ),
-                        Err(err) => tracing::error!(
-                            error = %err,
-                            "rollback after CP-410 transport-failed",
-                        ),
-                    }
-                }
-                Ok(nixfleet_agent::comms::ConfirmOutcome::Acknowledged) => {
-                    // Gap B: persist the confirm
-                    // timestamp so subsequent checkins
-                    // can attest it. Best-effort —
-                    // failure to persist doesn't roll
-                    // back the activation.
-                    if let Err(err) = nixfleet_agent::checkin_state::write_last_confirmed(
-                        &args.state_dir,
-                        &target.closure_hash,
-                        chrono::Utc::now(),
-                    ) {
-                        tracing::warn!(
-                            error = %err,
-                            state_dir = %args.state_dir.display(),
-                            "write_last_confirmed failed; soak attestation will be missing on next checkin",
-                        );
-                    }
-                    // Confirm landed → the dispatch
-                    // record's job is done. Remove it
-                    // so a future agent restart's
-                    // boot-recovery path doesn't try
-                    // to re-confirm an already-confirmed
-                    // generation. Best-effort.
-                    if let Err(err) = nixfleet_agent::checkin_state::clear_last_dispatched(
-                        &args.state_dir,
-                    ) {
-                        tracing::warn!(
-                            error = %err,
-                            "clear_last_dispatched failed (non-fatal)",
-                        );
-                    }
-                }
-                Ok(nixfleet_agent::comms::ConfirmOutcome::Other) => {} // logged in confirm_target
-                Err(err) => {
-                    tracing::warn!(error = %err, "confirm post failed");
-                }
-            }
+            handle_fired_and_polled(target, client_handle, args, evidence_signer).await;
         }
         Ok(ActivationOutcome::RealiseFailed { reason }) => {
-            tracing::warn!(
-                reason = %reason,
-                "activation: realise failed; nothing switched, retrying next tick",
-            );
-            post_report(
-                client_handle,
-                &args.control_plane_url,
-                &args.machine_id,
-                Some(&target.channel_ref),
-                ReportEvent::RealiseFailed {
-                    closure_hash: target.closure_hash.clone(),
-                    reason,
-                },
-            )
-            .await;
+            handle_realise_failed(reason, target, client_handle, args).await;
         }
         Ok(ActivationOutcome::SignatureMismatch {
             closure_hash,
             stderr_tail,
         }) => {
-            tracing::error!(
-                closure_hash = %closure_hash,
-                stderr_tail = %stderr_tail,
-                "activation: closure signature mismatch — refused by nix substituter trust",
-            );
-            post_report(
-                client_handle,
-                &args.control_plane_url,
-                &args.machine_id,
-                Some(&target.channel_ref),
-                ReportEvent::ClosureSignatureMismatch {
-                    closure_hash,
-                    stderr_tail,
-                },
-            )
-            .await;
+            handle_signature_mismatch(closure_hash, stderr_tail, target, client_handle, args).await;
         }
         Ok(ActivationOutcome::SwitchFailed { phase, exit_code }) => {
-            tracing::error!(
-                phase = %phase,
-                exit_code = ?exit_code,
-                "activation: switch failed; rolling back",
-            );
-            post_report(
-                client_handle,
-                &args.control_plane_url,
-                &args.machine_id,
-                Some(&target.channel_ref),
-                ReportEvent::ActivationFailed {
-                    phase: phase.clone(),
-                    exit_code,
-                    stderr_tail: None,
-                },
-            )
-            .await;
-            let rb_outcome =
-                nixfleet_agent::activation::rollback().await;
-            let rollback_event = match &rb_outcome {
-                Ok(o) if o.success() => ReportEvent::RollbackTriggered {
-                    reason: format!("activation phase {phase} failed"),
-                },
-                Ok(o) => ReportEvent::ActivationFailed {
-                    phase: format!(
-                        "rollback-after-{phase}/{}",
-                        o.phase().unwrap_or("unknown")
-                    ),
-                    exit_code: o.exit_code(),
-                    stderr_tail: None,
-                },
-                Err(err) => ReportEvent::ActivationFailed {
-                    phase: format!("rollback-after-{phase}"),
-                    exit_code: None,
-                    stderr_tail: Some(err.to_string()),
-                },
-            };
-            post_report(
-                client_handle,
-                &args.control_plane_url,
-                &args.machine_id,
-                Some(&target.channel_ref),
-                rollback_event,
-            )
-            .await;
-            if let Err(err) = rb_outcome {
-                tracing::error!(
-                    error = %err,
-                    "rollback after failed switch also failed — manual intervention required",
-                );
-            }
+            handle_switch_failed(phase, exit_code, target, client_handle, args).await;
         }
         Err(err) => {
-            // Spawn / I/O error inside activate(). Don't
-            // roll back (state is unknown — could have
-            // failed before realise even started); log
-            // and let next tick retry.
-            tracing::error!(error = %err, "activation spawn failed");
-            post_report(
-                client_handle,
-                &args.control_plane_url,
-                &args.machine_id,
-                Some(&target.channel_ref),
-                ReportEvent::Other {
-                    kind: "activation-spawn-failed".to_string(),
-                    detail: Some(serde_json::json!({
-                        "error": err.to_string(),
-                        "target_closure": target.closure_hash,
-                    })),
-                },
-            )
-            .await;
+            handle_activation_spawn_error(err, target, client_handle, args).await;
         }
     }
+}
+
+/// Switch fired and polled successfully → run the runtime compliance
+/// gate, then either confirm with the CP or roll back depending on
+/// the gate outcome.
+async fn handle_fired_and_polled(
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+) {
+    let activation_completed_at = chrono::Utc::now();
+    let (resolved_mode, gate_outcome) = run_runtime_gate(target, args, activation_completed_at).await;
+    let gate_blocks_confirm = process_gate_outcome(
+        &gate_outcome,
+        resolved_mode,
+        target,
+        client_handle,
+        args,
+        evidence_signer,
+        activation_completed_at,
+    )
+    .await;
+    if gate_blocks_confirm {
+        return;
+    }
+    confirm_and_finalize(target, client_handle, args).await;
+}
+
+/// Resolve the effective compliance mode (CP channel policy beats
+/// the agent's CLI default) and run the runtime gate.
+async fn run_runtime_gate(
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    args: &Args,
+    activation_completed_at: chrono::DateTime<chrono::Utc>,
+) -> (
+    nixfleet_agent::compliance::GateMode,
+    nixfleet_agent::compliance::GateOutcome,
+) {
+    use nixfleet_agent::compliance::GateMode;
+    let cli_default_mode = args
+        .compliance_gate_mode
+        .as_deref()
+        .filter(|s| !s.is_empty() && *s != "auto")
+        .map(GateMode::from_wire_str);
+    let input_mode = target
+        .compliance_mode
+        .as_deref()
+        .filter(|s| !s.is_empty() && *s != "auto")
+        .map(GateMode::from_wire_str)
+        .or(cli_default_mode);
+    let resolved_mode = nixfleet_agent::compliance::resolve_mode(input_mode).await;
+    let gate_outcome = nixfleet_agent::compliance::run_runtime_gate(
+        activation_completed_at,
+        &nixfleet_agent::compliance::default_evidence_path(),
+        resolved_mode,
+    )
+    .await;
+    (resolved_mode, gate_outcome)
+}
+
+/// Post events for the gate outcome; return true iff the agent
+/// should skip confirm and stay on the rolled-back generation.
+async fn process_gate_outcome(
+    gate_outcome: &nixfleet_agent::compliance::GateOutcome,
+    resolved_mode: nixfleet_agent::compliance::GateMode,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+    activation_completed_at: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    use nixfleet_agent::compliance::GateOutcome;
+    match gate_outcome {
+        GateOutcome::Pass { .. } => {
+            tracing::info!("compliance gate: PASS (all controls compliant)");
+            false
+        }
+        GateOutcome::Skipped { reason } => {
+            tracing::debug!(%reason, ?resolved_mode, "compliance gate: skipped");
+            false
+        }
+        GateOutcome::Failures { evidence, failures } => {
+            post_compliance_failures(failures, evidence, target, client_handle, args, evidence_signer)
+                .await;
+            false
+        }
+        GateOutcome::GateError {
+            reason,
+            collector_exit_code,
+            evidence_collected_at,
+        } => {
+            post_runtime_gate_error(
+                reason,
+                *collector_exit_code,
+                *evidence_collected_at,
+                resolved_mode,
+                target,
+                client_handle,
+                args,
+                evidence_signer,
+                activation_completed_at,
+            )
+            .await
+        }
+    }
+}
+
+async fn post_compliance_failures(
+    failures: &[nixfleet_agent::compliance::ControlEvidence],
+    evidence: &nixfleet_agent::compliance::ComplianceEvidence,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+) {
+    tracing::warn!(
+        count = failures.len(),
+        "compliance gate: failures — posting per-control events",
+    );
+    for ctrl in failures {
+        let articles =
+            nixfleet_agent::compliance::flatten_framework_articles(&ctrl.framework_articles);
+        let snippet = nixfleet_agent::compliance::truncate_evidence_snippet(&ctrl.checks);
+        let snippet_sha =
+            nixfleet_agent::evidence_signer::sha256_jcs(&snippet).unwrap_or_default();
+        let signed_payload = nixfleet_agent::evidence_signer::ComplianceFailureSignedPayload {
+            hostname: &args.machine_id,
+            rollout: Some(&target.channel_ref),
+            control_id: &ctrl.control,
+            status: &ctrl.status,
+            framework_articles: &articles,
+            evidence_collected_at: evidence.timestamp,
+            evidence_snippet_sha256: snippet_sha,
+        };
+        let signature = evidence_signer
+            .as_ref()
+            .as_ref()
+            .and_then(|s| s.sign(&signed_payload).ok());
+        post_report(
+            client_handle,
+            &args.control_plane_url,
+            &args.machine_id,
+            Some(&target.channel_ref),
+            ReportEvent::ComplianceFailure {
+                control_id: ctrl.control.clone(),
+                status: ctrl.status.clone(),
+                framework_articles: articles,
+                evidence_snippet: Some(snippet),
+                evidence_collected_at: evidence.timestamp,
+                signature,
+            },
+        )
+        .await;
+    }
+}
+
+/// Post the gate-error event; if enforcing, also roll back and
+/// post the rollback event. Returns true iff confirm must be
+/// skipped (i.e. enforce mode triggered a rollback).
+#[allow(clippy::too_many_arguments)]
+async fn post_runtime_gate_error(
+    reason: &str,
+    collector_exit_code: Option<i32>,
+    evidence_collected_at: Option<chrono::DateTime<chrono::Utc>>,
+    resolved_mode: nixfleet_agent::compliance::GateMode,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+    activation_completed_at: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    use nixfleet_agent::compliance::GateMode;
+    let enforcing = resolved_mode == GateMode::Enforce;
+    if enforcing {
+        tracing::error!(
+            %reason,
+            ?collector_exit_code,
+            "compliance gate: ERROR — refusing confirm + rolling back (enforce mode)",
+        );
+    } else {
+        tracing::warn!(
+            %reason,
+            ?collector_exit_code,
+            "compliance gate: ERROR — posting event, allowing confirm (permissive mode)",
+        );
+    }
+    let signed_payload = nixfleet_agent::evidence_signer::RuntimeGateErrorSignedPayload {
+        hostname: &args.machine_id,
+        rollout: Some(&target.channel_ref),
+        reason,
+        collector_exit_code,
+        evidence_collected_at,
+        activation_completed_at,
+    };
+    let signature = evidence_signer
+        .as_ref()
+        .as_ref()
+        .and_then(|s| s.sign(&signed_payload).ok());
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        ReportEvent::RuntimeGateError {
+            reason: reason.to_string(),
+            collector_exit_code,
+            evidence_collected_at,
+            activation_completed_at,
+            signature,
+        },
+    )
+    .await;
+    if enforcing {
+        let _ = nixfleet_agent::activation::rollback().await;
+        post_report(
+            client_handle,
+            &args.control_plane_url,
+            &args.machine_id,
+            Some(&target.channel_ref),
+            ReportEvent::RollbackTriggered {
+                reason: format!("compliance gate error: {reason}"),
+            },
+        )
+        .await;
+    }
+    enforcing
+}
+
+/// Confirm with the CP and persist the post-confirm bookkeeping.
+/// CP-410 (cancelled / deadline-expired rollout) triggers a rollback.
+async fn confirm_and_finalize(
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+) {
+    use nixfleet_agent::host_facts::{Host, HostFacts};
+    let boot_id = Host::new()
+        .boot_id()
+        .unwrap_or_else(|_| "unknown".to_string());
+    let rollout = &target.channel_ref;
+    // Wave 0 — wave/soak staging is deferred.
+    let wave: u32 = 0;
+    match nixfleet_agent::activation::confirm_target(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        target,
+        rollout,
+        wave,
+        &boot_id,
+    )
+    .await
+    {
+        Ok(nixfleet_agent::comms::ConfirmOutcome::Cancelled) => {
+            handle_cp_cancellation(rollout, client_handle, args).await;
+        }
+        Ok(nixfleet_agent::comms::ConfirmOutcome::Acknowledged) => {
+            persist_confirmed_state(target, args);
+        }
+        Ok(nixfleet_agent::comms::ConfirmOutcome::Other) => {}
+        Err(err) => tracing::warn!(error = %err, "confirm post failed"),
+    }
+}
+
+async fn handle_cp_cancellation(rollout: &str, client_handle: &reqwest::Client, args: &Args) {
+    let rb_outcome = nixfleet_agent::activation::rollback().await;
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(rollout),
+        ReportEvent::RollbackTriggered {
+            reason: "cp-410: rollout cancelled or deadline expired".to_string(),
+        },
+    )
+    .await;
+    match &rb_outcome {
+        Ok(o) if o.success() => {}
+        Ok(o) => tracing::error!(
+            phase = ?o.phase(),
+            exit_code = ?o.exit_code(),
+            "rollback after CP-410 failed (poll/fire layer)",
+        ),
+        Err(err) => tracing::error!(error = %err, "rollback after CP-410 transport-failed"),
+    }
+}
+
+/// Best-effort: failure to persist doesn't roll back the activation.
+/// `last_confirmed_at` feeds the CP's soak attestation on next checkin;
+/// `last_dispatched` is cleared so a future agent restart's boot-recovery
+/// path doesn't try to re-confirm an already-confirmed generation.
+fn persist_confirmed_state(target: &nixfleet_proto::agent_wire::EvaluatedTarget, args: &Args) {
+    if let Err(err) = nixfleet_agent::checkin_state::write_last_confirmed(
+        &args.state_dir,
+        &target.closure_hash,
+        chrono::Utc::now(),
+    ) {
+        tracing::warn!(
+            error = %err,
+            state_dir = %args.state_dir.display(),
+            "write_last_confirmed failed; soak attestation will be missing on next checkin",
+        );
+    }
+    if let Err(err) = nixfleet_agent::checkin_state::clear_last_dispatched(&args.state_dir) {
+        tracing::warn!(error = %err, "clear_last_dispatched failed (non-fatal)");
+    }
+}
+
+async fn handle_realise_failed(
+    reason: String,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+) {
+    tracing::warn!(
+        reason = %reason,
+        "activation: realise failed; nothing switched, retrying next tick",
+    );
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        ReportEvent::RealiseFailed {
+            closure_hash: target.closure_hash.clone(),
+            reason,
+        },
+    )
+    .await;
+}
+
+async fn handle_signature_mismatch(
+    closure_hash: String,
+    stderr_tail: String,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+) {
+    tracing::error!(
+        closure_hash = %closure_hash,
+        stderr_tail = %stderr_tail,
+        "activation: closure signature mismatch — refused by nix substituter trust",
+    );
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        ReportEvent::ClosureSignatureMismatch {
+            closure_hash,
+            stderr_tail,
+        },
+    )
+    .await;
+}
+
+async fn handle_switch_failed(
+    phase: String,
+    exit_code: Option<i32>,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+) {
+    tracing::error!(phase = %phase, exit_code = ?exit_code, "activation: switch failed; rolling back");
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        ReportEvent::ActivationFailed {
+            phase: phase.clone(),
+            exit_code,
+            stderr_tail: None,
+        },
+    )
+    .await;
+    let rb_outcome = nixfleet_agent::activation::rollback().await;
+    let rollback_event = match &rb_outcome {
+        Ok(o) if o.success() => ReportEvent::RollbackTriggered {
+            reason: format!("activation phase {phase} failed"),
+        },
+        Ok(o) => ReportEvent::ActivationFailed {
+            phase: format!(
+                "rollback-after-{phase}/{}",
+                o.phase().unwrap_or("unknown")
+            ),
+            exit_code: o.exit_code(),
+            stderr_tail: None,
+        },
+        Err(err) => ReportEvent::ActivationFailed {
+            phase: format!("rollback-after-{phase}"),
+            exit_code: None,
+            stderr_tail: Some(err.to_string()),
+        },
+    };
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        rollback_event,
+    )
+    .await;
+    if let Err(err) = rb_outcome {
+        tracing::error!(
+            error = %err,
+            "rollback after failed switch also failed — manual intervention required",
+        );
+    }
+}
+
+/// Spawn / I/O error inside `activate()`. State is unknown (could
+/// have failed before realise even started) so we don't roll back.
+async fn handle_activation_spawn_error(
+    err: anyhow::Error,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+) {
+    tracing::error!(error = %err, "activation spawn failed");
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        ReportEvent::Other {
+            kind: "activation-spawn-failed".to_string(),
+            detail: Some(serde_json::json!({
+                "error": err.to_string(),
+                "target_closure": target.closure_hash,
+            })),
+        },
+    )
+    .await;
 }
 
 async fn send_checkin(

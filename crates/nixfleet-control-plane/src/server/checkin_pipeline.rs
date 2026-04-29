@@ -394,16 +394,9 @@ async fn clear_left_healthy_for_checkin(state: &AppState, req: &CheckinRequest) 
     }
 }
 
-/// Per-checkin dispatch decision. Reads the latest verified
-/// `FleetResolved` from `AppState`, queries the DB for any pending
-/// confirm row for this host (idempotency guard), and runs
-/// `dispatch::decide_target`. On `Dispatch`, inserts a
-/// `pending_confirms` row keyed on the deterministic rollout id and
-/// returns the target. All other Decision variants resolve to None.
-///
-/// Failures here log + return None — a transient DB hiccup or
-/// missing fleet snapshot must not surface as HTTP 500 to the
-/// agent. The agent retries on its next checkin (60s).
+/// Per-checkin dispatch decision. Failures log + return None: a
+/// transient DB hiccup or missing fleet snapshot must not surface as
+/// HTTP 500 to the agent (it retries every 60s).
 async fn dispatch_target_for_checkin(
     state: &AppState,
     req: &CheckinRequest,
@@ -423,109 +416,8 @@ async fn dispatch_target_for_checkin(
         }
     };
 
-    // Issue #59 — wave-staging compliance gate. Block dispatch when
-    // any host on this host's channel has outstanding signature-
-    // verified ComplianceFailure / RuntimeGateError events under
-    // `compliance.mode = "enforce"`. Permissive mode never blocks;
-    // disabled / no-mode falls through. The gate is per-channel —
-    // wave N's outstanding failures hold wave N+1.
-    if let Some(channel_name) = fleet.hosts.get(&req.hostname).map(|h| &h.channel) {
-        if let Some(channel) = fleet.channels.get(channel_name) {
-            // Channel mode is a plain enum-string after the
-            // strict-removal cleanup; `from_wire_str` is forward-
-            // compat for unknown strings (fall back to Permissive).
-            let resolved_mode =
-                nixfleet_proto::compliance::GateMode::from_wire_str(&channel.compliance.mode);
-            // Gather per-host (records, current_rollout) for every
-            // host on this channel.
-            let reports_guard = state.host_reports.read().await;
-            let checkins_guard = state.host_checkins.read().await;
-            let channel_hosts: Vec<&String> = fleet
-                .hosts
-                .iter()
-                .filter_map(|(n, h)| (h.channel == *channel_name).then_some(n))
-                .collect();
-            // Stage data into owned slices so the iterator passed
-            // into evaluate_channel_gate has stable lifetimes. Each
-            // entry carries the host's wave_index for the per-wave
-            // gate decision (#59 issue E).
-            type StagedHost = (
-                String,                              // hostname
-                Vec<crate::server::ReportRecord>,    // report buffer (cloned)
-                Option<String>,                       // current rollout id
-                Option<u32>,                          // wave index
-            );
-            let staged: Vec<StagedHost> = channel_hosts
-                .iter()
-                .map(|n| {
-                    let buf: Vec<crate::server::ReportRecord> = reports_guard
-                        .get(*n)
-                        .map(|q| q.iter().cloned().collect())
-                        .unwrap_or_default();
-                    let cur_rollout = checkins_guard
-                        .get(*n)
-                        .and_then(|c| c.checkin.last_evaluated_target.as_ref())
-                        .and_then(|t| t.rollout_id.clone());
-                    let wave_idx = fleet
-                        .waves
-                        .get(channel_name)
-                        .and_then(|waves| {
-                            waves
-                                .iter()
-                                .position(|w| w.hosts.iter().any(|h| h == *n))
-                                .map(|i| i as u32)
-                        });
-                    (n.to_string(), buf, cur_rollout, wave_idx)
-                })
-                .collect();
-            drop(reports_guard);
-            drop(checkins_guard);
-
-            // Wave the requesting host belongs to.
-            let requesting_wave = fleet.waves.get(channel_name).and_then(|waves| {
-                waves
-                    .iter()
-                    .position(|w| w.hosts.iter().any(|h| h == &req.hostname))
-                    .map(|i| i as u32)
-            });
-
-            let outcome = crate::wave_gate::evaluate_channel_gate(
-                resolved_mode,
-                requesting_wave,
-                staged.iter().map(|(n, recs, rollout, wave_idx)| {
-                    crate::wave_gate::HostGateInput {
-                        hostname: n.as_str(),
-                        records: recs.as_slice(),
-                        current_rollout: rollout.as_deref(),
-                        wave_index: *wave_idx,
-                    }
-                }),
-            );
-            if outcome.blocks() {
-                tracing::warn!(
-                    target: "dispatch",
-                    hostname = %req.hostname,
-                    channel = %channel_name,
-                    requesting_wave = ?requesting_wave,
-                    outcome = ?outcome,
-                    "dispatch: wave-staging gate blocked target (outstanding compliance failures)",
-                );
-                return None;
-            }
-            // Permissive: log advisory but don't block.
-            if matches!(
-                outcome,
-                crate::wave_gate::WaveGateOutcome::Permissive { failing_events_count } if failing_events_count > 0
-            ) {
-                tracing::info!(
-                    target: "dispatch",
-                    hostname = %req.hostname,
-                    channel = %channel_name,
-                    outcome = ?outcome,
-                    "dispatch: permissive mode — outstanding compliance failures advisory only",
-                );
-            }
-        }
+    if wave_gate_blocks_dispatch(state, req, &fleet).await {
+        return None;
     }
 
     let decision = crate::dispatch::decide_target(
@@ -536,51 +428,163 @@ async fn dispatch_target_for_checkin(
         now,
         state.confirm_deadline_secs as u32,
     );
-
     match decision {
         crate::dispatch::Decision::Dispatch {
             target,
             rollout_id,
             wave_index,
-        } => {
-            let confirm_deadline =
-                now + chrono::Duration::seconds(state.confirm_deadline_secs);
-            match db.record_pending_confirm(
-                &req.hostname,
-                &rollout_id,
-                /* wave */ wave_index.unwrap_or(0),
-                &target.closure_hash,
-                &target.channel_ref,
-                confirm_deadline,
-            ) {
-                Ok(_) => {
-                    tracing::info!(
-                        target: "dispatch",
-                        hostname = %req.hostname,
-                        rollout = %rollout_id,
-                        target_closure = %target.closure_hash,
-                        confirm_deadline = %confirm_deadline.to_rfc3339(),
-                        "dispatch: target issued",
-                    );
-                    Some(target)
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        hostname = %req.hostname,
-                        rollout = %rollout_id,
-                        error = %err,
-                        "dispatch: record_pending_confirm failed; returning no target",
-                    );
-                    None
-                }
-            }
-        }
+        } => record_dispatched_target(db, &req.hostname, &rollout_id, wave_index, target, state, now),
         other => {
             tracing::debug!(
                 target: "dispatch",
                 hostname = %req.hostname,
                 decision = ?other,
                 "dispatch: no target",
+            );
+            None
+        }
+    }
+}
+
+/// Per-channel wave-staging compliance gate. Returns true iff dispatch
+/// must be blocked (enforce mode + outstanding signature-verified
+/// failures on an earlier wave). Permissive mode logs an advisory.
+async fn wave_gate_blocks_dispatch(
+    state: &AppState,
+    req: &CheckinRequest,
+    fleet: &nixfleet_proto::FleetResolved,
+) -> bool {
+    let Some(channel_name) = fleet.hosts.get(&req.hostname).map(|h| &h.channel) else {
+        return false;
+    };
+    let Some(channel) = fleet.channels.get(channel_name) else {
+        return false;
+    };
+    let resolved_mode = nixfleet_proto::compliance::GateMode::from_wire_str(&channel.compliance.mode);
+
+    let staged = stage_channel_hosts(state, fleet, channel_name).await;
+    let requesting_wave = wave_index_for(fleet, channel_name, &req.hostname);
+
+    let outcome = crate::wave_gate::evaluate_channel_gate(
+        resolved_mode,
+        requesting_wave,
+        staged.iter().map(|(n, recs, rollout, wave_idx)| {
+            crate::wave_gate::HostGateInput {
+                hostname: n.as_str(),
+                records: recs.as_slice(),
+                current_rollout: rollout.as_deref(),
+                wave_index: *wave_idx,
+            }
+        }),
+    );
+
+    if outcome.blocks() {
+        tracing::warn!(
+            target: "dispatch",
+            hostname = %req.hostname,
+            channel = %channel_name,
+            requesting_wave = ?requesting_wave,
+            outcome = ?outcome,
+            "dispatch: wave-staging gate blocked target (outstanding compliance failures)",
+        );
+        return true;
+    }
+    if matches!(
+        outcome,
+        crate::wave_gate::WaveGateOutcome::Permissive { failing_events_count } if failing_events_count > 0
+    ) {
+        tracing::info!(
+            target: "dispatch",
+            hostname = %req.hostname,
+            channel = %channel_name,
+            outcome = ?outcome,
+            "dispatch: permissive mode — outstanding compliance failures advisory only",
+        );
+    }
+    false
+}
+
+/// Snapshot per-host (records, current rollout, wave index) for every
+/// host on the given channel. Owned data so the gate iterator has
+/// stable lifetimes after the locks drop.
+async fn stage_channel_hosts(
+    state: &AppState,
+    fleet: &nixfleet_proto::FleetResolved,
+    channel_name: &str,
+) -> Vec<(String, Vec<crate::server::ReportRecord>, Option<String>, Option<u32>)> {
+    let reports_guard = state.host_reports.read().await;
+    let checkins_guard = state.host_checkins.read().await;
+    fleet
+        .hosts
+        .iter()
+        .filter(|(_, h)| h.channel == channel_name)
+        .map(|(n, _)| {
+            let buf: Vec<crate::server::ReportRecord> = reports_guard
+                .get(n)
+                .map(|q| q.iter().cloned().collect())
+                .unwrap_or_default();
+            let cur_rollout = checkins_guard
+                .get(n)
+                .and_then(|c| c.checkin.last_evaluated_target.as_ref())
+                .and_then(|t| t.rollout_id.clone());
+            let wave_idx = wave_index_for(fleet, channel_name, n);
+            (n.clone(), buf, cur_rollout, wave_idx)
+        })
+        .collect()
+}
+
+fn wave_index_for(
+    fleet: &nixfleet_proto::FleetResolved,
+    channel_name: &str,
+    hostname: &str,
+) -> Option<u32> {
+    fleet.waves.get(channel_name).and_then(|waves| {
+        waves
+            .iter()
+            .position(|w| w.hosts.iter().any(|h| h == hostname))
+            .map(|i| i as u32)
+    })
+}
+
+/// Persist the `pending_confirms` row for a freshly-dispatched
+/// target. Returns the target on success, None if the DB write fails
+/// (the row is the idempotency anchor — without it the next checkin
+/// would re-dispatch, breaking the contract).
+fn record_dispatched_target(
+    db: &crate::db::Db,
+    hostname: &str,
+    rollout_id: &str,
+    wave_index: Option<u32>,
+    target: nixfleet_proto::agent_wire::EvaluatedTarget,
+    state: &AppState,
+    now: DateTime<Utc>,
+) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
+    let confirm_deadline = now + chrono::Duration::seconds(state.confirm_deadline_secs);
+    match db.record_pending_confirm(
+        hostname,
+        rollout_id,
+        wave_index.unwrap_or(0),
+        &target.closure_hash,
+        &target.channel_ref,
+        confirm_deadline,
+    ) {
+        Ok(_) => {
+            tracing::info!(
+                target: "dispatch",
+                hostname = %hostname,
+                rollout = %rollout_id,
+                target_closure = %target.closure_hash,
+                confirm_deadline = %confirm_deadline.to_rfc3339(),
+                "dispatch: target issued",
+            );
+            Some(target)
+        }
+        Err(err) => {
+            tracing::warn!(
+                hostname = %hostname,
+                rollout = %rollout_id,
+                error = %err,
+                "dispatch: record_pending_confirm failed; returning no target",
             );
             None
         }
