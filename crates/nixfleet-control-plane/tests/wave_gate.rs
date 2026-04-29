@@ -367,7 +367,7 @@ async fn post_checkin(
     req: &CheckinRequest,
 ) -> CheckinResponse {
     client
-        .post(&format!("https://localhost:{port}/v1/agent/checkin"))
+        .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(req)
         .send()
         .await
@@ -423,7 +423,7 @@ async fn enforce_mode_blocks_dispatch_after_signed_compliance_failure() {
     //    failing control post-activation).
     let report = build_signed_compliance_failure(&host_sk, &dispatched_rollout, "auditLogging");
     let report_resp: ReportResponse = client
-        .post(&format!("https://localhost:{port}/v1/agent/report"))
+        .post(format!("https://localhost:{port}/v1/agent/report"))
         .json(&report)
         .send()
         .await
@@ -505,7 +505,7 @@ async fn permissive_mode_does_not_block_dispatch_despite_failure() {
     // Post a signed failure for the dispatched rollout.
     let report = build_signed_compliance_failure(&host_sk, &dispatched_rollout, "auditLogging");
     let _: ReportResponse = client
-        .post(&format!("https://localhost:{port}/v1/agent/report"))
+        .post(format!("https://localhost:{port}/v1/agent/report"))
         .json(&report)
         .send()
         .await

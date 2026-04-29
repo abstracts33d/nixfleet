@@ -117,9 +117,9 @@ pub fn fingerprint(pubkey_bytes: &[u8]) -> String {
 ///
 /// The CSR is parsed; the new cert inherits the CSR's subject DN
 /// + pubkey, gets a clientAuth EKU, a SAN dNSName matching the CN
-/// (rustls/webpki rejects CN-only certs), and the configured
-/// validity. Signed with the fleet CA private key loaded from
-/// `ca_key_path`.
+///   (rustls/webpki rejects CN-only certs), and the configured
+///   validity. Signed with the fleet CA private key loaded from
+///   `ca_key_path`.
 ///
 /// Caller is expected to have validated the CSR's CN already; this
 /// function does not double-check.

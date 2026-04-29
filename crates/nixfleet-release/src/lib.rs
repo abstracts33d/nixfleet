@@ -93,8 +93,8 @@ pub struct ReleaseConfig {
     pub git_user_email: Option<String>,
     /// Toggle the structural smoke verify (canonicalize round-trip
     /// + schema parse + non-zero signature length). Default on; off
-    /// for offline test scenarios where the just-produced bytes
-    /// don't matter.
+    ///   for offline test scenarios where the just-produced bytes
+    ///   don't matter.
     pub smoke_verify: bool,
     /// When set and the existing release file's closureHashes match
     /// the just-built hashes, reuse its `signedAt` instead of

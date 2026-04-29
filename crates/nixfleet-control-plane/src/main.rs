@@ -41,7 +41,9 @@ struct Args {
 enum Command {
     /// Long-running TLS server with internal reconcile loop. The
     /// natural operator default — `nixfleet-control-plane serve`.
-    Serve(ServeFlags),
+    /// Boxed to keep `Command` cheap-to-move; `ServeFlags` is the
+    /// far larger of the two variants (~470 bytes).
+    Serve(Box<ServeFlags>),
     /// One-shot tick: read inputs, verify, reconcile, print, exit.
     /// For tests + ad-hoc operator runs (handy for diffing what the
     /// loop is doing without tailing journald).
@@ -232,7 +234,7 @@ async fn main() -> ExitCode {
     install_crypto_provider();
 
     match Args::parse().command {
-        Command::Serve(flags) => match run_serve(flags).await {
+        Command::Serve(flags) => match run_serve(*flags).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 eprintln!("serve: {err:#}");
@@ -349,8 +351,8 @@ fn run_tick(flags: TickFlags) -> ExitCode {
     print!("{}", render_plan(&result));
 
     match &result.verify {
-        VerifyOutcome::Ok { actions, .. } => {
-            tracing::info!(actions = actions.len(), "tick ok");
+        VerifyOutcome::Ok(ok) => {
+            tracing::info!(actions = ok.actions.len(), "tick ok");
             ExitCode::SUCCESS
         }
         VerifyOutcome::Failed { reason } => {

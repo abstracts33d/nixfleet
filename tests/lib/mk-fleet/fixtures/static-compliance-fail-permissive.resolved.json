@@ -3,8 +3,7 @@
         "prod": {
             "compliance": {
                 "frameworks": [],
-                "mode": "permissive",
-                "strict": false
+                "mode": "permissive"
             },
             "freshnessWindow": 180,
             "reconcileIntervalMinutes": 30,

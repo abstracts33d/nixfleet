@@ -4,7 +4,9 @@
 //! generation, boot ID. All file I/O is `std::fs::*` — these are
 //! tiny reads of /run + /proc, no async needed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -181,7 +183,7 @@ fn booted_closure_hash() -> Result<String> {
 ///
 /// Falls back to the full path string if the shape doesn't match,
 /// so the field is always populated.
-fn closure_hash_from_path(p: &PathBuf) -> String {
+fn closure_hash_from_path(p: &Path) -> String {
     let s = p.to_string_lossy();
     s.rsplit('/')
         .next()

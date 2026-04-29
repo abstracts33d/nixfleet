@@ -3,8 +3,7 @@
         "stable": {
             "compliance": {
                 "frameworks": [],
-                "mode": "enforce",
-                "strict": true
+                "mode": "enforce"
             },
             "freshnessWindow": 180,
             "reconcileIntervalMinutes": 30,

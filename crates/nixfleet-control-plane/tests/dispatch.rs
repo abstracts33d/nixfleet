@@ -300,7 +300,7 @@ async fn dispatch_issues_target_when_diverged() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/checkin"))
+        .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&checkin_request("running-system-old"))
         .send()
         .await
@@ -347,7 +347,7 @@ async fn dispatch_returns_null_when_converged() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/checkin"))
+        .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&checkin_request(DECLARED_CLOSURE)) // already converged
         .send()
         .await
@@ -394,7 +394,7 @@ async fn dispatch_is_idempotent_across_two_checkins() {
 
     // First checkin: target dispatched, row inserted.
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/checkin"))
+        .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&checkin_request("running-system-old"))
         .send()
         .await
@@ -406,7 +406,7 @@ async fn dispatch_is_idempotent_across_two_checkins() {
     // Second checkin: pending row already exists → CP should NOT
     // dispatch again (no second row, no target in response).
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/checkin"))
+        .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&checkin_request("running-system-old"))
         .send()
         .await

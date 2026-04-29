@@ -212,7 +212,7 @@ async fn confirm_happy_path_marks_row_confirmed() {
     };
 
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/confirm"))
+        .post(format!("https://localhost:{port}/v1/agent/confirm"))
         .json(&req)
         .send()
         .await
@@ -275,7 +275,7 @@ async fn confirm_returns_410_when_no_pending_row() {
     };
 
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/confirm"))
+        .post(format!("https://localhost:{port}/v1/agent/confirm"))
         .json(&req)
         .send()
         .await
@@ -324,7 +324,7 @@ async fn confirm_rejects_cn_hostname_mismatch() {
     };
 
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/confirm"))
+        .post(format!("https://localhost:{port}/v1/agent/confirm"))
         .json(&req)
         .send()
         .await
@@ -367,7 +367,7 @@ async fn confirm_returns_503_without_db() {
     };
 
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/confirm"))
+        .post(format!("https://localhost:{port}/v1/agent/confirm"))
         .json(&req)
         .send()
         .await

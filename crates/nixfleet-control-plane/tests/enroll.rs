@@ -260,7 +260,7 @@ async fn enroll_happy_path_signs_cert() {
 
     let req = EnrollRequest { token, csr_pem };
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/enroll"))
+        .post(format!("https://localhost:{port}/v1/enroll"))
         .json(&req)
         .send()
         .await
@@ -328,7 +328,7 @@ async fn enroll_rejects_tampered_signature() {
 
     let req = EnrollRequest { token, csr_pem };
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/enroll"))
+        .post(format!("https://localhost:{port}/v1/enroll"))
         .json(&req)
         .send()
         .await
@@ -389,7 +389,7 @@ async fn enroll_rejects_replayed_nonce() {
         csr_pem: csr_pem.clone(),
     };
     let resp1 = client
-        .post(&format!("https://localhost:{port}/v1/enroll"))
+        .post(format!("https://localhost:{port}/v1/enroll"))
         .json(&req1)
         .send()
         .await
@@ -399,7 +399,7 @@ async fn enroll_rejects_replayed_nonce() {
     // Second call (same token, same nonce): 409.
     let req2 = EnrollRequest { token, csr_pem };
     let resp2 = client
-        .post(&format!("https://localhost:{port}/v1/enroll"))
+        .post(format!("https://localhost:{port}/v1/enroll"))
         .json(&req2)
         .send()
         .await

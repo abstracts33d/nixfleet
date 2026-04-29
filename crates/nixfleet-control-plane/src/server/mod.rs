@@ -2,8 +2,8 @@
 //!
 //! axum router + axum-server TLS listener + internal reconcile loop
 //! + Forgejo poll. The slim entry point — `serve()` and
-//! `build_router()` — is what `main.rs` calls; everything else lives
-//! in the submodules:
+//!   `build_router()` — is what `main.rs` calls; everything else lives
+//!   in the submodules:
 //!
 //! - `state` — shared `AppState`, `ServeArgs`, helper types,
 //!   constants
@@ -87,19 +87,24 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         None
     };
 
-    let mut app_state = AppState::default();
-    app_state.db = db.clone();
-    app_state.confirm_deadline_secs = args.confirm_deadline_secs;
-    if let Some(base_url) = &args.closure_upstream {
+    let closure_upstream = if let Some(base_url) = &args.closure_upstream {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| anyhow::anyhow!("build closure proxy client: {e}"))?;
-        app_state.closure_upstream = Some(ClosureUpstream {
+        Some(ClosureUpstream {
             base_url: base_url.clone(),
             client,
-        });
-    }
+        })
+    } else {
+        None
+    };
+    let app_state = AppState {
+        db: db.clone(),
+        confirm_deadline_secs: args.confirm_deadline_secs,
+        closure_upstream,
+        ..Default::default()
+    };
     let state = Arc::new(app_state);
 
     // Magic-rollback timer.

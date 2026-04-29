@@ -180,7 +180,7 @@ async fn checkin_records_request_and_returns_null_target() {
     };
 
     let resp: CheckinResponse = client
-        .post(&format!("https://localhost:{port}/v1/agent/checkin"))
+        .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&req)
         .send()
         .await
@@ -245,7 +245,7 @@ async fn checkin_rejects_cn_hostname_mismatch() {
     };
 
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/checkin"))
+        .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&req)
         .send()
         .await
@@ -300,7 +300,7 @@ async fn report_records_event_and_returns_event_id() {
     };
 
     let resp: ReportResponse = client
-        .post(&format!("https://localhost:{port}/v1/agent/report"))
+        .post(format!("https://localhost:{port}/v1/agent/report"))
         .json(&req)
         .send()
         .await

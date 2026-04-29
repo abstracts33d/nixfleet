@@ -77,7 +77,7 @@ pub async fn checkin(
         let body = resp.text().await.unwrap_or_default();
         anyhow::bail!("{url}: {status}: {body}");
     }
-    Ok(resp.json::<CheckinResponse>().await.context("parse checkin response")?)
+    resp.json::<CheckinResponse>().await.context("parse checkin response")
 }
 
 /// Outcome of POST /v1/agent/confirm. Distinguishes the three
@@ -148,5 +148,5 @@ pub async fn report(
         let body = resp.text().await.unwrap_or_default();
         anyhow::bail!("{url}: {status}: {body}");
     }
-    Ok(resp.json::<ReportResponse>().await.context("parse report response")?)
+    resp.json::<ReportResponse>().await.context("parse report response")
 }

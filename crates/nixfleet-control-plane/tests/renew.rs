@@ -246,7 +246,7 @@ async fn renew_happy_path_signs_fresh_cert() {
     let client = build_mtls_client(&pki.ca_cert, &pki.agent_cert_pem, &pki.agent_key_pem);
 
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/renew"))
+        .post(format!("https://localhost:{port}/v1/agent/renew"))
         .json(&req)
         .send()
         .await
@@ -295,7 +295,7 @@ async fn renew_rejects_request_without_client_cert() {
     // 401 if the handshake completed with no client cert, OR a
     // connect-level error) constitutes "rejected".
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/renew"))
+        .post(format!("https://localhost:{port}/v1/agent/renew"))
         .json(&req)
         .send()
         .await;
@@ -347,7 +347,7 @@ async fn renew_rejects_revoked_cert() {
     let client = build_mtls_client(&pki.ca_cert, &pki.agent_cert_pem, &pki.agent_key_pem);
 
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/renew"))
+        .post(format!("https://localhost:{port}/v1/agent/renew"))
         .json(&req)
         .send()
         .await
@@ -387,7 +387,7 @@ async fn renew_returns_500_when_ca_not_configured() {
     let client = build_mtls_client(&pki.ca_cert, &pki.agent_cert_pem, &pki.agent_key_pem);
 
     let resp = client
-        .post(&format!("https://localhost:{port}/v1/agent/renew"))
+        .post(format!("https://localhost:{port}/v1/agent/renew"))
         .json(&req)
         .send()
         .await

@@ -51,6 +51,12 @@ pub struct RolloutDbSnapshot {
     pub last_healthy_since: HashMap<String, DateTime<Utc>>,
 }
 
+/// One row of `pending_confirms_expired` — the magic-rollback
+/// timer's input. `(id, hostname, rollout_id, wave, target_closure_hash)`.
+/// Aliased so the function signature stays readable
+/// (and clippy's `type_complexity` lint stays quiet).
+pub type ExpiredPendingConfirm = (i64, String, String, u32, String);
+
 /// SQLite-backed CP persistence.
 pub struct Db {
     conn: Mutex<Connection>,
@@ -330,7 +336,7 @@ impl Db {
     /// always look greater than now — expired rows never matched and
     /// the rollback timer was a no-op. Caught on lab when a deadline
     /// passed by 50s while the row was still `pending`.
-    pub fn pending_confirms_expired(&self) -> Result<Vec<(i64, String, String, u32, String)>> {
+    pub fn pending_confirms_expired(&self) -> Result<Vec<ExpiredPendingConfirm>> {
         let guard = self.conn()?;
         let mut stmt = guard.prepare(
             "SELECT id, hostname, rollout_id, wave, target_closure_hash
@@ -413,12 +419,12 @@ impl Db {
 
     /// Transition a host's RFC-0002 §3.2 state to Soaked. Idempotent
     /// + defensive: only fires when the row is currently Healthy
-    /// (the only state that can advance to Soaked per the machine).
-    /// Step 3 of gap #2 — the CP-side action processor calls this
-    /// when the reconciler emits `Action::SoakHost`. Returns the
-    /// number of rows updated; 0 means the host was no longer
-    /// Healthy (typical: it reverted between the reconciler tick
-    /// and the action's application).
+    ///   (the only state that can advance to Soaked per the machine).
+    ///   Step 3 of gap #2 — the CP-side action processor calls this
+    ///   when the reconciler emits `Action::SoakHost`. Returns the
+    ///   number of rows updated; 0 means the host was no longer
+    ///   Healthy (typical: it reverted between the reconciler tick
+    ///   and the action's application).
     pub fn mark_host_soaked(&self, hostname: &str, rollout_id: &str) -> Result<usize> {
         let guard = self.conn()?;
         let n = guard

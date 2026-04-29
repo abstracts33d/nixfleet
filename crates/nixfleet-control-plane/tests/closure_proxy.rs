@@ -185,7 +185,7 @@ async fn closure_proxy_returns_501_when_upstream_unset() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
     let resp = client
-        .get(&format!(
+        .get(format!(
             "https://localhost:{cp_port}/v1/agent/closure/abc123"
         ))
         .send()
@@ -228,7 +228,7 @@ async fn closure_proxy_forwards_to_upstream() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
     let resp = client
-        .get(&format!("https://localhost:{cp_port}/v1/agent/closure/abc123"))
+        .get(format!("https://localhost:{cp_port}/v1/agent/closure/abc123"))
         .send()
         .await
         .unwrap();
@@ -266,7 +266,7 @@ async fn closure_proxy_returns_502_when_upstream_unreachable() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
     let resp = client
-        .get(&format!("https://localhost:{cp_port}/v1/agent/closure/abc123"))
+        .get(format!("https://localhost:{cp_port}/v1/agent/closure/abc123"))
         .send()
         .await
         .unwrap();

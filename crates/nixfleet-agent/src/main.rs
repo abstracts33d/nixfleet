@@ -254,7 +254,7 @@ async fn main() -> anyhow::Result<()> {
         // ticker's regular cadence). The ticker fires on its own
         // schedule; backoff is layered.
         if consecutive_failures > 0 {
-            let multiplier = (1u64 << (consecutive_failures.min(3))) as u64; // 1, 2, 4, 8
+            let multiplier = 1u64 << (consecutive_failures.min(3)); // 1, 2, 4, 8
             let base = args.poll_interval.saturating_mul(multiplier);
             // ±20% jitter.
             let jitter_pct: f64 = {

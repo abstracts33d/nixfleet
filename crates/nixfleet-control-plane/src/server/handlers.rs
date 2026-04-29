@@ -421,13 +421,8 @@ async fn dispatch_target_for_checkin(
     req: &CheckinRequest,
     now: DateTime<Utc>,
 ) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
-    let Some(db) = state.db.as_ref() else {
-        return None;
-    };
-    let fleet_snapshot = state.verified_fleet.read().await.clone();
-    let Some(fleet) = fleet_snapshot else {
-        return None;
-    };
+    let db = state.db.as_ref()?;
+    let fleet = state.verified_fleet.read().await.clone()?;
     let pending_for_host = match db.pending_confirm_exists(&req.hostname) {
         Ok(b) => b,
         Err(err) => {

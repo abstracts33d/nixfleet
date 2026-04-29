@@ -52,15 +52,16 @@ pub struct TickOutput {
 
 #[derive(Debug)]
 pub enum VerifyOutcome {
-    Ok {
-        signed_at: DateTime<Utc>,
-        ci_commit: Option<String>,
-        observed: Observed,
-        actions: Vec<Action>,
-    },
-    Failed {
-        reason: String,
-    },
+    Ok(Box<VerifyOk>),
+    Failed { reason: String },
+}
+
+#[derive(Debug)]
+pub struct VerifyOk {
+    pub signed_at: DateTime<Utc>,
+    pub ci_commit: Option<String>,
+    pub observed: Observed,
+    pub actions: Vec<Action>,
 }
 
 pub fn tick(inputs: &TickInputs) -> anyhow::Result<TickOutput> {
@@ -100,12 +101,12 @@ pub fn tick(inputs: &TickInputs) -> anyhow::Result<TickOutput> {
 
             let actions = reconcile(&fleet, &observed, inputs.now);
 
-            VerifyOutcome::Ok {
+            VerifyOutcome::Ok(Box::new(VerifyOk {
                 signed_at,
                 ci_commit,
                 observed,
                 actions,
-            }
+            }))
         }
         Err(err) => VerifyOutcome::Failed {
             reason: classify_verify_error(&err),
@@ -140,8 +141,8 @@ pub fn render_plan(out: &TickOutput) -> String {
     let mut s = String::new();
     s.push_str(&render_summary(out));
     s.push('\n');
-    if let VerifyOutcome::Ok { actions, .. } = &out.verify {
-        for action in actions {
+    if let VerifyOutcome::Ok(ok) = &out.verify {
+        for action in &ok.actions {
             s.push_str(&serde_json::to_string(action).expect("Action serialises"));
             s.push('\n');
         }
@@ -151,20 +152,15 @@ pub fn render_plan(out: &TickOutput) -> String {
 
 fn render_summary(out: &TickOutput) -> String {
     match &out.verify {
-        VerifyOutcome::Ok {
-            signed_at,
-            ci_commit,
-            observed,
-            actions,
-        } => json!({
+        VerifyOutcome::Ok(ok) => json!({
             "event": "tick",
             "verify_ok": true,
             "now": out.now.to_rfc3339(),
-            "signed_at": signed_at.to_rfc3339(),
-            "ci_commit": ci_commit,
-            "channels_observed": observed.channel_refs.len(),
-            "active_rollouts": observed.active_rollouts.len(),
-            "actions": actions.len(),
+            "signed_at": ok.signed_at.to_rfc3339(),
+            "ci_commit": ok.ci_commit,
+            "channels_observed": ok.observed.channel_refs.len(),
+            "active_rollouts": ok.observed.active_rollouts.len(),
+            "actions": ok.actions.len(),
         })
         .to_string(),
         VerifyOutcome::Failed { reason } => json!({
@@ -197,7 +193,7 @@ mod tests {
             now: DateTime::parse_from_rfc3339("2026-04-25T00:00:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
-            verify: VerifyOutcome::Ok {
+            verify: VerifyOutcome::Ok(Box::new(VerifyOk {
                 signed_at: DateTime::parse_from_rfc3339("2026-04-25T00:00:00Z")
                     .unwrap()
                     .with_timezone(&Utc),
@@ -207,7 +203,7 @@ mod tests {
                     channel: "stable".into(),
                     target_ref: "abc123".into(),
                 }],
-            },
+            })),
         };
         let summary = render_summary(&out);
         let v: serde_json::Value = serde_json::from_str(&summary).unwrap();
@@ -235,7 +231,7 @@ mod tests {
     fn render_plan_emits_one_line_per_action_plus_summary() {
         let out = TickOutput {
             now: Utc::now(),
-            verify: VerifyOutcome::Ok {
+            verify: VerifyOutcome::Ok(Box::new(VerifyOk {
                 signed_at: Utc::now(),
                 ci_commit: None,
                 observed: observed_no_rollouts(),
@@ -249,7 +245,7 @@ mod tests {
                         reason: "offline".into(),
                     },
                 ],
-            },
+            })),
         };
         let body = render_plan(&out);
         let lines: Vec<&str> = body.lines().collect();

@@ -174,7 +174,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
     use nixfleet_reconciler::Action;
 
     let actions = match &out.verify {
-        crate::VerifyOutcome::Ok { actions, .. } => actions,
+        crate::VerifyOutcome::Ok(ok) => &ok.actions,
         crate::VerifyOutcome::Failed { .. } => return,
     };
     let Some(db) = state.db.as_ref() else {
@@ -261,12 +261,12 @@ fn run_tick_with_projection(
             let observed = crate::observed_projection::project(checkins, channel_refs, rollouts);
             let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
             (
-                crate::VerifyOutcome::Ok {
+                crate::VerifyOutcome::Ok(Box::new(crate::VerifyOk {
                     signed_at,
                     ci_commit,
                     observed,
                     actions,
-                },
+                })),
                 Some(fleet),
             )
         }
