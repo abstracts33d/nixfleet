@@ -1165,7 +1165,7 @@ pub(super) async fn confirm(
             return Ok(Response::builder()
                 .status(StatusCode::GONE)
                 .body(Body::from(""))
-                .unwrap_or_default());
+                .expect("Response::builder with valid status + body is infallible"));
         }
     } else {
         // Standard path: stamp last_healthy_since (RFC-0002 §3.2
@@ -1192,7 +1192,7 @@ pub(super) async fn confirm(
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body(Body::from(""))
-        .unwrap_or_default())
+        .expect("Response::builder with valid status + body is infallible"))
 }
 
 #[derive(Debug, Serialize)]
@@ -1439,7 +1439,7 @@ pub(super) async fn closure_proxy(
                 .status(StatusCode::NOT_IMPLEMENTED)
                 .header("content-type", "application/json")
                 .body(Body::from(body.to_string()))
-                .unwrap_or_default());
+                .expect("Response::builder with valid status + body is infallible"));
         }
     };
 
@@ -1457,7 +1457,7 @@ pub(super) async fn closure_proxy(
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .body(Body::from(format!("upstream error: {err}")))
-                .unwrap_or_default());
+                .expect("Response::builder with valid status + body is infallible"));
         }
     };
     let status = resp.status().as_u16();
@@ -1469,7 +1469,7 @@ pub(super) async fn closure_proxy(
         .status(status)
         .header("content-type", "text/x-nix-narinfo")
         .body(Body::from(body))
-        .unwrap_or_default())
+        .expect("Response::builder with valid status + body is infallible"))
 }
 
 #[cfg(test)]
