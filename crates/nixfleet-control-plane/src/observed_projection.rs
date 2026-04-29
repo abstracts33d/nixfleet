@@ -59,17 +59,39 @@ pub fn project(
             state: RolloutState::Executing,
             current_wave: 0,
             // String → typed conversion at the DB → reconciler seam.
-            // Unknown strings fall back to Queued (matches the prior
-            // `from_str(..).ok().unwrap_or(Queued)` behaviour in
-            // `HostRolloutState::lookup` before the typed-map pass).
+            //
+            // Unknown strings fall back to `Failed` (NOT `Queued`),
+            // and emit a warn-level trace so operators see the
+            // schema mismatch. `Queued` would be actively harmful:
+            // the reconciler treats it as fresh dispatchable work,
+            // so an unrecognised state value would re-dispatch the
+            // host on every tick — the inverse of resolution-by-
+            // replacement. `Failed` halts the rollout per policy
+            // and is the conservative posture: an operator must
+            // inspect rather than letting the system silently
+            // re-drive activation.
+            //
+            // The fallback should be unreachable in practice:
+            // `HostRolloutState`'s variant set is the canonical
+            // truth for the V003 SQL CHECK, and the
+            // `host_rollout_state_check_matches_enum` test catches
+            // drift between them at compile/test time.
             host_states: snap
                 .host_states
                 .iter()
                 .map(|(h, s)| {
-                    (
-                        h.clone(),
-                        HostRolloutState::from_str(s).unwrap_or(HostRolloutState::Queued),
-                    )
+                    let parsed = HostRolloutState::from_str(s).unwrap_or_else(|_| {
+                        tracing::warn!(
+                            rollout = %snap.rollout_id,
+                            host = %h,
+                            unknown_state = %s,
+                            "host_rollout_state value not in HostRolloutState enum — \
+                             halting rollout (Failed fallback). Likely a SQL CHECK \
+                             extension that wasn't propagated to the typed enum.",
+                        );
+                        HostRolloutState::Failed
+                    });
+                    (h.clone(), parsed)
                 })
                 .collect(),
             last_healthy_since: snap.last_healthy_since.clone(),
@@ -137,6 +159,96 @@ mod tests {
         assert!(observed.host_state.is_empty());
         assert!(observed.channel_refs.is_empty());
         assert!(observed.active_rollouts.is_empty());
+    }
+
+    #[test]
+    fn host_rollout_state_check_matches_enum() {
+        // Drift detector: every value in the V003 CHECK list must
+        // be parseable by `HostRolloutState::from_str`. If the SQL
+        // gets a new value without the enum being extended (or
+        // vice versa), the projection's `Failed` fallback fires
+        // for live rows and silently halts rollouts. Catch it at
+        // test time instead.
+        let migration =
+            include_str!("../migrations/V003__host_rollout_state.sql");
+        // Extract the parenthesised list after `host_state IN (`.
+        let needle = "host_state IN (";
+        let start = migration.find(needle).expect("CHECK clause present");
+        let after = &migration[start + needle.len()..];
+        let end = after.find(')').expect("CHECK clause closes");
+        let list = &after[..end];
+        let values: Vec<&str> = list
+            .split(',')
+            .map(|s| s.trim().trim_matches('\'').trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(!values.is_empty(), "expected ≥1 value in CHECK clause");
+        for v in &values {
+            HostRolloutState::from_str(v).unwrap_or_else(|_| {
+                panic!(
+                    "V003 CHECK list value {v:?} is not in HostRolloutState. \
+                     Either extend the enum or remove the value from the CHECK."
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn projection_falls_back_to_failed_on_unknown_host_state() {
+        // The projection's defense-in-depth: an unrecognised SQL
+        // value must surface as Failed (halt the rollout) rather
+        // than Queued (re-dispatch loop). The current schema
+        // doesn't permit this in steady state, but a future CHECK
+        // extension that lands before the enum update would
+        // otherwise re-dispatch every "Reverted" host on every
+        // tick.
+        let mut host_states = HashMap::new();
+        host_states.insert("ohm".to_string(), "TotallyBogus".to_string());
+        let snap = RolloutDbSnapshot {
+            rollout_id: "stable@deadbeef".to_string(),
+            channel: "stable".to_string(),
+            target_closure_hash: "system-r1".to_string(),
+            target_channel_ref: "stable@deadbeef".to_string(),
+            host_states,
+            last_healthy_since: HashMap::new(),
+        };
+        let observed = project(
+            &HashMap::new(),
+            &HashMap::new(),
+            std::slice::from_ref(&snap),
+            HashMap::new(),
+        );
+        assert_eq!(
+            observed.active_rollouts[0].host_states.get("ohm").copied(),
+            Some(HostRolloutState::Failed),
+        );
+    }
+
+    #[test]
+    fn projection_round_trips_reverted_state() {
+        // V003 reserves Reverted; the typed enum carries it.
+        // Confirm the projection round-trips the wire string into
+        // the typed variant rather than misclassifying it.
+        let mut host_states = HashMap::new();
+        host_states.insert("ohm".to_string(), "Reverted".to_string());
+        let snap = RolloutDbSnapshot {
+            rollout_id: "stable@deadbeef".to_string(),
+            channel: "stable".to_string(),
+            target_closure_hash: "system-r1".to_string(),
+            target_channel_ref: "stable@deadbeef".to_string(),
+            host_states,
+            last_healthy_since: HashMap::new(),
+        };
+        let observed = project(
+            &HashMap::new(),
+            &HashMap::new(),
+            std::slice::from_ref(&snap),
+            HashMap::new(),
+        );
+        assert_eq!(
+            observed.active_rollouts[0].host_states.get("ohm").copied(),
+            Some(HostRolloutState::Reverted),
+        );
     }
 
     #[test]

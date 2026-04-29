@@ -217,23 +217,11 @@ async fn try_recover_orphan_confirm(
     // poll cycle. Documenting here rather than gating on it because
     // a fix would require persisting the dispatch-time rollout id
     // across CP rebuilds — out of scope for gap A.
-    let expected_rollout_id = {
-        let truncate8 = |s: &str| -> String {
-            let t: String = s.chars().take(8).collect();
-            if t.is_empty() {
-                "unknown".to_string()
-            } else {
-                t
-            }
-        };
-        let suffix: String = fleet
-            .meta
-            .ci_commit
-            .as_deref()
-            .map(truncate8)
-            .unwrap_or_else(|| truncate8(target_closure));
-        format!("{}@{}", host_decl.channel, suffix)
-    };
+    let expected_rollout_id = crate::dispatch::derive_rollout_id(
+        &host_decl.channel,
+        fleet.meta.ci_commit.as_deref(),
+        target_closure,
+    );
     if expected_rollout_id != req.rollout {
         tracing::info!(
             hostname = %req.hostname,
@@ -343,18 +331,16 @@ async fn recover_soak_state_from_attestation(
         return;
     }
 
-    // Mirror the rollout_id derivation in dispatch::decide_target —
-    // `<channel>@<short>` where short is first 8 chars of ci_commit
-    // when present, otherwise first 8 of the closure hash. Both
-    // sides MUST agree on this format so the recovered row's
-    // rollout_id matches what dispatch would emit.
-    let suffix: String = fleet
-        .meta
-        .ci_commit
-        .as_deref()
-        .map(|c| c.chars().take(8).collect::<String>())
-        .unwrap_or_else(|| target_closure.chars().take(8).collect::<String>());
-    let rollout_id = format!("{}@{}", host_decl.channel, suffix);
+    // The recovered row's rollout_id MUST match what dispatch would
+    // emit so the per-rollout grouping in
+    // `outstanding_compliance_events_by_rollout` lines up. Use the
+    // shared `derive_rollout_id` helper — see its docstring for the
+    // single-source-of-truth invariant across all three CP sites.
+    let rollout_id = crate::dispatch::derive_rollout_id(
+        &host_decl.channel,
+        fleet.meta.ci_commit.as_deref(),
+        target_closure,
+    );
 
     match db.host_rollout_state_exists(&req.hostname, &rollout_id) {
         Ok(true) => return, // already known — leave alone

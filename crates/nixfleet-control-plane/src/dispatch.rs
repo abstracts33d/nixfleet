@@ -32,6 +32,53 @@ use nixfleet_proto::{
 /// hardcode the path.
 const CONFIRM_ENDPOINT: &str = "/v1/agent/confirm";
 
+/// Canonical rollout-id derivation used by every CP code path that
+/// computes one from `(channel, ci_commit, target_closure)`. Single
+/// source of truth — see `tests::derive_rollout_id_*` for the
+/// invariants this guarantees.
+///
+/// Format: `<channel>@<short>` where `short` is derived as follows:
+/// - If `ci_commit` is `Some(s)`: first 8 chars of `s`, with `"unknown"`
+///   substituted when `s` is empty (issue #53's defensive fallback —
+///   today's mk-fleet schema rejects empty CI commits at eval time,
+///   but the proto type permits them, so a future loosening surfaces
+///   as a visible `channel@unknown` row rather than silently
+///   collapsing distinct rollouts into a `channel@` row).
+/// - If `ci_commit` is `None`: first 8 chars of `target_closure`,
+///   with the same `"unknown"` substitution if it too is empty.
+///
+/// Note that `Some("")` and `None` are NOT equivalent: the former
+/// yields `channel@unknown` (CI signed an empty commit — operator
+/// configuration error), the latter falls back to the closure
+/// prefix (legitimate flow for fleet snapshots that don't carry CI
+/// metadata, e.g. test fixtures).
+///
+/// Three CP sites must agree on this derivation:
+/// 1. `dispatch::decide_target` (writes `pending_confirms.rollout_id`).
+/// 2. `try_recover_orphan_confirm` in `server::handlers` (validates
+///    the agent's `req.rollout` against this derivation before
+///    synthesising a confirmed row — issue #54).
+/// 3. `recover_soak_state_from_attestation` in `server::handlers`
+///    (writes a synthetic `pending_confirms.rollout_id` after a CP
+///    rebuild — gap B-cp).
+///
+/// Drift between sites silently splits per-rollout grouping and
+/// resolution-by-replacement, defeating the gate's correctness.
+pub fn derive_rollout_id(channel: &str, ci_commit: Option<&str>, target_closure: &str) -> String {
+    fn truncate8(s: &str) -> String {
+        let t: String = s.chars().take(8).collect();
+        if t.is_empty() {
+            "unknown".to_string()
+        } else {
+            t
+        }
+    }
+    let suffix = ci_commit
+        .map(truncate8)
+        .unwrap_or_else(|| truncate8(target_closure));
+    format!("{channel}@{suffix}")
+}
+
 /// Outcome of the dispatch decision for a host.
 ///
 /// `PartialEq` is intentionally NOT derived: `EvaluatedTarget`
@@ -114,36 +161,19 @@ pub fn decide_target(
     }
 
     // Rollout id format: `<channel>@<short>` per RFC-0003 §4.2 example
-    // (`stable@r2`). The suffix is the first 8 chars of the CI commit
-    // when present, otherwise the first 8 of the closure hash. Both
-    // are deterministic from `fleet.resolved` so two checkins of the
-    // same fleet produce the same rollout id — required for idempotent
-    // INSERT into `pending_confirms`.
-    //
-    // Issue #53 — defensive fallback when both ci_commit and
-    // target_closure are empty strings. Today's mk-fleet schema
-    // doesn't admit empty ci_commit or closure_hash (validated at
-    // eval time), but the proto types are `String` not `NonEmptyString`,
-    // so a future loosening of those invariants would silently produce
-    // a rollout_id of `"<channel>@"` (idempotent INSERT into the same
-    // bogus row across all hosts). Substituting `"unknown"` makes the
-    // pathology visible in operator dashboards rather than silently
-    // collapsing distinct rollouts together.
-    let truncate8 = |s: &str| -> String {
-        let t: String = s.chars().take(8).collect();
-        if t.is_empty() {
-            "unknown".to_string()
-        } else {
-            t
-        }
-    };
-    let suffix: String = fleet
-        .meta
-        .ci_commit
-        .as_deref()
-        .map(truncate8)
-        .unwrap_or_else(|| truncate8(target_closure));
-    let rollout_id = format!("{}@{}", host.channel, suffix);
+    // (`stable@r2`). Derivation lives in `derive_rollout_id` — a
+    // shared helper called by every CP site that computes a rollout
+    // id from `(channel, ci_commit, target_closure)`. The result is
+    // deterministic for a given fleet, so two checkins of the same
+    // fleet produce the same rollout id — required for idempotent
+    // INSERT into `pending_confirms` and for the per-rollout
+    // resolution-by-replacement semantics in
+    // `outstanding_compliance_events_by_rollout`.
+    let rollout_id = derive_rollout_id(
+        &host.channel,
+        fleet.meta.ci_commit.as_deref(),
+        target_closure,
+    );
 
     // Wave-plan lookup: which entry in `fleet.waves[host.channel]`
     // (if any) lists this hostname. `None` for fleets that don't
@@ -205,6 +235,54 @@ mod tests {
         Channel, Compliance, Host,
     };
     use std::collections::HashMap;
+
+    #[test]
+    fn derive_rollout_id_uses_ci_commit_prefix_when_present() {
+        // Long ci_commit truncated to 8 chars; closure ignored.
+        assert_eq!(
+            derive_rollout_id("stable", Some("abc12345deadbeef"), "ignored-closure"),
+            "stable@abc12345"
+        );
+    }
+
+    #[test]
+    fn derive_rollout_id_falls_back_to_closure_prefix_when_ci_commit_absent() {
+        assert_eq!(
+            derive_rollout_id("stable", None, "closurehash1234567890"),
+            "stable@closureh"
+        );
+    }
+
+    #[test]
+    fn derive_rollout_id_substitutes_unknown_for_empty_ci_commit() {
+        // Issue #53 — `Some("")` is operator misconfiguration, not
+        // legitimate "no CI metadata". Surface as `channel@unknown`
+        // rather than silently falling through to the closure.
+        assert_eq!(
+            derive_rollout_id("stable", Some(""), "closurehash1234"),
+            "stable@unknown"
+        );
+    }
+
+    #[test]
+    fn derive_rollout_id_substitutes_unknown_when_both_sources_empty() {
+        assert_eq!(derive_rollout_id("stable", None, ""), "stable@unknown");
+        assert_eq!(derive_rollout_id("stable", Some(""), ""), "stable@unknown");
+    }
+
+    #[test]
+    fn derive_rollout_id_handles_short_ci_commit_and_closure() {
+        // Less than 8 chars — no padding, just take what's there.
+        assert_eq!(
+            derive_rollout_id("stable", Some("abc"), "closurehash"),
+            "stable@abc"
+        );
+        assert_eq!(
+            derive_rollout_id("stable", None, "abc"),
+            "stable@abc"
+        );
+    }
+
 
     fn fleet_with(hostname: &str, host: Host) -> FleetResolved {
         let mut hosts = HashMap::new();

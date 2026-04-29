@@ -467,6 +467,137 @@ async fn enforce_mode_blocks_dispatch_after_signed_compliance_failure() {
     handle.abort();
 }
 
+/// Issue #60 acceptance criterion: the wave gate must remain
+/// blocked across a CP restart. Mechanism — at boot, the CP
+/// hydrates the in-memory ring buffer from the persisted
+/// `host_reports` table; the gate's projection sources its
+/// outstanding-event counts from that ring (and from the SQL
+/// projection). If hydration silently breaks (e.g. a future
+/// serde migration leaves rows unparseable, hydration fires
+/// per-row warnings, the ring stays empty), gate decisions
+/// would unlock on every restart.
+///
+/// This test posts a signed `ComplianceFailure`, kills the CP,
+/// spawns a fresh server pointed at the same DB, and asserts
+/// the next checkin still returns `target: None`.
+#[tokio::test]
+async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
+    install_crypto_provider_once();
+
+    let dir = TempDir::new().unwrap();
+    let (host_sk, host_pubkey) = fresh_host_keypair();
+    let (artifact, signature, trust) =
+        write_signed_fleet(&dir, "enforce", Some(&host_pubkey));
+    let (ca, server_cert, server_key, client_cert, client_key) =
+        mint_ca_and_certs(&dir, HOSTNAME);
+    let db_path = dir.path().join("state.db");
+    let port = pick_free_port().await;
+    let client = build_mtls_client(&ca, &client_cert, &client_key);
+
+    // ── First CP process ─────────────────────────────────────
+    let handle1 = spawn_with_signed_fleet(
+        &dir,
+        artifact.clone(),
+        signature.clone(),
+        trust.clone(),
+        server_cert.clone(),
+        server_key.clone(),
+        ca.clone(),
+        db_path.clone(),
+        port,
+    )
+    .await;
+
+    // 1. Initial checkin dispatches.
+    let resp1 = post_checkin(&client, port, &checkin_request(CURRENT_CLOSURE)).await;
+    let dispatched_rollout = resp1
+        .target
+        .as_ref()
+        .and_then(|t| t.rollout_id.clone())
+        .expect("first checkin dispatches");
+
+    // 2. Post a signature-verified ComplianceFailure for the
+    //    dispatched rollout. This MUST hit the SQLite host_reports
+    //    table (otherwise the second CP can't see it).
+    let report = build_signed_compliance_failure(&host_sk, &dispatched_rollout, "auditLogging");
+    let report_resp: ReportResponse = client
+        .post(format!("https://localhost:{port}/v1/agent/report"))
+        .json(&report)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(report_resp.event_id.starts_with("evt-"));
+
+    // 3. Confirm gate blocks under the live CP (sanity check that
+    //    we haven't broken the steady-state behaviour).
+    let mut checkin_after_failure = checkin_request(CURRENT_CLOSURE);
+    checkin_after_failure.last_evaluated_target =
+        Some(nixfleet_proto::agent_wire::EvaluatedTarget {
+            closure_hash: DECLARED_CLOSURE.to_string(),
+            channel_ref: dispatched_rollout.clone(),
+            evaluated_at: Utc::now(),
+            rollout_id: Some(dispatched_rollout.clone()),
+            wave_index: None,
+            activate: None,
+            signed_at: None,
+            freshness_window_secs: None,
+            compliance_mode: Some("enforce".to_string()),
+        });
+    let resp_pre_restart = post_checkin(&client, port, &checkin_after_failure).await;
+    assert!(
+        resp_pre_restart.target.is_none(),
+        "pre-restart sanity: gate must already be blocking — got {:?}",
+        resp_pre_restart.target
+    );
+
+    // 4. Kill the CP. Wait for the port to be released. The DB
+    //    file persists in `dir`.
+    handle1.abort();
+    // Yield enough cycles for the listener to drop. tokio::task
+    // abort is non-blocking; without a brief wait, port-rebind
+    // races the kernel TIME_WAIT.
+    sleep(Duration::from_millis(300)).await;
+
+    // ── Second CP process, same DB ────────────────────────────
+    // Use a fresh port — `pick_free_port()` may hand back the
+    // same one if the kernel has released it, but we don't
+    // depend on that.
+    let port2 = pick_free_port().await;
+    let handle2 = spawn_with_signed_fleet(
+        &dir,
+        artifact,
+        signature,
+        trust,
+        server_cert,
+        server_key,
+        ca.clone(),
+        db_path,
+        port2,
+    )
+    .await;
+
+    // 5. Re-issue the same checkin. The new CP has no in-memory
+    //    state from the prior process — only the SQLite DB. If
+    //    hydration is correct, the host_reports row from step 2
+    //    is loaded into the ring buffer, the projection sees it
+    //    under the same rollout id, and the gate blocks again.
+    //    If hydration is broken (silent), the ring is empty and
+    //    the host gets a fresh dispatch.
+    let resp_post_restart = post_checkin(&client, port2, &checkin_after_failure).await;
+    assert!(
+        resp_post_restart.target.is_none(),
+        "post-restart hydration broken: gate unlocked after CP restart — got target {:?}. \
+         The host_reports SQLite row was not rehydrated into the gate's projection on \
+         CP startup.",
+        resp_post_restart.target
+    );
+
+    handle2.abort();
+}
+
 #[tokio::test]
 async fn permissive_mode_does_not_block_dispatch_despite_failure() {
     install_crypto_provider_once();

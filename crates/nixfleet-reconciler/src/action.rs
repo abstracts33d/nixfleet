@@ -57,16 +57,15 @@ pub enum Action {
     /// gate as a first-class event rather than only a journal
     /// log line.
     ///
-    /// **Wired but not yet emitted.** This variant is reachable
-    /// over the wire today (CP→agent action streams round-trip
-    /// it) and is the contract surface for the operator-visible
-    /// gate event. Reconciler-side emission is gated on extending
-    /// `Observed` with the per-host outstanding-event projection,
-    /// which couples to the host_reports SQLite migration tracked
-    /// in roadmap-0002 (the in-memory ring buffer's classification
-    /// gap). Until then, the dispatch handler's `tracing::warn`
-    /// at `target=dispatch` carries the same information for
-    /// operators tailing the journal.
+    /// Emitted by `rollout_state::advance_rollout` when the
+    /// channel mode is `enforce` AND at least one host on a wave
+    /// before the gate's promotion target has an outstanding
+    /// failure under the rollout's id (per-rollout grouping —
+    /// resolution-by-replacement means events bound to a
+    /// superseded rollout don't gate the new one). The
+    /// projection layer that feeds this comes from
+    /// `db::outstanding_compliance_events_by_rollout` →
+    /// `Observed.compliance_failures_by_rollout` (issue #60).
     ///
     /// `blocked_wave` is the wave whose promotion is held;
     /// `failing_hosts` is the set of hosts (on earlier waves)

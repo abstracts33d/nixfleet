@@ -20,6 +20,19 @@ use std::str::FromStr;
 /// `host_states` map — they have not been dispatched yet. The
 /// other variants reflect the post-dispatch lifecycle the CP
 /// writes into `host_rollout_state.host_state`.
+///
+/// The variant set is the canonical truth for the
+/// `host_rollout_state.host_state` SQL CHECK constraint
+/// (V003__host_rollout_state.sql). Adding a value here without
+/// extending the CHECK (or vice versa) lets `from_str` reject
+/// rows the SQL accepted, and is caught by the
+/// `host_rollout_state_check_matches_enum` test in the CP crate.
+/// `Reverted` is currently dormant: V003 reserves the wire string
+/// for the explicit-rollback path that lands with the rollout-
+/// halt action handler. The variant exists so the typed
+/// projection round-trips it instead of silently mapping to
+/// `Queued` (which would re-dispatch the host into a loop —
+/// the inverse of resolution-by-replacement).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostRolloutState {
     Queued,
@@ -29,6 +42,7 @@ pub enum HostRolloutState {
     Healthy,
     Soaked,
     Converged,
+    Reverted,
     Failed,
 }
 
@@ -45,6 +59,7 @@ impl HostRolloutState {
             HostRolloutState::Healthy => "Healthy",
             HostRolloutState::Soaked => "Soaked",
             HostRolloutState::Converged => "Converged",
+            HostRolloutState::Reverted => "Reverted",
             HostRolloutState::Failed => "Failed",
         }
     }
@@ -77,6 +92,7 @@ impl FromStr for HostRolloutState {
             "Healthy" => Ok(HostRolloutState::Healthy),
             "Soaked" => Ok(HostRolloutState::Soaked),
             "Converged" => Ok(HostRolloutState::Converged),
+            "Reverted" => Ok(HostRolloutState::Reverted),
             "Failed" => Ok(HostRolloutState::Failed),
             other => Err(anyhow!("unknown host_rollout_state: {other:?}")),
         }
@@ -163,14 +179,23 @@ pub(crate) fn handle_wave(
                 }
             }
             HostRolloutState::Soaked | HostRolloutState::Converged => {}
-            HostRolloutState::Failed => {
+            HostRolloutState::Failed | HostRolloutState::Reverted => {
+                // Both states block wave-soaking and halt the rollout
+                // per the channel's `on_health_failure` policy. The
+                // distinction is provenance: `Failed` is reconciler-
+                // observed (probe failure, exit-code != 0); `Reverted`
+                // is agent-attested (the host explicitly rolled back
+                // its activation). The downstream halt action treats
+                // them the same — the rollout is unsafe to advance
+                // until an operator inspects.
                 out.wave_all_soaked = false;
                 if let Some(chan) = fleet.channels.get(&rollout.channel) {
                     if let Some(policy) = fleet.rollout_policies.get(&chan.rollout_policy) {
                         out.actions.push(Action::HaltRollout {
                             rollout: rollout.id.clone(),
                             reason: format!(
-                                "host {host} failed (policy: {})",
+                                "host {host} {} (policy: {})",
+                                state.as_str().to_lowercase(),
                                 policy.on_health_failure
                             ),
                         });
@@ -197,6 +222,7 @@ mod tests {
             HostRolloutState::Healthy,
             HostRolloutState::Soaked,
             HostRolloutState::Converged,
+            HostRolloutState::Reverted,
             HostRolloutState::Failed,
         ] {
             assert_eq!(HostRolloutState::from_str(v.as_str()).unwrap(), v);
