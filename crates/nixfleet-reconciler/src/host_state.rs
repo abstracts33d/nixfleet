@@ -1,4 +1,4 @@
-//! Per-host state machine handling (RFC-0002 §3.2).
+//! Per-host state machine handling .
 //!
 //! Given a wave's host list, the reconciler's per-rollout state, and
 //! supporting context, emit the set of actions for each host and track
@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use nixfleet_proto::{FleetResolved, Wave};
 use std::str::FromStr;
 
-/// RFC-0002 §3.2 per-host rollout state. The reconciler reads
+/// per-host rollout state. The reconciler reads
 /// these from `Rollout.host_states: HashMap<String, HostRolloutState>`
 /// (a serde shim on the wire keeps file-backed `observed.json`
 /// fixtures byte-identical) and pattern-matches directly.
@@ -31,7 +31,7 @@ use std::str::FromStr;
 /// for the explicit-rollback path that lands with the rollout-
 /// halt action handler. The variant exists so the typed
 /// projection round-trips it instead of silently mapping to
-/// `Queued` (which would re-dispatch the host into a loop —
+/// `Queued` (which would re-dispatch the host into a loop
 /// the inverse of resolution-by-replacement).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostRolloutState {
@@ -161,7 +161,7 @@ pub(crate) fn handle_wave(
                 out.wave_all_soaked = false;
             }
             HostRolloutState::Healthy => {
-                // RFC-0002 §3.2: Healthy → Soaked once the host has
+                // : Healthy → Soaked once the host has
                 // remained Healthy for `wave.soak_minutes`. Without
                 // a `last_healthy_since` marker the soak gate stays
                 // closed (defensive — better to wait than promote

@@ -8,11 +8,11 @@
 //! `--sign-cmd`).
 //!
 //! Exit codes:
-//!   0 — release produced (or `NoChange` when reuse_unchanged_signature
-//!       is set and inputs haven't moved)
-//!   1 — config / build / nix eval failure
-//!   2 — push or sign hook failed
-//!   3 — smoke verify failed
+//! 0 — release produced (or `NoChange` when reuse_unchanged_signature
+//! is set and inputs haven't moved)
+//! 1 — config / build / nix eval failure
+//! 2 — push or sign hook failed
+//! 3 — smoke verify failed
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -43,10 +43,10 @@ struct Cli {
     /// Optional shell command run once per built closure. Receives
     /// env: NIXFLEET_HOST, NIXFLEET_PATH, NIXFLEET_CLOSURE_HASH.
     /// Examples (pick whichever matches your cache):
-    ///   `attic push <cache> "$NIXFLEET_PATH"`
-    ///   `nix copy --to s3://...   "$NIXFLEET_PATH"`
-    ///   `nix copy --to ssh://...  "$NIXFLEET_PATH"`
-    ///   (or any other command that publishes the closure).
+    /// `attic push <cache> "$NIXFLEET_PATH"`
+    /// `nix copy --to s3://... "$NIXFLEET_PATH"`
+    /// `nix copy --to ssh://... "$NIXFLEET_PATH"`
+    /// (or any other command that publishes the closure).
     #[arg(long, env = "NIXFLEET_PUSH_CMD")]
     push_cmd: Option<String>,
 

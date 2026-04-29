@@ -5,7 +5,7 @@
 //! - [`require_cn`] — extract the verified mTLS CN from the request
 //!   extensions, enforce cert revocation when the DB is configured.
 //!   Every `/v1/*` handler that gates on identity calls this first.
-//! - [`protocol_version_middleware`] — RFC-0003 §6 protocol-version
+//! - [`protocol_version_middleware`] — protocol-version
 //!   header enforcement on `/v1/*`. Forward-compat: missing header
 //!   accepted with debug log; present+mismatched returns 426.
 
@@ -61,7 +61,7 @@ pub(super) async fn require_cn(
 }
 
 /// Middleware: enforce `X-Nixfleet-Protocol: <PROTOCOL_MAJOR_VERSION>`
-/// on `/v1/*` requests (RFC-0003 §6).
+/// on `/v1/*` requests .
 ///
 /// Forward-compat posture: missing header → log debug + accept. This
 /// lets older agents that pre-date the version header keep working

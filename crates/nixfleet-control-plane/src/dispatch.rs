@@ -39,7 +39,7 @@ const CONFIRM_ENDPOINT: &str = "/v1/agent/confirm";
 ///
 /// Format: `<channel>@<short>` where `short` is derived as follows:
 /// - If `ci_commit` is `Some(s)`: first 8 chars of `s`, with `"unknown"`
-///   substituted when `s` is empty (issue #53's defensive fallback —
+///   substituted when `s` is empty ( 's defensive fallback
 ///   today's mk-fleet schema rejects empty CI commits at eval time,
 ///   but the proto type permits them, so a future loosening surfaces
 ///   as a visible `channel@unknown` row rather than silently
@@ -56,11 +56,11 @@ const CONFIRM_ENDPOINT: &str = "/v1/agent/confirm";
 /// Three CP sites must agree on this derivation:
 /// 1. `dispatch::decide_target` (writes `pending_confirms.rollout_id`).
 /// 2. `try_recover_orphan_confirm` in `server::handlers` (validates
-///    the agent's `req.rollout` against this derivation before
-///    synthesising a confirmed row — issue #54).
+///   the agent's `req.rollout` against this derivation before
+///   synthesising a confirmed row — ).
 /// 3. `recover_soak_state_from_attestation` in `server::handlers`
-///    (writes a synthetic `pending_confirms.rollout_id` after a CP
-///    rebuild — gap B-cp).
+///   (writes a synthetic `pending_confirms.rollout_id` after a CP
+///   rebuild — ).
 ///
 /// Drift between sites silently splits per-rollout grouping and
 /// resolution-by-replacement, defeating the gate's correctness.
@@ -122,7 +122,7 @@ pub enum Decision {
 /// this function pure and trivially unit-testable.
 ///
 /// `confirm_window_secs` is the value embedded in the dispatched
-/// target's `activate.confirmWindowSecs` (RFC-0003 §4.1). Threaded
+/// target's `activate.confirmWindowSecs` . Threaded
 /// through as a parameter so this function stays pure and doesn't
 /// have to import the `server` module's CP-side constant.
 pub fn decide_target(
@@ -160,7 +160,7 @@ pub fn decide_target(
         }
     }
 
-    // Rollout id format: `<channel>@<short>` per RFC-0003 §4.2 example
+    // Rollout id format: `<channel>@<short>` per example
     // (`stable@r2`). Derivation lives in `derive_rollout_id` — a
     // shared helper called by every CP site that computes a rollout
     // id from `(channel, ci_commit, target_closure)`. The result is
@@ -178,7 +178,7 @@ pub fn decide_target(
     // Wave-plan lookup: which entry in `fleet.waves[host.channel]`
     // (if any) lists this hostname. `None` for fleets that don't
     // declare a wave plan — the lab's single-channel single-wave
-    // deploy. RFC-0002 §3 wave staging consumes this when it lands.
+    // deploy. wave staging consumes this when it lands.
     let wave_index: Option<u32> = fleet.waves.get(&host.channel).and_then(|waves| {
         waves
             .iter()
@@ -186,7 +186,7 @@ pub fn decide_target(
             .map(|i| i as u32)
     });
 
-    // Issue #13 freshness relay: ship `meta.signedAt` and the
+    // freshness relay: ship `meta.signedAt` and the
     // channel's `freshness_window` (in seconds) into the target so
     // the agent can run an independent staleness check before
     // activating. Both Option-typed for forward-compat with older
@@ -210,7 +210,7 @@ pub fn decide_target(
             }),
             signed_at,
             freshness_window_secs,
-            // Issue #58 — relay the channel's compliance mode so the
+            // — relay the channel's compliance mode so the
             // agent's runtime gate (#57) honours fleet-wide policy
             // pushes without needing per-host CLI flags. `None` only
             // on degenerate fleet-snapshot state where the channel
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn derive_rollout_id_substitutes_unknown_for_empty_ci_commit() {
-        // Issue #53 — `Some("")` is operator misconfiguration, not
+        // — `Some("")` is operator misconfiguration, not
         // legitimate "no CI metadata". Surface as `channel@unknown`
         // rather than silently falling through to the closure.
         assert_eq!(
@@ -436,7 +436,7 @@ mod tests {
         assert_eq!(rollout_id, "stable@abc12345");
         assert_eq!(target.channel_ref, "stable@abc12345");
         assert_eq!(target.evaluated_at, now());
-        // Wire-additive RFC-0003 §4.1 fields:
+        // Wire-additive fields:
         assert_eq!(target.rollout_id.as_deref(), Some("stable@abc12345"));
         // No waves declared in fleet_with → both Decision and target
         // surface `wave_index = None`.

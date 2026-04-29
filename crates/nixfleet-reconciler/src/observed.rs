@@ -17,7 +17,7 @@ pub struct Observed {
     pub last_rolled_refs: HashMap<String, String>,
     pub host_state: HashMap<String, HostState>,
     pub active_rollouts: Vec<Rollout>,
-    /// Issue #60 — outstanding (compliance-failure + runtime-gate-
+    /// — outstanding (compliance-failure + runtime-gate-
     /// error) event counts, keyed first by rollout id then by
     /// hostname. The per-rollout grouping enforces resolution-by-
     /// replacement at the projection layer: events posted against
@@ -56,7 +56,7 @@ pub struct Rollout {
     pub id: String,
     pub channel: String,
     pub target_ref: String,
-    /// Typed wrapper over the wire string (RFC-0002 §3.1). The
+    /// Typed wrapper over the wire string . The
     /// `serde` shim round-trips via [`RolloutState::as_str`] /
     /// [`RolloutState::from_str`] so `observed.json` fixtures stay
     /// byte-identical while callers pattern-match on the enum
@@ -67,7 +67,7 @@ pub struct Rollout {
     )]
     pub state: RolloutState,
     pub current_wave: usize,
-    /// hostname → typed per-host state (RFC-0002 §3.2). Same shim
+    /// hostname → typed per-host state . Same shim
     /// pattern as `state` above: `host_states` JSON stays a string
     /// map on the wire while in-memory it carries the enum so the
     /// reconciler's pattern-match sites are exhaustive.
@@ -77,7 +77,7 @@ pub struct Rollout {
     )]
     pub host_states: HashMap<String, HostRolloutState>,
     /// When each host most recently entered Healthy. Step 3
-    /// (reconciler arm, RFC-0002 §3.2 Healthy → Soaked transition)
+    /// (reconciler arm, Healthy → Soaked transition)
     /// consults `now - last_healthy_since[host] >= wave.soak_minutes`
     /// to decide whether the host has soaked. Hosts not in Healthy
     /// are absent from the map. `#[serde(default)]` keeps file-

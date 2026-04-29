@@ -46,9 +46,11 @@ pub fn outstanding_failures<'a>(
     records
         .iter()
         .filter(|r| record_is_compliance_failure(r))
-        .filter(|r| match (current_rollout, r.report.rollout.as_deref()) {
-            (Some(cur), Some(ev_r)) if cur != ev_r => false,
-            _ => true,
+        .filter(|r| {
+            !matches!(
+                (current_rollout, r.report.rollout.as_deref()),
+                (Some(cur), Some(ev_r)) if cur != ev_r
+            )
         })
         .collect()
 }

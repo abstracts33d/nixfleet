@@ -1,8 +1,8 @@
 //! Long-running TLS server.
 //!
 //! axum router + axum-server TLS listener + internal reconcile loop
-//! + Forgejo poll. The slim entry point — `serve()` and
-//!   `build_router()` — is what `main.rs` calls; everything else lives
+//! + Forgejo poll. The slim entry point — `serve ` and
+//!   `build_router ` — is what `main.rs` calls; everything else lives
 //!   in the submodules:
 //!
 //! - `state` — shared `AppState`, `ServeArgs`, helper types,
@@ -111,13 +111,13 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     let state = Arc::new(app_state);
 
-    // Magic-rollback timer + hourly prune sweep (issue #52).
+    // Magic-rollback timer + hourly prune sweep .
     if let Some(db_arc) = db.clone() {
         crate::rollback_timer::spawn(db_arc.clone());
         crate::prune_timer::spawn(db_arc);
     }
 
-    // Issue #60 — hydrate the in-memory `host_reports` ring from
+    // — hydrate the in-memory `host_reports` ring from
     // SQLite at startup. Without this, the wave-staging gate
     // silently unlocks any held wave promotion across CP restart
     // until each agent re-fires its compliance gate. The DB write
@@ -266,7 +266,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         );
     }
 
-    // Revocations poll (gap C): refresh `cert_revocations` from a
+    // Revocations poll : refresh `cert_revocations` from a
     // signed sidecar artifact every 60s. Requires a configured DB
     // (the replay target); a None DB silently disables the poll.
     if let (Some(revocations_source), Some(db)) = (

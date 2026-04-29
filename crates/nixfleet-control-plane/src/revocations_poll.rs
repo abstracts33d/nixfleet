@@ -1,6 +1,6 @@
 //! Revocations poll loop.
 //!
-//! Closes gap C of `docs/roadmap/0002-v0.2-completeness-gaps.md`.
+//! Closes of `docs/roadmap/0002-v0.2-completeness-gaps.md`.
 //! Fetches a signed `revocations.json` artifact from a configured
 //! URL pair, runs `nixfleet_reconciler::verify_revocations`
 //! against the same `ciReleaseKey` trust roots that
@@ -78,7 +78,7 @@ pub fn spawn(db: Arc<Db>, config: RevocationsSource) -> tokio::task::JoinHandle<
                             ),
                         }
                     }
-                    // Issue #49 — heartbeat at INFO on every successful
+                    // — heartbeat at INFO on every successful
                     // tick (not just when applied > 0). Operators tailing
                     // the journal need a positive signal that the poll
                     // is alive; cross-checking forgejo access logs to

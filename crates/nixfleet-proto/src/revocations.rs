@@ -1,6 +1,6 @@
 //! `revocations.json` — signed agent-cert revocation list.
 //!
-//! Sidecar artifact alongside `fleet.resolved.json`. Closes gap C
+//! Sidecar artifact alongside `fleet.resolved.json`. Closes
 //! of `docs/roadmap/0002-v0.2-completeness-gaps.md`: without it,
 //! `cert_revocations` is the only piece of CP-resident state where
 //! loss-on-rebuild is a security regression rather than an
@@ -8,7 +8,7 @@
 //!
 //! Trust class: signed with the same `ciReleaseKey` that signs
 //! `fleet.resolved.json`. One signing key surface to rotate, same
-//! verification path on the CP. The threat model is identical —
+//! verification path on the CP. The threat model is identical
 //! both artifacts are the kind of data that, if forged, lets an
 //! attacker steer the fleet. They live in the same trust bucket.
 //!

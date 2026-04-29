@@ -1,4 +1,4 @@
-//! Host probe-output signing (issue #12 root-3 / #59).
+//! Host probe-output signing ( root-3 / #59).
 //!
 //! Reads `/etc/ssh/ssh_host_ed25519_key` (OpenSSH PEM format), parses
 //! the raw 32-byte private scalar, and signs the JCS-canonical bytes

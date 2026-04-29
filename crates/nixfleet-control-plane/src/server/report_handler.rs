@@ -53,7 +53,7 @@ pub(super) async fn report(
         .clone()
         .unwrap_or_else(|| "<none>".to_string());
 
-    // Issue #12 root-3 / #59 — verify probe-output signatures on the
+    // root-3 / #59 — verify probe-output signatures on the
     // two event variants that carry them. Non-signed events surface
     // as `None`; the wave-staging gate consults `signature_status`
     // when honouring outstanding events. Verification is best-
@@ -79,7 +79,7 @@ pub(super) async fn report(
         signature_status,
     };
 
-    // Issue #60 — write through to SQLite alongside the in-memory
+    // — write through to SQLite alongside the in-memory
     // ring buffer. Ring stays for hot-path latency in dispatch
     // decisions; SQLite is the durable record that survives CP
     // restart. DB write is best-effort: a failure logs warn + lets
@@ -95,7 +95,7 @@ pub(super) async fn report(
         // handled the same way: log + skip the DB write, let the
         // in-memory ring buffer below absorb the event regardless.
         // The serde failure path is what matters here — previously
-        // `unwrap_or_default()` would write `""` into report_json,
+        // `unwrap_or_default ` would write `""` into report_json,
         // and on next CP startup the hydration parse would fail and
         // skip the row, leaving a phantom DB row that could never
         // be replayed. Now we never write the row at all on serde
@@ -142,7 +142,7 @@ pub(super) async fn report(
     Ok(Json(ReportResponse { event_id }))
 }
 
-/// Compute the signature verdict for an incoming report (issue #12
+/// Compute the signature verdict for an incoming report (
 /// root-3 / #59). Only `ComplianceFailure` and `RuntimeGateError`
 /// carry probe-output signatures today; all other variants return
 /// `None`. The host's pubkey comes from `verified_fleet`'s
@@ -229,7 +229,7 @@ async fn compute_signature_status(
     }
 }
 
-/// 8-char lowercase-alnum suffix for event IDs. Not crypto-grade —
+/// 8-char lowercase-alnum suffix for event IDs. Not crypto-grade
 /// just enough to make IDs visually distinct in journal output.
 fn rand_suffix(n: usize) -> String {
     use rand::Rng;

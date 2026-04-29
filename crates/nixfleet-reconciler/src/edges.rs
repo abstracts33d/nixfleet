@@ -1,4 +1,4 @@
-//! Edge predecessor ordering check (RFC-0002 §4.1).
+//! Edge predecessor ordering check .
 
 use crate::host_state::HostRolloutState;
 use crate::observed::Rollout;

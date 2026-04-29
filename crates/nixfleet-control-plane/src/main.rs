@@ -1,14 +1,15 @@
+#![allow(clippy::doc_lazy_continuation)]
 //! `nixfleet-control-plane` — CLI shell.
 //!
 //! Two subcommands:
 //!
 //! * `serve` (default) — long-running TLS server. axum + tokio +
-//!   axum-server. Internal 30s reconcile loop. Exposes `GET /healthz`
-//!   and the `/v1/*` agent endpoints.
+//! axum-server. Internal 30s reconcile loop. Exposes `GET /healthz`
+//! and the `/v1/*` agent endpoints.
 //!
 //! * `tick` — oneshot: read inputs, verify, reconcile, print plan,
-//!   exit. Preserved for tests + ad-hoc operator runs (handy for
-//!   diffing what the loop is doing without tailing journald).
+//! exit. Preserved for tests + ad-hoc operator runs (handy for
+//! diffing what the loop is doing without tailing journald).
 //!
 //! Exit codes for `tick`:
 //! - 0 — verify ok, plan emitted (the plan may be empty — no drift).
@@ -95,11 +96,11 @@ struct ServeFlags {
     /// Time the dispatch loop gives an agent to fetch + activate +
     /// confirm a target before the magic-rollback timer marks the
     /// pending row as `rolled-back`. Default 360s: agents activate
-    /// via fire-and-forget (ADR-011, ~300s poll budget) + 60s slack;
+    /// via fire-and-forget ( , ~300s poll budget) + 60s slack;
     /// dropping below ~310s creates a chaos cascade (CP rolls back
     /// while agent is still polling). Tune up for slow-link channels
     /// (large closures over residential uplinks); avoid tuning down
-    /// without first lowering the agent-side poll budget. Issue #2
+    /// without first lowering the agent-side poll budget.
     /// step 5; coupling notes on `DEFAULT_CONFIRM_DEADLINE_SECS`.
     #[arg(long, default_value_t = 360)]
     confirm_deadline_secs: i64,
@@ -131,7 +132,7 @@ struct ServeFlags {
     #[arg(long, env = "NIXFLEET_CP_CHANNEL_REFS_TOKEN_FILE")]
     channel_refs_token_file: Option<PathBuf>,
 
-    // Revocations poll (gap C). Same source-agnostic shape as
+    // Revocations poll . Same source-agnostic shape as
     // channel-refs; same trust roots; same freshness window. Both
     // poll configs are independently optional — operators can run
     // channel-refs without revocations during the rollout.
@@ -152,7 +153,7 @@ struct ServeFlags {
     revocations_token_file: Option<PathBuf>,
 
     // Cert issuance (enroll + renew). The CP holds the fleet CA
-    // private key online — see issue #41 for the deferred TPM-bound
+    // private key online — see for the deferred TPM-bound
     // replacement. When these are unset, /v1/enroll and
     // /v1/agent/renew return 500.
     /// Fleet CA cert path (read on each issuance for the chain).
@@ -210,7 +211,7 @@ fn install_crypto_provider() {
     // Our direct `rustls = "0.23"` dependency pulls in `aws-lc-rs`
     // (its default feature) while `reqwest` (dev-dep) with
     // `rustls-tls` pulls in `ring`. Without this call, the first
-    // `ServerConfig::builder()` in `tls::build_server_config` panics
+    // `ServerConfig::builder ` in `tls::build_server_config` panics
     // with "Could not automatically determine the process-level
     // CryptoProvider from Rustls crate features".
     //

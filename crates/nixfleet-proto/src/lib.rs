@@ -1,3 +1,4 @@
+#![allow(clippy::doc_lazy_continuation)]
 //! NixFleet boundary-contract types.
 //!
 //! Every type in this crate mirrors an artifact declared in

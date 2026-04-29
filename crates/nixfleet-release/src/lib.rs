@@ -1,26 +1,27 @@
+#![allow(clippy::doc_lazy_continuation)]
 //! Producer for `releases/fleet.resolved.json` — the artifact defined
-//! in `docs/CONTRACTS.md §I #1` and `RFC-0001 §4.1`.
+//! in `docs/CONTRACTS.md §I #1` and ` `.
 //!
 //! The orchestration pipeline:
 //!
 //! 1. Enumerate hosts (default: every `nixosConfigurations.*` in the
-//!    consumer flake).
+//!   consumer flake).
 //! 2. Build each host's `config.system.build.toplevel`.
 //! 3. (optional) Run a per-host `--push-cmd` to upload the closure to
-//!    the fleet's binary cache. Implementation-agnostic — the hook
-//!    receives the store path in `$NIXFLEET_PATH`.
+//!   the fleet's binary cache. Implementation-agnostic — the hook
+//!   receives the store path in `$NIXFLEET_PATH`.
 //! 4. Evaluate `.#fleet.resolved` and parse via `nixfleet_proto`.
 //! 5. Inject each built host's `closureHash = basename(toplevel)`.
 //! 6. Stamp `meta.{signedAt, ciCommit, signatureAlgorithm}`.
 //! 7. Canonicalize via `nixfleet_canonicalize::canonicalize` (the
-//!    single implementation per CONTRACTS §III).
+//!   single implementation per CONTRACTS §III).
 //! 8. Hand the canonical bytes to a `--sign-cmd` hook via tempfiles
-//!    (`$NIXFLEET_INPUT` for canonical bytes, `$NIXFLEET_OUTPUT`
-//!    where the hook MUST write the raw signature).
+//!   (`$NIXFLEET_INPUT` for canonical bytes, `$NIXFLEET_OUTPUT`
+//!   where the hook MUST write the raw signature).
 //! 9. Smoke-verify the produced (artifact, signature) pair through
-//!    `nixfleet_reconciler::verify_artifact` — catches "we just
-//!    signed something the verifier rejects." Structural-only by
-//!    default; full signature check when a public key is supplied.
+//!   `nixfleet_reconciler::verify_artifact` — catches "we just
+//!   signed something the verifier rejects." Structural-only by
+//!   default; full signature check when a public key is supplied.
 //! 10. Atomic-write the release dir.
 //! 11. (optional) `git commit` + `git push`.
 //!
@@ -55,17 +56,17 @@ pub enum HostsSpec {
 /// Speculative knobs deliberately not present (each landed during
 /// design, removed during the no-untested-code pass — re-add with
 /// tests when a real fleet exercises them):
-///   - `include_darwin`: orchestrating Darwin closure builds. Lives
-///     in the activation-backend roadmap (docs/roadmap/0001-...).
-///   - `jobs > 1`: parallel `nix build` orchestration via
-///     `std::thread::spawn`. Single-host build is fast enough on
-///     today's fleets; concurrency is tricky and was never run with
-///     N > 1.
-///   - `smoke_verify_pubkey`: full-signature smoke verify with an
-///     operator-supplied pubkey. Structural smoke verify (canonicalize
-///     round-trip + schema parse) covers the framework's invariants;
-///     full-sig is an operator-workflow concern and re-adds a wrapper
-///     around `verify_artifact` that needs its own test surface.
+/// - `include_darwin`: orchestrating Darwin closure builds. Lives
+///   in the activation-backend roadmap (docs/roadmap/0001-...).
+/// - `jobs > 1`: parallel `nix build` orchestration via
+///   `std::thread::spawn`. Single-host build is fast enough on
+///   today's fleets; concurrency is tricky and was never run with
+///   N > 1.
+/// - `smoke_verify_pubkey`: full-signature smoke verify with an
+///   operator-supplied pubkey. Structural smoke verify (canonicalize
+///   round-trip + schema parse) covers the framework's invariants;
+///   full-sig is an operator-workflow concern and re-adds a wrapper
+///   around `verify_artifact` that needs its own test surface.
 #[derive(Debug, Clone)]
 pub struct ReleaseConfig {
     /// Path passed to `nix build` / `nix eval`. Defaults to `.`.
@@ -210,7 +211,7 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
     // ── 10. Write release dir ───────────────────────────────────
     write_release(&config.release_dir, &config.artifact_name, canonical.as_bytes(), &sig_bytes)?;
 
-    // ── 10a. Revocations artifact (gap C). Optional. ────────────
+    // ── 10a. Revocations artifact . Optional. ────────────
     // Same canonicalize + sign path as fleet.resolved; the artifact
     // must exist (even empty) for CP-rebuild recovery semantics to
     // hold — otherwise an operator who has never declared a

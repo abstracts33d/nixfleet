@@ -1,4 +1,4 @@
-//! Runtime compliance gate (issue #57 / arcanesys/nixfleet#4).
+//! Runtime compliance gate ( / arcanesys/nixfleet#4).
 //!
 //! Post fire-and-forget activation, BEFORE the agent posts confirm,
 //! it must verify that compliance probes have re-run against the
@@ -7,14 +7,14 @@
 //! yesterday's PASS data.
 //!
 //! Mirrors the freshness-verify-after-async-trigger pattern from
-//! ADR-011 fire-and-forget activation:
+//! fire-and-forget activation:
 //!
-//! | ADR-011 fire-and-forget                          | Runtime gate (here)                                  |
+//! | fire-and-forget | Runtime gate (here) |
 //! |--------------------------------------------------|------------------------------------------------------|
-//! | `systemd-run --unit=nixfleet-switch` (async)     | `systemctl start compliance-evidence-collector`      |
-//! | Poll `/run/current-system` for expected basename | Read `evidence.json.timestamp >= activation_time`    |
-//! | Poll budget timeout → SwitchFailed               | Collector timeout → RuntimeGateError                 |
-//! | ±60s skew slack on freshness gate                | ±60s skew slack on timestamp comparison              |
+//! | `systemd-run --unit=nixfleet-switch` (async) | `systemctl start compliance-evidence-collector` |
+//! | Poll `/run/current-system` for expected basename | Read `evidence.json.timestamp >= activation_time` |
+//! | Poll budget timeout → SwitchFailed | Collector timeout → RuntimeGateError |
+//! | ±60s skew slack on freshness gate | ±60s skew slack on timestamp comparison |
 //!
 //! Same shape: don't trust the async trigger fired; verify the
 //! observable post-condition.
@@ -107,7 +107,7 @@ pub enum GateOutcome {
     /// Collector ran, evidence is fresh, but at least one control
     /// is `non-compliant` or `error`. Agent posts one
     /// `ComplianceFailure` event per failing control. Whether to
-    /// also block the confirm is the CP rollout engine's call —
+    /// also block the confirm is the CP rollout engine's call
     /// the agent always reports honestly.
     Failures {
         evidence: ComplianceEvidence,
@@ -120,9 +120,9 @@ pub enum GateOutcome {
     },
     /// Collector failed, timed out, or evidence is stale relative
     /// to `activation_completed_at`. Agent posts
-    /// `ReportEvent::RuntimeGateError` and refuses to confirm —
+    /// `ReportEvent::RuntimeGateError` and refuses to confirm
     /// magic-rollback fires on the deadline. Defense-in-depth
-    /// match for ADR-011's poll-timeout class.
+    /// match for 's poll-timeout class.
     GateError {
         reason: String,
         collector_exit_code: Option<i32>,
@@ -180,10 +180,10 @@ pub async fn resolve_mode(input: Option<GateMode>) -> GateMode {
 ///
 /// Sequence:
 /// 1. If `Disabled`: return `Skipped` immediately. No state changes,
-///    no events, no journal warnings.
+///   no events, no journal warnings.
 /// 2. Trigger `systemctl start --wait <unit>` with bounded timeout.
-///    The collector unit's presence was confirmed by `resolve_mode`
-///    so this is expected to find the unit.
+///   The collector unit's presence was confirmed by `resolve_mode`
+///   so this is expected to find the unit.
 /// 3. Read evidence.json.
 /// 4. Verify timestamp >= `activation_completed_at - SLACK`.
 /// 5. Classify into Pass / Failures based on `controls[*].status`.
@@ -449,7 +449,7 @@ mod tests {
     async fn run_runtime_gate_disabled_short_circuits_without_io() {
         // Passing a non-existent path proves the function never tries
         // to read it when the mode is Disabled — the caller's
-        // resolve_mode() decision is honoured even if a stale evidence
+        // resolve_mode decision is honoured even if a stale evidence
         // file exists on disk.
         let bogus = std::path::PathBuf::from("/nonexistent/evidence.json");
         let now = chrono::Utc::now();

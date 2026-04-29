@@ -1,4 +1,4 @@
-//! Compliance gate policy mode (issue #57 / #58 / #59).
+//! Compliance gate policy mode.
 //!
 //! Single typed representation of the gate mode shared by:
 //! - `mk-fleet.nix` (static gate at fleet-eval time),
@@ -29,7 +29,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Resolved gate mode. The `auto` variant is agent-side only —
+/// Resolved gate mode. The `auto` variant is agent-side only
 /// it's the input that gets resolved to `Permissive` or
 /// `Disabled` based on collector-unit presence (see
 /// `nixfleet-agent::compliance::resolve_mode`). The CP and the

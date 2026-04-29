@@ -1,3 +1,4 @@
+#![allow(clippy::doc_lazy_continuation)]
 //! JCS canonicalization library backing the `nixfleet-canonicalize`
 //! binary. Pinned to `serde_jcs` per `docs/CONTRACTS.md §III`.
 //!

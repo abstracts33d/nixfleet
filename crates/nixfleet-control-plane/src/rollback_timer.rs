@@ -6,7 +6,7 @@
 //! journal line. The agent learns the rollout was rolled back via
 //! its next `/v1/agent/checkin`.
 //!
-//! This task is the CP-side half of magic rollback (issue #2). The
+//! This task is the CP-side half of magic rollback . The
 //! agent-side half is in `nixfleet-agent`'s activation loop (parallel
 //! PR): on a missed confirm window, the agent locally runs
 //! `nixos-rebuild --rollback` to revert to the previous boot

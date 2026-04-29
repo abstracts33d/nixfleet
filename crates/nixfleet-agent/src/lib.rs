@@ -1,9 +1,10 @@
+#![allow(clippy::doc_lazy_continuation)]
 //! NixFleet agent library.
 //!
 //! Reads cert paths + CP URL from CLI flags (set by the NixOS
 //! module), builds an mTLS reqwest client, polls
 //! `/v1/agent/checkin` every `pollInterval` seconds with a richer
-//! body than RFC-0003 §4.1's minimum (pending generation, last fetch
+//! body than 's minimum (pending generation, last fetch
 //! outcome, agent uptime). On fetch/verify failures the agent posts
 //! to `/v1/agent/report`. On a dispatched target it realises and
 //! activates the closure, then confirms via `/v1/agent/confirm`.

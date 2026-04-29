@@ -1,3 +1,4 @@
+#![allow(clippy::doc_lazy_continuation)]
 //! NixFleet control plane.
 //!
 //! The binary runs as a long-running TLS server: the [`tick`] function
@@ -140,7 +141,7 @@ fn classify_verify_error(err: &VerifyError) -> String {
 /// action. Each line is intended for the systemd journal — `journalctl
 /// -o cat` produces the raw JSON; `jq` filters trivially.
 ///
-/// Issue #50 — `Skip { reason: "offline" }` actions are coalesced into
+/// — `Skip { reason: "offline" }` actions are coalesced into
 /// a single `skip_summary` line per tick. With N active rollouts × M
 /// offline hosts the journal previously flooded (lab observed 28+
 /// skip-offline lines per 30s tick); coalescing drops that to 1.
@@ -292,7 +293,7 @@ mod tests {
         };
         let body = render_plan(&out);
         let lines: Vec<&str> = body.lines().collect();
-        // Issue #50: skip-offline actions now coalesce into one
+        // : skip-offline actions now coalesce into one
         // `skip_summary` line. The fixture has 1 OpenRollout + 1
         // offline-Skip → 3 lines total (summary + open_rollout +
         // skip_summary), same total as before but with different
@@ -364,8 +365,8 @@ mod tests {
         // Skip-offline action per (rollout, host), so a fleet with
         // 14 active rollouts and 4 offline hosts produces 56 raw
         // skip-actions. The summary's `hosts` field must contain
-        // each hostname ONCE, not N times. Without `dedup()`
-        // following `sort_unstable()`, the JSON line on lab carried
+        // each hostname ONCE, not N times. Without `dedup `
+        // following `sort_unstable `, the JSON line on lab carried
         // `["aether","aether",…14×]`; this test prevents that
         // recurring.
         let actions: Vec<Action> = (0..14)

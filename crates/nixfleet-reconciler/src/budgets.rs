@@ -1,4 +1,4 @@
-//! Disruption budget evaluation (RFC-0002 §4.2).
+//! Disruption budget evaluation .
 
 use crate::host_state::HostRolloutState;
 use crate::observed::Observed;

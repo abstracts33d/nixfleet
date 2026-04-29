@@ -7,7 +7,7 @@
 //!
 //! Active rollouts come from the DB snapshot (step 2 of gap #2 in
 //! docs/roadmap/0002-v0.2-completeness-gaps.md): the caller queries
-//! `Db::active_rollouts_snapshot()` and passes the result in. When
+//! `Db::active_rollouts_snapshot ` and passes the result in. When
 //! no DB is configured (offline replay, early-boot), pass `&[]` and
 //! the projection emits an empty `active_rollouts` — same shape as
 //! before this PR.

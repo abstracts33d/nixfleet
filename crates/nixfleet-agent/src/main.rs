@@ -1,8 +1,9 @@
+#![allow(clippy::doc_lazy_continuation)]
 //! `nixfleet-agent` — main poll + activation loop.
 //!
 //! Reads cert paths + CP URL from CLI flags, builds an mTLS reqwest
 //! client, polls `/v1/agent/checkin` every `pollInterval` seconds
-//! with a richer body than RFC-0003 §4.1's minimum (pending
+//! with a richer body than 's minimum (pending
 //! generation, last-fetch outcome, agent uptime). On a dispatched
 //! target, realises and activates the closure, then confirms via
 //! `/v1/agent/confirm`.
@@ -63,7 +64,7 @@ struct Args {
     #[arg(long, env = "NIXFLEET_AGENT_MACHINE_ID")]
     machine_id: String,
 
-    /// Seconds between checkins. Default 60s, matching RFC-0003 §2
+    /// Seconds between checkins. Default 60s, matching
     /// and the CP's response `nextCheckinSecs`.
     #[arg(long, default_value_t = 60, env = "NIXFLEET_AGENT_POLL_INTERVAL")]
     poll_interval: u64,
@@ -95,7 +96,7 @@ struct Args {
     /// Per-host state directory. The agent writes
     /// `last_confirmed_at` here on every successful confirm so it
     /// can attest the timestamp on every subsequent checkin
-    /// (gap B in
+    /// ( in
     /// docs/roadmap/0002-v0.2-completeness-gaps.md). Survives agent
     /// process restart; CP-side `recover_soak_state_from_attestation`
     /// consumes the attestation to rebuild
@@ -106,7 +107,7 @@ struct Args {
     #[arg(long, env = "NIXFLEET_AGENT_STATE_DIR", default_value = "/var/lib/nixfleet-agent")]
     state_dir: PathBuf,
 
-    /// Local default for the runtime compliance gate (issue #57). One
+    /// Local default for the runtime compliance gate . One
     /// of `"disabled"`, `"permissive"`, `"enforce"`, `"auto"` (or
     /// unset / empty → treated as `"auto"`). The CP can relay a
     /// per-channel `compliance_mode` on the dispatched
@@ -120,7 +121,7 @@ struct Args {
 
     /// Path to the host's OpenSSH ed25519 private key, used to sign
     /// `ComplianceFailure` / `RuntimeGateError` event payloads
-    /// (issue #12 root-3 / #59). The CP verifies the signature
+    /// ( root-3 / #59). The CP verifies the signature
     /// against `hosts.<hostname>.pubkey` from `fleet.resolved.json`,
     /// closing the auditor chain `host_pubkey → JCS event → 64-byte
     /// ed25519 sig`. Default `/etc/ssh/ssh_host_ed25519_key` matches
@@ -214,7 +215,7 @@ async fn main() -> anyhow::Result<()> {
         args.client_key.as_deref(),
     )?;
 
-    // ADR-011 boot recovery path. Runs once at startup, BEFORE the
+    // boot recovery path. Runs once at startup, BEFORE the
     // poll loop. Detects the post-self-switch case where the agent
     // got SIGTERMed mid-fire-and-forget poll: the new closure
     // restarted nixfleet-agent.service, and on the new agent's boot
@@ -243,7 +244,7 @@ async fn main() -> anyhow::Result<()> {
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut client_handle = client;
-    // RFC-0003 §5: exponential backoff with jitter on errors. Doubles
+    // : exponential backoff with jitter on errors. Doubles
     // each consecutive failure, capped at 8× the base interval (~8min
     // at 60s default). Reset to 1× on first success. Random jitter
     // ±20% spreads recovery across the fleet.
@@ -325,7 +326,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(resp) => {
                 consecutive_failures = 0;
                 if let Some(target) = &resp.target {
-                    // Issue #13 freshness gate: refuse to activate a
+                    // freshness gate: refuse to activate a
                     // target whose backing fleet.resolved is older
                     // than the channel's freshness_window (with ±60s
                     // skew slack). Defense-in-depth — the CP applies
@@ -396,7 +397,7 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
 
-                    // ADR-011 pre-fire signal. Lets operators see
+                    // pre-fire signal. Lets operators see
                     // "agent X started activating closure Y at
                     // timestamp T" in the CP report log, deterministic
                     // bookend to the post-poll success/failure event.
@@ -886,7 +887,7 @@ async fn handle_switch_failed(
     }
 }
 
-/// Spawn / I/O error inside `activate()`. State is unknown (could
+/// Spawn / I/O error inside `activate `. State is unknown (could
 /// have failed before realise even started) so we don't roll back.
 async fn handle_activation_spawn_error(
     err: anyhow::Error,
@@ -957,29 +958,29 @@ async fn send_checkin(
     comms::checkin(client, &args.control_plane_url, &req).await
 }
 
-/// ADR-011 boot recovery path. Closes the timing window where
+/// boot recovery path. Closes the timing window where
 /// fire-and-forget activation gets self-killed mid-poll.
 ///
 /// Sequence:
-///   1. Read `<state-dir>/last_dispatched`. Absent → no in-flight
-///      dispatch from a prior agent run, nothing to recover.
-///   2. Read `/run/current-system`. Compare basename to
-///      `last_dispatched.closure_hash`.
-///   3. **Match**: the prior agent fired a switch, got SIGTERMed by
-///      the new closure's unit-restart, but `nixfleet-switch.service`
-///      kept running and successfully activated the new closure.
-///      Post the retroactive `/v1/agent/confirm`. On Acknowledged →
-///      clear the dispatch record + write the confirm timestamp. On
-///      410 → CP already deadline-rolled-back; we should rollback
-///      locally too. On error → leave the record so a future cycle
-///      can retry.
-///   4. **Mismatch**: either we crashed before the switch took
-///      effect (system stayed on old closure), or rollback fired and
-///      we're back on the previous gen. Either way the dispatch
-///      record describes a transient state the agent is no longer
-///      in — clear it and let the next checkin re-decide.
+/// 1. Read `<state-dir>/last_dispatched`. Absent → no in-flight
+/// dispatch from a prior agent run, nothing to recover.
+/// 2. Read `/run/current-system`. Compare basename to
+/// `last_dispatched.closure_hash`.
+/// 3. **Match**: the prior agent fired a switch, got SIGTERMed by
+/// the new closure's unit-restart, but `nixfleet-switch.service`
+/// kept running and successfully activated the new closure.
+/// Post the retroactive `/v1/agent/confirm`. On Acknowledged →
+/// clear the dispatch record + write the confirm timestamp. On
+/// 410 → CP already deadline-rolled-back; we should rollback
+/// locally too. On error → leave the record so a future cycle
+/// can retry.
+/// 4. **Mismatch**: either we crashed before the switch took
+/// effect (system stayed on old closure), or rollback fired and
+/// we're back on the previous gen. Either way the dispatch
+/// record describes a transient state the agent is no longer
+/// in — clear it and let the next checkin re-decide.
 ///
-/// All paths are best-effort: returns `Ok(())` on logical decisions
+/// All paths are best-effort: returns `Ok( )` on logical decisions
 /// (mismatch, no-record, post-failure-but-not-a-bug); `Err` only on
 /// genuinely-unexpected I/O failures. The main loop's normal poll
 /// cadence is the safety net — even total recovery failure means

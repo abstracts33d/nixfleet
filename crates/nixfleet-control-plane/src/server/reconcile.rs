@@ -23,11 +23,11 @@ use super::state::{AppState, HostCheckinRecord, RECONCILE_INTERVAL};
 
 /// Spawn the reconcile loop. Each tick:
 /// 1. Reads the channel-refs cache (refreshed by the Forgejo poll
-///    task; falls back to file-backed observed.json when empty).
+///   task; falls back to file-backed observed.json when empty).
 /// 2. Builds an `Observed` from the in-memory checkin state +
-///    cached channel-refs.
+///   cached channel-refs.
 /// 3. Verifies the resolved artifact and reconciles against the
-///    projected `Observed`.
+///   projected `Observed`.
 /// 4. Emits the plan via tracing.
 ///
 /// Errors at any step are logged and fall through; the loop never
@@ -36,7 +36,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
     tokio::spawn(async move {
         // Prime the verified-fleet snapshot from the build-time
         // artifact, IF it isn't already populated. The Forgejo
-        // prime in `serve()` runs first and sets it from the
+        // prime in `serve ` runs first and sets it from the
         // operator's freshest repo bytes; this fallback only fires
         // when Forgejo isn't configured or its fetch failed. Either
         // way we don't overwrite a Forgejo-fresh snapshot with a
@@ -104,7 +104,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                 None => Vec::new(),
             };
 
-            // Issue #60 — fold the durable per-host outstanding-event
+            // — fold the durable per-host outstanding-event
             // counts into Observed so the reconciler can emit
             // Action::WaveBlocked. Empty map on missing DB or query
             // failure (degraded == old behaviour).
@@ -150,12 +150,12 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             //
             // 1. Verify-failed tick → preserve previous snapshot.
             // 2. The build-time artifact path is immutable for the
-            //    CP's lifetime, so the bytes verify_fleet_only re-
-            //    reads here are the SAME every tick.
+            // CP's lifetime, so the bytes verify_fleet_only re-
+            // reads here are the SAME every tick.
             // 3. Compare `signed_at`: only overwrite if the new
-            //    snapshot is at least as fresh as what's already
-            //    there. Keeps the Forgejo-fresh snapshot from being
-            //    clobbered.
+            // snapshot is at least as fresh as what's already
+            // there. Keeps the Forgejo-fresh snapshot from being
+            // clobbered.
             if let Some(fleet) = verified_fleet {
                 let mut guard = state.verified_fleet.write().await;
                 let should_overwrite = match guard.as_ref() {
@@ -189,7 +189,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
 
 /// Apply the side-effects of the reconciler's action stream that
 /// require CP-side state mutation. Today that's only
-/// `Action::SoakHost` (RFC-0002 §3.2 Healthy → Soaked) — the other
+/// `Action::SoakHost` ( Healthy → Soaked) — the other
 /// variants are emitted for journal/observability and don't write
 /// to the DB. Errors per action are logged + skipped; the tick
 /// completes regardless. The action stream is at-least-once: the
@@ -244,7 +244,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
 ///
 /// Returns both the tick output (for the journal plan) and the
 /// verified `FleetResolved` (for the dispatch path's snapshot in
-/// `AppState`). The fleet is `None` when the tick failed verify —
+/// `AppState`). The fleet is `None` when the tick failed verify
 /// the caller preserves whatever snapshot was previously in place.
 fn run_tick_with_projection(
     inputs: &TickInputs,

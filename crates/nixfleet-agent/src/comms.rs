@@ -83,14 +83,14 @@ pub async fn checkin(
 /// Outcome of POST /v1/agent/confirm. Distinguishes the three
 /// cases the activation loop needs to handle differently:
 /// 204 acknowledged, 410 cancelled (trigger local rollback per
-/// RFC-0003 §4.2), other (deadline timer will sort it out).
+/// ), other (deadline timer will sort it out).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmOutcome {
     /// 204 No Content — CP accepted the confirmation.
     Acknowledged,
     /// 410 Gone — CP says the rollout was cancelled OR the deadline
     /// already passed. Agent should run `nixos-rebuild --rollback`
-    /// per RFC-0003 §4.2.
+    /// per
     Cancelled,
     /// Any other status code. Treated as "couldn't confirm but
     /// don't need to take immediate action" — the CP-side rollback
@@ -100,7 +100,7 @@ pub enum ConfirmOutcome {
 
 /// POST /v1/agent/confirm. Called after a successful
 /// `nixos-rebuild switch` to acknowledge the activation. Wire shape
-/// per RFC-0003 §4.2.
+/// per
 pub async fn confirm(
     client: &Client,
     cp_url: &str,

@@ -1,4 +1,4 @@
-//! Rollout-level state machine handling (RFC-0002 §3.1).
+//! Rollout-level state machine handling .
 
 use crate::host_state::{self, WaveOutcome};
 use crate::observed::{Observed, Rollout};
@@ -12,7 +12,7 @@ use std::str::FromStr;
 // boundary; keep it on the public API even though the reconciler
 // itself now reads `Rollout.state` as the typed variant directly.
 
-/// RFC-0002 §3.1 rollout-level state. Persisted on the wire as a
+/// rollout-level state. Persisted on the wire as a
 /// string in `Rollout.state` JSON (a serde shim on the struct
 /// round-trips through [`Self::as_str`] / [`Self::from_str`] so
 /// fixtures stay byte-identical). Lifecycle:
@@ -93,7 +93,7 @@ pub(crate) fn advance_rollout(
     actions.extend(wave_actions);
 
     if wave_all_soaked {
-        // Issue #59 / #60 — wave-promotion gate. Before advancing
+        // — wave-promotion gate. Before advancing
         // wave N → N+1, check the durable host_reports projection
         // for outstanding ComplianceFailure / RuntimeGateError
         // events on hosts in waves 0..=N. Channel mode `enforce`
@@ -187,7 +187,7 @@ mod tests {
     }
 
     // ===============================================================
-    // Action::WaveBlocked emission — issue #60 integration coverage
+    // Action::WaveBlocked emission — integration coverage
     // ===============================================================
     //
     // The wave-staging gate's per-rollout, per-host filtering needs
@@ -196,10 +196,10 @@ mod tests {
     // accepted by the parser-level tests but caused stale events
     // from old rollouts to block fresh wave promotion forever.
     // These tests exercise the FULL signal path:
-    //   Observed.compliance_failures_by_rollout
-    //     → advance_rollout iterates the right rollout
-    //       → emits the right action (WaveBlocked vs PromoteWave vs
-    //         ConvergeRollout) per channel mode + per-rollout state.
+    // Observed.compliance_failures_by_rollout
+    // → advance_rollout iterates the right rollout
+    // → emits the right action (WaveBlocked vs PromoteWave vs
+    // ConvergeRollout) per channel mode + per-rollout state.
 
     use crate::host_state::HostRolloutState;
     use crate::observed::{Observed, Rollout};

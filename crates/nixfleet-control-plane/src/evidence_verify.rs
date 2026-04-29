@@ -47,7 +47,7 @@ impl SignatureStatus {
     /// statuses that signal active tampering.
     ///
     /// A future "strict" channel mode requiring `Verified` for
-    /// gate participation belongs as a new `GateMode` variant —
+    /// gate participation belongs as a new `GateMode` variant
     /// not a flip of this boolean.
     pub fn counts_for_gate(self) -> bool {
         !matches!(self, SignatureStatus::Mismatch | SignatureStatus::Malformed)

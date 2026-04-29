@@ -20,7 +20,7 @@ pub(super) const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 /// Must remain ≥ agent poll-budget + slack: a deadline shorter than
 /// the agent's fire-and-forget poll window triggers magic-rollback
 /// while the agent is still polling, cascading into a 410 + local
-/// rollback chain. 360s = 300s ADR-011 poll budget + 60s slack for
+/// rollback chain. 360s = 300s poll budget + 60s slack for
 /// clock skew + closure download tail latency.
 pub const DEFAULT_CONFIRM_DEADLINE_SECS: i64 = 360;
 

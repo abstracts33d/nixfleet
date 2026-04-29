@@ -1,4 +1,4 @@
-//! Agent-side freshness gate (issue #13).
+//! Agent-side freshness gate .
 //!
 //! Defense-in-depth check that refuses any dispatched target whose
 //! backing `fleet.resolved.json` artifact is older than the channel's
@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use nixfleet_proto::agent_wire::EvaluatedTarget;
 
 /// Symmetric clock-skew slack applied to the freshness check.
-/// Spec (issue #13) requires ≥60s; we use exactly 60s.
+/// Spec requires ≥60s; we use exactly 60s.
 pub const CLOCK_SKEW_SLACK_SECS: i64 = 60;
 
 /// Result of a freshness check on an `EvaluatedTarget`.

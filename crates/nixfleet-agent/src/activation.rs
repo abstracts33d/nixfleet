@@ -7,23 +7,23 @@
 //! around `nixos-rebuild switch`:
 //!
 //! 1. **Pre-realise**: `nix-store --realise <path>` forces nix to
-//!    fetch from the configured substituter (any nix-cache-protocol
-//!    backend the fleet wires — harmonia, attic, cachix, etc.) and
-//!    validate its signature *before* we commit to switching. If the
-//!    closure isn't locally available and substituter trust is
-//!    misconfigured, this fails closed — we never call
-//!    `nixos-rebuild` against an unverifiable path. Also catches
-//!    "closure-proxy returned a valid-looking narinfo for a path
-//!    that doesn't actually exist upstream" (the proxy-fallback
-//!    path is fundamentally less audited than direct substituter
-//!    fetch).
+//!   fetch from the configured substituter (any nix-cache-protocol
+//!   backend the fleet wires — harmonia, attic, cachix, etc.) and
+//!   validate its signature *before* we commit to switching. If the
+//!   closure isn't locally available and substituter trust is
+//!   misconfigured, this fails closed — we never call
+//!   `nixos-rebuild` against an unverifiable path. Also catches
+//!   "closure-proxy returned a valid-looking narinfo for a path
+//!   that doesn't actually exist upstream" (the proxy-fallback
+//!   path is fundamentally less audited than direct substituter
+//!   fetch).
 //! 2. **Switch**: `nixos-rebuild switch --system <verified-path>`.
-//!    nix's own substituter signature checks fire here too; the
-//!    pre-realise is belt-and-suspenders.
+//!   nix's own substituter signature checks fire here too; the
+//!   pre-realise is belt-and-suspenders.
 //! 3. **Post-verify**: read `/run/current-system` (resolve symlink),
-//!    compare basename against the expected closure_hash. If they
-//!    differ — switched to the wrong path, or `--system` got rewritten
-//!    somewhere — refuse to confirm and trigger local rollback.
+//!   compare basename against the expected closure_hash. If they
+//!   differ — switched to the wrong path, or `--system` got rewritten
+//!   somewhere — refuse to confirm and trigger local rollback.
 //!
 //! Pre-realise + post-verify together close the property "the agent
 //! either confirms the *exact* closure the CP told it about, or rolls
@@ -45,13 +45,13 @@
 //! aether (and future darwin hosts) run the same agent binary but
 //! the "fire" step diverges from the linux/systemd path:
 //!
-//! | step                  | linux (NixOS)                                  | darwin (nix-darwin)                                  |
+//! | step | linux (NixOS) | darwin (nix-darwin) |
 //! |-----------------------|------------------------------------------------|------------------------------------------------------|
-//! | switch-lock probe     | `flock(8)` on `/run/nixos/switch-to-configuration.lock` | n/a — darwin activation is sync, no concurrent races |
-//! | profile update        | `nix-env --profile … --set <store>`            | same                                                 |
-//! | fire                  | `systemd-run --unit=nixfleet-switch -- <store>/bin/switch-to-configuration switch` | `setsid()` detached `<store>/activate-user` (skip if absent) + `<store>/activate` |
-//! | poll                  | `/run/current-system` flips to expected basename | same (per v0.1 darwin-platform-notes.md)            |
-//! | unit-status triage    | `systemctl show --property=ExecMainStatus`     | n/a — returns None                                   |
+//! | switch-lock probe | `flock(8)` on `/run/nixos/switch-to-configuration.lock` | n/a — darwin activation is sync, no concurrent races |
+//! | profile update | `nix-env --profile … --set <store>` | same |
+//! | fire | `systemd-run --unit=nixfleet-switch -- <store>/bin/switch-to-configuration switch` | `setsid ` detached `<store>/activate-user` (skip if absent) + `<store>/activate` |
+//! | poll | `/run/current-system` flips to expected basename | same (per v0.1 darwin-platform-notes.md) |
+//! | unit-status triage | `systemctl show --property=ExecMainStatus` | n/a — returns None |
 //!
 //! Approach: runtime `cfg!(target_os = "macos")` dispatch (NOT
 //! `#[cfg]`) so both code paths compile + type-check on every build.
@@ -64,7 +64,7 @@
 //! profile-flip rollback) is already platform-agnostic.
 //!
 //! See `docs/mdbook/reference/darwin-platform-notes.md` (ported
-//! from v0.1.1) for the full rationale on why `setsid()` + a
+//! from v0.1.1) for the full rationale on why `setsid ` + a
 //! detached child process survives the agent's own SIGTERM during
 //! `activate`'s plist reload.
 
@@ -89,7 +89,7 @@ const SWITCH_LOCK_PATH: &str = "/run/nixos/switch-to-configuration.lock";
 /// Returns `true` only when the lock file exists AND a non-blocking
 /// shared `flock` attempt fails (lock contended). Lock file absent
 /// or `flock` binary unavailable returns `false` — fail-open. The
-/// agent's own activate() flow is guarded by the agent unit's own
+/// agent's own activate flow is guarded by the agent unit's own
 /// concurrency model (single-threaded poll loop), so the false case
 /// is "no operator-visible third-party switch is racing us".
 ///
@@ -131,14 +131,14 @@ pub async fn is_switch_in_progress() -> bool {
 }
 
 /// Maximum time the post-fire poll waits for `/run/current-system`
-/// to flip to the expected closure. ADR-011 default. Sized so that
+/// to flip to the expected closure. default. Sized so that
 /// realistic closure activations (large package set, slow disk,
 /// post-activation systemd target convergence) complete inside the
 /// CP's confirm deadline (`DEFAULT_CONFIRM_DEADLINE_SECS = 360`).
 pub const POLL_BUDGET: Duration = Duration::from_secs(300);
 
 /// How often the poll loop checks `/run/current-system`. 2s matches
-/// ADR-011 — fast enough to feel snappy in interactive runs, slow
+/// — fast enough to feel snappy in interactive runs, slow
 /// enough to keep CPU + IO load negligible.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -149,7 +149,7 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// to roll back).
 #[derive(Debug)]
 pub enum ActivationOutcome {
-    /// **Timing semantics.** Fire-and-forget (ADR-011): the agent has
+    /// **Timing semantics.** Fire-and-forget : the agent has
     /// fired `systemd-run --unit=nixfleet-switch -- switch-to-configuration switch`
     /// as a detached transient service AND polled `/run/current-system`
     /// to flip to the expected closure within the poll budget. By the
@@ -162,12 +162,12 @@ pub enum ActivationOutcome {
     /// Caller should POST `/v1/agent/confirm`.
     FiredAndPolled,
     /// `nix-store --realise` exited non-zero or returned a path that
-    /// doesn't match the input. The system was never switched —
+    /// doesn't match the input. The system was never switched
     /// caller skips rollback, retries next tick.
     RealiseFailed { reason: String },
     /// `nix-store --realise` failed specifically because the closure's
     /// narinfo signature did not match any key in
-    /// `nixfleet.trust.cacheKeys` (issue #12 root #2). Distinct from
+    /// `nixfleet.trust.cacheKeys` ( root #2). Distinct from
     /// the generic RealiseFailed so the operator dashboard can route
     /// "trust violation" alerts separately from "transient fetch
     /// failure". The system was never switched. Cache-substituter-
@@ -183,7 +183,7 @@ pub enum ActivationOutcome {
     /// rollback. `phase` distinguishes which step failed:
     /// - `"nix-env-set"`: setting the system profile (system was
     ///   never activated; rollback re-points the profile).
-    /// - `"systemd-run-fire"`: queueing the transient unit (rare —
+    /// - `"systemd-run-fire"`: queueing the transient unit (rare
     ///   indicates systemd itself refused; previous unit may be
     ///   stuck in `failed` state).
     /// - `"switch-poll-timeout"`: poll budget elapsed without
@@ -208,7 +208,7 @@ pub enum ActivationOutcome {
 /// field, so `journalctl | grep target_closure=<hash>` follows one
 /// activation end to end without parsing JSON.
 ///
-/// **Retry semantics (v0.2 trade-off vs ADR-011 §5).** ADR-011's
+/// **Retry semantics (v0.2 trade-off vs §5).** 's
 /// original wording allowed up to 3 in-call retries before giving
 /// up to rollback. v0.2 takes a different path: a single
 /// fire-and-forget attempt per call, with the agent's main poll
@@ -222,7 +222,7 @@ pub enum ActivationOutcome {
 /// attempts could trip the CP's confirm deadline before any
 /// actually succeeded. Tick-cadence retry instead keeps each
 /// attempt within its own deadline window. The cost: slower
-/// failure detection (60s tick vs ~5s per ADR-011's intent), but
+/// failure detection (60s tick vs ~5s per 's intent), but
 /// the failure surface is fundamentally smaller because each
 /// systemd-run unit is independent and observed via `systemctl
 /// show ExecMainStatus`.
@@ -348,7 +348,7 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
     // mid-fire without killing the activation.
     //
     // Darwin: `<store>/activate-user` (legacy, skip if absent) +
-    // `<store>/activate`, both spawned with `setsid()` so the child
+    // `<store>/activate`, both spawned with `setsid ` so the child
     // is in its own session — launchd's process-group SIGTERM during
     // the agent plist reload doesn't propagate.
     //
@@ -359,7 +359,7 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
 
     // Step 4: poll /run/current-system for the expected basename.
     //
-    // Budget: 300s (ADR-011). Coupled to CP's confirm_deadline_secs
+    // Budget: 300s . Coupled to CP's confirm_deadline_secs
     // default of 360s = 300s + 60s slack. See
     // `crates/nixfleet-control-plane/src/server/state.rs::DEFAULT_CONFIRM_DEADLINE_SECS`.
     //
@@ -416,9 +416,9 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
     }
 }
 
-/// Structured failure mode for `realise()`. Distinguishing
+/// Structured failure mode for `realise `. Distinguishing
 /// signature-mismatch from generic failure lets the agent map each
-/// to a different `ReportEvent` variant (issue #12 root #2: explicit
+/// to a different `ReportEvent` variant ( root #2: explicit
 /// surfacing of cache-trust violations vs transient fetch failures).
 pub enum RealiseError {
     /// nix's substituter trust check refused the narinfo because no
@@ -533,7 +533,7 @@ pub struct PollTimeout {
 }
 
 /// Poll `/run/current-system` for the expected basename. Returns
-/// `Ok(())` as soon as the symlink resolves to `expected`. Returns
+/// `Ok( )` as soon as the symlink resolves to `expected`. Returns
 /// `Err(PollTimeout)` once `budget` elapses without a match.
 ///
 /// Read errors during polling are non-fatal: the symlink may be
@@ -587,7 +587,7 @@ pub async fn poll_current_system(
 /// crates/agent/src/nix.rs:344-374) — defensive against concurrent
 /// profile mutations during activation.
 ///
-/// Returns `Ok(())` if the profile matches (either initially or
+/// Returns `Ok( )` if the profile matches (either initially or
 /// after self-correction). Returns `Err` only when self-correction
 /// itself failed; the post-poll caller treats that as non-fatal
 /// (the symlink-level check on /run/current-system already passed).
@@ -650,14 +650,14 @@ fn profile_matches(expected_store_path: &str, profile_path: &str) -> bool {
 
 /// Best-effort read of a transient systemd unit's exit code via
 /// `systemctl show --property=ExecMainStatus`. Used by both
-/// `activate()` (`nixfleet-switch.service`) and `rollback()`
+/// `activate ` (`nixfleet-switch.service`) and `rollback `
 /// (`nixfleet-rollback.service`) to triage poll-timeout cases.
 /// Returns `None` if the command fails or the property is empty/
 /// non-numeric — caller should treat exit status as unknown rather
 /// than synthesize a misleading 0.
 ///
 /// **Darwin:** no transient unit exists (the activation runs in a
-/// detached `setsid()` child, not a systemd-run service), so there's
+/// detached `setsid ` child, not a systemd-run service), so there's
 /// no equivalent exit-status surface. Returns `None` early on macOS
 /// — same semantic as "unknown" on linux: the poll-timeout caller
 /// already declares SwitchFailed, the exit code is purely diagnostic.
@@ -696,10 +696,10 @@ async fn read_unit_exit_code(unit_name: &str) -> Option<i32> {
 ///
 /// On darwin: spawns `<store>/activate-user` (legacy, skipped if
 /// absent) followed by `<store>/activate`, both detached via
-/// `setsid()` so launchd's process-group SIGTERM during the agent's
+/// `setsid ` so launchd's process-group SIGTERM during the agent's
 /// own plist reload doesn't propagate to the activation child. Per
 /// v0.1.1 darwin-platform-notes.md `nohup` doesn't work in a
-/// launchd daemon context (no controlling TTY), only `setsid()`
+/// launchd daemon context (no controlling TTY), only `setsid `
 /// gives the new session lifetime that survives the parent.
 async fn fire_switch(
     target: &EvaluatedTarget,
@@ -781,14 +781,14 @@ async fn fire_switch_systemd(
 }
 
 /// Darwin/launchd fire-and-forget. Spawns the activation script in a
-/// new session via `setsid()` so the agent's process group SIGTERM
+/// new session via `setsid ` so the agent's process group SIGTERM
 /// (which launchd issues during plist reload when the new closure
 /// changes the agent binary path) does not propagate to the
 /// activation child.
 ///
 /// Sequence (matches `darwin-rebuild switch`):
 /// 1. `<store>/activate-user` — legacy user activation. Some darwin
-///    closures still ship it, others don't. Absent → skip silently.
+///   closures still ship it, others don't. Absent → skip silently.
 /// 2. `<store>/activate` — system activation script. Always present.
 ///
 /// Both detach via `pre_exec(setsid)` and redirect stdout/stderr to
@@ -1002,7 +1002,7 @@ async fn fire_rollback_systemd() -> Result<Option<RollbackOutcome>> {
 /// Darwin rollback fire. Same setsid-detached pattern as
 /// `fire_switch_darwin`. The previously-rolled-back generation's
 /// store path is now pointed at by `/nix/var/nix/profiles/system`
-/// (because `rollback()` already ran `nix-env --rollback`), so we
+/// (because `rollback ` already ran `nix-env --rollback`), so we
 /// invoke `<resolved-store-path>/activate` to actually run the
 /// activation chain. Polling for `target_basename` in the caller
 /// observes completion.
@@ -1060,7 +1060,7 @@ async fn fire_rollback_darwin(_target_basename: &str) -> Result<Option<RollbackO
     Err(anyhow!("fire_rollback_darwin called on non-unix host"))
 }
 
-/// Outcome of a `rollback()` call. Mirrors `ActivationOutcome`'s
+/// Outcome of a `rollback ` call. Mirrors `ActivationOutcome`'s
 /// shape so callers can pattern-match similarly. Fire-and-forget
 /// applies to rollback for the same reason as activate: if the
 /// rolled-back closure's activation script changes a unit definition
@@ -1111,27 +1111,27 @@ impl RollbackOutcome {
 
 /// Local rollback: revert the system profile one generation back and
 /// run the previous closure's `switch-to-configuration switch` via
-/// the same fire-and-forget mechanism `activate()` uses (ADR-011).
+/// the same fire-and-forget mechanism `activate ` uses .
 ///
 /// Used when:
-/// - `activate()` returned a non-success outcome that requires
+/// - `activate ` returned a non-success outcome that requires
 ///   rollback (`SwitchFailed`).
 /// - The agent's confirm window expired before the CP acknowledged
-///   the activation (magic rollback, RFC-0003 §4.2).
+///   the activation (magic rollback, ).
 ///
 /// Sequence:
 /// 1. `nix-env --rollback` flips the profile symlink to the previous
-///    generation (synchronous — fast, no service restarts here).
+///   generation (synchronous — fast, no service restarts here).
 /// 2. Read the new profile target to discover what closure to poll
-///    for. Without this we'd be polling for "any change", which is
-///    a weaker contract than "rolled to the expected closure".
-/// 3. Fire `systemd-run --unit=nixfleet-rollback --collect --
-///    <new_target>/bin/switch-to-configuration switch`. The detached
-///    transient unit insulates the rollback's switch script from
-///    the agent's cgroup, so even if rollback's activation chain
-///    restarts services the agent depends on, the rollback completes.
+///   for. Without this we'd be polling for "any change", which is
+///   a weaker contract than "rolled to the expected closure".
+/// 3. Fire `systemd-run --unit=nixfleet-rollback --collect
+/// <new_target>/bin/switch-to-configuration switch`. The detached
+///   transient unit insulates the rollback's switch script from
+///   the agent's cgroup, so even if rollback's activation chain
+///   restarts services the agent depends on, the rollback completes.
 /// 4. Poll `/run/current-system` for the rolled-back basename, same
-///    POLL_BUDGET as activate (300s). Coupled to confirm-deadline.
+///   POLL_BUDGET as activate (300s). Coupled to confirm-deadline.
 ///
 /// Bypasses `nixos-rebuild` entirely — `nixos-rebuild-ng` tries to
 /// evaluate `<nixpkgs/nixos>` even on `--rollback`, which fails in
@@ -1243,7 +1243,7 @@ fn resolve_profile_target() -> Result<String> {
 
 /// POST `/v1/agent/confirm` to acknowledge a successful activation.
 ///
-/// Per RFC-0003 §4.2 the agent confirms exactly once after a
+/// Per the agent confirms exactly once after a
 /// successful activation. Returns `ConfirmOutcome` so the activation
 /// loop can react:
 /// - `Acknowledged` (204): nothing else to do.

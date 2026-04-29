@@ -1,4 +1,4 @@
-//! Boot-time recovery for ADR-011 fire-and-forget activation.
+//! Boot-time recovery for fire-and-forget activation.
 //!
 //! The fire-and-forget pattern (see `crates/nixfleet-agent/src/activation.rs`)
 //! commonly lets the agent be SIGTERMed mid-poll: the new closure restarts
@@ -155,8 +155,8 @@ async fn decide_and_run(
         Ok(outcome) => {
             // On Acknowledged: write last_confirmed + clear dispatch.
             // On Cancelled: CP already rolled this back via deadline;
-            //   the system is on the new closure but CP says not.
-            //   Run rollback to converge.
+            // the system is on the new closure but CP says not.
+            // Run rollback to converge.
             // On Other: leave record in place; next cycle retries.
             match outcome {
                 comms::ConfirmOutcome::Acknowledged => {

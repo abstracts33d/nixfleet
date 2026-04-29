@@ -25,7 +25,7 @@ pub enum Action {
         rollout: String,
         reason: String,
     },
-    /// RFC-0002 §3.2 Healthy → Soaked transition. Emitted when the
+    /// Healthy → Soaked transition. Emitted when the
     /// reconciler observes that a host has been Healthy for at
     /// least `wave.soak_minutes`. The CP-side action processor
     /// writes `host_rollout_state.host_state = 'Soaked'` so the
@@ -39,7 +39,7 @@ pub enum Action {
     /// removals that leave orphaned observed state. The reconciler
     /// silently `continue`s its loop (channel teardown is a valid
     /// operator workflow); this event makes the orphaning visible
-    /// in journals + traces. Issue #21 / spec OQ #5.
+    /// in journals + traces. / .
     ChannelUnknown {
         channel: String,
     },
@@ -47,7 +47,7 @@ pub enum Action {
         host: String,
         reason: String,
     },
-    /// Issue #59 — wave-staging compliance gate held this wave's
+    /// — wave-staging compliance gate held this wave's
     /// promotion because at least one host *in an earlier wave*
     /// has outstanding `ComplianceFailure` / `RuntimeGateError`
     /// events under enforce mode. The CP-side dispatch handler
@@ -60,12 +60,12 @@ pub enum Action {
     /// Emitted by `rollout_state::advance_rollout` when the
     /// channel mode is `enforce` AND at least one host on a wave
     /// before the gate's promotion target has an outstanding
-    /// failure under the rollout's id (per-rollout grouping —
+    /// failure under the rollout's id (per-rollout grouping
     /// resolution-by-replacement means events bound to a
     /// superseded rollout don't gate the new one). The
     /// projection layer that feeds this comes from
     /// `db::outstanding_compliance_events_by_rollout` →
-    /// `Observed.compliance_failures_by_rollout` (issue #60).
+    /// `Observed.compliance_failures_by_rollout` .
     ///
     /// `blocked_wave` is the wave whose promotion is held;
     /// `failing_hosts` is the set of hosts (on earlier waves)

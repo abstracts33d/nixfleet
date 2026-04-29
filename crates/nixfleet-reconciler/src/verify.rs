@@ -1,4 +1,4 @@
-//! RFC-0002 §4 step 0 — fetch + verify + freshness-gate.
+//! step 0 — fetch + verify + freshness-gate.
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -53,7 +53,7 @@ pub enum VerifyError {
     NoTrustRoots,
 }
 
-/// Verify a signed `fleet.resolved` artifact per RFC-0002 §4 step 0.
+/// Verify a signed `fleet.resolved` artifact per step 0.
 ///
 /// # Trust root list
 ///
@@ -151,7 +151,7 @@ fn verify_ed25519(
 /// Low-s malleability rejection: ECDSA signatures on Weierstrass curves
 /// are malleable — if `(r, s)` is valid, so is `(r, n − s)`. Canonical
 /// p256 signatures have `s <= n / 2`. The `p256` crate's
-/// `Signature::normalize_s()` returns `Some(normalized)` iff the input
+/// `Signature::normalize_s ` returns `Some(normalized)` iff the input
 /// was high-s; we reject any such signature outright. Required for
 /// root-of-trust keys per the same hardening pattern as `verify_strict`
 /// on ed25519.
@@ -219,7 +219,7 @@ fn verify_ecdsa_p256(
         .map_err(|_| VerifyError::BadSignature)
 }
 
-/// Verify a signed `revocations.json` artifact (gap C of
+/// Verify a signed `revocations.json` artifact ( of
 /// `docs/roadmap/0002-v0.2-completeness-gaps.md`). Same trust
 /// class as [`verify_artifact`] — both signed by `ciReleaseKey`
 /// per the cycle's design — so the same freshness window +
@@ -364,7 +364,7 @@ fn finish_verification(
 
     // Step 6b: freshness.
     //
-    // RFC-0003 §8 / issue #13 require ≥60s slack so benign clock
+    // / require ≥60s slack so benign clock
     // drift between the signing host and the verifying host doesn't
     // trigger spurious staleness errors. The slack is added to the
     // window itself rather than the timestamp because we want to
@@ -385,6 +385,6 @@ fn finish_verification(
 }
 
 /// Symmetric clock-skew slack added to the freshness window when
-/// rejecting stale `fleet.resolved` artifacts. Spec (RFC-0003 §8 /
-/// issue #13) requires ≥60s; we use exactly 60s.
+/// rejecting stale `fleet.resolved` artifacts. Spec ( /
+/// ) requires ≥60s; we use exactly 60s.
 pub const CLOCK_SKEW_SLACK_SECS: i64 = 60;

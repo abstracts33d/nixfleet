@@ -8,11 +8,11 @@
 //!
 //! ```text
 //! nixfleet-mint-token \
-//!     --hostname test-host \
-//!     --csr-pubkey-fingerprint <sha256-base64-of-CSR-spki> \
-//!     --org-root-key /path/to/org-root.ed25519.key \
-//!     --validity-hours 24 \
-//!     > bootstrap-token-test-host.json
+//! --hostname test-host \
+//! --csr-pubkey-fingerprint <sha256-base64-of-CSR-spki> \
+//! --org-root-key /path/to/org-root.ed25519.key \
+//! --validity-hours 24 \
+//! > bootstrap-token-test-host.json
 //! ```
 //!
 //! The agent's first-boot enrollment generates its own keypair

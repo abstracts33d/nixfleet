@@ -1,4 +1,4 @@
-//! `fleet.resolved.json` — CONTRACTS.md §I #1, RFC-0001 §4.1.
+//! `fleet.resolved.json` — CONTRACTS.md §I #1,
 //!
 //! Produced by CI invoking the Nix evaluator. Consumed by the
 //! control plane and, on the fallback direct-fetch path, by agents.
@@ -73,9 +73,9 @@ pub struct Compliance {
     /// Tri-state policy mode (`"disabled"` / `"permissive"` /
     /// `"enforce"`) shared by the static gate (mk-fleet eval) and
     /// the runtime gate (`nixfleet-agent::compliance`). Default
-    /// `"enforce"` matches the prior `strict = true` semantics —
+    /// `"enforce"` matches the prior `strict = true` semantics
     /// fleets that didn't opt out of compliance keep being gated.
-    /// (Issue #58 / #59. The legacy `strict: bool` field was
+    /// ( . The legacy `strict: bool` field was
     /// removed once the unified vocabulary stabilised.)
     pub mode: String,
 }
@@ -91,7 +91,7 @@ pub struct RolloutPolicy {
 }
 
 /// Recovery action when a host fails its health gate during a
-/// rollout (RFC-0002 §3.2 / §3.3). `mk-fleet` constrains the wire
+/// rollout ( / §3.3). `mk-fleet` constrains the wire
 /// values to `"halt" | "rollback-and-halt"`; the typed wrapper
 /// catches typos at compile time across the reconciler's match
 /// sites. Wire JSON stays kebab-case via `rename_all`.

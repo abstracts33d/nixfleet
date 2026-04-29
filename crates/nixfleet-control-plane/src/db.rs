@@ -8,7 +8,7 @@
 //! a connection pool is unnecessary. Mutex poisoning is converted
 //! to anyhow errors instead of panicking.
 //!
-//! All schema-modifying operations go through `migrate()` which
+//! All schema-modifying operations go through `migrate ` which
 //! refinery makes idempotent + version-tracked.
 
 use anyhow::{Context, Result};
@@ -43,7 +43,7 @@ pub struct RolloutDbSnapshot {
     pub channel: String,
     pub target_closure_hash: String,
     pub target_channel_ref: String,
-    /// hostname → RFC-0002 §3.2 state name. `host_rollout_state`
+    /// hostname → state name. `host_rollout_state`
     /// wins when present (carries Soaked / Converged / Failed once
     /// step 3 lands). Otherwise derived from the latest
     /// `pending_confirms.state` for that (rollout, host).
@@ -59,7 +59,7 @@ pub struct RolloutDbSnapshot {
 /// (and clippy's `type_complexity` lint stays quiet).
 pub type ExpiredPendingConfirm = (i64, String, String, u32, String);
 
-/// Issue #60 — one row of the durable `host_reports` table.
+/// — one row of the durable `host_reports` table.
 /// Carries the same fields the in-memory `ReportRecord` does,
 /// with `signature_status` left as the raw kebab-case string for
 /// the caller to deserialise into `evidence_verify::SignatureStatus`.
@@ -73,7 +73,7 @@ pub struct HostReportRow {
     pub report_json: String,
 }
 
-/// Issue #60 — input to `Db::record_host_report`. Bundling the
+/// — input to `Db::record_host_report`. Bundling the
 /// fields into a struct keeps the call-site readable (8-arg
 /// functions trip clippy's `too_many_arguments`) and lets the
 /// handler stage the row before calling the DB.
@@ -139,7 +139,7 @@ impl Db {
             .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))
     }
 
-    /// Run all pending migrations. Idempotent under refinery —
+    /// Run all pending migrations. Idempotent under refinery
     /// previously-applied migrations are skipped.
     pub fn migrate(&self) -> Result<()> {
         let mut guard = self.conn()?;
@@ -199,7 +199,7 @@ impl Db {
         Ok(n)
     }
 
-    /// Issue #52 — prune terminal `pending_confirms` rows older than
+    /// — prune terminal `pending_confirms` rows older than
     /// `max_age`. Mirror of `prune_token_replay`. `pending_confirms`
     /// is soft-state (ARCHITECTURE.md §6 Phase 10) and rows in
     /// terminal states `RolledBack` / `Cancelled` carry no
@@ -228,7 +228,7 @@ impl Db {
     }
 
     // =================================================================
-    // cert_revocations — RFC-0003 §2
+    // cert_revocations
     // =================================================================
 
     /// Record a revocation: any cert for `hostname` with notBefore
@@ -258,7 +258,7 @@ impl Db {
     }
 
     // ===============================================================
-    // pending_confirms — RFC-0003 §4.2 activation confirmations
+    // pending_confirms — activation confirmations
     // + magic rollback timer support
     // ===============================================================
 
@@ -297,7 +297,7 @@ impl Db {
     }
 
     /// Insert a `pending_confirms` row directly in `'confirmed'`
-    /// state — used by the orphan-confirm recovery path (gap A) when
+    /// state — used by the orphan-confirm recovery path when
     /// an agent posts `/v1/agent/confirm` but no matching `pending`
     /// row exists (typically because the CP was rebuilt mid-flight).
     /// The orphan handler verifies the agent's `closure_hash` matches
@@ -386,7 +386,7 @@ impl Db {
 
 
     /// Pending confirms whose deadline has passed and which haven't
-    /// been confirmed yet. Used by the magic-rollback timer task —
+    /// been confirmed yet. Used by the magic-rollback timer task
     /// each row returned is a host that failed to confirm in time
     /// and should be rolled back.
     ///
@@ -458,7 +458,7 @@ impl Db {
     }
 
     // ===============================================================
-    // host_rollout_state — RFC-0002 §3.2 / §4.4 soak timer support
+    // host_rollout_state — / §4.4 soak timer support
     // ===============================================================
 
     /// Mark host as Healthy for `rollout_id`, stamping
@@ -492,7 +492,7 @@ impl Db {
         Ok(())
     }
 
-    /// Transition a host's RFC-0002 §3.2 state to Soaked. Idempotent
+    /// Transition a host's state to Soaked. Idempotent
     /// + defensive: only fires when the row is currently Healthy
     ///   (the only state that can advance to Soaked per the machine).
     ///   Step 3 of gap #2 — the CP-side action processor calls this
@@ -540,7 +540,7 @@ impl Db {
     }
 
     /// True iff any `host_rollout_state` row exists for the given
-    /// (rollout_id, hostname). Used by gap B-cp's soak-state
+    /// (rollout_id, hostname). Used by 's soak-state
     /// recovery path to avoid overwriting existing host state when
     /// the agent's attestation arrives — an existing row reflects
     /// the actual lifecycle (Healthy/Soaked/Reverted/...) and is
@@ -774,7 +774,7 @@ impl Db {
     }
 
     // ===============================================================
-    // host_reports — issue #60 durable per-host event log
+    // host_reports — durable per-host event log
     // ===============================================================
 
     /// Persist an event report. Mirrors the in-memory ring buffer
@@ -878,7 +878,7 @@ impl Db {
 
     /// Count outstanding ComplianceFailure / RuntimeGateError events
     /// per `(rollout_id, hostname)`. Used by the reconciler's
-    /// wave-staging gate emission (issue #60). The per-rollout
+    /// wave-staging gate emission . The per-rollout
     /// grouping is what enforces resolution-by-replacement: an
     /// event posted against rollout R₀ contributes to `(R₀, host)`
     /// not to `host`-globally, so once the host moves to R₁ and the
@@ -1070,7 +1070,7 @@ mod tests {
     fn clear_host_healthy_is_noop_when_already_clear() {
         // Idempotent: calling clear on a row whose marker is
         // already NULL — or on a row that doesn't exist — returns 0
-        // and does not fail. The checkin handler may emit clear()
+        // and does not fail. The checkin handler may emit clear
         // every checkin while the host stays diverged.
         let db = fresh_db();
         let n = db.clear_host_healthy("test-host", "stable@r1").unwrap();
@@ -1422,7 +1422,7 @@ mod tests {
     }
 
     // ===============================================================
-    // host_reports — issue #60 round-trip + outstanding-event query
+    // host_reports — round-trip + outstanding-event query
     // ===============================================================
 
     fn fail_event<'a>(rollout: Option<&'a str>, sig: Option<&'a str>) -> HostReportInsert<'a> {

@@ -18,7 +18,7 @@ use super::state::AppState;
 ///
 /// No mTLS required (this is the path before the host has a cert).
 /// Authentication is via the bootstrap-token signature against the
-/// org root key in trust.json. Order of checks matches RFC-0003 §2:
+/// org root key in trust.json. Order of checks matches :
 /// 1. Replay defense
 /// 2. Expiry
 /// 3. Signature against `orgRootKey.{current,previous}`

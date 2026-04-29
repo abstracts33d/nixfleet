@@ -6,9 +6,9 @@
 //! - `token_replay` — bootstrap nonces past the 24h validity window
 //!   (`Db::prune_token_replay`)
 //! - `pending_confirms` — terminal rows (`rolled-back` / `cancelled`)
-//!   past 7 days (`Db::prune_pending_confirms`, issue #52)
+//!   past 7 days (`Db::prune_pending_confirms`, )
 //! - `host_reports` — event log past 7 days (`Db::prune_host_reports`,
-//!   issue #60)
+//!   )
 //!
 //! All helpers are idempotent — the task can be killed at any tick
 //! boundary without losing semantics. Mirrors the rollback-timer

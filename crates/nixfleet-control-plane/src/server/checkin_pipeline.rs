@@ -91,11 +91,11 @@ pub(super) async fn checkin(
 ///
 /// Recovery requires:
 /// 1. A verified fleet snapshot (otherwise we cannot validate the
-///    agent's claimed target).
+///   agent's claimed target).
 /// 2. The agent's `request.generation.closure_hash` matches the
-///    host's declared `closureHash` in the verified
-///    `FleetResolved.hosts[hostname]`. This is the same authorisation
-///    invariant the positive flow trusts (mTLS-CN + closure on file).
+///   host's declared `closureHash` in the verified
+///   `FleetResolved.hosts[hostname]`. This is the same authorisation
+///   invariant the positive flow trusts (mTLS-CN + closure on file).
 ///
 /// On success: synthesise a `confirmed` `pending_confirms` row +
 /// stamp `record_host_healthy`. On any failure (DB error, missing
@@ -142,7 +142,7 @@ async fn try_recover_orphan_confirm(
         return false;
     }
 
-    // Issue #54 — defensive rollout-id check. The closure_hash match
+    // — defensive rollout-id check. The closure_hash match
     // above proves the agent activated the closure the fleet declares
     // for this host, but it doesn't prove `req.rollout` is THIS
     // fleet's rollout id. A future schema evolution where two
@@ -166,7 +166,7 @@ async fn try_recover_orphan_confirm(
     // rebuilds + re-signs only on commit) and recoverable in one
     // poll cycle. Documenting here rather than gating on it because
     // a fix would require persisting the dispatch-time rollout id
-    // across CP rebuilds — out of scope for gap A.
+    // across CP rebuilds — out of scope for .
     let expected_rollout_id = crate::dispatch::derive_rollout_id(
         &host_decl.channel,
         fleet.meta.ci_commit.as_deref(),
@@ -229,22 +229,22 @@ async fn try_recover_orphan_confirm(
 /// would otherwise restart their soak window from zero on the
 /// next confirm, costing up to one full `soak_minutes` per
 /// affected wave. The agent's `last_confirmed_at` attestation
-/// (RFC-0003 §4.1 wire-additive field) lets the CP repopulate
+/// ( wire-additive field) lets the CP repopulate
 /// `last_healthy_since` from the agent-known timestamp — bringing
 /// the soak gate's effective state back close to its pre-rebuild
 /// position.
 ///
 /// Triggers when ALL of:
 /// 1. Agent reports `last_confirmed_at` (legacy agents leave it
-///    None, no-op for them).
+///   None, no-op for them).
 /// 2. CP has a verified `FleetResolved` snapshot.
 /// 3. The host is declared in the fleet with a `closureHash`.
 /// 4. The host's reported `current_generation.closure_hash` matches
-///    the declared target — i.e. it's converged on the live target.
+///   the declared target — i.e. it's converged on the live target.
 /// 5. No `host_rollout_state` row already exists for
-///    (rollout, host). An existing row reflects the actual
-///    lifecycle (Healthy/Soaked/Reverted) and is more authoritative
-///    than a re-attestation.
+///   (rollout, host). An existing row reflects the actual
+///   lifecycle (Healthy/Soaked/Reverted) and is more authoritative
+///   than a re-attestation.
 ///
 /// On success: synthesise a confirmed `pending_confirms` row +
 /// a `host_rollout_state` Healthy marker stamped with
@@ -343,7 +343,7 @@ async fn recover_soak_state_from_attestation(
     );
 }
 
-/// Per-checkin "left Healthy" sweep (RFC-0002 §3.2). Compares the
+/// Per-checkin "left Healthy" sweep . Compares the
 /// reported `current_generation.closure_hash` against each rollout
 /// the host is currently recorded as Healthy in; on mismatch,
 /// clears the Healthy marker so the soak timer restarts on the
@@ -597,7 +597,7 @@ fn record_dispatched_target(
 /// Behaviour:
 /// - Pending row exists, deadline not passed → mark confirmed, 204.
 /// - No matching row in 'pending' state → orphan-recovery path
-///   (gap A in docs/roadmap/0002-v0.2-completeness-gaps.md): if the
+///   ( in docs/roadmap/0002-v0.2-completeness-gaps.md): if the
 ///   agent's reported `closure_hash` matches the host's declared
 ///   target in the verified `FleetResolved`, treat this as a CP-
 ///   rebuild recovery — synthesise a confirmed pending_confirms
@@ -631,7 +631,7 @@ pub(super) async fn confirm(
     })?;
 
     if updated == 0 {
-        // Try the gap A orphan-confirm recovery path before
+        // Try the orphan-confirm recovery path before
         // declaring 410. Recovery succeeds only when the agent's
         // reported closure_hash matches the host's verified
         // target — that's the same authorisation invariant as
@@ -650,7 +650,7 @@ pub(super) async fn confirm(
                 .expect("Response::builder with valid status + body is infallible"));
         }
     } else {
-        // Standard path: stamp last_healthy_since (RFC-0002 §3.2
+        // Standard path: stamp last_healthy_since (
         // ConfirmWindow → Healthy). The orphan-recovery branch
         // already wrote it inline so we don't double-up here.
         if let Err(err) = db.record_host_healthy(&req.hostname, &req.rollout, Utc::now()) {
@@ -919,7 +919,7 @@ mod tests {
     #[tokio::test]
     async fn b_cp_recovery_skips_when_host_state_already_exists() {
         // host_rollout_state already has a row (e.g. from a normal
-        // confirm or from gap A's orphan recovery). Re-attestation
+        // confirm or from 's orphan recovery). Re-attestation
         // must NOT overwrite — the existing row is more
         // authoritative.
         let fleet = fleet_with_host("test-host", Some("system-r1"));

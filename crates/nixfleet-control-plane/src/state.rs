@@ -7,14 +7,14 @@
 //! every call site reads the same source of truth.
 //!
 //! Keeping the enum in a sibling module to `db.rs` avoids pulling
-//! a domain-specific type into the proto crate (it's CP-private —
+//! a domain-specific type into the proto crate (it's CP-private
 //! the agent never sees `pending_confirms.state` strings) while
 //! still letting `db.rs`, `rollback_timer.rs`, and any future SQL
 //! call sites share the same compile-time-checked variant names.
 
 use anyhow::{anyhow, Result};
 
-/// RFC-0003 §4.2 activation lifecycle. Persisted as TEXT in
+/// activation lifecycle. Persisted as TEXT in
 /// `pending_confirms.state` with a CHECK constraint over the
 /// canonical literals returned by [`PendingConfirmState::as_db_str`].
 ///

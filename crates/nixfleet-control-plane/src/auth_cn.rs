@@ -7,9 +7,9 @@
 //! ## Why this module exists in-tree
 //!
 //! `axum-server 0.7.3` does not expose peer certificates through any
-//! public API ([upstream issue #162](https://github.com/programatik29/axum-server/issues/162)).
+//! public API ([upstream ](https://github.com/programatik29/axum-server/issues/162)).
 //! The standard fix is a custom `Accept` wrapper that, after the TLS
-//! handshake, reads `tokio_rustls::server::TlsStream::get_ref().1.peer_certificates()`
+//! handshake, reads `tokio_rustls::server::TlsStream::get_ref .1.peer_certificates `
 //! and injects the chain into every request on that connection via a
 //! per-connection `tower::Service` wrapper.
 //!
@@ -32,7 +32,7 @@
 //!
 //! When mTLS is not configured (`tls.client_ca` is None at the
 //! server config level), the `PeerCertificates` extension still
-//! exists but is empty (`is_present() == false`). The middleware
+//! exists but is empty (`is_present == false`). The middleware
 //! treats that as a no-op and lets the request through, so TLS-only
 //! mode (and the /healthz integration test) keeps working.
 
@@ -151,9 +151,9 @@ where
             // Delegate the TLS handshake to RustlsAcceptor.
             let (tls_stream, inner_service) = inner.accept(stream, service).await?;
 
-            // After the handshake, get_ref() returns
+            // After the handshake, get_ref returns
             // (&InnerStream, &ServerConnection). ServerConnection
-            // exposes peer_certificates() returning the client's
+            // exposes peer_certificates returning the client's
             // cert chain (None if mTLS not configured or no cert
             // presented).
             let (_, server_conn) = tls_stream.get_ref();

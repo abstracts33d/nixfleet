@@ -18,14 +18,14 @@ use chrono::{DateTime, Utc};
 
 /// Filename inside `--state-dir` that carries the agent's most
 /// recent successful confirm. Two-line plaintext format:
-///   `<closure_hash>\n<rfc3339-timestamp>\n`
+/// `<closure_hash>\n<rfc3339-timestamp>\n`
 /// Written after every Acknowledged `/v1/agent/confirm`; read on
 /// every checkin. The closure_hash binds the timestamp to the
 /// generation it applies to — if the agent rolls back (current
 /// generation no longer matches the recorded closure), the
 /// timestamp is suppressed from the next checkin.
 ///
-/// Closes the agent half of gap B (issue #47): the CP-side
+/// Closes the agent half of : the CP-side
 /// projection ([`crates/nixfleet-control-plane/src/server/handlers.rs`]
 /// `recover_soak_state_from_attestation`) consumes
 /// `CheckinRequest.last_confirmed_at` to repopulate
@@ -35,8 +35,8 @@ pub const LAST_CONFIRM_FILENAME: &str = "last_confirmed_at";
 
 /// Filename inside `--state-dir` that carries the most-recently
 /// dispatched target. Written by `main.rs` after a checkin response
-/// returns a target, BEFORE `activate()` is called. Read at agent
-/// startup by `check_boot_recovery()` to detect "we got killed
+/// returns a target, BEFORE `activate ` is called. Read at agent
+/// startup by `check_boot_recovery ` to detect "we got killed
 /// mid-self-switch but the new closure is now live" — in which case
 /// the agent posts the retroactive `/v1/agent/confirm` instead of
 /// waiting for the next checkin to re-dispatch.
@@ -48,7 +48,7 @@ pub const LAST_CONFIRM_FILENAME: &str = "last_confirmed_at";
 /// would be awkward to line-encode (channel_ref containing `@`,
 /// future fields).
 ///
-/// Closes the agent half of ADR-011's "boot recovery" path. With
+/// Closes the agent half of 's "boot recovery" path. With
 /// fire-and-forget activation, the agent commonly gets killed
 /// mid-poll when the new closure restarts `nixfleet-agent.service`
 /// — the post-self-switch agent boots into the new closure and
@@ -57,11 +57,11 @@ pub const LAST_DISPATCH_FILENAME: &str = "last_dispatched";
 
 /// Persisted record of the most-recently dispatched target.
 ///
-/// Carries enough fields to reconstruct a `confirm_target()` call
+/// Carries enough fields to reconstruct a `confirm_target ` call
 /// after an agent restart. Channel + closure are the wire-essential
 /// keys; `rollout_id` is included for diagnostic correlation but
 /// the CP also re-derives it from the channel + closure on confirm.
-/// `dispatched_at` is the agent's wall-clock at write time —
+/// `dispatched_at` is the agent's wall-clock at write time
 /// purely diagnostic.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct LastDispatchRecord {

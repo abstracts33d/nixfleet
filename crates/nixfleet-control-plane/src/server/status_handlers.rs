@@ -35,7 +35,7 @@ pub(super) struct ChannelStatusResponse {
 }
 
 /// `GET /v1/channels/{name}` — declared vs currently-rolled
-/// snapshot for a channel (issue #3 acceptance criterion). Reads
+/// snapshot for a channel ( acceptance criterion). Reads
 /// from the in-memory verified-fleet snapshot — the same source
 /// of truth dispatch decisions are made against. Returns 404 when
 /// the channel is not declared in the verified `FleetResolved`.
@@ -84,7 +84,7 @@ pub(super) struct HostStatusEntry {
     /// Closure queued for next boot, if any. Null when current ==
     /// pending (the typical converged-and-rebooted state).
     pending_closure_hash: Option<String>,
-    /// Wall-clock of the most recent checkin (rfc3339). `None`
+    /// Wall-clock of the most recent checkin . `None`
     /// when the host has never checked in.
     last_checkin_at: Option<String>,
     /// Rollout id the host most recently confirmed against, per
@@ -106,7 +106,7 @@ pub(super) struct HostStatusEntry {
     /// resolution semantics as `outstanding_compliance_failures`).
     outstanding_runtime_gate_errors: usize,
     /// Count of `signature_status = Verified` events in the
-    /// host's report buffer. Auditor-chain visibility metric —
+    /// host's report buffer. Auditor-chain visibility metric
     /// when this matches `outstanding_compliance_failures +
     /// outstanding_runtime_gate_errors`, every outstanding
     /// failure has a verified signature against the host's

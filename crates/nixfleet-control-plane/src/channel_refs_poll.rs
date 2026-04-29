@@ -76,16 +76,16 @@ pub struct ChannelRefsCache {
 ///
 /// On each successful poll the task:
 /// 1. Fetches artifact + signature from the configured URLs (over
-///    HTTPS with the configured Bearer token, if any).
+///   HTTPS with the configured Bearer token, if any).
 /// 2. Reads `trust.json` fresh — operator key rotation propagates
-///    on the next poll, no CP restart required.
+///   on the next poll, no CP restart required.
 /// 3. Runs `verify_artifact` (canonicalize + signature verify +
-///    schemaVersion gate + freshness check). Same path the
-///    reconcile loop's file-backed verifier uses.
+///   schemaVersion gate + freshness check). Same path the
+///   reconcile loop's file-backed verifier uses.
 /// 4. Updates `verified_fleet` so the dispatch path's per-checkin
-///    decisions read fresh closureHashes.
+///   decisions read fresh closureHashes.
 /// 5. Refreshes the channel_refs cache (kept for telemetry +
-///    `Observed.channel_refs` projection in the reconciler).
+///   `Observed.channel_refs` projection in the reconciler).
 ///
 /// Failure semantics: log warn, retain previous state. A transient
 /// outage or a bad signature must not blank out a previously-good
@@ -123,7 +123,7 @@ pub fn spawn(
                     guard.last_refreshed_at = Some(chrono::Utc::now());
                     drop(guard);
 
-                    // Issue #49 — heartbeat at INFO on every successful
+                    // — heartbeat at INFO on every successful
                     // tick (`changed` and `unchanged` both visible).
                     // Operators tailing `journalctl -u
                     // nixfleet-control-plane` need a positive signal
@@ -150,7 +150,7 @@ pub fn spawn(
     })
 }
 
-/// One-shot synchronous fetch + verify, called once from `serve()`
+/// One-shot synchronous fetch + verify, called once from `serve `
 /// **before** starting the reconcile loop or accepting connections.
 ///
 /// Without this, the CP's first reconcile-loop prime falls back to

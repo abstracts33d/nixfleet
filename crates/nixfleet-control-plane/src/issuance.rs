@@ -3,7 +3,7 @@
 //! Validates the CSR + token, builds a TBS certificate with the
 //! standard agent-cert profile (clientAuth EKU, SAN dNSName), and
 //! signs with the fleet CA's private key. **The fleet CA private
-//! key is read at issuance time from a path on disk — issue #41
+//! key is read at issuance time from a path on disk
 //! tracks moving it to TPM-bound signing.**
 //!
 //! Audit log: every issuance writes one JSON line to journal AND
@@ -184,7 +184,7 @@ pub fn issue_cert(
     Ok((cert.pem(), not_after))
 }
 
-/// Append one JSON line to the audit log file. Best-effort —
+/// Append one JSON line to the audit log file. Best-effort
 /// failure to write the audit log warns but does not fail the
 /// issuance (the journal still has a tracing record).
 pub fn audit_log(
