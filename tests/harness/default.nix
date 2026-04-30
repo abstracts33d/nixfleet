@@ -217,6 +217,22 @@
         verifyArtifactPkg = nixfleet-verify-artifact;
       };
 
+  # Corruption-rejection scenario. Pure runCommand — bit-flips the
+  # signed fixture's canonical bytes and signature in turn, asserts
+  # verify-artifact rejects each.
+  corruptionRejectionScenario =
+    if nixfleet-verify-artifact == null
+    then
+      throw ''
+        tests/harness: fleet-harness-corruption-rejection requires
+        `nixfleet-verify-artifact`. Wire via modules/tests/harness.nix.
+      ''
+    else
+      import ./scenarios/corruption-rejection.nix {
+        inherit pkgs signedFixture;
+        verifyArtifactPkg = nixfleet-verify-artifact;
+      };
+
   # Deadline-expiry scenario. Real CP with a 3-second
   # confirm deadline; testScript drives the wire flow via curl from
   # the host VM (no agent microVM needed) — POST checkin → receive
@@ -258,6 +274,8 @@ in {
   fleet-harness-deadline-expiry = deadlineExpiryScenario;
 
   fleet-harness-auditor-chain = auditorChainScenario;
+
+  fleet-harness-corruption-rejection = corruptionRejectionScenario;
 
   # Fleet-N variants. fleet-2 is identical to smoke
   # under a different name, kept for criterion completeness.

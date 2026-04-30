@@ -62,6 +62,11 @@
           # payload and rejects a byte-flipped copy.
           fleet-harness-auditor-chain = harness.fleet-harness-auditor-chain;
 
+          # Corruption-rejection scenario. Bit-flips the signed
+          # fixture's canonical bytes and signature; asserts
+          # verify-artifact rejects each.
+          fleet-harness-corruption-rejection = harness.fleet-harness-corruption-rejection;
+
           # Probe-output fixture exposed standalone — byte-stability
           # regression guard, same role as signed-fixture.
           probe-fixture = harness.probeFixture;
