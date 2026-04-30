@@ -6,7 +6,9 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use ed25519_dalek::{Signer, SigningKey};
 use nixfleet_canonicalize::canonicalize;
 use nixfleet_proto::TrustedPubkey;
-use nixfleet_reconciler::{verify_artifact, verify_revocations, VerifyError};
+use nixfleet_reconciler::{
+    compute_rollout_id, verify_artifact, verify_revocations, verify_rollout_manifest, VerifyError,
+};
 use rand::rngs::OsRng;
 use rand::TryRngCore;
 use std::time::Duration;
@@ -816,4 +818,169 @@ fn reject_before_takes_precedence_over_stale() {
         matches!(err, VerifyError::RejectedBeforeTimestamp { .. }),
         "compromise switch must win over routine staleness, got {err:?}"
     );
+}
+
+// =================================================================
+// verify_rollout_manifest + compute_rollout_id — RFC-0002 §4.4
+// =================================================================
+
+const FIXTURE_MANIFEST: &str = r#"{
+  "schemaVersion": 1,
+  "displayName": "stable@def4567",
+  "channel": "stable",
+  "channelRef": "def4567abc123def4567abc123def4567abc123d",
+  "targetClosure": "0000000000000000000000000000000000000000-test-system",
+  "fleetResolvedHash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "hostSet": [
+    {"hostname": "agent-01", "waveIndex": 0},
+    {"hostname": "agent-02", "waveIndex": 1}
+  ],
+  "healthGate": {},
+  "complianceFrameworks": ["anssi-bp028"],
+  "meta": {
+    "schemaVersion": 1,
+    "signedAt": "2026-04-30T12:00:00Z",
+    "ciCommit": "def45678",
+    "signatureAlgorithm": "ed25519"
+  }
+}"#;
+
+fn sign_manifest(json: &str) -> (Vec<u8>, [u8; 64], TrustedPubkey, DateTime<Utc>) {
+    sign_artifact(json)
+}
+
+#[test]
+fn verify_rollout_manifest_ok_returns_manifest() {
+    let (bytes, sig, trust, signed_at) = sign_manifest(FIXTURE_MANIFEST);
+    let now = signed_at + ChronoDuration::minutes(30);
+    let window = Duration::from_secs(3 * 3600);
+
+    let result = verify_rollout_manifest(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    );
+    let m = result.expect("verify_rollout_manifest_ok");
+    assert_eq!(m.schema_version, 1);
+    assert_eq!(m.channel, "stable");
+    assert_eq!(m.host_set.len(), 2);
+    assert_eq!(m.host_set[0].hostname, "agent-01");
+    assert_eq!(m.host_set[1].wave_index, 1);
+}
+
+#[test]
+fn verify_rollout_manifest_rejects_tampered_signature() {
+    let (bytes, mut sig, trust, signed_at) = sign_manifest(FIXTURE_MANIFEST);
+    sig[0] ^= 0xFF;
+    let now = signed_at + ChronoDuration::minutes(30);
+    let window = Duration::from_secs(3 * 3600);
+
+    let err = verify_rollout_manifest(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(err, VerifyError::BadSignature));
+}
+
+#[test]
+fn verify_rollout_manifest_rejects_stale() {
+    let (bytes, sig, trust, signed_at) = sign_manifest(FIXTURE_MANIFEST);
+    let now = signed_at + ChronoDuration::hours(4);
+    let window = Duration::from_secs(3 * 3600);
+
+    let err = verify_rollout_manifest(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(err, VerifyError::Stale { .. }));
+}
+
+#[test]
+fn compute_rollout_id_is_64_hex_chars() {
+    let (bytes, sig, trust, signed_at) = sign_manifest(FIXTURE_MANIFEST);
+    let now = signed_at + ChronoDuration::minutes(30);
+    let window = Duration::from_secs(3 * 3600);
+
+    let m = verify_rollout_manifest(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    )
+    .expect("verify ok");
+
+    let id = compute_rollout_id(&m).expect("compute_rollout_id");
+    assert_eq!(id.len(), 64, "sha256 hex must be 64 chars: {id}");
+    assert!(
+        id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "id must be hex lowercase only: {id}"
+    );
+}
+
+#[test]
+fn compute_rollout_id_stable_across_round_trip() {
+    // Compute id from the verified manifest, then serialize → parse →
+    // compute again. Bytes round-trip identically through JCS, so the
+    // recomputed id must match.
+    let (bytes, sig, trust, signed_at) = sign_manifest(FIXTURE_MANIFEST);
+    let now = signed_at + ChronoDuration::minutes(30);
+    let window = Duration::from_secs(3 * 3600);
+
+    let m = verify_rollout_manifest(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    )
+    .expect("verify ok");
+
+    let id1 = compute_rollout_id(&m).unwrap();
+    let raw = serde_json::to_string(&m).unwrap();
+    let m2: nixfleet_proto::RolloutManifest = serde_json::from_str(&raw).unwrap();
+    let id2 = compute_rollout_id(&m2).unwrap();
+
+    assert_eq!(id1, id2, "id must survive serialize/parse round-trip");
+}
+
+#[test]
+fn compute_rollout_id_changes_with_field_change() {
+    // Sanity: any field change perturbs the id. Validates that the
+    // hash actually covers the canonical surface.
+    let (bytes, sig, trust, signed_at) = sign_manifest(FIXTURE_MANIFEST);
+    let now = signed_at + ChronoDuration::minutes(30);
+    let window = Duration::from_secs(3 * 3600);
+
+    let m = verify_rollout_manifest(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    )
+    .expect("verify ok");
+    let id1 = compute_rollout_id(&m).unwrap();
+
+    let mut m2 = m.clone();
+    m2.target_closure = "9999999999999999999999999999999999999999-perturbed".to_string();
+    let id2 = compute_rollout_id(&m2).unwrap();
+
+    assert_ne!(id1, id2);
 }

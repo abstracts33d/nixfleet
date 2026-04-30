@@ -4,9 +4,48 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
-use nixfleet_proto::{FleetResolved, Revocations, TrustedPubkey};
+use nixfleet_proto::{FleetResolved, Revocations, RolloutManifest, TrustedPubkey};
+use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use thiserror::Error;
+
+/// A signed sidecar artifact verified through the shared
+/// canonicalize → signature-verify → freshness-gate pipeline.
+/// Every signed artifact under `ciReleaseKey` (CONTRACTS.md §I)
+/// implements this trait — the `verify_signed_sidecar` generic
+/// works against any of them.
+pub trait SignedSidecar {
+    fn schema_version(&self) -> u32;
+    fn signed_at(&self) -> Option<DateTime<Utc>>;
+}
+
+impl SignedSidecar for FleetResolved {
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+    fn signed_at(&self) -> Option<DateTime<Utc>> {
+        self.meta.signed_at
+    }
+}
+
+impl SignedSidecar for Revocations {
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+    fn signed_at(&self) -> Option<DateTime<Utc>> {
+        self.meta.signed_at
+    }
+}
+
+impl SignedSidecar for RolloutManifest {
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+    fn signed_at(&self) -> Option<DateTime<Utc>> {
+        self.meta.signed_at
+    }
+}
 
 /// Accepted `schemaVersion` for this consumer.
 const ACCEPTED_SCHEMA_VERSION: u32 = 1;
@@ -53,6 +92,16 @@ pub enum VerifyError {
     NoTrustRoots,
 }
 
+/// Verify any signed sidecar artifact (`fleet.resolved.json`,
+/// `revocations.json`, `releases/rollouts/<rolloutId>.json`).
+///
+/// Generic over the parsed payload type — every signed artifact
+/// under `ciReleaseKey` (CONTRACTS.md §I) goes through the same
+/// canonicalize → signature-verify → schema-gate → freshness-gate
+/// pipeline. Rule-of-three consolidation: the per-artifact wrappers
+/// `verify_artifact`, `verify_revocations`, `verify_rollout_manifest`
+/// delegate here.
+///
 /// `trusted_keys` supports the rotation grace window — current +
 /// previous keys are both valid for up to 30 days. Tries in
 /// declaration order; first match wins. Entries with unsupported
@@ -62,6 +111,24 @@ pub enum VerifyError {
 /// is rejected regardless of which key matched. Strict `<` — exact
 /// equality is accepted. Fires before the freshness check so
 /// alerts can distinguish incident response from routine staleness.
+pub fn verify_signed_sidecar<T: SignedSidecar + DeserializeOwned>(
+    signed_bytes: &[u8],
+    signature: &[u8],
+    trusted_keys: &[TrustedPubkey],
+    now: DateTime<Utc>,
+    freshness_window: Duration,
+    reject_before: Option<DateTime<Utc>>,
+) -> Result<T, VerifyError> {
+    let canonical =
+        verify_signature_against_trust_roots(signed_bytes, signature, trusted_keys)?;
+    finish_sidecar_verification(&canonical, now, freshness_window, reject_before)
+}
+
+/// Thin wrapper around `verify_signed_sidecar` for `FleetResolved`.
+/// Kept as a named entry point because every existing caller (CP
+/// boot, channel-refs poll, agent direct-fetch fallback) reads
+/// better at the call site as `verify_artifact(...)` than as
+/// `verify_signed_sidecar::<FleetResolved>(...)`.
 pub fn verify_artifact(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -70,9 +137,14 @@ pub fn verify_artifact(
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
 ) -> Result<FleetResolved, VerifyError> {
-    let canonical =
-        verify_signature_against_trust_roots(signed_bytes, signature, trusted_keys)?;
-    finish_verification(&canonical, now, freshness_window, reject_before)
+    verify_signed_sidecar(
+        signed_bytes,
+        signature,
+        trusted_keys,
+        now,
+        freshness_window,
+        reject_before,
+    )
 }
 
 /// `verify_strict` rejects malleable signatures — required for
@@ -180,13 +252,8 @@ fn verify_ecdsa_p256(
 }
 
 /// Verify a signed `revocations.json` artifact. Same trust class
-/// as [`verify_artifact`] — both signed by `ciReleaseKey` — so
-/// the same freshness window +
-/// reject-before kill switch + canonicalization + signature path
-/// applies. The only thing that differs is the type-parse target
-/// (Revocations rather than FleetResolved) and the schema version
-/// constant (currently the same value, but kept independent so
-/// the two artifacts can evolve their schemas separately).
+/// as [`verify_artifact`] — both signed by `ciReleaseKey` — so the
+/// shared `verify_signed_sidecar` pipeline applies unchanged.
 pub fn verify_revocations(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -195,9 +262,67 @@ pub fn verify_revocations(
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
 ) -> Result<Revocations, VerifyError> {
+    verify_signed_sidecar(
+        signed_bytes,
+        signature,
+        trusted_keys,
+        now,
+        freshness_window,
+        reject_before,
+    )
+}
+
+/// Verify a signed `releases/rollouts/<rolloutId>.json` artifact.
+/// Same trust class as `fleet.resolved.json` and `revocations.json`.
+///
+/// Callers that received a `rolloutId` advertised by the CP should
+/// additionally call [`compute_rollout_id`] on the verified manifest
+/// and assert the result equals the advertised id — that's the
+/// content-address check that closes RFC-0002 §4.4's threat model.
+/// Kept as a separate step so the verify path itself stays generic.
+pub fn verify_rollout_manifest(
+    signed_bytes: &[u8],
+    signature: &[u8],
+    trusted_keys: &[TrustedPubkey],
+    now: DateTime<Utc>,
+    freshness_window: Duration,
+    reject_before: Option<DateTime<Utc>>,
+) -> Result<RolloutManifest, VerifyError> {
+    verify_signed_sidecar(
+        signed_bytes,
+        signature,
+        trusted_keys,
+        now,
+        freshness_window,
+        reject_before,
+    )
+}
+
+/// Compute a `RolloutManifest`'s rolloutId — `sha256(canonical(m))`,
+/// hex lowercase. Producer-side use: `nixfleet-release` derives the
+/// filename `releases/rollouts/<rolloutId>.json` from this. Consumer
+/// side: every recipient (CP on adoption, agent on first-fetch,
+/// auditor offline) recomputes and asserts equality against the id
+/// it was told to fetch.
+///
+/// Errors only on serde or canonicalize failure — both indicate a
+/// malformed manifest the caller should refuse to act on.
+pub fn compute_rollout_id(manifest: &RolloutManifest) -> Result<String, VerifyError> {
+    let raw = serde_json::to_string(manifest)?;
     let canonical =
-        verify_signature_against_trust_roots(signed_bytes, signature, trusted_keys)?;
-    finish_revocations_verification(&canonical, now, freshness_window, reject_before)
+        nixfleet_canonicalize::canonicalize(&raw).map_err(VerifyError::Canonicalize)?;
+    let digest = Sha256::digest(canonical.as_bytes());
+    Ok(hex_lowercase(&digest))
+}
+
+fn hex_lowercase(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 /// Shared parse → canonicalize → sig-verify. Returns canonical
@@ -248,19 +373,32 @@ fn verify_signature_against_trust_roots(
     Err(VerifyError::BadSignature)
 }
 
-/// Mirrors `finish_verification` for the `Revocations` type.
-/// Separate so the two artifacts can drift schema versions.
-fn finish_revocations_verification(
+/// Generic schema-gate + reject-before + freshness check.
+/// Slack added to window (not timestamp) tolerates "signed_at > now"
+/// symmetrically — negative diff passes the comparison. `reject_before`
+/// is checked before freshness so alerts distinguish "key compromised,
+/// rotate" from "CI is behind".
+///
+/// Applies `CLOCK_SKEW_SLACK_SECS` uniformly to every sidecar — same
+/// trust root, same fetch path, same clock-drift surface, same slack.
+/// (Pre-consolidation, the slack only applied to `FleetResolved`; the
+/// asymmetry was a vestigial oversight from when revocations.json was
+/// added separately.)
+fn finish_sidecar_verification<T: SignedSidecar + DeserializeOwned>(
     canonical: &str,
     now: DateTime<Utc>,
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
-) -> Result<Revocations, VerifyError> {
-    let revs: Revocations = serde_json::from_str(canonical)?;
-    if revs.schema_version != ACCEPTED_SCHEMA_VERSION {
-        return Err(VerifyError::SchemaVersionUnsupported(revs.schema_version));
+) -> Result<T, VerifyError> {
+    let payload: T = serde_json::from_str(canonical)?;
+    if payload.schema_version() != ACCEPTED_SCHEMA_VERSION {
+        return Err(VerifyError::SchemaVersionUnsupported(
+            payload.schema_version(),
+        ));
     }
-    let signed_at = revs.meta.signed_at.ok_or(VerifyError::NotSigned)?;
+
+    let signed_at = payload.signed_at().ok_or(VerifyError::NotSigned)?;
+
     if let Some(rb) = reject_before {
         if signed_at < rb {
             return Err(VerifyError::RejectedBeforeTimestamp {
@@ -269,46 +407,9 @@ fn finish_revocations_verification(
             });
         }
     }
+
     let window = ChronoDuration::from_std(freshness_window)
         .expect("freshness_window fits in i64 nanoseconds — multi-century windows are a bug");
-    if now - signed_at > window {
-        return Err(VerifyError::Stale {
-            signed_at,
-            now,
-            window: freshness_window,
-        });
-    }
-    Ok(revs)
-}
-
-/// `reject_before` is checked before freshness so alerts can
-/// distinguish "key compromised, rotate" from "CI is behind".
-fn finish_verification(
-    canonical: &str,
-    now: DateTime<Utc>,
-    freshness_window: Duration,
-    reject_before: Option<DateTime<Utc>>,
-) -> Result<FleetResolved, VerifyError> {
-    let fleet: FleetResolved = serde_json::from_str(canonical)?;
-    if fleet.schema_version != ACCEPTED_SCHEMA_VERSION {
-        return Err(VerifyError::SchemaVersionUnsupported(fleet.schema_version));
-    }
-
-    let signed_at = fleet.meta.signed_at.ok_or(VerifyError::NotSigned)?;
-
-    if let Some(rb) = reject_before {
-        if signed_at < rb {
-            return Err(VerifyError::RejectedBeforeTimestamp {
-                signed_at,
-                reject_before: rb,
-            });
-        }
-    }
-
-    // Slack added to window (not timestamp) tolerates "signed_at >
-    // now" symmetrically — negative diff passes the comparison.
-    let window = ChronoDuration::from_std(freshness_window)
-        .expect("freshness_window fits in i64 nanoseconds");
     let effective_window = window + ChronoDuration::seconds(CLOCK_SKEW_SLACK_SECS);
     if now - signed_at > effective_window {
         return Err(VerifyError::Stale {
@@ -318,7 +419,7 @@ fn finish_verification(
         });
     }
 
-    Ok(fleet)
+    Ok(payload)
 }
 
 pub const CLOCK_SKEW_SLACK_SECS: i64 = 60;

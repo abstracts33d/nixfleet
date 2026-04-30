@@ -29,4 +29,7 @@ pub use nixfleet_proto::FleetResolved;
 pub use observed::{HostState, Observed, Rollout};
 pub use reconcile::reconcile;
 pub use rollout_state::RolloutState;
-pub use verify::{verify_artifact, verify_revocations, VerifyError};
+pub use verify::{
+    compute_rollout_id, verify_artifact, verify_revocations, verify_rollout_manifest,
+    verify_signed_sidecar, SignedSidecar, VerifyError,
+};

@@ -24,6 +24,7 @@ anyhow = "1"
 thiserror = "2"
 base64 = "0.22"
 serde_jcs = "0.2"
+sha2 = "0.10"
 ssh-key = { version = "0.6", features = ["ed25519"] }
 
 [dev-dependencies]
