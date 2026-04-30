@@ -18,7 +18,7 @@
 //! - 404 — file not found, or `<rolloutId>` is not 64-char hex.
 //! - 500 — files present but recomputed hash doesn't match the path.
 
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -35,7 +35,7 @@ fn looks_like_rollout_id(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
-fn manifest_paths(dir: &PathBuf, rollout_id: &str) -> (PathBuf, PathBuf) {
+fn manifest_paths(dir: &FsPath, rollout_id: &str) -> (PathBuf, PathBuf) {
     let manifest = dir.join(format!("{rollout_id}.json"));
     let sig = dir.join(format!("{rollout_id}.json.sig"));
     (manifest, sig)

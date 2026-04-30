@@ -14,8 +14,8 @@
 //!   - Missing → 404 from CP, IO failure, or parse failure.
 //!   - VerifyFailed → signature failed against trust roots.
 //!   - Mismatch → hash recompute failed, host_set membership failed,
-//!                or a previously-cached rolloutId resolves to
-//!                different bytes than today's fetch.
+//!     or a previously-cached rolloutId resolves to different bytes
+//!     than today's fetch.
 //!
 //! Cache layout: `<state_dir>/rollouts/<rolloutId>.{json,sig}`.
 //! On every checkin the agent compares the advertised rolloutId to
