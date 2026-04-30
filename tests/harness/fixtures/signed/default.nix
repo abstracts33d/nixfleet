@@ -21,6 +21,13 @@
   freshnessWindowMinutes ? 86400,
   seedSalt ? "nixfleet-harness-test-seed-2026",
   derivationName ? "nixfleet-harness-signed-fixture",
+  # Per-host closureHash overrides. Default empty → mk-fleet's
+  # `closureHash = null` semantics (the production release pipeline
+  # injects real values from `system.build.toplevel`). Pass
+  # `{ "agent-01" = "..."; }` to make the agent's reported
+  # closure_hash match for convergence-dependent scenarios (e.g.
+  # the teardown's soak-state attestation recovery proof).
+  hostClosureHashes ? {},
 }: let
   fixedSignedAt = signedAt;
   fixedCiCommit = "0000000000000000000000000000000000000000";
@@ -86,13 +93,25 @@
 
   fleet = mkFleet fleetInput;
 
+  resolvedWithClosureHashes =
+    fleet.resolved
+    // {
+      hosts =
+        lib.mapAttrs (name: host:
+          host
+          // (lib.optionalAttrs (hostClosureHashes ? ${name}) {
+            closureHash = hostClosureHashes.${name};
+          }))
+        fleet.resolved.hosts;
+    };
+
   stamped =
     withSignature {
       signedAt = fixedSignedAt;
       ciCommit = fixedCiCommit;
       signatureAlgorithm = fixedAlgorithm;
     }
-    fleet.resolved;
+    resolvedWithClosureHashes;
 
   signed = import ./sign-bytes.nix {
     inherit pkgs nixfleet-canonicalize seedSalt;

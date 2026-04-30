@@ -5,46 +5,32 @@
 #
 # Sequence:
 #   1. Boot host VM running cp-real + N agent microVMs running
-#      agent-real.
+#      agent-real. Each agent is pre-seeded with last_confirmed_at
+#      and an overridden /run/current-system so its reported
+#      closure_hash matches the fleet's declared expectation.
 #   2. Wait for both agents to log at least one successful checkin
-#      ("checkin received" line in the CP journal). This proves
-#      the steady-state.
+#      ("checkin received" line in the CP journal). Steady-state.
 #   3. Stop the CP service, `rm -rf /var/lib/nixfleet-cp/state.db*`
 #      (matches the runbook's wipe step), restart the service.
-#   4. Wait for both agents to log a NEW checkin (post-restart).
-#      The agents are on a 10s poll cadence — recovery must
-#      complete within 30s.
-#   5. Assert each agent's post-restart checkin lands while the
-#      verified-fleet snapshot also reprimes from the on-disk
-#      signed artifact.
+#   4. Wait for the post-restart CP to:
+#      - accept fresh checkins from each agent (soft-state replay),
+#      - replay the signed revocations.json sidecar into
+#        cert_revocations within one poll cycle,
+#      - apply the agent-attested last_confirmed_at to repopulate
+#        host_rollout_state.last_healthy_since (soak-state recovery).
 #
 # What this proves:
-#   - The CP can be restarted from empty SQLite state and resumes
-#     accepting agent checkins immediately.
-#   - The in-memory `host_checkins` projection repopulates on the
-#     next agent checkin cycle (soft-state recovery; orphan-confirm
-#     is dormant here because no rollouts are in flight).
-#   - The verified-fleet snapshot reprimes from the build-time
-#     artifact path on restart (no GitOps poll wired in this
-#     scenario; the file-backed prime is the recovery source).
-#
-# What this does NOT yet prove (deferred):
-#   - cert_revocations replay from a signed sidecar — needs the
-#     harness to bake a signed revocations.json fixture.
-#   - host_rollout_state recovery via the agent-attested
-#     last_confirmed_at field — needs the agent to actually post a
-#     confirm, which requires a closureHash matching
-#     /run/current-system in the fixture (currently null per
-#     fleet-resolved.json so dispatch returns NoDeclaration).
-#   - pending_confirms orphan-recovery — needs an in-flight
-#     dispatch at wipe time, same dependency.
-#
-# All three deferred properties are covered by per-table unit
-# tests (see crates/nixfleet-control-plane/src/db.rs#tests). This
-# scenario is the integration-level proof that the agent-side
-# repopulation property holds end-to-end.
+#   - CP restart from empty SQLite resumes accepting checkins
+#     within one reconcile cycle (soft-state).
+#   - verified_fleet snapshot reprimes from the build-time signed
+#     artifact path.
+#   - cert_revocations rebuilds from the signed sidecar (hard-state,
+#     security-material).
+#   - host_rollout_state.last_healthy_since rebuilds from the
+#     agent-attested last_confirmed_at field on convergence.
 {
   lib,
+  pkgs,
   harnessLib,
   testCerts,
   signedFixture,
@@ -55,6 +41,12 @@
   # host VM, and the post-wipe step asserts the sidecar replays into
   # `cert_revocations` within one poll cycle.
   revocationsFixture ? null,
+  # Convergence target for the soak-state recovery proof. Must match
+  # the closureHash injected into `signedFixture`'s fleet.resolved
+  # for both agents — the preseedModule below makes the agent's
+  # /run/current-system resolve to a path with this basename so
+  # current_generation.closure_hash matches fleet.hosts[*].closureHash.
+  teardownClosureHash,
   agentNames ? ["agent-01" "agent-02"],
   ...
 }: let
@@ -62,11 +54,54 @@
     inherit testCerts signedFixture cpPkg revocationsFixture;
   };
 
+  # Pre-seeds last_confirmed_at and overrides /run/current-system so
+  # each agent reports the convergence closure_hash + echoes a
+  # synthetic attestation timestamp on every checkin. Both pieces
+  # are required for the CP's recover_soak_state_from_attestation
+  # path to apply: the closure match unlocks the recovery, the
+  # attestation provides the timestamp to clamp into
+  # host_rollout_state.last_healthy_since.
+  attestedAt = "2026-04-01T00:00:00Z";
+  preseedModule = {pkgs, ...}: {
+    systemd.services.harness-agent-preseed = {
+      description = "Pre-seed agent state-dir + override /run/current-system for convergence";
+      wantedBy = ["multi-user.target"];
+      before = ["nixfleet-agent.service"];
+      after = ["local-fs.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        set -euo pipefail
+
+        # Override /run/current-system. The symlink target doesn't
+        # need to exist — the agent only reads the symlink string
+        # via fs::read_link and bases its closure_hash report on
+        # path basename.
+        ${pkgs.coreutils}/bin/ln -sfn \
+          /tmp/${teardownClosureHash} /run/current-system
+
+        # Seed last_confirmed_at in the agent's state dir. Format
+        # per crates/nixfleet-agent/src/checkin_state.rs:
+        # <closure_hash>\n<rfc3339>\n. Two-line plaintext.
+        ${pkgs.coreutils}/bin/mkdir -p /var/lib/nixfleet-agent
+        ${pkgs.coreutils}/bin/chmod 0700 /var/lib/nixfleet-agent
+        ${pkgs.coreutils}/bin/printf '%s\n%s\n' \
+          '${teardownClosureHash}' '${attestedAt}' \
+          > /var/lib/nixfleet-agent/last_confirmed_at
+        ${pkgs.coreutils}/bin/chmod 0600 \
+          /var/lib/nixfleet-agent/last_confirmed_at
+      '';
+    };
+  };
+
   mkAgent = name:
     harnessLib.mkRealAgentNode {
       inherit testCerts signedFixture agentPkg;
       hostName = name;
       pollIntervalSecs = 10;
+      extraModules = [preseedModule];
     };
 
   agents = lib.listToAttrs (map (n: {
@@ -103,6 +138,40 @@ in
                 "revocations sidecar did not replay within 90s after CP wipe"
             )
         print("step 4: revocations sidecar replayed (1 entry verified)")
+      '';
+
+      # Soft-state attestation recovery: each agent's pre-seeded
+      # last_confirmed_at must echo on its first post-wipe checkin
+      # and trigger recover_soak_state_from_attestation, which
+      # stamps host_rollout_state.last_healthy_since from the
+      # attested timestamp. The CP emits the load-bearing log line
+      # from checkin_pipeline::recover_soak_state_from_attestation.
+      assertSoakStateRecovered = ''
+
+        print("step 5: waiting for soak-state attestation recovery…")
+        soak_deadline = time.monotonic() + 60
+        recovered = set()
+        agents_set = set(${builtins.toJSON agentNames})
+        while recovered != agents_set and time.monotonic() < soak_deadline:
+            for hostname in list(agents_set - recovered):
+                rc, _ = host.execute(
+                    "journalctl -u nixfleet-control-plane.service "
+                    f"--since='{post_wipe_cursor}' --no-pager "
+                    "| grep -E "
+                    f"'soak-state recovery: stamped last_healthy_since.*{hostname}'"
+                )
+                if rc == 0:
+                    recovered.add(hostname)
+            if recovered != agents_set:
+                time.sleep(3)
+        missing = agents_set - recovered
+        if missing:
+            raise Exception(
+                f"soak-state recovery did not stamp last_healthy_since "
+                f"for {missing} within 60s after CP wipe"
+            )
+        print("step 5: soak-state recovery stamped last_healthy_since "
+              f"for {len(recovered)} agents")
       '';
     in ''
       import time
@@ -206,10 +275,13 @@ in
       )
 
       ${assertRevocationsReplayed}
+      ${assertSoakStateRecovered}
 
       print(
           "fleet-harness-teardown: every agent re-checked-in within "
-          "one reconcile cycle after CP DB wipe (ARCHITECTURE.md §8)."
+          "one reconcile cycle after CP DB wipe; revocations sidecar "
+          "replayed and soak-state attestation recovery stamped "
+          "host_rollout_state (ARCHITECTURE.md §8)."
       )
     '';
   }

@@ -108,6 +108,27 @@
     then null
     else import ./fixtures/signed/revocations.nix {inherit pkgs nixfleet-canonicalize;};
 
+  # Convergence variant of signedFixture for the teardown scenario.
+  # Same seedSalt → same trust.json verifies it; the difference is
+  # an injected per-host closureHash so the agent's reported
+  # current_generation.closure_hash matches the fleet's expectation
+  # (the agent VM overrides /run/current-system to a path with this
+  # basename). That match is what the CP-side soak-state attestation
+  # recovery requires before applying last_confirmed_at.
+  teardownClosureHash = "0000000000000000000000000000000000000000-harness-stub";
+  teardownSignedFixture =
+    if nixfleet-canonicalize == null
+    then null
+    else
+      import ./fixtures/signed {
+        inherit lib pkgs nixfleet-canonicalize;
+        derivationName = "nixfleet-harness-teardown-signed-fixture";
+        hostClosureHashes = {
+          "agent-01" = teardownClosureHash;
+          "agent-02" = teardownClosureHash;
+        };
+      };
+
   # Stale variant of the signed fixture: deliberately
   # signs the artifact a year and a half in the past so any sane
   # freshness window puts the agent's clock-skewed `now − signedAt`
@@ -161,7 +182,13 @@
     else
       import ./scenarios/teardown.nix (scenarioArgs
         // {
-          inherit signedFixture revocationsFixture;
+          # The teardown scenario uses the convergence variant of the
+          # signed fixture so the agent's reported closure_hash
+          # matches the fleet's declared value (lets the soak-state
+          # recovery path actually run after the CP wipe). Other
+          # consumers keep using signedFixture.
+          signedFixture = teardownSignedFixture;
+          inherit revocationsFixture teardownClosureHash;
           cpPkg = nixfleet-control-plane;
           agentPkg = nixfleet-agent;
         });
