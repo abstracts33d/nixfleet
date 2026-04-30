@@ -121,10 +121,7 @@ async fn decide_and_run(
     }
 
     // Match — post retroactive confirm.
-    use crate::host_facts::{Host, HostFacts};
-    let boot_id = Host::new()
-        .boot_id()
-        .unwrap_or_else(|_| "unknown".to_string());
+    let boot_id = crate::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
     // Synthesize an EvaluatedTarget shape from the persisted record.
     // signed_at + freshness_window_secs deliberately None: the
     // freshness gate already passed when we first dispatched, and

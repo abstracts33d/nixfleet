@@ -658,10 +658,7 @@ async fn confirm_and_finalize(
     client_handle: &reqwest::Client,
     args: &Args,
 ) {
-    use nixfleet_agent::host_facts::{Host, HostFacts};
-    let boot_id = Host::new()
-        .boot_id()
-        .unwrap_or_else(|_| "unknown".to_string());
+    let boot_id = nixfleet_agent::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
     let rollout = &target.channel_ref;
     // Wave 0 — wave/soak staging is deferred.
     let wave: u32 = 0;
@@ -864,10 +861,8 @@ async fn send_checkin(
     args: &Args,
     started_at: Instant,
 ) -> anyhow::Result<nixfleet_proto::agent_wire::CheckinResponse> {
-    use nixfleet_agent::host_facts::{Host, HostFacts};
-    let host = Host::new();
-    let current_generation = host.current_generation_ref()?;
-    let pending_generation = host.pending_generation()?;
+    let current_generation = nixfleet_agent::host_facts::current_generation_ref()?;
+    let pending_generation = nixfleet_agent::host_facts::pending_generation()?;
     let uptime_secs = checkin_state::uptime_secs(started_at);
 
     // Gap B: attest the most recent confirm timestamp when it

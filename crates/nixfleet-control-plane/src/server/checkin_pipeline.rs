@@ -561,14 +561,14 @@ fn record_dispatched_target(
     now: DateTime<Utc>,
 ) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
     let confirm_deadline = now + chrono::Duration::seconds(state.confirm_deadline_secs);
-    match db.record_pending_confirm(
+    match db.record_pending_confirm(&crate::db::PendingConfirmInsert {
         hostname,
         rollout_id,
-        wave_index.unwrap_or(0),
-        &target.closure_hash,
-        &target.channel_ref,
+        wave: wave_index.unwrap_or(0),
+        target_closure_hash: &target.closure_hash,
+        target_channel_ref: &target.channel_ref,
         confirm_deadline,
-    ) {
+    }) {
         Ok(_) => {
             tracing::info!(
                 target: "dispatch",

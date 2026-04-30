@@ -6,6 +6,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use nixfleet_proto::TrustedPubkey;
 
 /// 15s timeout — faster trips on transient upstream blips.
 pub fn build_client() -> reqwest::Client {
@@ -14,6 +16,21 @@ pub fn build_client() -> reqwest::Client {
         .timeout(Duration::from_secs(15))
         .build()
         .expect("build signed-fetch client (rustls + 15s timeout)")
+}
+
+/// Read trust.json fresh, returning the active CI release keys +
+/// the optional `reject_before` compromise switch. Both polls and
+/// the reconcile loop call this — rotation in trust.json propagates
+/// without a CP restart.
+pub fn read_trust_roots(path: &Path) -> Result<(Vec<TrustedPubkey>, Option<DateTime<Utc>>)> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("read trust file {}", path.display()))?;
+    let trust: nixfleet_proto::TrustConfig =
+        serde_json::from_str(&raw).context("parse trust file")?;
+    Ok((
+        trust.ci_release_key.active_keys(),
+        trust.ci_release_key.reject_before,
+    ))
 }
 
 /// Read fresh on each poll so token rotation propagates without

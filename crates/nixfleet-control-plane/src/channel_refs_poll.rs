@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tokio::sync::RwLock;
 
 use crate::signed_fetch;
@@ -112,16 +112,7 @@ async fn poll_once(
     )
     .await?;
 
-    // Trust roots are read fresh on every poll. Operator rotates
-    // `nixfleet.trust.ciReleaseKey.current` → next deploy
-    // materialises the new trust.json → next poll picks it up. No
-    // CP restart needed.
-    let trust_raw = std::fs::read_to_string(&config.trust_path)
-        .with_context(|| format!("read trust file {}", config.trust_path.display()))?;
-    let trust: nixfleet_proto::TrustConfig =
-        serde_json::from_str(&trust_raw).context("parse trust file")?;
-    let trusted_keys = trust.ci_release_key.active_keys();
-    let reject_before = trust.ci_release_key.reject_before;
+    let (trusted_keys, reject_before) = signed_fetch::read_trust_roots(&config.trust_path)?;
 
     let fleet_resolved = nixfleet_reconciler::verify_artifact(
         &artifact_bytes,

@@ -260,25 +260,20 @@ fn run_tick_with_projection(
     compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
 ) -> (anyhow::Result<crate::TickOutput>, Option<FleetResolved>) {
     use anyhow::Context;
-    let read_inputs = || -> anyhow::Result<(Vec<u8>, Vec<u8>, nixfleet_proto::TrustConfig)> {
+    let read_inputs = || -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<nixfleet_proto::TrustedPubkey>, Option<chrono::DateTime<chrono::Utc>>)> {
         let artifact = std::fs::read(&inputs.artifact_path)
             .with_context(|| format!("read artifact {}", inputs.artifact_path.display()))?;
         let signature = std::fs::read(&inputs.signature_path)
             .with_context(|| format!("read signature {}", inputs.signature_path.display()))?;
-        let trust_raw = std::fs::read_to_string(&inputs.trust_path)
-            .with_context(|| format!("read trust {}", inputs.trust_path.display()))?;
-        let trust: nixfleet_proto::TrustConfig =
-            serde_json::from_str(&trust_raw).context("parse trust")?;
-        Ok((artifact, signature, trust))
+        let (trusted_keys, reject_before) =
+            crate::signed_fetch::read_trust_roots(&inputs.trust_path)?;
+        Ok((artifact, signature, trusted_keys, reject_before))
     };
 
-    let (artifact, signature, trust) = match read_inputs() {
+    let (artifact, signature, trusted_keys, reject_before) = match read_inputs() {
         Ok(t) => t,
         Err(e) => return (Err(e), None),
     };
-
-    let trusted_keys = trust.ci_release_key.active_keys();
-    let reject_before = trust.ci_release_key.reject_before;
 
     let (verify, fleet) = match nixfleet_reconciler::verify_artifact(
         &artifact,
@@ -333,15 +328,15 @@ fn run_tick_with_projection(
 pub(super) fn verify_fleet_only(inputs: &TickInputs) -> Option<FleetResolved> {
     let artifact = std::fs::read(&inputs.artifact_path).ok()?;
     let signature = std::fs::read(&inputs.signature_path).ok()?;
-    let trust_raw = std::fs::read_to_string(&inputs.trust_path).ok()?;
-    let trust: nixfleet_proto::TrustConfig = serde_json::from_str(&trust_raw).ok()?;
+    let (trusted_keys, reject_before) =
+        crate::signed_fetch::read_trust_roots(&inputs.trust_path).ok()?;
     nixfleet_reconciler::verify_artifact(
         &artifact,
         &signature,
-        &trust.ci_release_key.active_keys(),
+        &trusted_keys,
         inputs.now,
         inputs.freshness_window,
-        trust.ci_release_key.reject_before,
+        reject_before,
     )
     .ok()
 }
