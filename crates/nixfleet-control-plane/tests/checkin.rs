@@ -212,6 +212,7 @@ async fn report_records_event_and_returns_event_id() {
         event: ReportEvent::RealiseFailed {
             closure_hash: "abc123".to_string(),
             reason: "substituter 503 — upstream unavailable".to_string(),
+            signature: None,
         },
     };
 

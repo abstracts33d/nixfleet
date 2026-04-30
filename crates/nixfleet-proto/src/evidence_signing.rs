@@ -61,3 +61,44 @@ pub struct RollbackTriggeredSignedPayload<'a> {
     pub rollout: Option<&'a str>,
     pub reason: &'a str,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RealiseFailedSignedPayload<'a> {
+    pub hostname: &'a str,
+    pub rollout: Option<&'a str>,
+    pub closure_hash: &'a str,
+    pub reason: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyMismatchSignedPayload<'a> {
+    pub hostname: &'a str,
+    pub rollout: Option<&'a str>,
+    pub expected: &'a str,
+    pub actual: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosureSignatureMismatchSignedPayload<'a> {
+    pub hostname: &'a str,
+    pub rollout: Option<&'a str>,
+    pub closure_hash: &'a str,
+    /// SHA-256 of the JCS bytes of `stderr_tail` — same rationale
+    /// as `ActivationFailedSignedPayload.stderr_tail_sha256`.
+    pub stderr_tail_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaleTargetSignedPayload<'a> {
+    pub hostname: &'a str,
+    pub rollout: Option<&'a str>,
+    pub closure_hash: &'a str,
+    pub channel_ref: &'a str,
+    pub signed_at: DateTime<Utc>,
+    pub freshness_window_secs: u32,
+    pub age_secs: i64,
+}

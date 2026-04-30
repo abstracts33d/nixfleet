@@ -247,4 +247,87 @@ mod tests {
             SignatureStatus::Verified
         );
     }
+
+    /// Round-trip helper for the activation-evidence payload variants.
+    /// One assertion per variant covers the proto + sign + verify path.
+    fn round_trip<T: Serialize>(payload: &T) {
+        use ed25519_dalek::Signer;
+        let (sk, pubkey_str) = keypair_from(7);
+        let canonical = serde_jcs::to_vec(payload).unwrap();
+        let sig = sk.sign(&canonical);
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+        assert_eq!(
+            verify_event(Some(&sig_b64), Some(&pubkey_str), payload),
+            SignatureStatus::Verified
+        );
+    }
+
+    #[test]
+    fn activation_failed_round_trip() {
+        use nixfleet_proto::evidence_signing::ActivationFailedSignedPayload;
+        round_trip(&ActivationFailedSignedPayload {
+            hostname: "lab",
+            rollout: Some("stable@abc"),
+            phase: "switch-to-configuration",
+            exit_code: Some(1),
+            stderr_tail_sha256: "deadbeef".to_string(),
+        });
+    }
+
+    #[test]
+    fn realise_failed_round_trip() {
+        use nixfleet_proto::evidence_signing::RealiseFailedSignedPayload;
+        round_trip(&RealiseFailedSignedPayload {
+            hostname: "lab",
+            rollout: Some("stable@abc"),
+            closure_hash: "0000000000000000000000000000000000000000-test",
+            reason: "substituter 503",
+        });
+    }
+
+    #[test]
+    fn verify_mismatch_round_trip() {
+        use nixfleet_proto::evidence_signing::VerifyMismatchSignedPayload;
+        round_trip(&VerifyMismatchSignedPayload {
+            hostname: "lab",
+            rollout: Some("stable@abc"),
+            expected: "0000000000000000000000000000000000000000-expected",
+            actual: "1111111111111111111111111111111111111111-actual",
+        });
+    }
+
+    #[test]
+    fn rollback_triggered_round_trip() {
+        use nixfleet_proto::evidence_signing::RollbackTriggeredSignedPayload;
+        round_trip(&RollbackTriggeredSignedPayload {
+            hostname: "lab",
+            rollout: Some("stable@abc"),
+            reason: "cp-410: rollout cancelled",
+        });
+    }
+
+    #[test]
+    fn closure_signature_mismatch_round_trip() {
+        use nixfleet_proto::evidence_signing::ClosureSignatureMismatchSignedPayload;
+        round_trip(&ClosureSignatureMismatchSignedPayload {
+            hostname: "lab",
+            rollout: Some("stable@abc"),
+            closure_hash: "0000000000000000000000000000000000000000-test",
+            stderr_tail_sha256: "cafebabe".to_string(),
+        });
+    }
+
+    #[test]
+    fn stale_target_round_trip() {
+        use nixfleet_proto::evidence_signing::StaleTargetSignedPayload;
+        round_trip(&StaleTargetSignedPayload {
+            hostname: "lab",
+            rollout: Some("stable@abc"),
+            closure_hash: "0000000000000000000000000000000000000000-test",
+            channel_ref: "stable@abc",
+            signed_at: chrono::DateTime::from_timestamp(1_000_000, 0).unwrap(),
+            freshness_window_secs: 86400,
+            age_secs: 3600,
+        });
+    }
 }

@@ -185,12 +185,17 @@ pub enum ReportEvent {
 
     /// Activation step exited non-zero (`nix-env --set`,
     /// `switch-to-configuration`, or any boot-time activation).
+    /// `signature` is base64 ed25519 over the JCS-canonical
+    /// `ActivationFailedSignedPayload`. Same trust model as
+    /// `ComplianceFailure.signature`.
     ActivationFailed {
         phase: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stderr_tail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 
     /// `nix-store --realise` failed (substituter trust mismatch,
@@ -198,6 +203,8 @@ pub enum ReportEvent {
     RealiseFailed {
         closure_hash: String,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 
     /// Post-switch verify caught `/run/current-system` pointing
@@ -205,12 +212,16 @@ pub enum ReportEvent {
     VerifyMismatch {
         expected: String,
         actual: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 
     /// Agent invoked local rollback. Paired with one of the failure
     /// events above for triage context.
     RollbackTriggered {
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 
     EnrollmentFailed {
@@ -234,6 +245,8 @@ pub enum ReportEvent {
     ClosureSignatureMismatch {
         closure_hash: String,
         stderr_tail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 
     /// Agent refused to activate because the backing
@@ -246,6 +259,8 @@ pub enum ReportEvent {
         signed_at: DateTime<Utc>,
         freshness_window_secs: u32,
         age_secs: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 
     /// A control's post-activation probe reported `non-compliant`

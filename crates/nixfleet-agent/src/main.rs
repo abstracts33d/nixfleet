@@ -333,6 +333,19 @@ async fn process_dispatch_target(
                 age_secs,
                 "agent: refusing stale target — fleet.resolved older than freshness_window + 60s slack",
             );
+            let stale_payload = nixfleet_agent::evidence_signer::StaleTargetSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                closure_hash: &target.closure_hash,
+                channel_ref: &target.channel_ref,
+                signed_at,
+                freshness_window_secs,
+                age_secs,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&stale_payload).ok());
             post_report(
                 client,
                 &args.control_plane_url,
@@ -344,6 +357,7 @@ async fn process_dispatch_target(
                     signed_at,
                     freshness_window_secs,
                     age_secs,
+                    signature,
                 },
             )
             .await;
@@ -407,16 +421,25 @@ async fn handle_activation_outcome(
             handle_fired_and_polled(target, client_handle, args, evidence_signer).await;
         }
         Ok(ActivationOutcome::RealiseFailed { reason }) => {
-            handle_realise_failed(reason, target, client_handle, args).await;
+            handle_realise_failed(reason, target, client_handle, args, evidence_signer).await;
         }
         Ok(ActivationOutcome::SignatureMismatch {
             closure_hash,
             stderr_tail,
         }) => {
-            handle_signature_mismatch(closure_hash, stderr_tail, target, client_handle, args).await;
+            handle_signature_mismatch(
+                closure_hash,
+                stderr_tail,
+                target,
+                client_handle,
+                args,
+                evidence_signer,
+            )
+            .await;
         }
         Ok(ActivationOutcome::SwitchFailed { phase, exit_code }) => {
-            handle_switch_failed(phase, exit_code, target, client_handle, args).await;
+            handle_switch_failed(phase, exit_code, target, client_handle, args, evidence_signer)
+                .await;
         }
         Err(err) => {
             handle_activation_spawn_error(err, target, client_handle, args).await;
@@ -448,7 +471,7 @@ async fn handle_fired_and_polled(
     if gate_blocks_confirm {
         return;
     }
-    confirm_and_finalize(target, client_handle, args).await;
+    confirm_and_finalize(target, client_handle, args, evidence_signer).await;
 }
 
 /// Resolve the effective compliance mode (CP channel policy beats
@@ -637,13 +660,24 @@ async fn post_runtime_gate_error(
     .await;
     if enforcing {
         let _ = nixfleet_agent::activation::rollback().await;
+        let rollback_reason = format!("compliance gate error: {reason}");
+        let rollback_payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
+            hostname: &args.machine_id,
+            rollout: Some(&target.channel_ref),
+            reason: &rollback_reason,
+        };
+        let rollback_signature = evidence_signer
+            .as_ref()
+            .as_ref()
+            .and_then(|s| s.sign(&rollback_payload).ok());
         post_report(
             client_handle,
             &args.control_plane_url,
             &args.machine_id,
             Some(&target.channel_ref),
             ReportEvent::RollbackTriggered {
-                reason: format!("compliance gate error: {reason}"),
+                reason: rollback_reason,
+                signature: rollback_signature,
             },
         )
         .await;
@@ -657,6 +691,7 @@ async fn confirm_and_finalize(
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
     client_handle: &reqwest::Client,
     args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
     let boot_id = nixfleet_agent::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
     let rollout = &target.channel_ref;
@@ -674,7 +709,7 @@ async fn confirm_and_finalize(
     .await
     {
         Ok(nixfleet_agent::comms::ConfirmOutcome::Cancelled) => {
-            handle_cp_cancellation(rollout, client_handle, args).await;
+            handle_cp_cancellation(rollout, client_handle, args, evidence_signer).await;
         }
         Ok(nixfleet_agent::comms::ConfirmOutcome::Acknowledged) => {
             persist_confirmed_state(target, args);
@@ -684,15 +719,31 @@ async fn confirm_and_finalize(
     }
 }
 
-async fn handle_cp_cancellation(rollout: &str, client_handle: &reqwest::Client, args: &Args) {
+async fn handle_cp_cancellation(
+    rollout: &str,
+    client_handle: &reqwest::Client,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+) {
     let rb_outcome = nixfleet_agent::activation::rollback().await;
+    let reason = "cp-410: rollout cancelled or deadline expired";
+    let rollback_payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
+        hostname: &args.machine_id,
+        rollout: Some(rollout),
+        reason,
+    };
+    let signature = evidence_signer
+        .as_ref()
+        .as_ref()
+        .and_then(|s| s.sign(&rollback_payload).ok());
     post_report(
         client_handle,
         &args.control_plane_url,
         &args.machine_id,
         Some(rollout),
         ReportEvent::RollbackTriggered {
-            reason: "cp-410: rollout cancelled or deadline expired".to_string(),
+            reason: reason.to_string(),
+            signature,
         },
     )
     .await;
@@ -733,11 +784,22 @@ async fn handle_realise_failed(
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
     client_handle: &reqwest::Client,
     args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
     tracing::warn!(
         reason = %reason,
         "activation: realise failed; nothing switched, retrying next tick",
     );
+    let payload = nixfleet_agent::evidence_signer::RealiseFailedSignedPayload {
+        hostname: &args.machine_id,
+        rollout: Some(&target.channel_ref),
+        closure_hash: &target.closure_hash,
+        reason: &reason,
+    };
+    let signature = evidence_signer
+        .as_ref()
+        .as_ref()
+        .and_then(|s| s.sign(&payload).ok());
     post_report(
         client_handle,
         &args.control_plane_url,
@@ -746,6 +808,7 @@ async fn handle_realise_failed(
         ReportEvent::RealiseFailed {
             closure_hash: target.closure_hash.clone(),
             reason,
+            signature,
         },
     )
     .await;
@@ -757,12 +820,25 @@ async fn handle_signature_mismatch(
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
     client_handle: &reqwest::Client,
     args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
     tracing::error!(
         closure_hash = %closure_hash,
         stderr_tail = %stderr_tail,
         "activation: closure signature mismatch — refused by nix substituter trust",
     );
+    let stderr_tail_sha256 =
+        nixfleet_agent::evidence_signer::sha256_jcs(&stderr_tail).unwrap_or_default();
+    let payload = nixfleet_agent::evidence_signer::ClosureSignatureMismatchSignedPayload {
+        hostname: &args.machine_id,
+        rollout: Some(&target.channel_ref),
+        closure_hash: &closure_hash,
+        stderr_tail_sha256,
+    };
+    let signature = evidence_signer
+        .as_ref()
+        .as_ref()
+        .and_then(|s| s.sign(&payload).ok());
     post_report(
         client_handle,
         &args.control_plane_url,
@@ -771,6 +847,7 @@ async fn handle_signature_mismatch(
         ReportEvent::ClosureSignatureMismatch {
             closure_hash,
             stderr_tail,
+            signature,
         },
     )
     .await;
@@ -782,38 +859,101 @@ async fn handle_switch_failed(
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
     client_handle: &reqwest::Client,
     args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
     tracing::error!(phase = %phase, exit_code = ?exit_code, "activation: switch failed; rolling back");
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        ReportEvent::ActivationFailed {
-            phase: phase.clone(),
+    {
+        let stderr_tail_sha256 =
+            nixfleet_agent::evidence_signer::sha256_jcs(&"").unwrap_or_default();
+        let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
+            hostname: &args.machine_id,
+            rollout: Some(&target.channel_ref),
+            phase: &phase,
             exit_code,
-            stderr_tail: None,
-        },
-    )
-    .await;
+            stderr_tail_sha256,
+        };
+        let signature = evidence_signer
+            .as_ref()
+            .as_ref()
+            .and_then(|s| s.sign(&payload).ok());
+        post_report(
+            client_handle,
+            &args.control_plane_url,
+            &args.machine_id,
+            Some(&target.channel_ref),
+            ReportEvent::ActivationFailed {
+                phase: phase.clone(),
+                exit_code,
+                stderr_tail: None,
+                signature,
+            },
+        )
+        .await;
+    }
     let rb_outcome = nixfleet_agent::activation::rollback().await;
     let rollback_event = match &rb_outcome {
-        Ok(o) if o.success() => ReportEvent::RollbackTriggered {
-            reason: format!("activation phase {phase} failed"),
-        },
-        Ok(o) => ReportEvent::ActivationFailed {
-            phase: format!(
+        Ok(o) if o.success() => {
+            let reason = format!("activation phase {phase} failed");
+            let payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                reason: &reason,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::RollbackTriggered { reason, signature }
+        }
+        Ok(o) => {
+            let phase_str = format!(
                 "rollback-after-{phase}/{}",
                 o.phase().unwrap_or("unknown")
-            ),
-            exit_code: o.exit_code(),
-            stderr_tail: None,
-        },
-        Err(err) => ReportEvent::ActivationFailed {
-            phase: format!("rollback-after-{phase}"),
-            exit_code: None,
-            stderr_tail: Some(err.to_string()),
-        },
+            );
+            let exit = o.exit_code();
+            let stderr_tail_sha256 =
+                nixfleet_agent::evidence_signer::sha256_jcs(&"").unwrap_or_default();
+            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                phase: &phase_str,
+                exit_code: exit,
+                stderr_tail_sha256,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::ActivationFailed {
+                phase: phase_str,
+                exit_code: exit,
+                stderr_tail: None,
+                signature,
+            }
+        }
+        Err(err) => {
+            let phase_str = format!("rollback-after-{phase}");
+            let stderr_tail = err.to_string();
+            let stderr_tail_sha256 =
+                nixfleet_agent::evidence_signer::sha256_jcs(&stderr_tail).unwrap_or_default();
+            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                phase: &phase_str,
+                exit_code: None,
+                stderr_tail_sha256,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::ActivationFailed {
+                phase: phase_str,
+                exit_code: None,
+                stderr_tail: Some(stderr_tail),
+                signature,
+            }
+        }
     };
     post_report(
         client_handle,
