@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
-use nixfleet_control_plane::db::Db;
+use nixfleet_control_plane::db::{Db, PendingConfirmInsert};
 use nixfleet_control_plane::observed_projection;
 use nixfleet_control_plane::state::{HealthyMarker, HostRolloutState};
 use nixfleet_proto::fleet_resolved::Meta;
@@ -104,8 +104,15 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
     let healthy_at = Utc::now() - chrono::Duration::minutes(10);
     let now = Utc::now();
 
-    db.record_pending_confirm(host, rollout_id, 0, target_closure, rollout_id, confirm_deadline)
-        .unwrap();
+    db.record_pending_confirm(&PendingConfirmInsert {
+        hostname: host,
+        rollout_id,
+        wave: 0,
+        target_closure_hash: target_closure,
+        target_channel_ref: rollout_id,
+        confirm_deadline,
+    })
+    .unwrap();
     let n = db.confirm_pending(host, rollout_id).unwrap();
     assert_eq!(n, 1, "confirm_pending must mark the row confirmed");
     db.transition_host_state(
@@ -198,14 +205,14 @@ fn soak_loop_skips_when_window_not_elapsed() {
     let healthy_at = Utc::now() - chrono::Duration::minutes(1);
     let now = Utc::now();
 
-    db.record_pending_confirm(
-        host,
+    db.record_pending_confirm(&PendingConfirmInsert {
+        hostname: host,
         rollout_id,
-        0,
-        target_closure,
-        rollout_id,
-        Utc::now() + chrono::Duration::seconds(120),
-    )
+        wave: 0,
+        target_closure_hash: target_closure,
+        target_channel_ref: rollout_id,
+        confirm_deadline: Utc::now() + chrono::Duration::seconds(120),
+    })
     .unwrap();
     db.confirm_pending(host, rollout_id).unwrap();
     db.transition_host_state(

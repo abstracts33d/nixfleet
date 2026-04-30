@@ -64,6 +64,21 @@ pub struct HostReportInsert<'a> {
     pub report_json: &'a str,
 }
 
+/// Bundled args for [`Db::record_pending_confirm`]. Mirrors the
+/// [`HostReportInsert`] precedent — both `rollout_id` and
+/// `target_channel_ref` are `&str` literals shaped like
+/// `"stable@abc12345"`, easy to swap positionally; the named struct
+/// makes that class of bug a compile error at the call site.
+#[derive(Debug, Clone)]
+pub struct PendingConfirmInsert<'a> {
+    pub hostname: &'a str,
+    pub rollout_id: &'a str,
+    pub wave: u32,
+    pub target_closure_hash: &'a str,
+    pub target_channel_ref: &'a str,
+    pub confirm_deadline: DateTime<Utc>,
+}
+
 /// SQLite-backed CP persistence.
 pub struct Db {
     conn: Mutex<Connection>,
@@ -242,15 +257,7 @@ impl Db {
     /// when CP populates `target` in a checkin response. The agent
     /// will later post `/v1/agent/confirm` with the same `rollout_id`
     /// once it boots the new closure.
-    pub fn record_pending_confirm(
-        &self,
-        hostname: &str,
-        rollout_id: &str,
-        wave: u32,
-        target_closure_hash: &str,
-        target_channel_ref: &str,
-        confirm_deadline: DateTime<Utc>,
-    ) -> Result<i64> {
+    pub fn record_pending_confirm(&self, row: &PendingConfirmInsert<'_>) -> Result<i64> {
         let guard = self.conn()?;
         guard
             .execute(
@@ -260,12 +267,12 @@ impl Db {
                                               confirm_deadline)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    hostname,
-                    rollout_id,
-                    wave,
-                    target_closure_hash,
-                    target_channel_ref,
-                    confirm_deadline.to_rfc3339()
+                    row.hostname,
+                    row.rollout_id,
+                    row.wave,
+                    row.target_closure_hash,
+                    row.target_channel_ref,
+                    row.confirm_deadline.to_rfc3339()
                 ],
             )
             .context("insert pending_confirms")?;
@@ -1038,14 +1045,12 @@ mod tests {
         // a row whose deadline is firmly in the past.
         let db = fresh_db();
         let past_deadline = Utc::now() - chrono::Duration::seconds(60);
-        db.record_pending_confirm(
+        db.record_pending_confirm(&pc_insert(
             "test-host",
             "stable@abc",
-            0,
             "decl-system",
-            "stable@abc",
             past_deadline,
-        )
+        ))
         .unwrap();
 
         let expired = db.pending_confirms_expired().unwrap();
@@ -1066,14 +1071,12 @@ mod tests {
         // is in the future stay out of the expired set.
         let db = fresh_db();
         let future_deadline = Utc::now() + chrono::Duration::seconds(120);
-        db.record_pending_confirm(
+        db.record_pending_confirm(&pc_insert(
             "test-host",
             "stable@def",
-            0,
             "decl-system",
-            "stable@def",
             future_deadline,
-        )
+        ))
         .unwrap();
         let expired = db.pending_confirms_expired().unwrap();
         assert!(expired.is_empty(), "row in window should not expire: {expired:?}");
@@ -1092,6 +1095,25 @@ mod tests {
             None,
         )
         .unwrap();
+    }
+
+    /// Test helper: build a `PendingConfirmInsert` with the common
+    /// shape used across the test module (rollout_id reused as
+    /// channel_ref, mirroring how `dispatch.rs` populates the row).
+    fn pc_insert<'a>(
+        host: &'a str,
+        rollout: &'a str,
+        target_closure: &'a str,
+        deadline: DateTime<Utc>,
+    ) -> PendingConfirmInsert<'a> {
+        PendingConfirmInsert {
+            hostname: host,
+            rollout_id: rollout,
+            wave: 0,
+            target_closure_hash: target_closure,
+            target_channel_ref: rollout,
+            confirm_deadline: deadline,
+        }
     }
 
     #[test]
@@ -1183,14 +1205,12 @@ mod tests {
         // since the host has not yet reached Healthy.
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
-        db.record_pending_confirm(
+        db.record_pending_confirm(&pc_insert(
             "test-host",
             "stable@r1",
-            0,
             "target-system-r1",
-            "stable@r1",
             future,
-        )
+        ))
         .unwrap();
         // Still pending — healthy_rollouts_for_host must be empty
         // even after recording Healthy (the row exists but the
@@ -1215,14 +1235,12 @@ mod tests {
     fn healthy_rollouts_for_host_excludes_cleared_rows() {
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
-        db.record_pending_confirm(
+        db.record_pending_confirm(&pc_insert(
             "test-host",
             "stable@r1",
-            0,
             "target-system-r1",
-            "stable@r1",
             future,
-        )
+        ))
         .unwrap();
         db.confirm_pending("test-host", "stable@r1").unwrap();
         mark_healthy(&db, "test-host", "stable@r1", Utc::now());
@@ -1303,7 +1321,7 @@ mod tests {
         // transition. Need a confirmed pending_confirms row to
         // pass the snapshot's join filter.
         let future = Utc::now() + chrono::Duration::seconds(120);
-        db.record_pending_confirm("ohm", "stable@r1", 0, "target", "stable@r1", future)
+        db.record_pending_confirm(&pc_insert("ohm", "stable@r1", "target", future))
             .unwrap();
         db.confirm_pending("ohm", "stable@r1").unwrap();
         let snap = db.active_rollouts_snapshot().unwrap();
@@ -1328,14 +1346,12 @@ mod tests {
         // (RFC §3.2) and no last_healthy_since marker.
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
-        db.record_pending_confirm(
+        db.record_pending_confirm(&pc_insert(
             "ohm",
             "stable@abc12345",
-            0,
             "system-r1",
-            "stable@abc12345",
             future,
-        )
+        ))
         .unwrap();
 
         let snap = db.active_rollouts_snapshot().unwrap();
@@ -1358,14 +1374,12 @@ mod tests {
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
         let now = Utc::now();
-        db.record_pending_confirm(
+        db.record_pending_confirm(&pc_insert(
             "ohm",
             "stable@abc12345",
-            0,
             "system-r1",
-            "stable@abc12345",
             future,
-        )
+        ))
         .unwrap();
         db.confirm_pending("ohm", "stable@abc12345").unwrap();
         mark_healthy(&db, "ohm", "stable@abc12345", now);
@@ -1387,15 +1401,8 @@ mod tests {
         // reconciler and trigger spurious re-dispatches.
         let db = fresh_db();
         let past = Utc::now() - chrono::Duration::seconds(120);
-        db.record_pending_confirm(
-            "ohm",
-            "stable@dead",
-            0,
-            "system-x",
-            "stable@dead",
-            past,
-        )
-        .unwrap();
+        db.record_pending_confirm(&pc_insert("ohm", "stable@dead", "system-x", past))
+            .unwrap();
         let expired = db.pending_confirms_expired().unwrap();
         let ids: Vec<i64> = expired.iter().map(|(id, _, _, _, _)| *id).collect();
         db.mark_rolled_back(&ids).unwrap();
@@ -1419,7 +1426,7 @@ mod tests {
             ("pixel", "edge@r2"),
             ("aether", "edge@r2"),
         ] {
-            db.record_pending_confirm(host, rollout, 0, "target", rollout, future)
+            db.record_pending_confirm(&pc_insert(host, rollout, "target", future))
                 .unwrap();
         }
         // ohm + pixel confirm; krach + aether stay in ConfirmWindow.
@@ -1464,7 +1471,7 @@ mod tests {
         let db = fresh_db();
         // First dispatch: past deadline, expires + rolls back.
         let past = Utc::now() - chrono::Duration::seconds(120);
-        db.record_pending_confirm("ohm", "stable@r1", 0, "old", "stable@r1", past)
+        db.record_pending_confirm(&pc_insert("ohm", "stable@r1", "old", past))
             .unwrap();
         let expired = db.pending_confirms_expired().unwrap();
         let ids: Vec<i64> = expired.iter().map(|(id, _, _, _, _)| *id).collect();
@@ -1472,7 +1479,7 @@ mod tests {
 
         // Second dispatch with a fresh deadline.
         let future = Utc::now() + chrono::Duration::seconds(120);
-        db.record_pending_confirm("ohm", "stable@r1", 0, "new", "stable@r1", future)
+        db.record_pending_confirm(&pc_insert("ohm", "stable@r1", "new", future))
             .unwrap();
 
         let snap = db.active_rollouts_snapshot().unwrap();

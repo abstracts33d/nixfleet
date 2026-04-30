@@ -17,7 +17,10 @@ use chrono::Utc;
 use common::{
     build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port, write_pem,
 };
-use nixfleet_control_plane::{db::Db, server};
+use nixfleet_control_plane::{
+    db::{Db, PendingConfirmInsert},
+    server,
+};
 use nixfleet_proto::agent_wire::{ConfirmRequest, GenerationRef};
 use tempfile::TempDir;
 use tokio::time::sleep;
@@ -91,14 +94,14 @@ async fn confirm_happy_path_marks_row_confirmed() {
         let db = Db::open(&db_path).unwrap();
         db.migrate().unwrap();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
-        db.record_pending_confirm(
-            "test-host",
-            "stable@abc123",
-            0,
-            "deadbeef-nixos-system",
-            "main",
-            deadline,
-        )
+        db.record_pending_confirm(&PendingConfirmInsert {
+            hostname: "test-host",
+            rollout_id: "stable@abc123",
+            wave: 0,
+            target_closure_hash: "deadbeef-nixos-system",
+            target_channel_ref: "main",
+            confirm_deadline: deadline,
+        })
         .unwrap();
     }
 
