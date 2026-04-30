@@ -57,6 +57,13 @@
         channel = "stable";
         pubkey = null;
       };
+      agent-02 = {
+        system = "x86_64-linux";
+        configuration = stubConfiguration;
+        tags = ["harness"];
+        channel = "stable";
+        pubkey = null;
+      };
       cp = {
         system = "x86_64-linux";
         configuration = stubConfiguration;
