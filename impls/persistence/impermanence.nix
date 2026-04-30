@@ -20,7 +20,6 @@
   inputs,
   config,
   lib,
-  pkgs,
   ...
 }: let
   hS = config.hostSpec;
@@ -76,42 +75,28 @@ in {
     # Btrfs root-wipe: every boot, move the active root subvol to
     # old_roots/<timestamp> and create a fresh empty @root. State
     # survives only via the persisted bind-mounts above. Old roots
-    # past `oldRootsRetentionDays` are recursively deleted.
-    #
-    # systemd stage 1 service (the legacy `boot.initrd.postResumeCommands`
-    # hook is rejected when systemd-initrd is enabled). The service runs
-    # before sysroot.mount so the wipe lands before NixOS pivots root.
-    # btrfs-progs is added to initrdBin so `btrfs subvolume *` is on PATH.
-    boot.initrd.systemd.services.nixfleet-rollback-root = {
-      description = "Move @root → old_roots/<ts> and create a fresh empty @root";
-      wantedBy = ["initrd.target"];
-      before = ["sysroot.mount"];
-      unitConfig.DefaultDependencies = "no";
-      serviceConfig.Type = "oneshot";
-      script = ''
-        mkdir /btrfs_tmp
-        mount ${impl.rootDevice} /btrfs_tmp
-        if [[ -e /btrfs_tmp/@root ]]; then
-            mkdir -p /btrfs_tmp/old_roots
-            timestamp=$(date --date="@$(stat -c %Y /btrfs_tmp/@root)" "+%Y-%m-%-d_%H:%M:%S")
-            mv /btrfs_tmp/@root "/btrfs_tmp/old_roots/$timestamp"
-        fi
-        delete_subvolume_recursively() {
-            IFS=$'\n'
-            for i in $(btrfs subvolume list -o "$1" | cut -f 9- -d ' '); do
-                delete_subvolume_recursively "/btrfs_tmp/$i"
-            done
-            btrfs subvolume delete "$1"
-        }
-        for i in $(find /btrfs_tmp/old_roots/ -maxdepth 1 -mtime +${toString impl.oldRootsRetentionDays}); do
-            delete_subvolume_recursively "$i"
-        done
-        btrfs subvolume create /btrfs_tmp/@root
-        umount /btrfs_tmp
-      '';
-    };
-
-    boot.initrd.systemd.initrdBin = [pkgs.btrfs-progs];
+    # past 30 days are recursively deleted.
+    boot.initrd.postResumeCommands = lib.mkAfter ''
+      mkdir /btrfs_tmp
+      mount ${impl.rootDevice} /btrfs_tmp
+      if [[ -e /btrfs_tmp/@root ]]; then
+          mkdir -p /btrfs_tmp/old_roots
+          timestamp=$(date --date="@$(stat -c %Y /btrfs_tmp/@root)" "+%Y-%m-%-d_%H:%M:%S")
+          mv /btrfs_tmp/@root "/btrfs_tmp/old_roots/$timestamp"
+      fi
+      delete_subvolume_recursively() {
+          IFS=$'\n'
+          for i in $(btrfs subvolume list -o "$1" | cut -f 9- -d ' '); do
+              delete_subvolume_recursively "/btrfs_tmp/$i"
+          done
+          btrfs subvolume delete "$1"
+      }
+      for i in $(find /btrfs_tmp/old_roots/ -maxdepth 1 -mtime +${toString impl.oldRootsRetentionDays}); do
+          delete_subvolume_recursively "$i"
+      done
+      btrfs subvolume create /btrfs_tmp/@root
+      umount /btrfs_tmp
+    '';
 
     fileSystems.${cfg.persistRoot}.neededForBoot = true;
   };
