@@ -1462,6 +1462,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
+ "sha2",
  "ssh-key",
  "thiserror 2.0.18",
 ]
@@ -1481,6 +1482,7 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tracing",
  "tracing-subscriber",
