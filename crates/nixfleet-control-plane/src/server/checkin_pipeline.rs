@@ -116,6 +116,13 @@ async fn validate_orphan_recovery(
         );
         None
     })?;
+    let fleet_resolved_hash = state.fleet_resolved_hash.read().await.clone().or_else(|| {
+        tracing::debug!(
+            hostname = %req.hostname,
+            "orphan-confirm recovery: no fleet_resolved_hash yet (CP just booted?)",
+        );
+        None
+    })?;
     let host_decl = fleet.hosts.get(&req.hostname).or_else(|| {
         tracing::debug!(
             hostname = %req.hostname,
@@ -142,18 +149,24 @@ async fn validate_orphan_recovery(
     }
 
     // Defensive: closure match doesn't prove `req.rollout` is THIS
-    // fleet's rollout id (a future schema where two rollouts target
-    // the same closure could collapse them). KNOWN EDGE CASE: if CI
-    // re-signs with a new ci_commit between dispatch and orphan
-    // confirm AND the closure is unchanged, the agent's historical
-    // rollout id won't match — we 410, agent rolls back a healthy
-    // activation, next dispatch picks up the new id cleanly. Rare
-    // and recoverable in one poll cycle.
-    let expected_rollout_id = crate::dispatch::derive_rollout_id(
+    // fleet's rollout id. With content-addressed manifests (RFC-0002
+    // §4.4), a CI re-sign with the same closure but different
+    // host_set / wave_layout / etc. produces a different rolloutId,
+    // and the cross-snapshot mismatch surfaces here.
+    let expected_rollout_id = match nixfleet_reconciler::compute_rollout_id_for_channel(
+        &fleet,
+        &fleet_resolved_hash,
         &host_decl.channel,
-        fleet.meta.ci_commit.as_deref(),
-        target_closure,
-    );
+    ) {
+        Ok(Some(id)) => id,
+        Ok(None) | Err(_) => {
+            tracing::info!(
+                hostname = %req.hostname,
+                "orphan-confirm recovery: rolloutId could not be projected — genuine 410",
+            );
+            return None;
+        }
+    };
     if expected_rollout_id != req.rollout {
         tracing::info!(
             hostname = %req.hostname,
@@ -266,6 +279,9 @@ async fn recover_soak_state_from_attestation(
     let Some(fleet) = state.verified_fleet.read().await.clone() else {
         return;
     };
+    let Some(fleet_resolved_hash) = state.fleet_resolved_hash.read().await.clone() else {
+        return;
+    };
     let Some(host_decl) = fleet.hosts.get(&req.hostname) else {
         return;
     };
@@ -278,14 +294,18 @@ async fn recover_soak_state_from_attestation(
 
     // The recovered row's rollout_id MUST match what dispatch would
     // emit so the per-rollout grouping in
-    // `outstanding_compliance_events_by_rollout` lines up. Use the
-    // shared `derive_rollout_id` helper — see its docstring for the
-    // single-source-of-truth invariant across all three CP sites.
-    let rollout_id = crate::dispatch::derive_rollout_id(
+    // `outstanding_compliance_events_by_rollout` lines up. Same
+    // projection both dispatch and the orphan-confirm recovery path
+    // call — single source of truth at
+    // `nixfleet_reconciler::compute_rollout_id_for_channel`.
+    let rollout_id = match nixfleet_reconciler::compute_rollout_id_for_channel(
+        &fleet,
+        &fleet_resolved_hash,
         &host_decl.channel,
-        fleet.meta.ci_commit.as_deref(),
-        target_closure,
-    );
+    ) {
+        Ok(Some(id)) => id,
+        Ok(None) | Err(_) => return,
+    };
 
     match db.host_rollout_state_exists(&req.hostname, &rollout_id) {
         Ok(true) => return, // already known — leave alone
@@ -405,6 +425,13 @@ async fn dispatch_target_for_checkin(
 ) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
     let db = state.db.as_ref()?;
     let fleet = state.verified_fleet.read().await.clone()?;
+    let fleet_resolved_hash = state.fleet_resolved_hash.read().await.clone().or_else(|| {
+        tracing::debug!(
+            hostname = %req.hostname,
+            "dispatch: no fleet_resolved_hash yet; skipping",
+        );
+        None
+    })?;
     let pending_for_host = match db.pending_confirm_exists(&req.hostname) {
         Ok(b) => b,
         Err(err) => {
@@ -425,6 +452,7 @@ async fn dispatch_target_for_checkin(
         &req.hostname,
         req,
         &fleet,
+        &fleet_resolved_hash,
         pending_for_host,
         now,
         state.confirm_deadline_secs as u32,
@@ -719,21 +747,47 @@ mod tests {
                 },
             },
         );
+        let mut rollout_policies = HashMap::new();
+        rollout_policies.insert(
+            "default".to_string(),
+            nixfleet_proto::RolloutPolicy {
+                strategy: "waves".to_string(),
+                waves: vec![],
+                health_gate: nixfleet_proto::HealthGate::default(),
+                on_health_failure: nixfleet_proto::OnHealthFailure::Halt,
+            },
+        );
         nixfleet_proto::FleetResolved {
             schema_version: 1,
             hosts,
             channels,
-            rollout_policies: HashMap::new(),
+            rollout_policies,
             waves: HashMap::new(),
             edges: vec![],
             disruption_budgets: vec![],
             meta: Meta {
                 schema_version: 1,
-                signed_at: None,
+                signed_at: Some(
+                    DateTime::parse_from_rfc3339("2026-04-30T00:00:00Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                ),
                 ci_commit: Some("abc12345".to_string()),
-                signature_algorithm: None,
+                signature_algorithm: Some("ed25519".to_string()),
             },
         }
+    }
+
+    /// Stable test fleet hash. Tests pass this as the
+    /// `fleet_resolved_hash` so the projection result is deterministic
+    /// even though the real one is computed from canonical bytes.
+    const TEST_FLEET_HASH: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+
+    fn expected_rollout_id_for(fleet: &nixfleet_proto::FleetResolved, channel: &str) -> String {
+        nixfleet_reconciler::compute_rollout_id_for_channel(fleet, TEST_FLEET_HASH, channel)
+            .expect("projection succeeds")
+            .expect("non-empty channel")
     }
 
     fn checkin_req_with_attestation(
@@ -778,6 +832,7 @@ mod tests {
         let state = Arc::new(AppState {
             db: Some(Arc::clone(&db)),
             verified_fleet: Arc::new(tokio::sync::RwLock::new(Some(Arc::new(fleet)))),
+            fleet_resolved_hash: Arc::new(tokio::sync::RwLock::new(Some(TEST_FLEET_HASH.to_string()))),
             ..AppState::default()
         });
         (state, db)
@@ -791,8 +846,9 @@ mod tests {
         // marker and returns true so the handler emits 204 instead
         // of forcing a local rollback.
         let fleet = fleet_with_host("test-host", Some("target-system-r1"));
+        let expected_id = expected_rollout_id_for(&fleet, "stable");
         let (state, db) = state_with_fleet_and_db(fleet).await;
-        let req = confirm_req("test-host", "stable@abc12345", "target-system-r1");
+        let req = confirm_req("test-host", &expected_id, "target-system-r1");
 
         assert!(
             try_recover_orphan_confirm(&state, &req).await,
@@ -801,7 +857,7 @@ mod tests {
 
         let snap = db.active_rollouts_snapshot().unwrap();
         assert_eq!(snap.len(), 1);
-        assert_eq!(snap[0].rollout_id, "stable@abc12345");
+        assert_eq!(snap[0].rollout_id, expected_id);
         assert_eq!(snap[0].target_closure_hash, "target-system-r1");
         // Healthy marker stamped in the same call.
         let healthy = db.healthy_rollouts_for_host("test-host").unwrap();
@@ -924,20 +980,18 @@ mod tests {
 
     #[tokio::test]
     async fn b_cp_recovery_skips_when_host_state_already_exists() {
-        // host_rollout_state already has a row (e.g. from a normal
-        // confirm or from 's orphan recovery). Re-attestation
-        // must NOT overwrite — the existing row is more
-        // authoritative.
+        // host_rollout_state already has a row. Re-attestation must
+        // NOT overwrite — the existing row is authoritative.
         let fleet = fleet_with_host("test-host", Some("system-r1"));
+        let expected_id = expected_rollout_id_for(&fleet, "stable");
         let (state, db) = state_with_fleet_and_db(fleet).await;
 
-        // Pre-populate a Healthy row for the rollout the host
-        // would derive (channel "stable", short "abc12345" from the
-        // fleet's ci_commit).
+        // Pre-populate a Healthy row for the rolloutId the host
+        // would derive from the projected manifest.
         let original = Utc::now() - chrono::Duration::seconds(5);
         db.transition_host_state(
             "test-host",
-            "stable@abc12345",
+            &expected_id,
             crate::state::HostRolloutState::Healthy,
             crate::state::HealthyMarker::Set(original),
             None,
@@ -949,10 +1003,7 @@ mod tests {
 
         recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
 
-        // last_healthy_since stays at `original` (5s ago), NOT at
-        // `attested` (2h ago) — recovery saw the existing row and
-        // skipped.
-        let map = db.host_soak_state_for_rollout("stable@abc12345").unwrap();
+        let map = db.host_soak_state_for_rollout(&expected_id).unwrap();
         let stamped = map.get("test-host").unwrap();
         assert_eq!(
             stamped.timestamp(),

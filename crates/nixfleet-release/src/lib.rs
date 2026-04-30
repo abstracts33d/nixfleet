@@ -35,9 +35,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::{
-    FleetResolved, HostWave, RevocationEntry, Revocations, RolloutManifest,
-};
+use nixfleet_proto::{FleetResolved, RevocationEntry, Revocations};
+use nixfleet_reconciler::project_manifest;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
@@ -400,97 +399,6 @@ fn enumerate_hosts(config: &ReleaseConfig) -> Result<Vec<String>> {
 /// revokedBy?}` objects. An empty array is valid and means "no
 /// revocations on file" — the artifact still gets produced so a
 /// CP-rebuild has something to verify + replay (even if empty).
-/// Project a single channel out of `fleet.resolved` into a
-/// `RolloutManifest`. Returns `Ok(None)` when no host on this channel
-/// has a `closureHash` (degenerate channel — nothing to dispatch),
-/// matching the `Decision::NoDeclaration` semantics in the CP's
-/// dispatch path.
-///
-/// `host_set` is sorted by hostname for canonical-byte stability.
-/// All other inputs are read straight from `fleet`; the manifest is
-/// a pure projection.
-fn project_manifest(
-    fleet: &FleetResolved,
-    channel: &str,
-    fleet_resolved_hash: &str,
-    signed_at: DateTime<Utc>,
-    ci_commit: Option<&str>,
-    signature_algorithm: &str,
-) -> Result<Option<RolloutManifest>> {
-    let channel_def = fleet
-        .channels
-        .get(channel)
-        .ok_or_else(|| anyhow::anyhow!("channel {channel} missing from fleet.channels"))?;
-
-    let policy = fleet
-        .rollout_policies
-        .get(&channel_def.rollout_policy)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "rollout policy {} for channel {channel} not found in fleet.rolloutPolicies",
-                channel_def.rollout_policy
-            )
-        })?;
-
-    let waves = fleet.waves.get(channel);
-
-    let mut host_set: Vec<HostWave> = Vec::new();
-    for (hostname, host) in fleet.hosts.iter() {
-        if host.channel != channel {
-            continue;
-        }
-        let target_closure = match host.closure_hash.as_ref() {
-            Some(c) => c.clone(),
-            None => continue, // skip hosts without a declared closure
-        };
-        let wave_index: u32 = match waves {
-            Some(ws) => ws
-                .iter()
-                .position(|w| w.hosts.iter().any(|h| h == hostname))
-                .map(|i| i as u32)
-                .unwrap_or(0),
-            None => 0,
-        };
-        host_set.push(HostWave {
-            hostname: hostname.clone(),
-            wave_index,
-            target_closure,
-        });
-    }
-
-    if host_set.is_empty() {
-        return Ok(None);
-    }
-    host_set.sort_by(|a, b| a.hostname.cmp(&b.hostname));
-
-    let display_name = format!(
-        "{}@{}",
-        channel,
-        ci_commit
-            .map(|c| c.chars().take(8).collect::<String>())
-            .unwrap_or_else(|| "unknown".to_string())
-    );
-
-    let channel_ref = ci_commit.unwrap_or_default().to_string();
-
-    Ok(Some(RolloutManifest {
-        schema_version: 1,
-        display_name,
-        channel: channel.to_string(),
-        channel_ref,
-        fleet_resolved_hash: fleet_resolved_hash.to_string(),
-        host_set,
-        health_gate: policy.health_gate.clone(),
-        compliance_frameworks: channel_def.compliance.frameworks.clone(),
-        meta: nixfleet_proto::Meta {
-            schema_version: 1,
-            signed_at: Some(signed_at),
-            ci_commit: ci_commit.map(|c| c.to_string()),
-            signature_algorithm: Some(signature_algorithm.to_string()),
-        },
-    }))
-}
-
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(digest.len() * 2);

@@ -151,6 +151,7 @@ async fn spawn_with_signed_fleet(
         revocations: None,
         db_path: Some(db_path),
         closure_upstream: None,
+        rollouts_dir: None,
     };
     let handle = tokio::spawn(server::serve(args));
     // Give the prime path time to verify the artifact + write the

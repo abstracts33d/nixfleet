@@ -38,6 +38,7 @@ pub struct ChannelRefsCache {
 pub fn spawn(
     cache: Arc<RwLock<ChannelRefsCache>>,
     verified_fleet: Arc<RwLock<Option<Arc<nixfleet_proto::FleetResolved>>>>,
+    fleet_resolved_hash: Arc<RwLock<Option<String>>>,
     config: ChannelRefsSource,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -49,13 +50,17 @@ pub fn spawn(
         loop {
             ticker.tick().await;
             match poll_once(&client, &config).await {
-                Ok((refs, fleet)) => {
+                Ok((refs, fleet, fleet_hash)) => {
                     let new_signed_at = fleet.meta.signed_at;
                     let new_ci_commit = fleet.meta.ci_commit.clone();
 
                     {
                         let mut guard = verified_fleet.write().await;
                         *guard = Some(Arc::new(fleet));
+                    }
+                    {
+                        let mut guard = fleet_resolved_hash.write().await;
+                        *guard = Some(fleet_hash);
                     }
 
                     let mut guard = cache.write().await;
@@ -91,18 +96,21 @@ pub fn spawn(
 /// building the closure) — observed as stair-stepping backwards
 /// through deploy history. Failure falls back to the build-time
 /// artifact.
+///
+/// Returns `(fleet, fleet_resolved_hash)` — the hash anchors every
+/// rolloutId derivation downstream (RFC-0002 §4.4).
 pub async fn prime_once(
     config: &ChannelRefsSource,
-) -> Result<nixfleet_proto::FleetResolved> {
+) -> Result<(nixfleet_proto::FleetResolved, String)> {
     let client = signed_fetch::build_client();
-    let (_refs, fleet) = poll_once(&client, config).await?;
-    Ok(fleet)
+    let (_refs, fleet, hash) = poll_once(&client, config).await?;
+    Ok((fleet, hash))
 }
 
 async fn poll_once(
     client: &reqwest::Client,
     config: &ChannelRefsSource,
-) -> Result<(HashMap<String, String>, nixfleet_proto::FleetResolved)> {
+) -> Result<(HashMap<String, String>, nixfleet_proto::FleetResolved, String)> {
     let token = signed_fetch::read_token(config.token_file.as_deref())?;
     let (artifact_bytes, signature_bytes) = signed_fetch::fetch_signed_pair(
         client,
@@ -124,6 +132,14 @@ async fn poll_once(
     )
     .map_err(|e| anyhow::anyhow!("verify_artifact (channel-refs poll): {e:?}"))?;
 
+    // Compute the canonical-bytes hash that anchors every rolloutId
+    // derivation downstream. Re-canonicalising the parsed FleetResolved
+    // is byte-stable (same JCS implementation produced the bytes we
+    // just verified), so this matches what producers and auditors get.
+    let fleet_resolved_hash =
+        nixfleet_reconciler::compute_canonical_hash(&fleet_resolved)
+            .map_err(|e| anyhow::anyhow!("compute_canonical_hash: {e:?}"))?;
+
     // Flatten channels → channel_refs (telemetry + the shape the
     // reconciler's `Observed.channel_refs` expects). For now every
     // channel gets the same CI commit — single fleet repo, single
@@ -138,5 +154,5 @@ async fn poll_once(
     for name in fleet_resolved.channels.keys() {
         refs.insert(name.clone(), ci_commit.clone());
     }
-    Ok((refs, fleet_resolved))
+    Ok((refs, fleet_resolved, fleet_resolved_hash))
 }

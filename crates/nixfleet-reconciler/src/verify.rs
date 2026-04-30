@@ -298,21 +298,29 @@ pub fn verify_rollout_manifest(
     )
 }
 
-/// Compute a `RolloutManifest`'s rolloutId — `sha256(canonical(m))`,
-/// hex lowercase. Producer-side use: `nixfleet-release` derives the
-/// filename `releases/rollouts/<rolloutId>.json` from this. Consumer
-/// side: every recipient (CP on adoption, agent on first-fetch,
-/// auditor offline) recomputes and asserts equality against the id
-/// it was told to fetch.
+/// Compute the SHA-256 hex of the JCS-canonical bytes of any
+/// serialisable value. The shared primitive behind every
+/// content-address derivation in the system: rolloutId,
+/// fleet_resolved_hash, future per-host or Merkle-projected hashes.
 ///
 /// Errors only on serde or canonicalize failure — both indicate a
-/// malformed manifest the caller should refuse to act on.
-pub fn compute_rollout_id(manifest: &RolloutManifest) -> Result<String, VerifyError> {
-    let raw = serde_json::to_string(manifest)?;
+/// malformed input the caller should refuse to act on.
+pub fn compute_canonical_hash<T: serde::Serialize>(value: &T) -> Result<String, VerifyError> {
+    let raw = serde_json::to_string(value)?;
     let canonical =
         nixfleet_canonicalize::canonicalize(&raw).map_err(VerifyError::Canonicalize)?;
     let digest = Sha256::digest(canonical.as_bytes());
     Ok(hex_lowercase(&digest))
+}
+
+/// Compute a `RolloutManifest`'s rolloutId — `sha256(canonical(m))`,
+/// hex lowercase. Producer-side use: `nixfleet-release` derives the
+/// filename `releases/rollouts/<rolloutId>.json` from this. Consumer
+/// side: every recipient (CP on advertise, agent on first-fetch,
+/// auditor offline) recomputes and asserts equality against the id
+/// it was told to fetch.
+pub fn compute_rollout_id(manifest: &RolloutManifest) -> Result<String, VerifyError> {
+    compute_canonical_hash(manifest)
 }
 
 fn hex_lowercase(bytes: &[u8]) -> String {

@@ -57,6 +57,12 @@ pub struct ServeArgs {
     /// Base URL of a nix binary cache the CP proxies
     /// `/v1/agent/closure/<hash>` to. None → endpoint returns 501.
     pub closure_upstream: Option<String>,
+    /// Directory containing pre-signed `<rolloutId>.{json,sig}` pairs
+    /// produced by nixfleet-release. None → `GET /v1/rollouts/<id>`
+    /// always returns 503 (manifest distribution disabled). Required
+    /// for any rollout where agents will verify wave membership
+    /// independently (RFC-0002 §4.4).
+    pub rollouts_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,7 +110,16 @@ pub struct AppState {
     pub db: Option<Arc<crate::db::Db>>,
     pub closure_upstream: Option<ClosureUpstream>,
     pub verified_fleet: Arc<RwLock<Option<Arc<FleetResolved>>>>,
+    /// SHA-256 hex of the canonical bytes of `verified_fleet`. Updated
+    /// in lockstep with verified_fleet by the channel-refs poll. Used
+    /// by `compute_rollout_id_for_channel` to anchor every rolloutId
+    /// advertisement to the specific signed snapshot it was projected
+    /// from (RFC-0002 §4.4 anchor).
+    pub fleet_resolved_hash: Arc<RwLock<Option<String>>>,
     pub confirm_deadline_secs: i64,
+    /// Filesystem path to the directory holding pre-signed rollout
+    /// manifests. `GET /v1/rollouts/<rolloutId>` looks here.
+    pub rollouts_dir: Option<PathBuf>,
 }
 
 impl Default for AppState {
@@ -120,7 +135,9 @@ impl Default for AppState {
             db: None,
             closure_upstream: None,
             verified_fleet: Arc::new(RwLock::new(None)),
+            fleet_resolved_hash: Arc::new(RwLock::new(None)),
             confirm_deadline_secs: DEFAULT_CONFIRM_DEADLINE_SECS,
+            rollouts_dir: None,
         }
     }
 }

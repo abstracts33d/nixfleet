@@ -186,7 +186,7 @@ async fn poll_refreshes_verified_fleet_snapshot() {
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
-    let _poll = spawn(cache.clone(), verified_fleet.clone(), cfg);
+    let _poll = spawn(cache.clone(), verified_fleet.clone(), Arc::new(RwLock::new(None)), cfg);
 
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let mut last_snapshot: Option<Arc<FleetResolved>> = None;
@@ -273,7 +273,7 @@ async fn poll_retains_snapshot_on_verify_failure() {
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
-    let _poll = spawn(cache.clone(), verified_fleet.clone(), cfg);
+    let _poll = spawn(cache.clone(), verified_fleet.clone(), Arc::new(RwLock::new(None)), cfg);
 
     tokio::time::sleep(Duration::from_secs(2)).await;
     let snapshot = verified_fleet.read().await.clone();

@@ -125,6 +125,14 @@ struct ServeFlags {
     /// cachix, nix-serve, …). When unset, returns 501.
     #[arg(long, env = "NIXFLEET_CP_CLOSURE_UPSTREAM")]
     closure_upstream: Option<String>,
+
+    /// Filesystem directory containing pre-signed rollout manifests
+    /// (`<rolloutId>.{json,sig}`) produced by `nixfleet-release`.
+    /// `GET /v1/rollouts/<rolloutId>` looks up files here. Unset
+    /// disables manifest distribution — `GET /v1/rollouts/...` returns
+    /// 503 and agents that need manifests will refuse to act.
+    #[arg(long, env = "NIXFLEET_CP_ROLLOUTS_DIR")]
+    rollouts_dir: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -256,6 +264,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         revocations,
         db_path: flags.db_path,
         closure_upstream: flags.closure_upstream,
+        rollouts_dir: flags.rollouts_dir,
     })
     .await
 }

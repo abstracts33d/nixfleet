@@ -73,6 +73,7 @@ async fn spawn_server_with_db_at_port(
         revocations: None,
         db_path,
         closure_upstream: None,
+        rollouts_dir: None,
     };
     let handle = tokio::spawn(server::serve(args));
     sleep(Duration::from_millis(300)).await;

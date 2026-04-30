@@ -23,6 +23,7 @@ mod handlers;
 mod middleware;
 mod reconcile;
 mod report_handler;
+mod rollouts_handlers;
 mod state;
 mod status_handlers;
 
@@ -59,6 +60,14 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/agent/renew", post(enrollment_handlers::renew))
         .route("/v1/channels/{name}", get(status_handlers::channel_status))
         .route("/v1/hosts", get(status_handlers::hosts_status))
+        .route(
+            "/v1/rollouts/{rolloutId}",
+            get(rollouts_handlers::manifest),
+        )
+        .route(
+            "/v1/rollouts/{rolloutId}/sig",
+            get(rollouts_handlers::signature),
+        )
         .layer(axum::middleware::from_fn(version_layer));
 
     Router::new()
@@ -107,6 +116,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         db: db.clone(),
         confirm_deadline_secs: args.confirm_deadline_secs,
         closure_upstream,
+        rollouts_dir: args.rollouts_dir.clone(),
         ..Default::default()
     };
     let state = Arc::new(app_state);
@@ -222,8 +232,9 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )
         .await
         {
-            Ok(Ok(fleet)) => {
+            Ok(Ok((fleet, fleet_hash))) => {
                 *state.verified_fleet.write().await = Some(Arc::new(fleet));
+                *state.fleet_resolved_hash.write().await = Some(fleet_hash);
                 tracing::info!(
                     target: "reconcile",
                     "primed verified-fleet from channel-refs source before opening listener",
@@ -262,6 +273,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         crate::channel_refs_poll::spawn(
             state.channel_refs_cache.clone(),
             state.verified_fleet.clone(),
+            state.fleet_resolved_hash.clone(),
             channel_refs_source,
         );
     }

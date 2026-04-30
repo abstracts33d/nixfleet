@@ -51,7 +51,16 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                     ..inputs.clone()
                 };
                 if let Some(fleet) = verify_fleet_only(&prime_inputs) {
+                    // Compute the canonical-bytes hash that anchors
+                    // every rolloutId derivation downstream (RFC-0002
+                    // §4.4). Re-canonicalising the parsed FleetResolved
+                    // is byte-stable.
+                    let fleet_hash =
+                        nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
                     *state.verified_fleet.write().await = Some(Arc::new(fleet));
+                    if let Some(h) = fleet_hash {
+                        *state.fleet_resolved_hash.write().await = Some(h);
+                    }
                     tracing::info!(
                         target: "reconcile",
                         "primed verified-fleet snapshot from build-time artifact (Forgejo prime unavailable)",
@@ -168,7 +177,13 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                     },
                 };
                 if should_overwrite {
+                    let fleet_hash =
+                        nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
                     *guard = Some(Arc::new(fleet));
+                    drop(guard);
+                    if let Some(h) = fleet_hash {
+                        *state.fleet_resolved_hash.write().await = Some(h);
+                    }
                 }
             }
 
