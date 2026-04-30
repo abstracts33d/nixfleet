@@ -50,11 +50,16 @@
   signedFixture,
   cpPkg,
   agentPkg,
+  # Optional signed revocations sidecar. When supplied, the CP runs
+  # with --revocations-* flags pointed at a static HTTP server on the
+  # host VM, and the post-wipe step asserts the sidecar replays into
+  # `cert_revocations` within one poll cycle.
+  revocationsFixture ? null,
   agentNames ? ["agent-01" "agent-02"],
   ...
 }: let
   cpHostModule = harnessLib.mkRealCpHostModule {
-    inherit testCerts signedFixture cpPkg;
+    inherit testCerts signedFixture cpPkg revocationsFixture;
   };
 
   mkAgent = name:
@@ -74,7 +79,32 @@ in
     name = "fleet-harness-teardown";
     inherit cpHostModule agents;
     timeout = 900;
-    testScript = ''
+    testScript = let
+      assertRevocationsReplayed = lib.optionalString (revocationsFixture != null) ''
+
+        # Hard-state recovery: the signed revocations.json sidecar
+        # must replay into `cert_revocations` after the wipe. Poll
+        # interval is 60s on the CP side, so give it 90s of slack.
+        print("step 4: waiting for revocations sidecar replay…")
+        rev_deadline = time.monotonic() + 90
+        rev_seen = False
+        while time.monotonic() < rev_deadline:
+            rc, _ = host.execute(
+                "journalctl -u nixfleet-control-plane.service "
+                f"--since='{post_wipe_cursor}' --no-pager "
+                "| grep -E 'revocations poll: list verified.*entries=1'"
+            )
+            if rc == 0:
+                rev_seen = True
+                break
+            time.sleep(3)
+        if not rev_seen:
+            raise Exception(
+                "revocations sidecar did not replay within 90s after CP wipe"
+            )
+        print("step 4: revocations sidecar replayed (1 entry verified)")
+      '';
+    in ''
       import time
 
       start_all()
@@ -170,6 +200,8 @@ in
           f"--since='{post_wipe_cursor}' --no-pager "
           "| grep -E 'verified-fleet snapshot|primed verified-fleet'"
       )
+
+      ${assertRevocationsReplayed}
 
       print(
           "fleet-harness-teardown: every agent re-checked-in within "

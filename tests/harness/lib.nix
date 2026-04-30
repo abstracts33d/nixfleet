@@ -191,9 +191,14 @@
     testCerts,
     signedFixture,
     cpPkg,
+    # Optional signed `revocations.json` sidecar fixture. When set,
+    # cp-real.nix runs a static HTTP server alongside the CP and
+    # configures `--revocations-*` to poll it. Scenarios that don't
+    # exercise revocations recovery pass `null`.
+    revocationsFixture ? null,
   }: {
     imports = [./nodes/cp-real.nix];
-    _module.args = {inherit testCerts signedFixture cpPkg;};
+    _module.args = {inherit testCerts signedFixture cpPkg revocationsFixture;};
   };
 
   mkAgentNode = {

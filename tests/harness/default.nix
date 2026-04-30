@@ -100,6 +100,14 @@
     then null
     else import ./fixtures/probe {inherit pkgs nixfleet-canonicalize;};
 
+  # Signed `revocations.json` sidecar — verifies under the same
+  # test-trust.json as signedFixture (shared seedSalt). Consumed by
+  # the teardown scenario to assert hard-state replay after CP wipe.
+  revocationsFixture =
+    if nixfleet-canonicalize == null
+    then null
+    else import ./fixtures/signed/revocations.nix {inherit pkgs nixfleet-canonicalize;};
+
   # Stale variant of the signed fixture: deliberately
   # signs the artifact a year and a half in the past so any sane
   # freshness window puts the agent's clock-skewed `now − signedAt`
@@ -153,7 +161,7 @@
     else
       import ./scenarios/teardown.nix (scenarioArgs
         // {
-          inherit signedFixture;
+          inherit signedFixture revocationsFixture;
           cpPkg = nixfleet-control-plane;
           agentPkg = nixfleet-agent;
         });
@@ -289,4 +297,5 @@ in {
   inherit signedFixture;
   inherit agenixFixture;
   inherit probeFixture;
+  inherit revocationsFixture;
 }

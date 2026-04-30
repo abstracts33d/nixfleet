@@ -50,6 +50,10 @@
           # rebuild failure signals non-determinism in mkFleet,
           # canonicalize, or the keygen helper.
           signed-fixture = harness.signedFixture;
+
+          # Signed `revocations.json` sidecar fixture exposed
+          # standalone — same byte-stability role as signed-fixture.
+          revocations-fixture = harness.revocationsFixture;
         }
         // lib.optionalAttrs (nixfleet-canonicalize != null && nixfleet-verify-artifact != null) {
           # Signed-roundtrip scenario. Exercises the full stack:
