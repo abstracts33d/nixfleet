@@ -9,7 +9,9 @@ the code disagrees, the code is being built to match.
 |---|---|---|
 | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | High-level architecture, component roles, trust flow, build order (Phases 0–10) | First read for new contributors |
 | [`CONTRACTS.md`](CONTRACTS.md) | Every artifact, key, and format that crosses a stream boundary (data, trust roots, canonicalization, storage purity) | When adding or changing anything cross-stream |
-| [`KICKOFF.md`](KICKOFF.md) | v0.2 cycle flow, stream prompts (A / B / C), checkpoints, merge discipline | When starting work on a v0.2 stream |
+| [`commercial-extensions.md`](commercial-extensions.md) | Capabilities deliberately out of scope for the open kernel (HA, SLA observability, audit packages) | When weighing whether a feature belongs in this repo |
+| [`trust-root-flow.md`](trust-root-flow.md) | How `nixfleet.trust.*` declarations reach `verify_artifact` at runtime | When touching trust-root wiring |
+| [`harness.md`](harness.md) | microvm.nix harness scope and slot-in points | When extending the integration-test fabric |
 
 ## Protocol + data (RFCs)
 
@@ -21,27 +23,23 @@ the code disagrees, the code is being built to match.
 
 ## Operational reference (mdbook)
 
-The [`mdbook/`](mdbook/) subtree is the user-facing manual built with mdbook.
-Start at [`mdbook/README.md`](mdbook/README.md); the full table of contents
-lives in [`mdbook/SUMMARY.md`](mdbook/SUMMARY.md). Notable sections:
+The [`mdbook/`](mdbook/) subtree is the user-facing manual. Source lives in
+[`mdbook/src/`](mdbook/src/); the table of contents is
+[`mdbook/src/SUMMARY.md`](mdbook/src/SUMMARY.md). Build with `nix run .#docs`.
 
 | Section | Path |
 |---|---|
-| Architecture overview | [`mdbook/architecture.md`](mdbook/architecture.md) |
-| Getting started (quick start, installation, design guarantees) | [`mdbook/guide/getting-started/`](mdbook/guide/getting-started/) |
-| Defining hosts (`mkHost`, hostSpec, cross-platform) | [`mdbook/guide/defining-hosts/`](mdbook/guide/defining-hosts/) |
-| Deploying (control plane, agent, cache, rollouts) | [`mdbook/guide/deploying/`](mdbook/guide/deploying/) |
-| Operating (status, rollback, impermanence) | [`mdbook/guide/operating/`](mdbook/guide/operating/) |
-| Extending (custom scopes, secrets, templates) | [`mdbook/guide/extending/`](mdbook/guide/extending/) |
-| Reference (CLI, options, modules) | [`mdbook/reference/`](mdbook/reference/) |
-| Testing (overview, eval, VM, Rust) | [`mdbook/testing/`](mdbook/testing/) |
+| Introduction | [`mdbook/src/introduction.md`](mdbook/src/introduction.md) |
+| Architecture overview | [`mdbook/src/architecture.md`](mdbook/src/architecture.md) |
+| Operator cookbook | [`mdbook/src/operator-cookbook.md`](mdbook/src/operator-cookbook.md) |
+| Troubleshooting | [`mdbook/src/troubleshooting.md`](mdbook/src/troubleshooting.md) |
+| Rust API (generated) | [`mdbook/src/api.md`](mdbook/src/api.md) |
+| Module options (generated) | [`mdbook/src/options.md`](mdbook/src/options.md) |
 
 ## Historical decisions
 
-| File | What it is |
-|---|---|
-| [`adr/`](adr/) | Architecture Decision Records (011 ADRs, numbered 001–011) covering `mkHost`, flags-over-roles, agent-as-service-module, hydration, fire-and-forget apply, etc. |
-| [`superpowers/`](superpowers/) | Spec + plan artifacts from implementation cycles (`specs/`, `plans/`) |
+[`adr/`](adr/) — 11 Architecture Decision Records (001–011) covering `mkHost`,
+flags-over-roles, agent-as-service-module, hydration, fire-and-forget apply, etc.
 
 ## Root-level docs
 
@@ -50,5 +48,6 @@ lives in [`mdbook/SUMMARY.md`](mdbook/SUMMARY.md). Notable sections:
 | [`../README.md`](../README.md) | User-facing README: install, quick start, ecosystem |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | Changelog (Keep a Changelog format) |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Contributor guide: setup, tests, commit conventions, license |
+| [`../DISASTER-RECOVERY.md`](../DISASTER-RECOVERY.md) | Operator runbook for CP teardown + recovery |
 | [`../SECURITY.md`](../SECURITY.md) | Security policy and disclosure |
 | [`../CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Code of conduct |
