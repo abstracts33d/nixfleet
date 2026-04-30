@@ -166,6 +166,16 @@ in
                 time.sleep(3)
         missing = agents_set - recovered
         if missing:
+            # Diagnostic dump: surface the actual post-wipe CP
+            # journal so the failure mode is debuggable from build
+            # logs alone (without re-running interactively).
+            _, dump = host.execute(
+                "journalctl -u nixfleet-control-plane.service "
+                f"--since='{post_wipe_cursor}' --no-pager"
+            )
+            print("=== post-wipe CP journal ===")
+            print(dump)
+            print("=== end CP journal ===")
             raise Exception(
                 f"soak-state recovery did not stamp last_healthy_since "
                 f"for {missing} within 60s after CP wipe"
