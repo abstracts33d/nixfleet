@@ -651,7 +651,7 @@ fn reject_before_exact_equal_is_accepted() {
 }
 
 // =================================================================
-// verify_revocations — gap C signed sidecar artifact
+// verify_revocations — signed `revocations.json` sidecar artifact
 // =================================================================
 
 const FIXTURE_REVOCATIONS: &str = r#"{

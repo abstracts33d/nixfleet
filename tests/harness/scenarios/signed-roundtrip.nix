@@ -1,8 +1,5 @@
-# tests/harness/scenarios/signed-roundtrip.nix
-#
-# Phase 2 cross-stream wire-up test per docs/phase-2-entry-spec.md §1–3.
-#
-# Proves that one signed fleet.resolved.json round-trips through:
+# Signed fleet.resolved round-trip test. Proves that a signed
+# artifact passes through every layer of the trust pipeline:
 #   mkFleet -> withSignature -> nixfleet-canonicalize -> ed25519-sign
 #   (fixture build)
 #   -> CP mTLS serve -> agent mTLS fetch

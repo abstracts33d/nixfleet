@@ -1,14 +1,13 @@
 # tests/harness/nodes/cp-real.nix
 #
-# Real-binary CP node for the Phase 10 teardown scenario (issue #14
-# / cycle N+1). Runs `nixfleet-control-plane serve` from the crane-
-# built package against the harness's signed fixture. State lives in
-# `/var/lib/nixfleet-cp/` so the teardown scenario can wipe it
-# mid-run and observe recovery.
+# Real-binary CP node for the teardown scenario (issue #14). Runs
+# `nixfleet-control-plane serve` from the crane-built package against
+# the harness's signed fixture. State lives in `/var/lib/nixfleet-cp/`
+# so the teardown scenario can wipe it mid-run and observe recovery.
 #
 # Why a separate node from cp.nix / cp-signed.nix: those serve a
 # static fixture from socat / Python http.server — no SQLite, no
-# in-memory checkin map, nothing to wipe. The Phase 10 test needs
+# in-memory checkin map, nothing to wipe. The teardown test needs
 # a CP that actually keeps state. Once this node is exercised in
 # CI, it's also the path for any future scenario that wants real
 # CP semantics (rollouts, dispatch, magic rollback).

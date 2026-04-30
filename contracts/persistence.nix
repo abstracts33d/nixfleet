@@ -16,11 +16,9 @@
 # `environment.persistence."/persist".directories = ...` for the
 # impermanence impl).
 #
-# Pre-phase-12 the framework imported `inputs.impermanence` directly
-# and bundled the upstream module + btrfs wipe + persisted-dir list
-# in one file. Phase 12 split that: schema in `contracts/`, impl in
-# `impls/` — fleets that don't enable the impermanence impl pay no
-# runtime cost from the input.
+# Schema lives here in `contracts/`; the impermanence implementation
+# lives in `impls/`. Fleets that don't enable the impermanence impl
+# pay no runtime cost from the upstream `inputs.impermanence` input.
 #
 # Home Manager-side persistence remains a separate concern — fleets
 # wire it via their own HM module imports.

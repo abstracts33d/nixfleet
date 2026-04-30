@@ -1,5 +1,3 @@
-# tests/harness/nodes/agent-verify.nix
-#
 # Signed-roundtrip agent microVM. At boot, fetches `canonical.json` and
 # `canonical.json.sig` from the CP over mTLS, stages `test-trust.json`
 # from the signed fixture, then runs `nixfleet-verify-artifact`. On
@@ -7,8 +5,8 @@
 # schemaVersion=<n> hosts=<n>` — the scenario testScript greps for the
 # marker.
 #
-# TODO: retire this module when the v0.2 agent inlines the verify call
-# site (per docs/phase-2-entry-spec.md §6 — the CLI is scaffold).
+# TODO: retire this module when the agent inlines the verify call
+# site directly (the CLI is harness scaffolding).
 {
   lib,
   pkgs,

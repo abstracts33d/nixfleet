@@ -28,14 +28,13 @@
   # derivation across scenarios. Inlined here (was previously in the now-
   # retired modules/tests/_lib/helpers.nix that served v0.1 VM scenarios).
   #
-  # X.509 extension posture (load-bearing for cycle-N+1 cp-real.nix):
-  # the CP's `WebPkiClientVerifier` strictly checks the chain's
-  # extensions — the CA needs basicConstraints CA:TRUE +
-  # keyCertSign; client certs need extendedKeyUsage clientAuth;
-  # server cert needs extendedKeyUsage serverAuth. The earlier
-  # smoke / signed-roundtrip scenarios used socat / Python
-  # http.server which did NOT enforce any of this; the real-CP
-  # node introduced by cycle N+1 is the first consumer that does.
+  # X.509 extension posture (load-bearing for cp-real.nix): the CP's
+  # `WebPkiClientVerifier` strictly checks the chain's extensions —
+  # the CA needs basicConstraints CA:TRUE + keyCertSign; client certs
+  # need extendedKeyUsage clientAuth; server cert needs
+  # extendedKeyUsage serverAuth. The earlier smoke / signed-roundtrip
+  # scenarios used socat / Python http.server which did NOT enforce
+  # any of this; cp-real.nix is the first consumer that does.
   # Explicit extensions below avoid relying on OpenSSL's default
   # behaviour (which has shifted across versions).
   mkTlsCerts = {hostnames ? ["cp" "agent-01" "agent-02"]}:
@@ -183,11 +182,11 @@
     _module.args = {inherit testCerts signedFixture;};
   };
 
-  # Real-binary CP host module (cycle N+1, issue #14). Runs the
-  # crane-built `nixfleet-control-plane serve` binary against the
-  # signed fixture with persistent SQLite state. Used by the
-  # Phase 10 teardown scenario; future scenarios that need real CP
-  # semantics import this instead of mkCpHostModule.
+  # Real-binary CP host module (issue #14). Runs the crane-built
+  # `nixfleet-control-plane serve` binary against the signed fixture
+  # with persistent SQLite state. Used by the teardown scenario;
+  # future scenarios that need real CP semantics import this instead
+  # of mkCpHostModule.
   mkRealCpHostModule = {
     testCerts,
     signedFixture,
@@ -265,7 +264,7 @@
     system.stateVersion = lib.mkDefault "24.11";
   };
 
-  # Real-binary agent microVM (cycle N+1). Runs the crane-built
+  # Real-binary agent microVM. Runs the crane-built
   # `nixfleet-agent` against `cp-real`. Pre-placed certs (no
   # enrollment); poll loop ticks at `pollIntervalSecs` (default 10s
   # in the harness so scenarios don't wait the full 60s production

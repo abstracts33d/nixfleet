@@ -1,6 +1,6 @@
 # tests/harness/nodes/agent-real.nix
 #
-# Real-binary agent microVM node for cycle-N+1 scenarios. Runs the
+# Real-binary agent microVM node. Runs the
 # `nixfleet-agent` binary against `cp-real` over mTLS. Pre-placed
 # client cert + key + CA + trust mean enrollment is skipped (the
 # harness's mkTlsCerts hands the agent a CA-signed cert directly);
@@ -55,8 +55,8 @@
       Restart = "on-failure";
       RestartSec = 5;
       # StateDirectory creates /var/lib/nixfleet-agent at unit
-      # start with mode 0700; the agent writes
-      # `last_confirmed_at` (gap B attestation) here.
+      # start with mode 0700; the agent writes `last_confirmed_at`
+      # (the soak-recovery attestation echoed on every checkin) here.
       StateDirectory = "nixfleet-agent";
       StateDirectoryMode = "0700";
       ExecStart = lib.concatStringsSep " " [

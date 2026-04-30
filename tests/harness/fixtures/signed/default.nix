@@ -10,8 +10,8 @@
 # `meta.{signedAt, ciCommit, signatureAlgorithm}`, and a 32-byte
 # ed25519 seed derived from `seedSalt`. Signing path (canonicalize →
 # sign) is factored into ./sign-bytes.nix so future signed sidecars
-# (e.g. revocations.json for criterion #1's hard-state teardown) reuse
-# the same key + verify under the same trust file.
+# (revocations.json, signed probe outputs) reuse the same key + verify
+# under the same trust file.
 {
   lib,
   pkgs,

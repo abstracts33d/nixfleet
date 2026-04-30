@@ -147,8 +147,8 @@ in {
       default = "/var/lib/nixfleet-agent";
       description = ''
         Per-host state directory. Holds `last_dispatched.json` and
-        `last_confirmed_at` (gap B). Created by the preActivation
-        script with mode 0700; survives agent restart. NOT wiped on
+        `last_confirmed_at`. Created by the preActivation script
+        with mode 0700; survives agent restart. NOT wiped on
         impermanent darwin hosts (no equivalent of NixOS impermanence
         on darwin yet).
       '';

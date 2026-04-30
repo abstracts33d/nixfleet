@@ -1,13 +1,11 @@
-# §8 done-criterion #2: auditor traces host↔closure↔commit↔probes
-# offline. Demonstrates the verify-artifact `probe` mode rejects a
-# tampered payload and accepts a well-formed one — the load-bearing
-# property an auditor relies on when reconstructing the chain
-# without CP access.
+# Auditor offline-chain demonstration: verify-artifact `probe` mode
+# accepts a well-formed signed compliance payload and rejects a
+# byte-flipped copy. The load-bearing property is that an auditor
+# can reconstruct the host↔probes link without CP access; this
+# scenario asserts the CLI surface honors that contract.
 #
-# This is intentionally a pure runCommand check, not a microvm
-# scenario: the verify path is offline by definition, no nodes or
-# networking required. Faster to build, cheaper to run, same
-# coverage of the contract.
+# Pure runCommand — the verify path is offline by definition; no
+# microvm or networking required.
 {
   pkgs,
   probeFixture,

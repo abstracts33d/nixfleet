@@ -20,10 +20,10 @@ Every CP-resident table classifies as either soft state (recoverable from agent 
 | Table | Class | Recovery |
 |---|---|---|
 | `host_checkins` (in-memory) | soft | repopulates as agents check in (poll cadence determines completion time) |
-| `pending_confirms` | soft | gap A's orphan-confirm path: agents whose `closure_hash` matches the verified target get a synthetic `confirmed` row + Healthy marker without a local rollback |
-| `host_rollout_state` | soft | gap B's `last_confirmed_at` attestation: agents echo their last-confirm timestamp on every checkin; CP repopulates `last_healthy_since` clamped to `min(now, attested)` |
+| `pending_confirms` | soft | orphan-confirm recovery (#46): agents whose `closure_hash` matches the verified target get a synthetic `confirmed` row + Healthy marker without a local rollback |
+| `host_rollout_state` | soft | agent-attested `last_confirmed_at` (#47): agents echo their last-confirm timestamp on every checkin; CP repopulates `last_healthy_since` clamped to `min(now, attested)` |
 | `token_replay` | soft | bounded by 24h bootstrap-token TTL; loss extends the replay window by at most that duration |
-| `cert_revocations` | **hard** | gap C's signed `revocations.json` sidecar: CP fetches + verifies + replays into the table on every reconcile tick |
+| `cert_revocations` | **hard** | signed `revocations.json` sidecar (#48): CP fetches + verifies + replays into the table on every reconcile tick |
 
 Trust roots (`trust.json`) come from the flake itself — rebuilt as part of the closure.
 
@@ -124,13 +124,13 @@ If all four checks pass, recovery is complete.
 
 Recoverable but **regressed by one reconcile cycle**:
 
-- **In-flight rollouts.** Hosts that were mid-activation (in `pending_confirms.state = 'pending'`) get the gap A orphan-recovery treatment on their next confirm POST: the CP synthesises a confirmed row when the agent's reported closure matches the verified target. Agents whose closure does NOT match get the standard 410 + local rollback.
-- **Soak windows.** Per-host `last_healthy_since` markers reset to "now of next checkin" via gap B's attestation. A wave that was mid-soak when the CP died restarts its soak window; if the wave's `soak_minutes` is e.g. 30 minutes and the host was 28 minutes in, you pay an extra 30 minutes before promotion.
+- **In-flight rollouts.** Hosts that were mid-activation (in `pending_confirms.state = 'pending'`) get the orphan-confirm-recovery treatment (#46) on their next confirm POST: the CP synthesises a confirmed row when the agent's reported closure matches the verified target. Agents whose closure does NOT match get the standard 410 + local rollback.
+- **Soak windows.** Per-host `last_healthy_since` markers reset to "now of next checkin" via the agent-attested timestamp (#47). A wave that was mid-soak when the CP died restarts its soak window; if the wave's `soak_minutes` is e.g. 30 minutes and the host was 28 minutes in, you pay an extra 30 minutes before promotion.
 - **Audit trail.** `audit.log` survives if you didn't delete it. The CP's structured journal output also survives (systemd journal is independent of the SQLite state). Together they reconstruct the pre-wipe state for incident review.
 
 **Not lost** (recovered automatically from signed artifacts):
 
-- Cert revocations (gap C — signed sidecar).
+- Cert revocations (signed sidecar — #48).
 - Trust roots (flake-provided).
 
 **Not lost** (recovered automatically from agent inputs):
@@ -155,7 +155,7 @@ Production poll cadence (60s) means the harness numbers don't translate 1:1. Exp
   - Trust file unreadable → check `--trust-file` permissions.
   - Build-time artifact signature invalid → flake build is producing a corrupted `fleet.resolved.json`. Roll back the flake commit.
   - Database migration failure → unexpected schema state in a non-empty DB; if you wiped per Step 2 this should not happen. If it does, file a bug.
-- **Agents don't reconnect.** Check the agents' systemd unit on the agent host: `journalctl -u nixfleet-agent.service`. Usually a cert-expiry issue (the cert's notBefore predates a `cert_revocations` entry — the gap C sidecar replayed on restart and now invalidates the agent). Resolution: re-enroll the affected hosts via the bootstrap-token flow.
+- **Agents don't reconnect.** Check the agents' systemd unit on the agent host: `journalctl -u nixfleet-agent.service`. Usually a cert-expiry issue (the cert's notBefore predates a `cert_revocations` entry — the revocations sidecar replayed on restart and now invalidates the agent). Resolution: re-enroll the affected hosts via the bootstrap-token flow.
 - **Recovery time exceeds the target by >10×.** Likely an upstream-fetch issue. Check the channel-refs poll loop: `journalctl -u nixfleet-control-plane.service | grep channel-refs`. Common causes: Forgejo authentication token expired, network partition, upstream URL misconfigured.
 
 ## Validation in CI

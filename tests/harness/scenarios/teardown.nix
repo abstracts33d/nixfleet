@@ -1,9 +1,7 @@
-# tests/harness/scenarios/teardown.nix
-#
-# Phase 10 control-plane teardown scenario (issue #14). Validates
-# ARCHITECTURE.md §8 done-criterion #1: *"destroying the control
-# plane's database and rebuilding from empty state results in full
-# fleet visibility within one reconcile cycle."*
+# Control-plane teardown scenario (issue #14). Validates
+# ARCHITECTURE.md §8: destroying the CP's database and rebuilding
+# from empty state restores full fleet visibility within one
+# reconcile cycle.
 #
 # Sequence:
 #   1. Boot host VM running cp-real + N agent microVMs running
@@ -24,27 +22,25 @@
 #   - The CP can be restarted from empty SQLite state and resumes
 #     accepting agent checkins immediately.
 #   - The in-memory `host_checkins` projection repopulates on the
-#     next agent checkin cycle (soft state recovery, gap A's
-#     orphan-confirm path is dormant here because no rollouts are
-#     in flight).
+#     next agent checkin cycle (soft-state recovery; orphan-confirm
+#     is dormant here because no rollouts are in flight).
 #   - The verified-fleet snapshot reprimes from the build-time
 #     artifact path on restart (no GitOps poll wired in this
 #     scenario; the file-backed prime is the recovery source).
 #
 # What this does NOT yet prove (deferred):
 #   - cert_revocations replay from a signed sidecar — needs the
-#     harness to bake a signed revocations.json fixture (gap C
-#     producer side hasn't been wired into the harness yet).
-#   - host_rollout_state recovery via gap B's last_confirmed_at
-#     attestation — needs the agent to actually post a confirm,
-#     which requires a closureHash matching /run/current-system
-#     in the fixture (currently null per fleet-resolved.json so
-#     dispatch returns NoDeclaration).
-#   - pending_confirms gap-A recovery — needs an in-flight
+#     harness to bake a signed revocations.json fixture.
+#   - host_rollout_state recovery via the agent-attested
+#     last_confirmed_at field — needs the agent to actually post a
+#     confirm, which requires a closureHash matching
+#     /run/current-system in the fixture (currently null per
+#     fleet-resolved.json so dispatch returns NoDeclaration).
+#   - pending_confirms orphan-recovery — needs an in-flight
 #     dispatch at wipe time, same dependency.
 #
-# All three gaps are exercised by per-table unit tests already
-# (see crates/nixfleet-control-plane/src/db.rs#tests). This
+# All three deferred properties are covered by per-table unit
+# tests (see crates/nixfleet-control-plane/src/db.rs#tests). This
 # scenario is the integration-level proof that the agent-side
 # repopulation property holds end-to-end.
 {
@@ -134,7 +130,7 @@ in
       pre_wipe = wait_for_checkins_since(pre_wipe_cursor, timeout_s=60)
       print(f"step 1: baseline checkins observed: {pre_wipe}")
 
-      # Phase 10 wipe: stop the CP, delete the SQLite database,
+      # Wipe step: stop the CP, delete the SQLite database,
       # restart. Mirrors the operator runbook in DISASTER-RECOVERY.md.
       print("step 2: simulating CP destruction (stop + DB wipe + restart)…")
       host.succeed("systemctl stop nixfleet-control-plane.service")
@@ -154,9 +150,9 @@ in
 
       # Recovery window: agents are on 10s poll, give them 30s
       # margin (3 poll cycles) to land a fresh checkin against the
-      # post-restart CP. ARCHITECTURE.md §8 done-criterion #1's
-      # "one reconcile cycle" with the harness's 10s poll =
-      # ~10-20s expected; 30s budget is comfortable.
+      # post-restart CP. ARCHITECTURE.md §8's "one reconcile cycle"
+      # with the harness's 10s poll = ~10-20s expected; 30s budget
+      # is comfortable.
       print("step 3: waiting for post-wipe recovery checkins…")
       recovery_start = time.monotonic()
       post_wipe = wait_for_checkins_since(post_wipe_cursor, timeout_s=30)
@@ -176,9 +172,8 @@ in
       )
 
       print(
-          "fleet-harness-teardown: ARCHITECTURE.md §8 done-criterion #1 "
-          "passes — every agent re-checked-in within one reconcile cycle "
-          "after CP DB wipe."
+          "fleet-harness-teardown: every agent re-checked-in within "
+          "one reconcile cycle after CP DB wipe (ARCHITECTURE.md §8)."
       )
     '';
   }

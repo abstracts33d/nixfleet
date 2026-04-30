@@ -14,8 +14,8 @@
 # - signed-roundtrip — stub CP serving the signed fixture, agent
 #   verifies via the verify-artifact CLI.
 # - teardown — real CP binary + real agents; wipes CP DB mid-run
-#   and asserts state recovery (issue #14, ARCHITECTURE.md §8
-#   done-criterion #1).
+#   and asserts state recovery within one reconcile cycle
+#   (issue #14, ARCHITECTURE.md §8).
 {
   lib,
   pkgs,
@@ -29,11 +29,11 @@
   # signed-roundtrip scenario invokes it from inside the agent microVM;
   # the smoke scenario does not need it.
   nixfleet-verify-artifact ? null,
-  # Real binaries for the cycle-N+1 teardown scenario (issue #14)
-  # and any future scenario that needs real CP / agent semantics
-  # (rollouts, dispatch, magic rollback). Defaults to null so
-  # callers without the crane workspace still get the stub-based
-  # smoke + signed-roundtrip scenarios.
+  # Real binaries for the teardown scenario (issue #14) and any
+  # future scenario that needs real CP / agent semantics (rollouts,
+  # dispatch, magic rollback). Defaults to null so callers without
+  # the crane workspace still get the stub-based smoke +
+  # signed-roundtrip scenarios.
   nixfleet-control-plane ? null,
   nixfleet-agent ? null,
 }: let
@@ -87,14 +87,14 @@
         inherit lib pkgs nixfleet-canonicalize;
       };
 
-  # Encrypted-secret fixture for criterion #3 (CP disk yields zero
-  # plaintext secrets). Outputs an age-encrypted blob + matching
-  # identity + the plaintext bytes the scenario greps for absence of.
+  # Encrypted-secret fixture for the secret-hygiene scenario. Outputs
+  # an age-encrypted blob + matching identity + the plaintext bytes
+  # the scenario greps for absence of in CP-side disk dumps.
   agenixFixture = import ./fixtures/agenix {inherit pkgs;};
 
-  # Pre-signed probe-output fixture for criterion #2 (auditor offline
-  # chain). Outputs canonical payload + base64 sig + OpenSSH pubkey;
-  # consumed by the auditor-chain scenario via verify-artifact probe.
+  # Pre-signed probe-output fixture for the auditor-chain scenario.
+  # Outputs canonical payload + base64 sig + OpenSSH pubkey; consumed
+  # by verify-artifact probe.
   probeFixture =
     if nixfleet-canonicalize == null
     then null
@@ -201,8 +201,8 @@
           agentPkg = nixfleet-agent;
         });
 
-  # §8 done-criterion #2 auditor-chain scenario. Pure runCommand —
-  # the verify path is offline by definition, no microvm required.
+  # Auditor offline-chain scenario. Pure runCommand — the verify
+  # path is offline by definition, no microvm required.
   auditorChainScenario =
     if nixfleet-verify-artifact == null || probeFixture == null
     then
@@ -266,7 +266,7 @@ in {
   fleet-harness-fleet-10 = mkFleetNScenario 10;
 
   # Signed-fixture derivation exposed as a harness attribute. Registered
-  # as a flake check (`phase-2-signed-fixture`) in `modules/tests/harness.nix`
+  # as a flake check (`signed-fixture`) in `modules/tests/harness.nix`
   # so byte-stability regressions surface on every CI run.
   inherit signedFixture;
   inherit agenixFixture;

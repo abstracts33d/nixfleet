@@ -109,25 +109,26 @@ in {
       '';
     };
 
-    # Gap B-agent (deferred to #2 — Magic rollback in the agent).
-    # The agent persists `last_confirmed_at` here after every
-    # successful confirm so subsequent checkins can attest the
-    # timestamp; the CP-side
+    # Per-host state directory. The agent persists
+    # `last_confirmed_at` here after every successful confirm so
+    # subsequent checkins can attest the timestamp; the CP-side
     # `recover_soak_state_from_attestation` repopulates
     # `host_rollout_state.last_healthy_since` after a CP rebuild.
     # Aligned with `StateDirectory=nixfleet-agent` so the systemd
     # unit creates the directory with the right owner + perms.
+    # Agent-side population of last_confirmed_at folds into the
+    # magic-rollback work (#2).
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/nixfleet-agent";
       description = ''
         Directory the agent uses for per-host persistent state.
-        Currently holds `last_confirmed_at` (gap B) — a two-line
-        plaintext file binding the agent's most recent successful
-        confirm timestamp to the closure it applies to. Created
-        with mode 0700 by the systemd unit's StateDirectory.
-        Survives agent process restart but NOT
-        `systemd-tmpfiles --remove` style wipes.
+        Currently holds `last_confirmed_at` — a two-line plaintext
+        file binding the agent's most recent successful confirm
+        timestamp to the closure it applies to. Created with mode
+        0700 by the systemd unit's StateDirectory. Survives agent
+        process restart but NOT `systemd-tmpfiles --remove` style
+        wipes.
       '';
     };
 
