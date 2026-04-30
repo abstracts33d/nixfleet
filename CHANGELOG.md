@@ -4,6 +4,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### v0.2 acceptance cycle (2026-04-30)
+
+ARCHITECTURE.md §8's four falsifiable done-criteria are now harness-enforced end-to-end. Closes the gap from "stated as a contract" to "fails loudly on regression." Net −2,421 LOC across 83 commits; 280 Rust tests, 0 clippy warnings, 9 microvm scenarios.
+
+#### Added — harness scenarios
+
+- **`fleet-harness-corruption-rejection`** (§8 #4 — corrupted-artifact rejection). Pure runCommand check: bit-flips canonical bytes and signature in turn against `nixfleet-verify-artifact`, asserts each is rejected with the typed `VerifyError`.
+- **`fleet-harness-auditor-chain`** (§8 #2 — offline auditor chain). Demonstrates `nixfleet-verify-artifact probe` accepts a well-formed signed compliance payload and rejects a byte-flipped copy. Verifies the host↔probes link without CP access.
+- **`fleet-harness-secret-hygiene`** (§8 #3 — zero plaintext on stolen CP disk). Agent decrypts an age-encrypted blob at boot, lands plaintext in `/run/secrets/test-token`, then runs through normal checkin traffic; testScript greps the CP's state.db, journal, audit.log, and `/etc/nixfleet-cp/` tree for the plaintext, asserts no leaks.
+- **`fleet-harness-teardown`** extended (§8 #1 — CP rebuild within one reconcile cycle). Beyond the prior soft-state checkin replay: now also asserts the signed `revocations.json` sidecar replays into `cert_revocations` post-wipe, and the agent-attested `last_confirmed_at` repopulates `host_rollout_state.last_healthy_since` via `recover_soak_state_from_attestation`. The fixture injects per-host `closureHash` and the agent VM overrides `/run/current-system` so convergence triggers the recovery path. Closes #14.
+
+#### Added — supporting infrastructure
+
+- **Shared `signBytes` helper** (`tests/harness/fixtures/signed/sign-bytes.nix`) factors the JCS+ed25519 signing path. Used by the main signed fixture and by new sidecar fixtures (revocations, probe outputs).
+- **`nixfleet_reconciler::evidence`** consolidates probe-output verify (moved from `nixfleet-control-plane`'s `evidence_verify` module). Both CP and the offline `nixfleet-verify-artifact` CLI share one implementation.
+- **`nixfleet-verify-artifact probe` subcommand** for offline audit verification (canonical-bytes + base64 signature + OpenSSH ed25519 pubkey → exit 0/1).
+- **Probe-output fixture** (`tests/harness/fixtures/probe/`) bakes a signed `ComplianceFailureSignedPayload` for the auditor scenario.
+- **Revocations fixture** (`tests/harness/fixtures/signed/revocations.nix`) bakes a signed `Revocations` envelope for the teardown scenario.
+- **Agenix fixture** (`tests/harness/fixtures/agenix/`) provides a deterministic age identity + encrypted-secret pair for the secret-hygiene scenario.
+- **Flake-check registration** for the new fixtures (`signed-fixture`, `probe-fixture`, `revocations-fixture`) — byte-stability regression guards.
+
+#### Changed
+
+- **Tracking-cycle nomenclature scrub.** `Phase N` / `criterion #N` / `gap A` / `phase-2-signed-fixture` and similar labels removed from source code, flake check names, and reference docs. Code reads timeless; tracking lives in GitHub issues. Renamed checks: `phase-2-signed-fixture` → `signed-fixture`, `phase-1-2-probe-fixture` → `probe-fixture`. CHANGELOG entries (this file) are exempt — dated record genre.
+- **Bare GitHub-issue refs scrub from source.** `(#46)`, `(#48)`, `closes #N` style references stripped from Rust + Nix sources (28 files, no net LOC change). Substantive descriptions retained; commit messages and CHANGELOG entries keep the refs.
+- **Markdown cleanup (5-phase pass, −10,636 LOC).** Deleted `docs/superpowers/`, `docs/KICKOFF.md`, all `phase-N-entry-spec.md` files, and the `docs/roadmap/` tracking files; tracking content migrated to issues #67/#68/#69. Reference docs (ARCHITECTURE.md, CONTRACTS.md, RFCs, DISASTER-RECOVERY.md) compacted; "implementation status (date)" blocks removed from RFC headers. `docs/README.md` rewritten to match actual on-disk structure.
+
+#### Issues
+
+- Closed: #14 (Phase 10 teardown test), #46 (orphan-confirm recovery), #47 (last_confirmed_at attestation), #48 (signed revocations sidecar), #57 (runtime compliance gate, agent), #58 (static compliance unification), #60 (host_reports SQLite). Plus quick-wins #49, #50, #52, #53, #54.
+- Filed: #67 (pluggable activation backend, v0.3 scope), #68 (CheckinResponse.target widen for RFC-0003 §4.1), #69 (onHealthFailure rollback emission for RFC-0002 §5.1).
+- Updated with progress: #4 (compliance gate umbrella; CLI surfacing → #66), #12 (signed artifacts umbrella; root-3 → #61, rotation → #63), #59 (CP-side wave-promotion gating; CLI surfacing → #66), #61 (probe signatures on remaining 6 activation-evidence variants).
+
+#### Cycle scaffolding
+
+- Memory rules captured: heavy builds run on lab not darwin; tracking-cycle labels stay out of code; microvm guests aren't first-class test driver nodes; testScript runs through mypy `--strict`; `_` is a real variable in tuple unpacks. Prevents re-learning the same lessons next cycle.
+
 ### v0.2 completeness cycle (2026-04-28)
 
 Closes the framework-scoped gaps required for ARCHITECTURE.md §8 done-criterion #1 — *"destroying the CP's database and rebuilding from empty state results in full fleet visibility within one reconcile cycle"* — to hold against strict reading. Six commits between `fe3baec` and `ac5a66f`; tests 127 → 165.
