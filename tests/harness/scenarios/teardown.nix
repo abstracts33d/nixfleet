@@ -71,9 +71,18 @@
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
       };
+      # Make the agent unit a hard consumer: if preseed fails, the
+      # agent's recovery test would silently false-pass otherwise
+      # (read_last_confirmed returns Ok(None) on missing file with
+      # no warn). Tying via requiredBy surfaces a preseed failure
+      # as an agent-failed unit instead.
+      requiredBy = ["nixfleet-agent.service"];
       script = ''
-        set -euo pipefail
+        set -euxo pipefail
+        echo "harness-preseed: starting"
 
         # Override /run/current-system. The symlink target doesn't
         # need to exist — the agent only reads the symlink string
@@ -81,6 +90,7 @@
         # path basename.
         ${pkgs.coreutils}/bin/ln -sfn \
           /tmp/${teardownClosureHash} /run/current-system
+        ${pkgs.coreutils}/bin/ls -la /run/current-system
 
         # Seed last_confirmed_at in the agent's state dir. Format
         # per crates/nixfleet-agent/src/checkin_state.rs:
@@ -92,6 +102,9 @@
           > /var/lib/nixfleet-agent/last_confirmed_at
         ${pkgs.coreutils}/bin/chmod 0600 \
           /var/lib/nixfleet-agent/last_confirmed_at
+        ${pkgs.coreutils}/bin/ls -la /var/lib/nixfleet-agent/
+        ${pkgs.coreutils}/bin/cat /var/lib/nixfleet-agent/last_confirmed_at
+        echo "harness-preseed: complete"
       '';
     };
   };
@@ -166,16 +179,23 @@ in
                 time.sleep(3)
         missing = agents_set - recovered
         if missing:
-            # Diagnostic dump: surface the actual post-wipe CP
-            # journal so the failure mode is debuggable from build
-            # logs alone (without re-running interactively).
-            dump = host.succeed(
+            # Diagnostic dump: surface the post-wipe CP journal AND
+            # each missing agent's console-forwarded journal so the
+            # failure mode is debuggable from build logs alone.
+            cp_dump = host.succeed(
                 "journalctl -u nixfleet-control-plane.service "
                 f"--since='{post_wipe_cursor}' --no-pager"
             )
             print("=== post-wipe CP journal ===")
-            print(dump)
+            print(cp_dump)
             print("=== end CP journal ===")
+            for missing_host in sorted(missing):
+                vm_dump = host.succeed(
+                    f"journalctl -u microvm@{missing_host}.service --no-pager"
+                )
+                print(f"=== {missing_host} microvm journal ===")
+                print(vm_dump)
+                print(f"=== end {missing_host} microvm journal ===")
             raise Exception(
                 f"soak-state recovery did not stamp last_healthy_since "
                 f"for {missing} within 60s after CP wipe"
