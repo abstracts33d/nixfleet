@@ -31,7 +31,9 @@
   };
 
   keygen = pkgs.writers.writePython3 "ed25519-pkcs8-from-seed-probe" {} ''
-    import base64, sys
+    import base64
+    import sys
+
     seed = bytes.fromhex(sys.argv[1])
     der = bytes.fromhex("302e020100300506032b657004220420") + seed
     with open(sys.argv[2], "w") as f:
@@ -44,7 +46,10 @@
   # "ssh-ed25519" string + 4-byte length-prefix raw 32-byte pubkey,
   # then base64-wrapped, then "ssh-ed25519 <b64> <comment>".
   toOpenssh = pkgs.writers.writePython3 "raw-to-openssh-ed25519" {} ''
-    import base64, struct, sys
+    import base64
+    import struct
+    import sys
+
     raw = base64.b64decode(open(sys.argv[1]).read().strip())
     wire = struct.pack(">I", 11) + b"ssh-ed25519" + struct.pack(">I", 32) + raw
     print("ssh-ed25519", base64.b64encode(wire).decode(), "harness-host")

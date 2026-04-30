@@ -18,7 +18,9 @@
   # caller-supplied seed for `genpkey` (openssl/openssl#18333), so we
   # hand-build the 48-byte DER (16-byte prefix + 32-byte seed).
   keygen = pkgs.writers.writePython3 "ed25519-pkcs8-from-seed" {} ''
-    import base64, sys
+    import base64
+    import sys
+
     seed = bytes.fromhex(sys.argv[1])
     assert len(seed) == 32
     der = bytes.fromhex("302e020100300506032b657004220420") + seed
