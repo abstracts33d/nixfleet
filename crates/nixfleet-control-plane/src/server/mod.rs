@@ -151,7 +151,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                                     };
                                 let signature_status = row.signature_status.and_then(|s| {
                                     serde_json::from_value::<
-                                        crate::evidence_verify::SignatureStatus,
+                                        nixfleet_reconciler::evidence::SignatureStatus,
                                     >(serde_json::Value::String(s))
                                     .ok()
                                 });

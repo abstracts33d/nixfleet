@@ -150,9 +150,12 @@ pub(super) async fn report(
 async fn compute_signature_status(
     state: &Arc<AppState>,
     req: &ReportRequest,
-) -> Option<crate::evidence_verify::SignatureStatus> {
-    use crate::evidence_verify;
+) -> Option<nixfleet_reconciler::evidence::SignatureStatus> {
     use nixfleet_proto::agent_wire::ReportEvent;
+    use nixfleet_proto::evidence_signing::{
+        ComplianceFailureSignedPayload, RuntimeGateErrorSignedPayload,
+    };
+    use nixfleet_reconciler::evidence::verify_event;
 
     let pubkey: Option<String> = {
         let fleet_guard = state.verified_fleet.read().await;
@@ -189,7 +192,7 @@ async fn compute_signature_status(
                 },
                 None => String::new(),
             };
-            let payload = evidence_verify::ComplianceFailureSignedPayload {
+            let payload = ComplianceFailureSignedPayload {
                 hostname: &req.hostname,
                 rollout: req.rollout.as_deref(),
                 control_id,
@@ -198,7 +201,7 @@ async fn compute_signature_status(
                 evidence_collected_at: *evidence_collected_at,
                 evidence_snippet_sha256: snippet_sha,
             };
-            Some(evidence_verify::verify_event(
+            Some(verify_event(
                 signature.as_deref(),
                 pubkey.as_deref(),
                 &payload,
@@ -211,7 +214,7 @@ async fn compute_signature_status(
             activation_completed_at,
             signature,
         } => {
-            let payload = evidence_verify::RuntimeGateErrorSignedPayload {
+            let payload = RuntimeGateErrorSignedPayload {
                 hostname: &req.hostname,
                 rollout: req.rollout.as_deref(),
                 reason,
@@ -219,7 +222,7 @@ async fn compute_signature_status(
                 evidence_collected_at: *evidence_collected_at,
                 activation_completed_at: *activation_completed_at,
             };
-            Some(evidence_verify::verify_event(
+            Some(verify_event(
                 signature.as_deref(),
                 pubkey.as_deref(),
                 &payload,

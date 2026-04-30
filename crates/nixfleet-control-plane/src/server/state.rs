@@ -65,7 +65,7 @@ pub struct HostCheckinRecord {
     pub checkin: CheckinRequest,
 }
 
-/// `signature_status` is the `evidence_verify` verdict for events
+/// `signature_status` is the evidence-verify verdict for events
 /// carrying a signature contract (`ComplianceFailure`,
 /// `RuntimeGateError`). None for events without a contract or
 /// pre-dating the field.
@@ -74,7 +74,7 @@ pub struct ReportRecord {
     pub event_id: String,
     pub received_at: DateTime<Utc>,
     pub report: ReportRequest,
-    pub signature_status: Option<crate::evidence_verify::SignatureStatus>,
+    pub signature_status: Option<nixfleet_reconciler::evidence::SignatureStatus>,
 }
 
 #[derive(Clone, Debug)]

@@ -11,6 +11,7 @@
 //! Both are stateless: state lives in the inputs.
 
 pub mod action;
+pub mod evidence;
 pub mod host_state;
 pub mod observed;
 pub mod reconcile;

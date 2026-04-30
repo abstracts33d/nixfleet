@@ -1,24 +1,18 @@
-//! CP-side verifier for host probe-output signatures.
+//! Probe-output signature verification.
 //!
-//! Reconstructs the JCS-canonical signed payload from the wire
-//! `ReportEvent` + cert-CN-bound hostname, parses
-//! `hosts.<hostname>.pubkey` from `fleet.resolved.json` (OpenSSH
-//! format), and runs `ed25519::verify_strict`.
+//! Two entry points:
+//! - [`verify_canonical_payload`]: bytes-level. Caller owns
+//!   canonicalization. Used by offline auditor tooling that doesn't
+//!   know the typed wire-payload shape.
+//! - [`verify_event`]: typed wrapper. Caller passes a `Serialize`
+//!   payload; this fn JCS-canonicalizes then calls the bytes-level fn.
 //!
-//! Hostname comes from the cert, not the report body — the report
-//! handler already enforced `cert_cn == body.hostname`. Pubkey
-//! absence (`NoPubkey`) is graceful: lab fleets enrol hosts before
-//! stamping `pubkey` in fleet.nix.
+//! Pubkey is OpenSSH-format `ssh-ed25519 AAAA...`. Source is
+//! `hosts.<hostname>.pubkey` from `fleet.resolved.json`.
 
-use anyhow::{Context, Result};
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Serialize;
-
-pub use nixfleet_proto::evidence_signing::{
-    ActivationFailedSignedPayload, ComplianceFailureSignedPayload,
-    RollbackTriggeredSignedPayload, RuntimeGateErrorSignedPayload,
-};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -45,22 +39,18 @@ impl SignatureStatus {
     /// probe-output signature is defense-in-depth + auditor-chain
     /// seam, not the primary trust root. Everything counts except
     /// statuses that signal active tampering.
-    ///
-    /// A future "strict" channel mode requiring `Verified` for
-    /// gate participation belongs as a new `GateMode` variant
-    /// not a flip of this boolean.
     pub fn counts_for_gate(self) -> bool {
         !matches!(self, SignatureStatus::Mismatch | SignatureStatus::Malformed)
     }
 }
 
-/// Verify base64 ed25519 `signature` over JCS-canonical bytes of
-/// `payload`. Inputs are Optional so callers pass Options through;
-/// the verdict reflects each Some/None combination.
-pub fn verify_event<T: Serialize>(
-    signature: Option<&str>,
+/// Verify a base64 ed25519 signature over already-canonical bytes.
+/// `Some/None` semantics on the inputs let callers thread Optional
+/// signature/pubkey fields through to a single verdict.
+pub fn verify_canonical_payload(
+    canonical: &[u8],
     pubkey_openssh: Option<&str>,
-    payload: &T,
+    signature: Option<&str>,
 ) -> SignatureStatus {
     let Some(sig_b64) = signature else {
         return SignatureStatus::Unsigned;
@@ -85,21 +75,30 @@ pub fn verify_event<T: Serialize>(
     };
     let sig = Signature::from_bytes(&sig_arr);
 
-    let canonical = match serde_jcs::to_vec(payload) {
-        Ok(v) => v,
-        Err(_) => return SignatureStatus::Malformed,
-    };
-
-    match pubkey.verify(&canonical, &sig) {
+    match pubkey.verify(canonical, &sig) {
         Ok(()) => SignatureStatus::Verified,
         Err(_) => SignatureStatus::Mismatch,
     }
 }
 
+/// Typed wrapper: JCS-canonicalize `payload`, then verify.
+pub fn verify_event<T: Serialize>(
+    signature: Option<&str>,
+    pubkey_openssh: Option<&str>,
+    payload: &T,
+) -> SignatureStatus {
+    let canonical = match serde_jcs::to_vec(payload) {
+        Ok(v) => v,
+        Err(_) => return SignatureStatus::Malformed,
+    };
+    verify_canonical_payload(&canonical, pubkey_openssh, signature)
+}
+
 /// `Ok(Some(_))` for a well-formed ed25519 pubkey, `Ok(None)` for
 /// non-ed25519 algorithms (caller → `WrongAlgorithm`), `Err(_)` on
 /// parse failure (caller → `Malformed`).
-fn parse_ssh_ed25519_pubkey(line: &str) -> Result<Option<VerifyingKey>> {
+fn parse_ssh_ed25519_pubkey(line: &str) -> anyhow::Result<Option<VerifyingKey>> {
+    use anyhow::Context;
     let public = ssh_key::PublicKey::from_openssh(line.trim())
         .context("parse OpenSSH pubkey")?;
     match public.key_data() {
@@ -116,22 +115,19 @@ fn parse_ssh_ed25519_pubkey(line: &str) -> Result<Option<VerifyingKey>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nixfleet_proto::evidence_signing::ComplianceFailureSignedPayload;
 
-    /// Generate an ed25519 keypair (avoiding the rand_core feature
-    /// gate on `SigningKey::generate`), return (signing_key, ssh
-    /// public key string in `ssh-ed25519 AAAAC3...` form).
-    fn fresh_keypair() -> (ed25519_dalek::SigningKey, String) {
-        use rand::RngCore;
-        let mut seed = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut seed);
+    /// Distinct keypairs from a counter — tests need pairs that
+    /// don't match each other, but they don't need randomness.
+    fn keypair_from(byte: u8) -> (ed25519_dalek::SigningKey, String) {
+        let seed = [byte; 32];
         let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
         let pubkey_bytes = sk.verifying_key().to_bytes();
         let ssh_pk = ssh_key::PublicKey::new(
             ssh_key::public::KeyData::Ed25519(ssh_key::public::Ed25519PublicKey(pubkey_bytes)),
             "test-host",
         );
-        let openssh = ssh_pk.to_openssh().expect("to_openssh");
-        (sk, openssh)
+        (sk, ssh_pk.to_openssh().expect("to_openssh"))
     }
 
     fn sample_payload() -> ComplianceFailureSignedPayload<'static> {
@@ -147,32 +143,28 @@ mod tests {
     }
 
     #[test]
-    fn verify_returns_unsigned_when_signature_missing() {
-        let payload = sample_payload();
+    fn unsigned_when_signature_missing() {
         assert_eq!(
-            verify_event(None, Some("ssh-ed25519 AAAAxxxx"), &payload),
+            verify_event(None, Some("ssh-ed25519 AAAAxxxx"), &sample_payload()),
             SignatureStatus::Unsigned
         );
     }
 
     #[test]
-    fn verify_returns_no_pubkey_when_pubkey_missing() {
-        let payload = sample_payload();
+    fn no_pubkey_when_pubkey_missing() {
         assert_eq!(
-            verify_event(Some("AAAA"), None, &payload),
+            verify_event(Some("AAAA"), None, &sample_payload()),
             SignatureStatus::NoPubkey
         );
     }
 
     #[test]
-    fn verify_round_trip_succeeds() {
+    fn round_trip_succeeds() {
         use ed25519_dalek::Signer;
-        let (sk, pubkey_str) = fresh_keypair();
+        let (sk, pubkey_str) = keypair_from(1);
         let payload = sample_payload();
-        let canonical = serde_jcs::to_vec(&payload).unwrap();
-        let sig = sk.sign(&canonical);
-        let sig_b64 =
-            base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+        let sig = sk.sign(&serde_jcs::to_vec(&payload).unwrap());
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
         assert_eq!(
             verify_event(Some(&sig_b64), Some(&pubkey_str), &payload),
             SignatureStatus::Verified
@@ -180,16 +172,12 @@ mod tests {
     }
 
     #[test]
-    fn verify_returns_mismatch_on_tampered_payload() {
+    fn mismatch_on_tampered_payload() {
         use ed25519_dalek::Signer;
-        let (sk, pubkey_str) = fresh_keypair();
+        let (sk, pubkey_str) = keypair_from(1);
         let payload = sample_payload();
-        let canonical = serde_jcs::to_vec(&payload).unwrap();
-        let sig = sk.sign(&canonical);
-        let sig_b64 =
-            base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
-
-        // Verify against a tampered payload — different control_id.
+        let sig = sk.sign(&serde_jcs::to_vec(&payload).unwrap());
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
         let mut tampered = sample_payload();
         tampered.control_id = "backupRetention";
         assert_eq!(
@@ -199,16 +187,13 @@ mod tests {
     }
 
     #[test]
-    fn verify_returns_mismatch_on_wrong_pubkey() {
+    fn mismatch_on_wrong_pubkey() {
         use ed25519_dalek::Signer;
-        let (sk_signer, _) = fresh_keypair();
-        let (_, pubkey_str_other) = fresh_keypair();
+        let (sk_signer, _) = keypair_from(1);
+        let (_, pubkey_str_other) = keypair_from(2);
         let payload = sample_payload();
-        let canonical = serde_jcs::to_vec(&payload).unwrap();
-        let sig = sk_signer.sign(&canonical);
-        let sig_b64 =
-            base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
-        // Sign with key A, verify with key B — should mismatch.
+        let sig = sk_signer.sign(&serde_jcs::to_vec(&payload).unwrap());
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
         assert_eq!(
             verify_event(Some(&sig_b64), Some(&pubkey_str_other), &payload),
             SignatureStatus::Mismatch
@@ -216,15 +201,13 @@ mod tests {
     }
 
     #[test]
-    fn verify_returns_malformed_on_garbage_signature() {
+    fn malformed_on_garbage_signature() {
         let payload = sample_payload();
-        let (_, pubkey_str) = fresh_keypair();
-        // Not base64.
+        let (_, pubkey_str) = keypair_from(3);
         assert_eq!(
             verify_event(Some("!!!not-base64!!!"), Some(&pubkey_str), &payload),
             SignatureStatus::Malformed
         );
-        // Wrong length (32 bytes instead of 64).
         let short = base64::engine::general_purpose::STANDARD.encode([0u8; 32]);
         assert_eq!(
             verify_event(Some(&short), Some(&pubkey_str), &payload),
@@ -233,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_returns_malformed_on_garbage_pubkey() {
+    fn malformed_on_garbage_pubkey() {
         let payload = sample_payload();
         let sig = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
         assert_eq!(
@@ -244,14 +227,24 @@ mod tests {
 
     #[test]
     fn signature_status_gate_counting() {
-        // Verified, Unsigned, NoPubkey, WrongAlgorithm — all count
-        // (mTLS-bound trust). Mismatch + Malformed signal active
-        // tampering and DON'T count.
         assert!(SignatureStatus::Verified.counts_for_gate());
         assert!(SignatureStatus::Unsigned.counts_for_gate());
         assert!(SignatureStatus::NoPubkey.counts_for_gate());
         assert!(SignatureStatus::WrongAlgorithm.counts_for_gate());
         assert!(!SignatureStatus::Mismatch.counts_for_gate());
         assert!(!SignatureStatus::Malformed.counts_for_gate());
+    }
+
+    #[test]
+    fn bytes_level_round_trip() {
+        use ed25519_dalek::Signer;
+        let (sk, pubkey_str) = keypair_from(1);
+        let canonical = serde_jcs::to_vec(&sample_payload()).unwrap();
+        let sig = sk.sign(&canonical);
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+        assert_eq!(
+            verify_canonical_payload(&canonical, Some(&pubkey_str), Some(&sig_b64)),
+            SignatureStatus::Verified
+        );
     }
 }

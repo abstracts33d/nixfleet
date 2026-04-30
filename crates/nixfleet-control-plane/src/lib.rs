@@ -16,7 +16,6 @@ pub mod auth_cn;
 pub mod channel_refs_poll;
 pub mod db;
 pub mod dispatch;
-pub mod evidence_verify;
 pub mod issuance;
 pub mod observed_projection;
 pub mod prune_timer;

@@ -199,7 +199,7 @@ pub(super) async fn hosts_status(
                     }
                     if matches!(
                         record.signature_status,
-                        Some(crate::evidence_verify::SignatureStatus::Verified)
+                        Some(nixfleet_reconciler::evidence::SignatureStatus::Verified)
                     ) {
                         verified_count += 1;
                     }

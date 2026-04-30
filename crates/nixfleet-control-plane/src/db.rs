@@ -41,7 +41,7 @@ pub struct RolloutDbSnapshot {
 pub type ExpiredPendingConfirm = (i64, String, String, u32, String);
 
 /// `signature_status` is the raw kebab-case string; caller
-/// deserialises into `evidence_verify::SignatureStatus`.
+/// deserialises into `nixfleet_reconciler::evidence::SignatureStatus`.
 #[derive(Debug, Clone)]
 pub struct HostReportRow {
     pub event_id: String,
@@ -920,7 +920,7 @@ impl Db {
     /// not rollout-scoped and don't gate wave promotion.
     ///
     /// `signature_status` filter mirrors the
-    /// `evidence_verify::SignatureStatus::counts_for_gate` rule:
+    /// `nixfleet_reconciler::evidence::SignatureStatus::counts_for_gate` rule:
     /// `mismatch` and `malformed` are forged FAIL events from a
     /// compromised mTLS cert and don't count; everything else
     /// (verified, unsigned, no-pubkey, wrong-algorithm, NULL) does.

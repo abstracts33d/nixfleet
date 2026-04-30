@@ -136,7 +136,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evidence_verify::SignatureStatus;
+    use nixfleet_reconciler::evidence::SignatureStatus;
     use chrono::Utc;
     use nixfleet_proto::agent_wire::{ReportEvent, ReportRequest};
 
