@@ -372,6 +372,48 @@ async fn process_dispatch_target(
         FreshnessCheck::Fresh => {}
     }
 
+    // Manifest gate (RFC-0002 §4.4 / RFC-0003 §4.1): the agent MUST
+    // fetch + verify the rollout manifest from the CP, recompute its
+    // content hash, and assert (hostname, wave_index) ∈ host_set
+    // before consuming any other field of `target`. Failure on any
+    // step is hard refuse-to-act with a signed event.
+    if let Some(rollout_id) = target.rollout_id.as_deref() {
+        let cache = nixfleet_agent::manifest_cache::ManifestCache::new(
+            &args.state_dir,
+            &args.trust_file,
+        );
+        let wave_index = target.wave_index.unwrap_or(0);
+        match cache
+            .ensure(client, &args.control_plane_url, rollout_id, &args.machine_id, wave_index)
+            .await
+        {
+            Ok(_manifest) => {
+                tracing::debug!(
+                    rollout_id = %rollout_id,
+                    wave_index = wave_index,
+                    "agent: rollout manifest verified",
+                );
+            }
+            Err(err) => {
+                handle_manifest_error(
+                    err,
+                    rollout_id,
+                    target,
+                    client,
+                    args,
+                    evidence_signer,
+                )
+                .await;
+                return;
+            }
+        }
+    } else {
+        tracing::debug!(
+            closure_hash = %target.closure_hash,
+            "agent: target lacks rollout_id — older CP, skipping manifest gate",
+        );
+    }
+
     // Best-effort. Failure means the next regular checkin
     // re-dispatches instead of boot-recovery confirming.
     let dispatch_record = nixfleet_agent::checkin_state::LastDispatchRecord {
@@ -1103,6 +1145,97 @@ async fn handle_verify_mismatch(
             "rollback after verify mismatch also failed — manual intervention required",
         );
     }
+}
+
+/// Manifest gate failure (RFC-0002 §4.4): the CP advertised a
+/// rolloutId we couldn't fetch, couldn't verify, or whose content
+/// didn't match the partition-attack defenses. Emit the matching
+/// signed `ReportEvent` and return — caller does not proceed with
+/// any other field of `target`. No rollback because nothing was
+/// activated.
+async fn handle_manifest_error(
+    err: nixfleet_agent::manifest_cache::ManifestError,
+    rollout_id: &str,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client: &reqwest::Client,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+) {
+    use nixfleet_agent::manifest_cache::ManifestError;
+    let reason = err.reason().to_string();
+    tracing::error!(
+        rollout_id = %rollout_id,
+        kind = match err {
+            ManifestError::Missing(_) => "missing",
+            ManifestError::VerifyFailed(_) => "verify-failed",
+            ManifestError::Mismatch(_) => "mismatch",
+        },
+        reason = %reason,
+        "agent: refusing dispatch — rollout manifest gate failed",
+    );
+
+    let event = match err {
+        ManifestError::Missing(_) => {
+            let payload = nixfleet_agent::evidence_signer::ManifestMissingSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(rollout_id),
+                rollout_id,
+                reason: &reason,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::ManifestMissing {
+                rollout_id: rollout_id.to_string(),
+                reason,
+                signature,
+            }
+        }
+        ManifestError::VerifyFailed(_) => {
+            let payload = nixfleet_agent::evidence_signer::ManifestVerifyFailedSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(rollout_id),
+                rollout_id,
+                reason: &reason,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::ManifestVerifyFailed {
+                rollout_id: rollout_id.to_string(),
+                reason,
+                signature,
+            }
+        }
+        ManifestError::Mismatch(_) => {
+            let payload = nixfleet_agent::evidence_signer::ManifestMismatchSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(rollout_id),
+                rollout_id,
+                reason: &reason,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::ManifestMismatch {
+                rollout_id: rollout_id.to_string(),
+                reason,
+                signature,
+            }
+        }
+    };
+
+    post_report(
+        client,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        event,
+    )
+    .await;
 }
 
 /// Spawn / I/O error inside `activate `. State is unknown (could

@@ -18,9 +18,11 @@ use serde::Serialize;
 
 pub use nixfleet_proto::evidence_signing::{
     ActivationFailedSignedPayload, ClosureSignatureMismatchSignedPayload,
-    ComplianceFailureSignedPayload, RealiseFailedSignedPayload,
-    RollbackTriggeredSignedPayload, RuntimeGateErrorSignedPayload,
-    StaleTargetSignedPayload, VerifyMismatchSignedPayload,
+    ComplianceFailureSignedPayload, ManifestMismatchSignedPayload,
+    ManifestMissingSignedPayload, ManifestVerifyFailedSignedPayload,
+    RealiseFailedSignedPayload, RollbackTriggeredSignedPayload,
+    RuntimeGateErrorSignedPayload, StaleTargetSignedPayload,
+    VerifyMismatchSignedPayload,
 };
 
 pub const DEFAULT_SSH_HOST_KEY_PATH: &str = "/etc/ssh/ssh_host_ed25519_key";

@@ -318,6 +318,39 @@ mod tests {
     }
 
     #[test]
+    fn manifest_missing_round_trip() {
+        use nixfleet_proto::evidence_signing::ManifestMissingSignedPayload;
+        round_trip(&ManifestMissingSignedPayload {
+            hostname: "lab",
+            rollout: Some("a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1"),
+            rollout_id: "a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1",
+            reason: "GET /v1/rollouts/<id> returned 404",
+        });
+    }
+
+    #[test]
+    fn manifest_verify_failed_round_trip() {
+        use nixfleet_proto::evidence_signing::ManifestVerifyFailedSignedPayload;
+        round_trip(&ManifestVerifyFailedSignedPayload {
+            hostname: "lab",
+            rollout: Some("a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1"),
+            rollout_id: "a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1",
+            reason: "signature does not verify against ciReleaseKey",
+        });
+    }
+
+    #[test]
+    fn manifest_mismatch_round_trip() {
+        use nixfleet_proto::evidence_signing::ManifestMismatchSignedPayload;
+        round_trip(&ManifestMismatchSignedPayload {
+            hostname: "lab",
+            rollout: Some("a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1"),
+            rollout_id: "a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1",
+            reason: "(hostname, wave_index) not in manifest.host_set",
+        });
+    }
+
+    #[test]
     fn stale_target_round_trip() {
         use nixfleet_proto::evidence_signing::StaleTargetSignedPayload;
         round_trip(&StaleTargetSignedPayload {

@@ -284,6 +284,40 @@ pub enum ReportEvent {
         signature: Option<String>,
     },
 
+    /// Agent fetched `GET /v1/rollouts/<rolloutId>` and the CP
+    /// returned 404, the file pair was unreadable, or the bytes
+    /// didn't parse as a `RolloutManifest`. Agent refuses to act on
+    /// the dispatch (RFC-0002 §4.4 / RFC-0003 §4.1).
+    ManifestMissing {
+        rollout_id: String,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+
+    /// Manifest bytes were fetched but signature verification failed
+    /// against the trust roots the agent already holds (`ciReleaseKey`).
+    /// Hard refuse-to-act — same trust class as a tampered
+    /// `fleet.resolved.json`.
+    ManifestVerifyFailed {
+        rollout_id: String,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+
+    /// Manifest verified but content-address recompute failed (the
+    /// CP-advertised `rollout_id` doesn't match `sha256(canonical(m))`),
+    /// or `(hostname, wave_index)` is not in `manifest.host_set`, or
+    /// a previously-cached rolloutId now resolves to different bytes.
+    /// The partition attack RFC-0002 §4.4 closes — hard refuse-to-act.
+    ManifestMismatch {
+        rollout_id: String,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+
     /// Runtime gate couldn't produce a verdict — collector failed,
     /// timed out, or evidence was older than activation completion.
     /// Distinct from `ComplianceFailure` (per-control negative on

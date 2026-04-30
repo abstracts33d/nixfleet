@@ -102,3 +102,40 @@ pub struct StaleTargetSignedPayload<'a> {
     pub freshness_window_secs: u32,
     pub age_secs: i64,
 }
+
+/// Agent could not load + parse the rollout manifest the CP
+/// advertised (RFC-0002 §4.4). Distinct from `ManifestVerifyFailed`
+/// (sig failed) and `ManifestMismatch` (content-address failed).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestMissingSignedPayload<'a> {
+    pub hostname: &'a str,
+    pub rollout: Option<&'a str>,
+    pub rollout_id: &'a str,
+    pub reason: &'a str,
+}
+
+/// Manifest fetched but signature didn't verify against the trust
+/// roots the agent already holds (same `ciReleaseKey` that signs
+/// `fleet.resolved.json` and `revocations.json`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestVerifyFailedSignedPayload<'a> {
+    pub hostname: &'a str,
+    pub rollout: Option<&'a str>,
+    pub rollout_id: &'a str,
+    pub reason: &'a str,
+}
+
+/// Manifest signed correctly but the agent's content-bound checks
+/// failed: recomputed hash doesn't match advertised `rollout_id`,
+/// `(hostname, wave_index)` not in `host_set`, or a previously-cached
+/// rolloutId resolves to different bytes today than yesterday.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestMismatchSignedPayload<'a> {
+    pub hostname: &'a str,
+    pub rollout: Option<&'a str>,
+    pub rollout_id: &'a str,
+    pub reason: &'a str,
+}

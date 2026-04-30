@@ -154,9 +154,11 @@ async fn compute_signature_status(
     use nixfleet_proto::agent_wire::ReportEvent;
     use nixfleet_proto::evidence_signing::{
         ActivationFailedSignedPayload, ClosureSignatureMismatchSignedPayload,
-        ComplianceFailureSignedPayload, RealiseFailedSignedPayload,
-        RollbackTriggeredSignedPayload, RuntimeGateErrorSignedPayload,
-        StaleTargetSignedPayload, VerifyMismatchSignedPayload,
+        ComplianceFailureSignedPayload, ManifestMismatchSignedPayload,
+        ManifestMissingSignedPayload, ManifestVerifyFailedSignedPayload,
+        RealiseFailedSignedPayload, RollbackTriggeredSignedPayload,
+        RuntimeGateErrorSignedPayload, StaleTargetSignedPayload,
+        VerifyMismatchSignedPayload,
     };
     use nixfleet_reconciler::evidence::verify_event;
 
@@ -349,6 +351,57 @@ async fn compute_signature_status(
                 signed_at: *signed_at,
                 freshness_window_secs: *freshness_window_secs,
                 age_secs: *age_secs,
+            };
+            Some(verify_event(
+                signature.as_deref(),
+                pubkey.as_deref(),
+                &payload,
+            ))
+        }
+        ReportEvent::ManifestMissing {
+            rollout_id,
+            reason,
+            signature,
+        } => {
+            let payload = ManifestMissingSignedPayload {
+                hostname: &req.hostname,
+                rollout: req.rollout.as_deref(),
+                rollout_id,
+                reason,
+            };
+            Some(verify_event(
+                signature.as_deref(),
+                pubkey.as_deref(),
+                &payload,
+            ))
+        }
+        ReportEvent::ManifestVerifyFailed {
+            rollout_id,
+            reason,
+            signature,
+        } => {
+            let payload = ManifestVerifyFailedSignedPayload {
+                hostname: &req.hostname,
+                rollout: req.rollout.as_deref(),
+                rollout_id,
+                reason,
+            };
+            Some(verify_event(
+                signature.as_deref(),
+                pubkey.as_deref(),
+                &payload,
+            ))
+        }
+        ReportEvent::ManifestMismatch {
+            rollout_id,
+            reason,
+            signature,
+        } => {
+            let payload = ManifestMismatchSignedPayload {
+                hostname: &req.hostname,
+                rollout: req.rollout.as_deref(),
+                rollout_id,
+                reason,
             };
             Some(verify_event(
                 signature.as_deref(),
