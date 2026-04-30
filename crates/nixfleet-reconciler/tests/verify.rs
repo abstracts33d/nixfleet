@@ -829,11 +829,10 @@ const FIXTURE_MANIFEST: &str = r#"{
   "displayName": "stable@def4567",
   "channel": "stable",
   "channelRef": "def4567abc123def4567abc123def4567abc123d",
-  "targetClosure": "0000000000000000000000000000000000000000-test-system",
   "fleetResolvedHash": "1111111111111111111111111111111111111111111111111111111111111111",
   "hostSet": [
-    {"hostname": "agent-01", "waveIndex": 0},
-    {"hostname": "agent-02", "waveIndex": 1}
+    {"hostname": "agent-01", "waveIndex": 0, "targetClosure": "0000000000000000000000000000000000000000-host-a"},
+    {"hostname": "agent-02", "waveIndex": 1, "targetClosure": "1111111111111111111111111111111111111111-host-b"}
   ],
   "healthGate": {},
   "complianceFrameworks": ["anssi-bp028"],
@@ -869,6 +868,8 @@ fn verify_rollout_manifest_ok_returns_manifest() {
     assert_eq!(m.host_set.len(), 2);
     assert_eq!(m.host_set[0].hostname, "agent-01");
     assert_eq!(m.host_set[1].wave_index, 1);
+    assert!(m.host_set[0].target_closure.starts_with("0000"));
+    assert!(m.host_set[1].target_closure.starts_with("1111"));
 }
 
 #[test]
@@ -979,7 +980,8 @@ fn compute_rollout_id_changes_with_field_change() {
     let id1 = compute_rollout_id(&m).unwrap();
 
     let mut m2 = m.clone();
-    m2.target_closure = "9999999999999999999999999999999999999999-perturbed".to_string();
+    m2.host_set[0].target_closure =
+        "9999999999999999999999999999999999999999-perturbed".to_string();
     let id2 = compute_rollout_id(&m2).unwrap();
 
     assert_ne!(id1, id2);

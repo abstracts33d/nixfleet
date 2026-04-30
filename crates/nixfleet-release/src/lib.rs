@@ -35,7 +35,10 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::{FleetResolved, RevocationEntry, Revocations};
+use nixfleet_proto::{
+    FleetResolved, HostWave, RevocationEntry, Revocations, RolloutManifest,
+};
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 /// Hosts to release. Resolved against the consumer's flake at
@@ -263,11 +266,77 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
         );
     }
 
+    // ── 10b. Rollout manifests ──────────────────────────────────
+    // One signed manifest per channel, projected from the just-signed
+    // fleet.resolved. Same canonicalize + sign hook. Each manifest's
+    // fleetResolvedHash binds it cryptographically to this snapshot
+    // (RFC-0002 §4.4); without that binding a key-rotation overlap
+    // window could otherwise let an attacker pair a manifest from
+    // snapshot X with the resolved.json from snapshot Y.
+    let mut manifest_paths: Vec<PathBuf> = Vec::new();
+    let fleet_resolved_hash = sha256_hex(canonical.as_bytes());
+    let rollouts_dir = config.release_dir.join("rollouts");
+    for (channel_name, _channel) in resolved.channels.iter() {
+        let manifest = match project_manifest(
+            &resolved,
+            channel_name,
+            &fleet_resolved_hash,
+            signed_at,
+            ci_commit.as_deref(),
+            &config.signature_algorithm,
+        )? {
+            Some(m) => m,
+            None => continue, // channel has no host with a closureHash
+        };
+
+        let manifest_json = serde_json::to_string(&manifest)
+            .with_context(|| format!("serialise manifest for channel {channel_name}"))?;
+        let manifest_canonical = nixfleet_canonicalize::canonicalize(&manifest_json)
+            .with_context(|| format!("canonicalize manifest for channel {channel_name}"))?;
+        let rollout_id = nixfleet_reconciler::compute_rollout_id(&manifest)
+            .with_context(|| format!("compute rolloutId for channel {channel_name}"))?;
+
+        let artifact_name = format!("{rollout_id}.json");
+        let manifest_path = rollouts_dir.join(&artifact_name);
+        let sig_path = rollouts_dir.join(format!("{artifact_name}.sig"));
+
+        // Reuse-unchanged short-circuit: rolloutId is the content
+        // hash, so byte-identical canonical bytes IS byte-identical
+        // path. If both files exist with matching canonical bytes,
+        // reuse the on-disk signature instead of re-invoking the hook.
+        let sig_bytes = if manifest_path.exists()
+            && sig_path.exists()
+            && std::fs::read(&manifest_path).ok().as_deref() == Some(manifest_canonical.as_bytes())
+        {
+            std::fs::read(&sig_path).context("read existing manifest signature")?
+        } else {
+            sign(&config.sign_cmd, manifest_canonical.as_bytes())?
+        };
+
+        write_release(
+            &rollouts_dir,
+            &artifact_name,
+            manifest_canonical.as_bytes(),
+            &sig_bytes,
+        )?;
+        manifest_paths.push(manifest_path);
+        manifest_paths.push(sig_path);
+
+        tracing::info!(
+            target: "nixfleet_release",
+            rollout_id = %rollout_id,
+            channel = %channel_name,
+            host_count = manifest.host_set.len(),
+            "rollout manifest signed + written",
+        );
+    }
+
     // ── 11. Git commit + push ───────────────────────────────────
     let mut commit_sha = None;
     if config.git_commit {
         let mut release_files = vec![release_path.clone(), signature_path.clone()];
         release_files.extend(revocations_paths.iter().cloned());
+        release_files.extend(manifest_paths.iter().cloned());
         let committed = git_commit_release(config, &release_files, ci_commit.as_deref(), signed_at)?;
         if let Some(c) = &config.git_push {
             if committed {
@@ -331,6 +400,106 @@ fn enumerate_hosts(config: &ReleaseConfig) -> Result<Vec<String>> {
 /// revokedBy?}` objects. An empty array is valid and means "no
 /// revocations on file" — the artifact still gets produced so a
 /// CP-rebuild has something to verify + replay (even if empty).
+/// Project a single channel out of `fleet.resolved` into a
+/// `RolloutManifest`. Returns `Ok(None)` when no host on this channel
+/// has a `closureHash` (degenerate channel — nothing to dispatch),
+/// matching the `Decision::NoDeclaration` semantics in the CP's
+/// dispatch path.
+///
+/// `host_set` is sorted by hostname for canonical-byte stability.
+/// All other inputs are read straight from `fleet`; the manifest is
+/// a pure projection.
+fn project_manifest(
+    fleet: &FleetResolved,
+    channel: &str,
+    fleet_resolved_hash: &str,
+    signed_at: DateTime<Utc>,
+    ci_commit: Option<&str>,
+    signature_algorithm: &str,
+) -> Result<Option<RolloutManifest>> {
+    let channel_def = fleet
+        .channels
+        .get(channel)
+        .ok_or_else(|| anyhow::anyhow!("channel {channel} missing from fleet.channels"))?;
+
+    let policy = fleet
+        .rollout_policies
+        .get(&channel_def.rollout_policy)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "rollout policy {} for channel {channel} not found in fleet.rolloutPolicies",
+                channel_def.rollout_policy
+            )
+        })?;
+
+    let waves = fleet.waves.get(channel);
+
+    let mut host_set: Vec<HostWave> = Vec::new();
+    for (hostname, host) in fleet.hosts.iter() {
+        if host.channel != channel {
+            continue;
+        }
+        let target_closure = match host.closure_hash.as_ref() {
+            Some(c) => c.clone(),
+            None => continue, // skip hosts without a declared closure
+        };
+        let wave_index: u32 = match waves {
+            Some(ws) => ws
+                .iter()
+                .position(|w| w.hosts.iter().any(|h| h == hostname))
+                .map(|i| i as u32)
+                .unwrap_or(0),
+            None => 0,
+        };
+        host_set.push(HostWave {
+            hostname: hostname.clone(),
+            wave_index,
+            target_closure,
+        });
+    }
+
+    if host_set.is_empty() {
+        return Ok(None);
+    }
+    host_set.sort_by(|a, b| a.hostname.cmp(&b.hostname));
+
+    let display_name = format!(
+        "{}@{}",
+        channel,
+        ci_commit
+            .map(|c| c.chars().take(8).collect::<String>())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+
+    let channel_ref = ci_commit.unwrap_or_default().to_string();
+
+    Ok(Some(RolloutManifest {
+        schema_version: 1,
+        display_name,
+        channel: channel.to_string(),
+        channel_ref,
+        fleet_resolved_hash: fleet_resolved_hash.to_string(),
+        host_set,
+        health_gate: policy.health_gate.clone(),
+        compliance_frameworks: channel_def.compliance.frameworks.clone(),
+        meta: nixfleet_proto::Meta {
+            schema_version: 1,
+            signed_at: Some(signed_at),
+            ci_commit: ci_commit.map(|c| c.to_string()),
+            signature_algorithm: Some(signature_algorithm.to_string()),
+        },
+    }))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest.iter() {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
+}
+
 fn eval_revocations(config: &ReleaseConfig, attr: &str) -> Result<Vec<RevocationEntry>> {
     let output = Command::new("nix")
         .args([
@@ -856,6 +1025,172 @@ mod tests {
 
         let m2 = render_commit_message("ts={ts}, sha={sha}", "abc", ts);
         assert_eq!(m2, "ts=2026-04-27T12:00:00+00:00, sha=abc");
+    }
+
+    fn manifest_resolved() -> FleetResolved {
+        use nixfleet_proto::{HealthGate, PolicyWave, RolloutPolicy, Selector, Wave};
+        let mut hosts = std::collections::HashMap::new();
+        hosts.insert(
+            "agent-02".to_string(),
+            Host {
+                system: "x86_64-linux".into(),
+                tags: vec![],
+                channel: "stable".into(),
+                closure_hash: Some("aaaa-host-b".into()),
+                pubkey: None,
+            },
+        );
+        hosts.insert(
+            "agent-01".to_string(),
+            Host {
+                system: "x86_64-linux".into(),
+                tags: vec![],
+                channel: "stable".into(),
+                closure_hash: Some("aaaa-host-a".into()),
+                pubkey: None,
+            },
+        );
+        hosts.insert(
+            "agent-no-closure".to_string(),
+            Host {
+                system: "x86_64-linux".into(),
+                tags: vec![],
+                channel: "stable".into(),
+                closure_hash: None, // no declaration → skipped
+                pubkey: None,
+            },
+        );
+        let mut channels = std::collections::HashMap::new();
+        channels.insert(
+            "stable".to_string(),
+            Channel {
+                rollout_policy: "default".into(),
+                reconcile_interval_minutes: 5,
+                freshness_window: 60,
+                signing_interval_minutes: 30,
+                compliance: Compliance {
+                    frameworks: vec!["anssi-bp028".into()],
+                    mode: "permissive".to_string(),
+                },
+            },
+        );
+        let mut rollout_policies = std::collections::HashMap::new();
+        rollout_policies.insert(
+            "default".to_string(),
+            RolloutPolicy {
+                strategy: "waves".into(),
+                waves: vec![PolicyWave {
+                    selector: Selector {
+                        tags: vec![],
+                        tags_any: vec![],
+                        hosts: vec![],
+                        channel: None,
+                        all: true,
+                    },
+                    soak_minutes: 5,
+                }],
+                health_gate: HealthGate::default(),
+                on_health_failure: nixfleet_proto::OnHealthFailure::Halt,
+            },
+        );
+        let mut waves = std::collections::HashMap::new();
+        waves.insert(
+            "stable".to_string(),
+            vec![
+                Wave {
+                    hosts: vec!["agent-01".into()],
+                    soak_minutes: 5,
+                },
+                Wave {
+                    hosts: vec!["agent-02".into()],
+                    soak_minutes: 5,
+                },
+            ],
+        );
+        FleetResolved {
+            schema_version: 1,
+            hosts,
+            channels,
+            rollout_policies,
+            waves,
+            edges: vec![],
+            disruption_budgets: vec![],
+            meta: Meta {
+                schema_version: 1,
+                signed_at: None,
+                ci_commit: None,
+                signature_algorithm: None,
+            },
+        }
+    }
+
+    #[test]
+    fn project_manifest_emits_sorted_host_set_with_correct_wave_indices() {
+        let r = manifest_resolved();
+        let ts = DateTime::parse_from_rfc3339("2026-04-30T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let m = project_manifest(&r, "stable", "feedface", ts, Some("def45678"), "ed25519")
+            .unwrap()
+            .expect("non-empty manifest");
+        // sorted: agent-01 before agent-02
+        assert_eq!(m.host_set[0].hostname, "agent-01");
+        assert_eq!(m.host_set[1].hostname, "agent-02");
+        // agent-no-closure skipped — only 2 entries
+        assert_eq!(m.host_set.len(), 2);
+        // wave_index from waves["stable"]
+        assert_eq!(m.host_set[0].wave_index, 0);
+        assert_eq!(m.host_set[1].wave_index, 1);
+        // per-host target_closure preserved
+        assert_eq!(m.host_set[0].target_closure, "aaaa-host-a");
+        assert_eq!(m.host_set[1].target_closure, "aaaa-host-b");
+        // anchor + display_name + meta
+        assert_eq!(m.fleet_resolved_hash, "feedface");
+        assert_eq!(m.display_name, "stable@def45678");
+        assert_eq!(m.channel_ref, "def45678");
+        assert_eq!(m.meta.signed_at, Some(ts));
+        assert_eq!(m.compliance_frameworks, vec!["anssi-bp028".to_string()]);
+    }
+
+    #[test]
+    fn project_manifest_returns_none_when_no_host_has_closure_hash() {
+        // dummy_resolved's hosts have closure_hash: None
+        let r = dummy_resolved();
+        // dummy_resolved has no rollout_policies → project errors;
+        // give it a policy first.
+        let mut r = r;
+        r.rollout_policies.insert(
+            "default".to_string(),
+            nixfleet_proto::RolloutPolicy {
+                strategy: "waves".into(),
+                waves: vec![],
+                health_gate: nixfleet_proto::HealthGate::default(),
+                on_health_failure: nixfleet_proto::OnHealthFailure::Halt,
+            },
+        );
+        let ts = Utc::now();
+        let result = project_manifest(&r, "stable", "deadbeef", ts, None, "ed25519").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn project_manifest_errors_on_missing_channel() {
+        let r = manifest_resolved();
+        let ts = Utc::now();
+        let err = project_manifest(&r, "ghost", "feedface", ts, None, "ed25519").unwrap_err();
+        assert!(err.to_string().contains("channel ghost"));
+    }
+
+    #[test]
+    fn sha256_hex_is_64_char_lowercase() {
+        let h = sha256_hex(b"hello world");
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        // known sha256("hello world")
+        assert_eq!(
+            h,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
     }
 
     #[test]

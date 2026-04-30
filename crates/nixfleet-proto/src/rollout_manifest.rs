@@ -48,15 +48,10 @@ pub struct RolloutManifest {
 
     pub channel: String,
 
-    /// Git ref the channel resolved to at CI time. Bound to the
-    /// channel's `target_closure` via the `fleet.resolved` projection.
+    /// Git ref the channel resolved to at CI time. Same value the CP
+    /// stores in `host_rollout_state.target_ref` for hosts on this
+    /// channel.
     pub channel_ref: String,
-
-    /// Target closure hash this rollout converges hosts onto.
-    /// Identical to `fleet_resolved.hosts[hostname].closureHash` for
-    /// every host in `host_set` — CI guarantees the invariant by
-    /// construction (the manifest is a projection of `fleet.resolved`).
-    pub target_closure: String,
 
     /// SHA-256 (hex, lowercase) of the canonical bytes of the
     /// `fleet.resolved.json` from which this manifest was projected.
@@ -65,11 +60,17 @@ pub struct RolloutManifest {
     /// from snapshot X with the resolved.json from snapshot Y.
     pub fleet_resolved_hash: String,
 
-    /// Hosts in this rollout, paired with their wave assignment.
-    /// MUST be sorted by `hostname` ascending for canonical-byte
-    /// stability — JCS sorts object keys but not array elements,
-    /// so the producer's emission order is the canonical order.
-    /// Verifiers should re-assert the sort at parse time.
+    /// Hosts in this rollout, paired with their wave assignment and
+    /// the closure they're targeted to converge onto. MUST be sorted
+    /// by `hostname` ascending for canonical-byte stability — JCS
+    /// sorts object keys but not array elements, so the producer's
+    /// emission order is the canonical order. Verifiers should
+    /// re-assert the sort at parse time.
+    ///
+    /// Per-host closure (rather than one channel-level target) reflects
+    /// the reality that hosts on the same channel can target different
+    /// closures (different `system.build.toplevel` derivations); the
+    /// channel groups hosts by *rollout cadence*, not by *target binary*.
     pub host_set: Vec<HostWave>,
 
     pub health_gate: HealthGate,
@@ -92,6 +93,13 @@ pub struct HostWave {
     /// reshape `waves[channel]` produce a different manifest with a
     /// different `rolloutId`.
     pub wave_index: u32,
+    /// Closure hash this host is targeted to converge onto.
+    /// Identical to `fleet_resolved.hosts[hostname].closureHash` at
+    /// projection time. Letting the agent re-assert this value
+    /// against what the CP advertises in `EvaluatedTarget.closureHash`
+    /// closes another forgery vector — a compromised CP can't quietly
+    /// retarget a host inside an otherwise-valid rollout.
+    pub target_closure: String,
 }
 
 #[cfg(test)]
@@ -115,17 +123,18 @@ mod tests {
             display_name: "stable@def4567".into(),
             channel: "stable".into(),
             channel_ref: "def4567abc123def4567abc123def4567abc123d".into(),
-            target_closure: "0000000000000000000000000000000000000000-test-system".into(),
             fleet_resolved_hash:
                 "1111111111111111111111111111111111111111111111111111111111111111".into(),
             host_set: vec![
                 HostWave {
                     hostname: "agent-01".into(),
                     wave_index: 0,
+                    target_closure: "0000000000000000000000000000000000000000-host-a".into(),
                 },
                 HostWave {
                     hostname: "agent-02".into(),
                     wave_index: 1,
+                    target_closure: "1111111111111111111111111111111111111111-host-b".into(),
                 },
             ],
             health_gate: HealthGate::default(),
@@ -203,15 +212,33 @@ mod tests {
     }
 
     #[test]
+    fn host_target_closure_change_changes_canonical_bytes() {
+        // Per-host target_closure is part of the canonical surface;
+        // a CP that quietly retargets one host inside an otherwise-
+        // valid rollout produces a different rolloutId.
+        let m1 = sample_manifest();
+        let mut m2 = sample_manifest();
+        m2.host_set[0].target_closure =
+            "9999999999999999999999999999999999999999-perturbed".into();
+
+        let canon1 = canonicalize(&serde_json::to_string(&m1).unwrap()).unwrap();
+        let canon2 = canonicalize(&serde_json::to_string(&m2).unwrap()).unwrap();
+
+        assert_ne!(canon1, canon2);
+    }
+
+    #[test]
     fn host_wave_round_trip() {
         let h = HostWave {
             hostname: "agent-03".into(),
             wave_index: 2,
+            target_closure: "abcdef1234567890abcdef1234567890abcdef12-test".into(),
         };
         let s = serde_json::to_string(&h).unwrap();
         let parsed: HostWave = serde_json::from_str(&s).unwrap();
         assert_eq!(parsed, h);
         // wire shape: camelCase
         assert!(s.contains("\"waveIndex\":2"));
+        assert!(s.contains("\"targetClosure\""));
     }
 }
