@@ -100,6 +100,15 @@
     then null
     else import ./fixtures/probe {inherit pkgs nixfleet-canonicalize;};
 
+  # Pre-signed rollout-manifest fixture for the manifest-tamper-rejection
+  # scenario. Outputs canonical manifest + raw sig + pubkey + trust.json
+  # + the rolloutId (sha256 of canonical bytes). Consumed by
+  # `nixfleet-verify-artifact rollout-manifest`.
+  rolloutManifestFixture =
+    if nixfleet-canonicalize == null
+    then null
+    else import ./fixtures/rollout-manifest {inherit lib pkgs nixfleet-canonicalize;};
+
   # Signed `revocations.json` sidecar — verifies under the same
   # test-trust.json as signedFixture (shared seedSalt). Consumed by
   # the teardown scenario to assert hard-state replay after CP wipe.
@@ -305,6 +314,25 @@
         verifyArtifactPkg = nixfleet-verify-artifact;
       };
 
+  # Manifest-tamper-rejection scenario. Pure runCommand — exercises
+  # the rollout-manifest leg of the offline auditor chain (RFC-0002
+  # §4.4). Asserts well-formed verify, byte-tampered manifest +
+  # signature both rejected, and content-address mismatch (operator
+  # passes a wrong --rollout-id) rejected — the rename/swap attack.
+  manifestTamperRejectionScenario =
+    if nixfleet-verify-artifact == null || rolloutManifestFixture == null
+    then
+      throw ''
+        tests/harness: fleet-harness-manifest-tamper-rejection requires
+        both `nixfleet-canonicalize` (for the rolloutManifestFixture)
+        and `nixfleet-verify-artifact`. Wire via modules/tests/harness.nix.
+      ''
+    else
+      import ./scenarios/manifest-tamper-rejection.nix {
+        inherit pkgs rolloutManifestFixture;
+        verifyArtifactPkg = nixfleet-verify-artifact;
+      };
+
   # Deadline-expiry scenario. Real CP with a 3-second
   # confirm deadline; testScript drives the wire flow via curl from
   # the host VM (no agent microVM needed) — POST checkin → receive
@@ -348,6 +376,8 @@ in {
   fleet-harness-auditor-chain = auditorChainScenario;
 
   fleet-harness-corruption-rejection = corruptionRejectionScenario;
+
+  fleet-harness-manifest-tamper-rejection = manifestTamperRejectionScenario;
 
   fleet-harness-secret-hygiene = secretHygieneScenario;
 

@@ -71,9 +71,20 @@
           # verify-artifact rejects each.
           fleet-harness-corruption-rejection = harness.fleet-harness-corruption-rejection;
 
+          # Manifest-tamper-rejection scenario. Same shape as
+          # corruption-rejection, but for `releases/rollouts/<id>.json`
+          # signed manifests (RFC-0002 §4.4). Adds a content-address
+          # mismatch case (rename/swap attack).
+          fleet-harness-manifest-tamper-rejection =
+            harness.fleet-harness-manifest-tamper-rejection;
+
           # Probe-output fixture exposed standalone — byte-stability
           # regression guard, same role as signed-fixture.
           probe-fixture = harness.probeFixture;
+
+          # Rollout-manifest fixture exposed standalone — same
+          # byte-stability role as signed-fixture / probe-fixture.
+          rollout-manifest-fixture = harness.rolloutManifestFixture;
         }
         // lib.optionalAttrs (
           nixfleet-canonicalize

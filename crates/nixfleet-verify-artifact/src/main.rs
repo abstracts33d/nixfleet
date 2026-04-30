@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use nixfleet_proto::TrustConfig;
 use nixfleet_reconciler::evidence::{verify_canonical_payload, SignatureStatus};
-use nixfleet_reconciler::verify_artifact;
+use nixfleet_reconciler::{compute_rollout_id, verify_artifact, verify_rollout_manifest};
 
 #[derive(Parser, Debug)]
 #[command(name = "nixfleet-verify-artifact", version)]
@@ -44,6 +44,30 @@ enum Cmd {
         now: DateTime<Utc>,
         #[arg(long)]
         freshness_window_secs: u64,
+    },
+    /// Verify a signed `releases/rollouts/<rolloutId>.json` against
+    /// a trust.json. Asserts the signature, recomputes the manifest's
+    /// content hash and compares against the operator-provided
+    /// `rollout-id`, and surfaces the projection's anchor (the
+    /// `fleetResolvedHash` field) so an offline auditor can cross-
+    /// check the manifest against the corresponding fleet.resolved.
+    RolloutManifest {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        signature: PathBuf,
+        #[arg(long)]
+        trust_file: PathBuf,
+        #[arg(long)]
+        now: DateTime<Utc>,
+        #[arg(long)]
+        freshness_window_secs: u64,
+        /// Expected rolloutId the manifest's content hash must match.
+        /// In production this is the value the CP advertised in
+        /// `EvaluatedTarget.rollout_id`. Catches the mix-and-match /
+        /// rename attack where on-disk filename diverges from content.
+        #[arg(long)]
+        rollout_id: String,
     },
     /// Verify a signed probe-output payload against a host's pubkey.
     Probe {
@@ -70,12 +94,103 @@ fn main() -> ExitCode {
             now,
             freshness_window_secs,
         } => run_artifact(artifact, signature, trust_file, now, freshness_window_secs),
+        Cmd::RolloutManifest {
+            manifest,
+            signature,
+            trust_file,
+            now,
+            freshness_window_secs,
+            rollout_id,
+        } => run_rollout_manifest(
+            manifest,
+            signature,
+            trust_file,
+            now,
+            freshness_window_secs,
+            rollout_id,
+        ),
         Cmd::Probe {
             payload,
             signature,
             pubkey,
         } => run_probe(payload, signature, pubkey),
     }
+}
+
+fn run_rollout_manifest(
+    manifest_path: PathBuf,
+    signature_path: PathBuf,
+    trust_file: PathBuf,
+    now: DateTime<Utc>,
+    freshness_window_secs: u64,
+    expected_rollout_id: String,
+) -> ExitCode {
+    let manifest_bytes = match std::fs::read(&manifest_path) {
+        Ok(v) => v,
+        Err(err) => {
+            return arg_error(format!("read manifest {}: {err}", manifest_path.display()))
+        }
+    };
+    let signature_bytes = match std::fs::read(&signature_path) {
+        Ok(v) => v,
+        Err(err) => {
+            return arg_error(format!("read signature {}: {err}", signature_path.display()))
+        }
+    };
+    let trust_raw = match std::fs::read_to_string(&trust_file) {
+        Ok(v) => v,
+        Err(err) => return arg_error(format!("read trust-file {}: {err}", trust_file.display())),
+    };
+    let trust: TrustConfig = match serde_json::from_str(&trust_raw) {
+        Ok(t) => t,
+        Err(err) => return arg_error(format!("parse trust-file {}: {err}", trust_file.display())),
+    };
+    if trust.schema_version != TrustConfig::CURRENT_SCHEMA_VERSION {
+        return arg_error(format!(
+            "trust-file schemaVersion {} unsupported (accepted: {})",
+            trust.schema_version,
+            TrustConfig::CURRENT_SCHEMA_VERSION
+        ));
+    }
+
+    let manifest = match verify_rollout_manifest(
+        &manifest_bytes,
+        &signature_bytes,
+        &trust.ci_release_key.active_keys(),
+        now,
+        Duration::from_secs(freshness_window_secs),
+        trust.ci_release_key.reject_before,
+    ) {
+        Ok(m) => m,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let recomputed = match compute_rollout_id(&manifest) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("compute_rollout_id failed: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    if recomputed != expected_rollout_id {
+        eprintln!(
+            "rolloutId mismatch: expected {expected_rollout_id}, recomputed {recomputed}"
+        );
+        return ExitCode::from(1);
+    }
+
+    println!(
+        "schemaVersion={} channel={} hostSet={} fleetResolvedHash={} rolloutId={}",
+        manifest.schema_version,
+        manifest.channel,
+        manifest.host_set.len(),
+        manifest.fleet_resolved_hash,
+        recomputed,
+    );
+    ExitCode::SUCCESS
 }
 
 fn run_artifact(
