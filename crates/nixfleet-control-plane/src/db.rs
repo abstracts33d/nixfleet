@@ -479,92 +479,69 @@ impl Db {
     ) -> Result<usize> {
         let guard = self.conn()?;
         let new_state_str = new_state.as_db_str();
+        // `Untouched` → NULL; the SQL uses COALESCE so a NULL bind
+        // preserves the existing column value rather than writing
+        // NULL over it. Single point of conversion lets each branch
+        // below stay a single static SQL statement (query plan is
+        // identical across every call regardless of marker variant).
+        let marker_bind: Option<String> = match marker {
+            HealthyMarker::Set(ts) => Some(ts.to_rfc3339()),
+            HealthyMarker::Untouched => None,
+        };
 
-        match expected_from {
+        let n = match expected_from {
             None => {
                 // UPSERT path. Mirrors the legacy `record_host_healthy`
                 // shape but parameterised over the target state and
                 // healthy-marker. Matches the V003 schema's column
-                // order.
-                let marker_str = match marker {
-                    HealthyMarker::Set(ts) => Some(ts.to_rfc3339()),
-                    HealthyMarker::Untouched => None,
-                };
-                // Two near-identical statements rather than a single
-                // dynamic SQL: keeps the query plan static and the
-                // intent obvious to anyone scanning db.rs. Both
-                // variants preserve the legacy upsert's "leave
-                // last_healthy_since alone if marker is Untouched"
-                // semantics — Untouched is the no-op for the column.
-                let n = match marker_str {
-                    Some(ts) => guard
-                        .execute(
-                            "INSERT INTO host_rollout_state(rollout_id, hostname,
-                                                            host_state,
-                                                            last_healthy_since,
-                                                            updated_at)
-                             VALUES (?1, ?2, ?3, ?4, datetime('now'))
-                             ON CONFLICT(rollout_id, hostname) DO UPDATE SET
-                               host_state = excluded.host_state,
-                               last_healthy_since = excluded.last_healthy_since,
-                               updated_at = datetime('now')",
-                            params![rollout_id, hostname, new_state_str, ts],
-                        )
-                        .context("upsert host_rollout_state with marker")?,
-                    None => guard
-                        .execute(
-                            "INSERT INTO host_rollout_state(rollout_id, hostname,
-                                                            host_state,
-                                                            updated_at)
-                             VALUES (?1, ?2, ?3, datetime('now'))
-                             ON CONFLICT(rollout_id, hostname) DO UPDATE SET
-                               host_state = excluded.host_state,
-                               updated_at = datetime('now')",
-                            params![rollout_id, hostname, new_state_str],
-                        )
-                        .context("upsert host_rollout_state")?,
-                };
-                Ok(n)
+                // order. COALESCE on the conflict branch preserves
+                // the existing `last_healthy_since` when the marker is
+                // Untouched (NULL bind); on insert the column starts
+                // NULL anyway so the bind goes straight in.
+                guard
+                    .execute(
+                        "INSERT INTO host_rollout_state(rollout_id, hostname,
+                                                        host_state,
+                                                        last_healthy_since,
+                                                        updated_at)
+                         VALUES (?1, ?2, ?3, ?4, datetime('now'))
+                         ON CONFLICT(rollout_id, hostname) DO UPDATE SET
+                           host_state = excluded.host_state,
+                           last_healthy_since = COALESCE(
+                               excluded.last_healthy_since,
+                               host_rollout_state.last_healthy_since),
+                           updated_at = datetime('now')",
+                        params![rollout_id, hostname, new_state_str, marker_bind],
+                    )
+                    .context("upsert host_rollout_state")?
             }
             Some(prev) => {
                 // Guarded UPDATE path. Mirrors the legacy
                 // `mark_host_soaked` "only from Healthy" filter, now
                 // parameterised so any directional transition (Healthy
                 // → Soaked, Soaked → Converged, etc.) routes through
-                // the same code.
-                let prev_str = prev.as_db_str();
-                let n = match marker {
-                    HealthyMarker::Set(ts) => guard
-                        .execute(
-                            "UPDATE host_rollout_state
-                             SET host_state = ?3,
-                                 last_healthy_since = ?4,
-                                 updated_at = datetime('now')
-                             WHERE rollout_id = ?1 AND hostname = ?2
-                               AND host_state = ?5",
-                            params![
-                                rollout_id,
-                                hostname,
-                                new_state_str,
-                                ts.to_rfc3339(),
-                                prev_str
-                            ],
-                        )
-                        .context("guarded transition host_rollout_state with marker")?,
-                    HealthyMarker::Untouched => guard
-                        .execute(
-                            "UPDATE host_rollout_state
-                             SET host_state = ?3,
-                                 updated_at = datetime('now')
-                             WHERE rollout_id = ?1 AND hostname = ?2
-                               AND host_state = ?4",
-                            params![rollout_id, hostname, new_state_str, prev_str],
-                        )
-                        .context("guarded transition host_rollout_state")?,
-                };
-                Ok(n)
+                // the same code. COALESCE keeps `last_healthy_since`
+                // unchanged when the marker is Untouched.
+                guard
+                    .execute(
+                        "UPDATE host_rollout_state
+                         SET host_state = ?3,
+                             last_healthy_since = COALESCE(?4, last_healthy_since),
+                             updated_at = datetime('now')
+                         WHERE rollout_id = ?1 AND hostname = ?2
+                           AND host_state = ?5",
+                        params![
+                            rollout_id,
+                            hostname,
+                            new_state_str,
+                            marker_bind,
+                            prev.as_db_str()
+                        ],
+                    )
+                    .context("guarded transition host_rollout_state")?
             }
-        }
+        };
+        Ok(n)
     }
 
     /// Clear the Healthy marker for (rollout, host) — the host has
