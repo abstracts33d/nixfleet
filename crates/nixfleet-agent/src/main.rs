@@ -441,6 +441,17 @@ async fn handle_activation_outcome(
             handle_switch_failed(phase, exit_code, target, client_handle, args, evidence_signer)
                 .await;
         }
+        Ok(ActivationOutcome::VerifyMismatch { expected, actual }) => {
+            handle_verify_mismatch(
+                expected,
+                actual,
+                target,
+                client_handle,
+                args,
+                evidence_signer,
+            )
+            .await;
+        }
         Err(err) => {
             handle_activation_spawn_error(err, target, client_handle, args).await;
         }
@@ -967,6 +978,129 @@ async fn handle_switch_failed(
         tracing::error!(
             error = %err,
             "rollback after failed switch also failed — manual intervention required",
+        );
+    }
+}
+
+/// Post-switch verify caught `/run/current-system` resolving to a
+/// basename that is neither expected nor pre-switch. Emit a signed
+/// `VerifyMismatch` then roll back, mirroring the failure-and-rollback
+/// shape of `handle_switch_failed`.
+async fn handle_verify_mismatch(
+    expected: String,
+    actual: String,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client_handle: &reqwest::Client,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+) {
+    tracing::error!(
+        expected = %expected,
+        actual = %actual,
+        "activation: post-switch verify caught flip to unexpected closure; rolling back",
+    );
+    let payload = nixfleet_agent::evidence_signer::VerifyMismatchSignedPayload {
+        hostname: &args.machine_id,
+        rollout: Some(&target.channel_ref),
+        expected: &expected,
+        actual: &actual,
+    };
+    let signature = evidence_signer
+        .as_ref()
+        .as_ref()
+        .and_then(|s| s.sign(&payload).ok());
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        ReportEvent::VerifyMismatch {
+            expected: expected.clone(),
+            actual: actual.clone(),
+            signature,
+        },
+    )
+    .await;
+
+    let rb_outcome = nixfleet_agent::activation::rollback().await;
+    let rollback_event = match &rb_outcome {
+        Ok(o) if o.success() => {
+            let reason = format!(
+                "post-switch verify mismatch (expected {expected}, got {actual})"
+            );
+            let payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                reason: &reason,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::RollbackTriggered { reason, signature }
+        }
+        Ok(o) => {
+            let phase_str = format!(
+                "rollback-after-verify-mismatch/{}",
+                o.phase().unwrap_or("unknown")
+            );
+            let exit = o.exit_code();
+            let stderr_tail_sha256 =
+                nixfleet_agent::evidence_signer::sha256_jcs(&"").unwrap_or_default();
+            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                phase: &phase_str,
+                exit_code: exit,
+                stderr_tail_sha256,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::ActivationFailed {
+                phase: phase_str,
+                exit_code: exit,
+                stderr_tail: None,
+                signature,
+            }
+        }
+        Err(err) => {
+            let phase_str = "rollback-after-verify-mismatch".to_string();
+            let stderr_tail = err.to_string();
+            let stderr_tail_sha256 =
+                nixfleet_agent::evidence_signer::sha256_jcs(&stderr_tail).unwrap_or_default();
+            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                phase: &phase_str,
+                exit_code: None,
+                stderr_tail_sha256,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::ActivationFailed {
+                phase: phase_str,
+                exit_code: None,
+                stderr_tail: Some(stderr_tail),
+                signature,
+            }
+        }
+    };
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        rollback_event,
+    )
+    .await;
+    if let Err(err) = rb_outcome {
+        tracing::error!(
+            error = %err,
+            "rollback after verify mismatch also failed — manual intervention required",
         );
     }
 }
