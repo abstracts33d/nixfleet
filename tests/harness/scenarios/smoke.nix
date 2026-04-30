@@ -25,7 +25,7 @@
   harnessLib,
   testCerts,
   resolvedJsonPath,
-  # Issue #5 fleet-N parameterisation. Default agentNames preserves
+  # Fleet-N parameterisation. Default agentNames preserves
   # the original 2-agent smoke shape; the fleet-N wrappers in
   # tests/harness/default.nix override this for fleet-5 / fleet-10.
   agentNames ? ["agent-01" "agent-02"],

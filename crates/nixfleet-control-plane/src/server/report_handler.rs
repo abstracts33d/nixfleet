@@ -53,7 +53,7 @@ pub(super) async fn report(
         .clone()
         .unwrap_or_else(|| "<none>".to_string());
 
-    // root-3 / #59 — verify probe-output signatures on the
+    // root-3 — verify probe-output signatures on the
     // two event variants that carry them. Non-signed events surface
     // as `None`; the wave-staging gate consults `signature_status`
     // when honouring outstanding events. Verification is best-
@@ -143,7 +143,7 @@ pub(super) async fn report(
 }
 
 /// Compute the signature verdict for an incoming report (
-/// root-3 / #59). Only `ComplianceFailure` and `RuntimeGateError`
+/// root-3). Only `ComplianceFailure` and `RuntimeGateError`
 /// carry probe-output signatures today; all other variants return
 /// `None`. The host's pubkey comes from `verified_fleet`'s
 /// `hosts.<hostname>.pubkey`; absent pubkey → `NoPubkey`.

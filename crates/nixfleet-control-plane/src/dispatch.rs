@@ -134,7 +134,7 @@ pub fn decide_target(
             signed_at,
             freshness_window_secs,
             // — relay the channel's compliance mode so the
-            // agent's runtime gate (#57) honours fleet-wide policy
+            // agent's runtime gate honours fleet-wide policy
             // pushes without needing per-host CLI flags. `None` only
             // on degenerate fleet-snapshot state where the channel
             // lookup itself misses; the wire field stays Optional

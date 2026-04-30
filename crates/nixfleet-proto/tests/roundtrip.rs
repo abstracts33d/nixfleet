@@ -72,7 +72,7 @@ fn stream_b_empty_selector_parses_and_canonicalizes() {
 
 #[test]
 fn meta_signature_algorithm_none_round_trips_as_absent() {
-    // Per #18's §I/§II amendment: `meta.signatureAlgorithm` is OPTIONAL
+    // Per the §I/§II amendment: `meta.signatureAlgorithm` is OPTIONAL
     // with default "ed25519" on the consumer side. The canonical way to
     // encode "use the default" is ABSENT (not `null`). Explicit algorithm
     // strings round-trip as themselves.

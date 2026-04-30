@@ -1,6 +1,6 @@
 # tests/harness/default.nix
 #
-# Entry point for the microvm.nix-based fleet simulation harness (issue #5).
+# Entry point for the microvm.nix-based fleet simulation harness.
 #
 # Returns an attrset of discoverable scenarios. `flake-module.nix` registers
 # these under `checks.<system>.fleet-harness-*`. Each scenario is a
@@ -9,13 +9,13 @@
 #
 # Scenario inventory:
 # - smoke / fleet-2 / fleet-5 / fleet-10 — stub CP + N stub agents.
-#   N=2 is the canonical smoke; N=5 / N=10 satisfy issue #5's
+#   N=2 is the canonical smoke; N=5 / N=10 satisfy the
 #   "fleet-N" parameterisation.
 # - signed-roundtrip — stub CP serving the signed fixture, agent
 #   verifies via the verify-artifact CLI.
 # - teardown — real CP binary + real agents; wipes CP DB mid-run
 #   and asserts state recovery within one reconcile cycle
-#   (issue #14, ARCHITECTURE.md §8).
+#   (ARCHITECTURE.md §8).
 {
   lib,
   pkgs,
@@ -29,7 +29,7 @@
   # signed-roundtrip scenario invokes it from inside the agent microVM;
   # the smoke scenario does not need it.
   nixfleet-verify-artifact ? null,
-  # Real binaries for the teardown scenario (issue #14) and any
+  # Real binaries for the teardown scenario and any
   # future scenario that needs real CP / agent semantics (rollouts,
   # dispatch, magic rollback). Defaults to null so callers without
   # the crane workspace still get the stub-based smoke +
@@ -100,7 +100,7 @@
     then null
     else import ./fixtures/probe {inherit pkgs nixfleet-canonicalize;};
 
-  # Stale variant of the signed fixture (issue #13): deliberately
+  # Stale variant of the signed fixture: deliberately
   # signs the artifact a year and a half in the past so any sane
   # freshness window puts the agent's clock-skewed `now − signedAt`
   # well past `freshness_window + 60s`. Used by the
@@ -138,7 +138,7 @@
           verifyArtifactPkg = nixfleet-verify-artifact;
         });
 
-  # Cycle-N+1 teardown scenario (issue #14). Real CP + real agents;
+  # Cycle-N+1 teardown scenario. Real CP + real agents;
   # wipes CP DB mid-run; asserts agents repopulate within one
   # reconcile cycle.
   teardownScenario =
@@ -158,7 +158,7 @@
           agentPkg = nixfleet-agent;
         });
 
-  # Issue #13 stale-target refusal scenario. Real CP serving a
+  # Stale-target refusal scenario. Real CP serving a
   # year-and-a-half-old fixture (CP accepts because its
   # --freshness-window-secs is bumped huge); real agent receives the
   # dispatched target, the `nixfleet_agent::freshness` gate fires
@@ -217,7 +217,7 @@
         verifyArtifactPkg = nixfleet-verify-artifact;
       };
 
-  # Issue #2 step 5 deadline-expiry scenario. Real CP with a 3-second
+  # Deadline-expiry scenario. Real CP with a 3-second
   # confirm deadline; testScript drives the wire flow via curl from
   # the host VM (no agent microVM needed) — POST checkin → receive
   # target → wait past deadline → POST confirm → assert HTTP 410.
@@ -259,7 +259,7 @@ in {
 
   fleet-harness-auditor-chain = auditorChainScenario;
 
-  # Issue #5 fleet-N variants. fleet-2 is identical to smoke
+  # Fleet-N variants. fleet-2 is identical to smoke
   # under a different name, kept for criterion completeness.
   fleet-harness-fleet-2 = mkFleetNScenario 2;
   fleet-harness-fleet-5 = mkFleetNScenario 5;

@@ -1,4 +1,4 @@
-# Tier A - microvm.nix-based fleet simulation harness (issue #5).
+# Tier A - microvm.nix-based fleet simulation harness.
 #
 # Registers `checks.x86_64-linux.fleet-harness-*` discoverable scenarios.
 # Each scenario boots one CP microVM + N agent microVMs on a single host
@@ -26,7 +26,7 @@
     # agent microVM runs.
     nixfleet-canonicalize = config.packages.nixfleet-canonicalize or null;
     nixfleet-verify-artifact = config.packages.nixfleet-verify-artifact or null;
-    # Real binaries for the teardown scenario (issue #14). Static-
+    # Real binaries for the teardown scenario. Static-
     # fixture stub nodes (cp.nix / agent.nix / cp-signed.nix) keep
     # working with the existing scenarios; the teardown scenario opts
     # into the real-binary nodes via these.
@@ -72,17 +72,17 @@
           && nixfleet-control-plane != null
           && nixfleet-agent != null
         ) {
-          # Teardown scenario (issue #14). Real CP + real agents;
+          # Teardown scenario. Real CP + real agents;
           # wipes the CP DB mid-run and asserts state recovery
           # within one reconcile cycle.
           fleet-harness-teardown = harness.fleet-harness-teardown;
 
-          # Issue #2 step 5: confirm-deadline expiry → 410.
+          # Confirm-deadline expiry → 410.
           # Host-side curl drives the wire flow against cp-real
           # with --confirm-deadline-secs 3.
           fleet-harness-deadline-expiry = harness.fleet-harness-deadline-expiry;
 
-          # Issue #13: agent-side freshness gate wire-format. CP
+          # Agent-side freshness gate wire-format. CP
           # serves a year-and-a-half-old fixture; testScript asserts
           # dispatched targets carry signedAt + freshnessWindowSecs
           # such that the agent's freshness::check returns Stale.
@@ -93,7 +93,7 @@
           # it before the regular poll loop fires.
           fleet-harness-boot-recovery = harness.fleet-harness-boot-recovery;
 
-          # Parameterised fleet-N variants (issue #5). Same
+          # Parameterised fleet-N variants. Same
           # scenario as fleet-harness-smoke but with N agents.
           # CI runs fleet-2 on PR; fleet-10 / fleet-50 are
           # available for nightly / on-demand.

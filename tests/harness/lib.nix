@@ -1,6 +1,6 @@
 # tests/harness/lib.nix
 #
-# Helpers for the microvm.nix-based fleet simulation harness (issue #5).
+# Helpers for the microvm.nix-based fleet simulation harness.
 #
 # Builds lightweight microVM guests (cloud-hypervisor/qemu) that share the
 # host's /nix/store over virtiofs, for cheap fleet-scale scenarios.
@@ -182,7 +182,7 @@
     _module.args = {inherit testCerts signedFixture;};
   };
 
-  # Real-binary CP host module (issue #14). Runs the crane-built
+  # Real-binary CP host module. Runs the crane-built
   # `nixfleet-control-plane serve` binary against the signed fixture
   # with persistent SQLite state. Used by the teardown scenario;
   # future scenarios that need real CP semantics import this instead
@@ -318,7 +318,7 @@
     # `agents`-count: 4GB host + (count × guestMemMB), with a
     # 1GB minimum host overhead reservation. Fleet-2 lands at
     # 4GB; fleet-10 lands at ~7GB; fleet-50 (if attempted) would
-    # land at ~17GB which hits issue #5's 16GB-dev-machine cap.
+    # land at ~17GB which hits the 16GB-dev-machine cap.
     hostMemoryMB ? null,
   }: let
     agentCount = builtins.length (builtins.attrNames agents);

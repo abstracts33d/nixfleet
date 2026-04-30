@@ -1,5 +1,5 @@
 //! Integration test for the ADR-011 boot-recovery PostedConfirm
-//! branch (audit cleanup item #6).
+//! branch.
 //!
 //! The unit tests in `recovery::tests` exercise the decision logic
 //! against a dummy reqwest client that hits an unreachable port —

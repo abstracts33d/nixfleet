@@ -57,7 +57,7 @@ pub enum HostsSpec {
 /// design, removed during the no-untested-code pass — re-add with
 /// tests when a real fleet exercises them):
 /// - `include_darwin`: orchestrating Darwin closure builds.
-///   Tracked in #67 (pluggable activation backend).
+///   Pending a pluggable activation backend.
 /// - `jobs > 1`: parallel `nix build` orchestration via
 ///   `std::thread::spawn`. Single-host build is fast enough on
 ///   today's fleets; concurrency is tricky and was never run with

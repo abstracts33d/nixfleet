@@ -1,6 +1,6 @@
 # tests/lib/mk-fleet/fixtures/static-compliance-fail-permissive.nix
 #
-# Issue #58 — when a channel's `compliance.mode = "permissive"`, the
+# When a channel's `compliance.mode = "permissive"`, the
 # static gate emits `lib.warn` per failing host/control but eval
 # SUCCEEDS. Mirror of negative/static-compliance-fail-strict.nix
 # with mode flipped from default-strict (legacy) to explicit

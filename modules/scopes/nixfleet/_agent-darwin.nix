@@ -43,7 +43,7 @@
 #
 # 5. **No `--health-config`/`--health-interval`/`--metrics-port`/
 #    `--db-path`/`--retry-interval`/`--cache-url`/`--dry-run`/
-#    `--allow-insecure`** — these v0.1 flags were removed in #29.
+#    `--allow-insecure`** — these v0.1 flags were removed.
 #    The v0.2 agent surface is intentionally narrower; health,
 #    metrics, and cache concerns live outside the agent binary now.
 {
@@ -135,7 +135,7 @@ in {
       default = "/etc/ssh/ssh_host_ed25519_key";
       description = ''
         Host SSH ed25519 private key, used to sign ComplianceFailure
-        / RuntimeGateError event payloads (issue #12 root-3 / #59).
+        / RuntimeGateError event payloads (root-3).
         Default matches OpenSSH's stock path on darwin (sshd is
         managed by `services.openssh` in nix-darwin or pre-existing
         on macOS hosts).
@@ -158,7 +158,7 @@ in {
       type = lib.types.enum ["auto" "disabled" "permissive" "enforce"];
       default = "auto";
       description = ''
-        Local default for the runtime compliance gate (issue #57).
+        Local default for the runtime compliance gate.
         Identical semantics to the NixOS module — see _agent.nix for
         the full description. On darwin the gate's auto-detect probes
         `launchctl list compliance-evidence-collector` instead of

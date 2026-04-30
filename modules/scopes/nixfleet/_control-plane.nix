@@ -175,8 +175,8 @@ in {
     };
 
     # Cert issuance (enroll + renew). The CP holds the fleet
-    # CA private key online — see nixfleet issue #41 for the deferred
-    # TPM-bound replacement. The fleet wires these to paths produced
+    # CA private key online; a TPM-bound replacement is deferred.
+    # The fleet wires these to paths produced
     # by its secrets backend.
     fleetCaCert = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -196,8 +196,8 @@ in {
       description = ''
         Fleet CA private key path (decrypted by the fleet's secrets
         backend). Used to sign agent certs in /v1/enroll and
-        /v1/agent/renew. **Online on the CP — see nixfleet issue
-        #41.**
+        /v1/agent/renew. **Online on the CP under the current
+        design; a TPM-bound replacement is deferred.**
       '';
     };
 
@@ -292,7 +292,7 @@ in {
       };
     };
 
-    # Gap C (#48): signed `revocations.json` sidecar. Mirrors
+    # Gap C: signed `revocations.json` sidecar. Mirrors
     # `channelRefsSource` —
     # same `(artifact, signature, token)` shape, same Bearer auth,
     # same trust class (ciReleaseKey signs both artifacts). When

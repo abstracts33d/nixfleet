@@ -13,8 +13,8 @@
 # verifies token signatures with the public half (declared in
 # `config.nixfleet.trust.orgRootKey`).
 #
-# Per the design property in `docs/CONTRACTS.md §II #3` and
-# nixfleet#10's "control plane holds no secrets, forges no trust",
+# Per the design property in `docs/CONTRACTS.md §II #3` —
+# "control plane holds no secrets, forges no trust" —
 # the org root key compromise scenario is a multi-host operator-
 # workstation event — not a CP-side breach. Sovereignty preserved.
 #

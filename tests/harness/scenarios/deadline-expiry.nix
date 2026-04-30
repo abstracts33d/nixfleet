@@ -1,6 +1,6 @@
 # tests/harness/scenarios/deadline-expiry.nix
 #
-# Issue #2 step 5 deadline-expiry scenario.
+# Deadline-expiry scenario.
 #
 # Validates the magic-rollback CP-side path: when an agent's confirm
 # deadline expires before /v1/agent/confirm lands, the rollback_timer
@@ -173,7 +173,7 @@ in
       )
 
       print(
-          "fleet-harness-deadline-expiry: issue #2 step 5 contract holds — "
+          "fleet-harness-deadline-expiry: deadline-expiry contract holds — "
           "expired pending_confirms returns 410, row transitions to rolled_back."
       )
     '';

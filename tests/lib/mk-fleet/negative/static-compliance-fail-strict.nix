@@ -1,6 +1,6 @@
 # tests/lib/mk-fleet/negative/static-compliance-fail-strict.nix
 #
-# Issue #4 static compliance gate: when `channels.X.compliance.strict
+# Static compliance gate: when `channels.X.compliance.strict
 # = true`, any host on that channel whose evaluated NixOS config has
 # a `compliance.evidence.probes.<n>` with `type ∈ {static, both}`
 # and `staticEvidence.passed = false` must fail mkFleet eval.

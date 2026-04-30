@@ -75,7 +75,7 @@
     };
   };
 
-  # --- Revocations sidecar (signed `revocations.json`, #48) ---
+  # --- Revocations sidecar (signed `revocations.json`) ---
   # Operator-declared agent-cert revocation entries. The release
   # pipeline serialises this list, signs it with the same
   # ciReleaseKey that signs `fleet.resolved`, and writes
@@ -177,8 +177,8 @@
       compliance = mkOption {
         type = types.submodule {
           options = {
-            # Issue #58 — tri-state policy mode shared by the static
-            # gate (this file) and the runtime gate (#57 agent-side).
+            # Tri-state policy mode shared by the static
+            # gate (this file) and the runtime gate (agent-side).
             # Default `enforce` matches the original `strict = true`
             # default the legacy boolean form had — fleets that
             # didn't opt out of compliance keep being gated.
@@ -393,7 +393,7 @@
       (lib.attrNames cfg.channels);
 
     # Effective compliance mode is just `compliance.mode` — the
-    # legacy `strict` boolean was removed once issue #58's unified
+    # legacy `strict` boolean was removed once the unified
     # vocabulary stabilised. Schema default is `enforce`, matching
     # the prior `strict = true` default.
     resolvedComplianceMode = channelName: cfg.channels.${channelName}.compliance.mode;
@@ -436,7 +436,7 @@
       )
       hostsOnChannels;
 
-    # Static compliance gate (issue #4 / #58). For every host on a
+    # Static compliance gate. For every host on a
     # channel whose effective mode is `enforce`, walk
     # `compliance.evidence.probes.*` (populated by the
     # nixfleet-compliance modules each host imports) and collect
@@ -491,7 +491,7 @@
         )
         cfg.disruptionBudgets;
 
-      # Issue #58 — permissive-mode compliance warnings. Mirrors
+      # Permissive-mode compliance warnings. Mirrors
       # the staticComplianceErrors accumulator in checkInvariants but
       # selects channels whose effective mode is `permissive` instead
       # of `enforce`. Failures emit `lib.warn` and let eval succeed,

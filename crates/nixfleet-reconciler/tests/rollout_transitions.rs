@@ -47,7 +47,7 @@ fn onfailure_halt() {
 
 #[test]
 fn channel_unknown_emits_event() {
-    // Issue #21: an active rollout references a channel that no
+    // An active rollout references a channel that no
     // longer exists in fleet.resolved.channels. The reconciler
     // surfaces a ChannelUnknown observability event before
     // silently continuing — operators can grep journal for

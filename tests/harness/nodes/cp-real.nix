@@ -1,6 +1,6 @@
 # tests/harness/nodes/cp-real.nix
 #
-# Real-binary CP node for the teardown scenario (issue #14). Runs
+# Real-binary CP node for the teardown scenario. Runs
 # `nixfleet-control-plane serve` from the crane-built package against
 # the harness's signed fixture. State lives in `/var/lib/nixfleet-cp/`
 # so the teardown scenario can wipe it mid-run and observe recovery.

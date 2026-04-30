@@ -134,7 +134,7 @@ fn verify_at_exact_window_boundary_is_fresh() {
 
 #[test]
 fn verify_within_clock_skew_slack_is_fresh() {
-    // Issue #13 / RFC-0003 §8: verify_artifact tolerates ≥60s clock
+    // RFC-0003 §8: verify_artifact tolerates ≥60s clock
     // skew so a benignly-drifted host doesn't reject a freshly-signed
     // artifact. age = window + 30s must still be fresh.
     let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_SIGNED);
@@ -394,7 +394,7 @@ fn verify_skips_unknown_algorithm_when_known_also_present() {
     );
 }
 
-// ---- ECDSA P-256 (#18 signature-algorithm agility) -------------------
+// ---- ECDSA P-256 (signature-algorithm agility) -------------------
 
 /// P-256 curve order `n`, big-endian. Used to construct high-s twin
 /// signatures for malleability rejection tests.

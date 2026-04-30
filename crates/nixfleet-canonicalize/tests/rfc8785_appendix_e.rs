@@ -1,4 +1,4 @@
-//! RFC 8785 Appendix E conformance corpus (issue #22).
+//! RFC 8785 Appendix E conformance corpus.
 //!
 //! The pinned `serde_jcs` library is the source of truth for our
 //! signature contract — every signer + verifier in the fleet

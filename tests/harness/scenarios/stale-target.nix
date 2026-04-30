@@ -1,6 +1,6 @@
 # tests/harness/scenarios/stale-target.nix
 #
-# Issue #13 stale-target refusal scenario.
+# Stale-target refusal scenario.
 #
 # Validates the agent-side defense-in-depth freshness gate landed in
 # `crates/nixfleet-agent/src/freshness.rs` plus the CP dispatch wiring
@@ -177,7 +177,7 @@ in
           # Step 2: assert wire fields populated.
           print("step 2: CP dispatched a target — verifying freshness fields…")
           assert "signedAt" in target, (
-              f"target missing signedAt — CP dispatch failed to relay #13 fields: {target!r}"
+              f"target missing signedAt — CP dispatch failed to relay freshness fields: {target!r}"
           )
           assert "freshnessWindowSecs" in target, (
               f"target missing freshnessWindowSecs: {target!r}"
@@ -213,7 +213,7 @@ in
           )
 
       print(
-          "fleet-harness-stale-target: issue #13 wire-relay holds — "
+          "fleet-harness-stale-target: wire-relay holds — "
           "CP populates target.signedAt and target.freshnessWindowSecs, "
           "values trip the agent's freshness gate as expected."
       )

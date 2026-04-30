@@ -593,7 +593,7 @@ impl Db {
     }
 
     /// Currently-Healthy hosts in `rollout_id` and the timestamp
-    /// they entered Healthy. Step 2 of gap #2 (next session, the
+    /// they entered Healthy. Step 2 (next session, the
     /// observed-state projection) reads this so the reconciler can
     /// compute `now - last_healthy_since >= wave.soak_minutes`.
     /// Excludes rows whose `last_healthy_since` is NULL.
@@ -662,7 +662,7 @@ impl Db {
     }
 
     /// Snapshot the active rollouts derived from the DB for the
-    /// observed-state projection (step 2 of gap #2). For each
+    /// observed-state projection (step 2). For each
     /// (rollout_id, hostname), keep only the latest
     /// `pending_confirms` row by `dispatched_at`, restricted to
     /// `state IN ('pending', 'confirmed')`. LEFT JOIN

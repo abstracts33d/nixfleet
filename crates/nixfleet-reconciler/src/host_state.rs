@@ -165,7 +165,7 @@ pub(crate) fn handle_wave(
                 // remained Healthy for `wave.soak_minutes`. Without
                 // a `last_healthy_since` marker the soak gate stays
                 // closed (defensive — better to wait than promote
-                // a wave that's missing data). Step 1+2 of gap #2
+                // a wave that's missing data). Steps 1+2
                 // populate this map; step 3 (this arm) consumes it.
                 out.wave_all_soaked = false;
                 let soak_window = chrono::Duration::minutes(wave.soak_minutes as i64);

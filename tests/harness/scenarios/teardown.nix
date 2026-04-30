@@ -1,4 +1,4 @@
-# Control-plane teardown scenario (issue #14). Validates
+# Control-plane teardown scenario. Validates
 # ARCHITECTURE.md §8: destroying the CP's database and rebuilding
 # from empty state restores full fleet visibility within one
 # reconcile cycle.

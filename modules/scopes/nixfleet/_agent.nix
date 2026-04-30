@@ -7,7 +7,7 @@
 # the binary re-reads on startup.
 #
 # Legacy options (tags, healthChecks, metricsPort, dryRun,
-# allowInsecure, cacheUrl, healthInterval) were removed in #29.
+# allowInsecure, cacheUrl, healthInterval) were removed.
 # The agent is intentionally minimal; health, metrics, and cache
 # concerns live outside the agent binary.
 #
@@ -117,7 +117,7 @@ in {
     # Aligned with `StateDirectory=nixfleet-agent` so the systemd
     # unit creates the directory with the right owner + perms.
     # Agent-side population of last_confirmed_at folds into the
-    # magic-rollback work (#2).
+    # magic-rollback work.
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/nixfleet-agent";
@@ -132,7 +132,7 @@ in {
       '';
     };
 
-    # Issue #57 — runtime compliance gate policy.
+    # Runtime compliance gate policy.
     # `auto` (default) auto-detects from collector unit presence:
     # Permissive when present, Disabled when absent. Operators
     # introducing compliance to an existing fleet typically: deploy
@@ -144,7 +144,7 @@ in {
       type = lib.types.enum ["auto" "disabled" "permissive" "enforce"];
       default = "auto";
       description = ''
-        Local default for the runtime compliance gate (issue #57).
+        Local default for the runtime compliance gate.
 
         - `auto` (default): permissive when the
           `compliance-evidence-collector.service` unit is present on
