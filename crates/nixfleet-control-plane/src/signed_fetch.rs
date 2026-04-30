@@ -60,11 +60,7 @@ pub async fn fetch_signed_pair(
     Ok((artifact, signature))
 }
 
-async fn fetch_url(
-    client: &reqwest::Client,
-    url: &str,
-    token: Option<&str>,
-) -> Result<Vec<u8>> {
+async fn fetch_url(client: &reqwest::Client, url: &str, token: Option<&str>) -> Result<Vec<u8>> {
     let mut req = client.get(url);
     if let Some(t) = token {
         req = req.header("Authorization", format!("Bearer {t}"));

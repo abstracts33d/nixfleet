@@ -42,22 +42,20 @@ pub fn spawn(db: Arc<Db>) -> tokio::task::JoinHandle<()> {
                     0
                 }
             };
-            let pending_pruned =
-                match db.prune_pending_confirms(PENDING_CONFIRMS_RETENTION_HOURS) {
-                    Ok(n) => n,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "prune timer: pending_confirms failed");
-                        0
-                    }
-                };
-            let reports_pruned =
-                match db.prune_host_reports(HOST_REPORTS_RETENTION_HOURS) {
-                    Ok(n) => n,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "prune timer: host_reports failed");
-                        0
-                    }
-                };
+            let pending_pruned = match db.prune_pending_confirms(PENDING_CONFIRMS_RETENTION_HOURS) {
+                Ok(n) => n,
+                Err(err) => {
+                    tracing::warn!(error = %err, "prune timer: pending_confirms failed");
+                    0
+                }
+            };
+            let reports_pruned = match db.prune_host_reports(HOST_REPORTS_RETENTION_HOURS) {
+                Ok(n) => n,
+                Err(err) => {
+                    tracing::warn!(error = %err, "prune timer: host_reports failed");
+                    0
+                }
+            };
             tracing::info!(
                 target: "prune",
                 token_replay = token_pruned,

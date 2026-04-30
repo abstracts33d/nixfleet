@@ -357,6 +357,59 @@ in {
         '';
       };
     };
+
+    # Rollout-manifest HTTP source. Companion to `rolloutsDir` for
+    # fleets where the manifests can't reach the closure via
+    # `inputs.self` — which is every fleet using a normal release
+    # pipeline, since `nixfleet-release` writes
+    # `releases/rollouts/<rolloutId>.{json,sig}` AFTER building the
+    # closures it just signed. The first activation of any new closure
+    # therefore points `rolloutsDir` at a path inside its own source
+    # tree that doesn't yet contain the manifests.
+    #
+    # Mirrors `channelRefsSource` / `revocationsSource` shape but uses
+    # URL TEMPLATES (containing `{rolloutId}`) instead of fixed URLs,
+    # because the rolloutId is part of the path. Same Bearer token
+    # pattern, same trust class (`ciReleaseKey` — verification stays
+    # in the agent on receipt; the CP only checks content-address).
+    rolloutsSource = {
+      artifactUrlTemplate = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "https://git.example.com/myorg/myfleet/raw/branch/main/releases/rollouts/{rolloutId}.json";
+        description = ''
+          URL template for HTTP-fetched rollout manifests. Must
+          contain the literal `{rolloutId}` token; the CP substitutes
+          the requested rolloutId at fetch time. When null, manifest
+          distribution falls back to `rolloutsDir`. Must be set
+          together with `signatureUrlTemplate`.
+        '';
+      };
+
+      signatureUrlTemplate = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "https://git.example.com/myorg/myfleet/raw/branch/main/releases/rollouts/{rolloutId}.json.sig";
+        description = ''
+          Signature URL template (same `{rolloutId}` substitution as
+          the artifact template). Both required to enable HTTP fetch.
+          Verified by the agent against the same `ciReleaseKey` trust
+          roots as `fleet.resolved.json`.
+        '';
+      };
+
+      tokenFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/secrets/cp-rollouts-token";
+        description = ''
+          Path to a file containing the upstream API token. Defaults
+          to falling back on `channelRefsSource.tokenFile` when null
+          (the typical case: one Forgejo instance, one access token,
+          all three sidecars share it).
+        '';
+      };
+    };
   };
 
   config = lib.mkMerge [
@@ -480,6 +533,33 @@ in {
                   (
                     if cfg.revocationsSource.tokenFile != null
                     then cfg.revocationsSource.tokenFile
+                    else cfg.channelRefsSource.tokenFile
+                  ))
+              ]
+            )
+            ++ lib.optionals
+            (
+              cfg.rolloutsSource.artifactUrlTemplate
+              != null
+              && cfg.rolloutsSource.signatureUrlTemplate != null
+            ) (
+              [
+                "--rollouts-source-artifact-url-template"
+                (lib.escapeShellArg cfg.rolloutsSource.artifactUrlTemplate)
+                "--rollouts-source-signature-url-template"
+                (lib.escapeShellArg cfg.rolloutsSource.signatureUrlTemplate)
+              ]
+              ++ lib.optionals
+              (
+                cfg.rolloutsSource.tokenFile
+                != null
+                || cfg.channelRefsSource.tokenFile != null
+              ) [
+                "--rollouts-source-token-file"
+                (lib.escapeShellArg
+                  (
+                    if cfg.rolloutsSource.tokenFile != null
+                    then cfg.rolloutsSource.tokenFile
                     else cfg.channelRefsSource.tokenFile
                   ))
               ]

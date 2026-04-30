@@ -68,6 +68,7 @@ async fn spawn_cp(
         db_path: None,
         closure_upstream,
         rollouts_dir: None,
+        rollouts_source: None,
     };
     let handle = tokio::spawn(server::serve(args));
     sleep(Duration::from_millis(300)).await;

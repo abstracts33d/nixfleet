@@ -240,7 +240,7 @@ mod tests {
                 error: None,
             }),
             uptime_secs: None,
-        last_confirmed_at: None,
+            last_confirmed_at: None,
         }
     }
 
@@ -255,7 +255,15 @@ mod tests {
         let fleet = fleet_with("ohm", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, false, now(), 120),
+            decide_target(
+                "test-host",
+                &req,
+                &fleet,
+                TEST_FLEET_HASH,
+                false,
+                now(),
+                120
+            ),
             Decision::Unmanaged
         ));
     }
@@ -265,7 +273,15 @@ mod tests {
         let fleet = fleet_with("test-host", host(None));
         let req = checkin("running-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, false, now(), 120),
+            decide_target(
+                "test-host",
+                &req,
+                &fleet,
+                TEST_FLEET_HASH,
+                false,
+                now(),
+                120
+            ),
             Decision::NoDeclaration
         ));
     }
@@ -275,7 +291,15 @@ mod tests {
         let fleet = fleet_with("test-host", host(Some("matched-system")));
         let req = checkin("matched-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, false, now(), 120),
+            decide_target(
+                "test-host",
+                &req,
+                &fleet,
+                TEST_FLEET_HASH,
+                false,
+                now(),
+                120
+            ),
             Decision::Converged
         ));
     }
@@ -285,7 +309,15 @@ mod tests {
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, /* pending */ true, now(), 120),
+            decide_target(
+                "test-host",
+                &req,
+                &fleet,
+                TEST_FLEET_HASH,
+                /* pending */ true,
+                now(),
+                120
+            ),
             Decision::InFlight
         ));
     }
@@ -295,7 +327,15 @@ mod tests {
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::VerifyFailed));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, false, now(), 120),
+            decide_target(
+                "test-host",
+                &req,
+                &fleet,
+                TEST_FLEET_HASH,
+                false,
+                now(),
+                120
+            ),
             Decision::HoldAfterFailure
         ));
     }
@@ -305,7 +345,15 @@ mod tests {
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::FetchFailed));
         assert!(matches!(
-            decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, false, now(), 120),
+            decide_target(
+                "test-host",
+                &req,
+                &fleet,
+                TEST_FLEET_HASH,
+                false,
+                now(),
+                120
+            ),
             Decision::HoldAfterFailure
         ));
     }
@@ -314,7 +362,15 @@ mod tests {
     fn dispatch_when_diverged_and_no_pending() {
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
-        let d = decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, false, now(), 120);
+        let d = decide_target(
+            "test-host",
+            &req,
+            &fleet,
+            TEST_FLEET_HASH,
+            false,
+            now(),
+            120,
+        );
         let Decision::Dispatch {
             target,
             rollout_id,
@@ -329,7 +385,9 @@ mod tests {
         // value depends on every field of the manifest projection;
         // we assert shape, not value.
         assert_eq!(rollout_id.len(), 64);
-        assert!(rollout_id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(rollout_id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         // channel_ref still mirrors the rolloutId on the wire (it's
         // the identifier the agent sends back on confirm).
         assert_eq!(target.channel_ref, rollout_id);
@@ -362,7 +420,15 @@ mod tests {
             ],
         );
         let req = checkin("running-system", Some(FetchResult::Ok));
-        let d = decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, false, now(), 120);
+        let d = decide_target(
+            "test-host",
+            &req,
+            &fleet,
+            TEST_FLEET_HASH,
+            false,
+            now(),
+            120,
+        );
         let Decision::Dispatch {
             target, wave_index, ..
         } = d
@@ -400,9 +466,10 @@ mod tests {
             120,
         );
         let (id1, id2) = match (d1, d2) {
-            (Decision::Dispatch { rollout_id: a, .. }, Decision::Dispatch { rollout_id: b, .. }) => {
-                (a, b)
-            }
+            (
+                Decision::Dispatch { rollout_id: a, .. },
+                Decision::Dispatch { rollout_id: b, .. },
+            ) => (a, b),
             other => panic!("expected two Dispatch decisions, got {other:?}"),
         };
         assert_ne!(id1, id2);
@@ -413,7 +480,15 @@ mod tests {
         // Different confirm-window must propagate to the wire.
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
-        let d = decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, false, now(), 240);
+        let d = decide_target(
+            "test-host",
+            &req,
+            &fleet,
+            TEST_FLEET_HASH,
+            false,
+            now(),
+            240,
+        );
         let Decision::Dispatch { target, .. } = d else {
             panic!("expected Dispatch");
         };
@@ -426,7 +501,15 @@ mod tests {
         // Brand-new agent, never fetched anything — should still dispatch.
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", None);
-        let d = decide_target("test-host", &req, &fleet, TEST_FLEET_HASH, false, now(), 120);
+        let d = decide_target(
+            "test-host",
+            &req,
+            &fleet,
+            TEST_FLEET_HASH,
+            false,
+            now(),
+            120,
+        );
         assert!(matches!(d, Decision::Dispatch { .. }));
     }
 }

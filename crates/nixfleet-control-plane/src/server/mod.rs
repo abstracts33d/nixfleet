@@ -55,15 +55,15 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/agent/checkin", post(checkin_pipeline::checkin))
         .route("/v1/agent/report", post(report_handler::report))
         .route("/v1/agent/confirm", post(checkin_pipeline::confirm))
-        .route("/v1/agent/closure/{hash}", get(status_handlers::closure_proxy))
+        .route(
+            "/v1/agent/closure/{hash}",
+            get(status_handlers::closure_proxy),
+        )
         .route("/v1/enroll", post(enrollment_handlers::enroll))
         .route("/v1/agent/renew", post(enrollment_handlers::renew))
         .route("/v1/channels/{name}", get(status_handlers::channel_status))
         .route("/v1/hosts", get(status_handlers::hosts_status))
-        .route(
-            "/v1/rollouts/{rolloutId}",
-            get(rollouts_handlers::manifest),
-        )
+        .route("/v1/rollouts/{rolloutId}", get(rollouts_handlers::manifest))
         .route(
             "/v1/rollouts/{rolloutId}/sig",
             get(rollouts_handlers::signature),
@@ -117,6 +117,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         confirm_deadline_secs: args.confirm_deadline_secs,
         closure_upstream,
         rollouts_dir: args.rollouts_dir.clone(),
+        rollouts_source: args.rollouts_source.clone(),
         ..Default::default()
     };
     let state = Arc::new(app_state);
@@ -162,12 +163,12 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                                 let signature_status = row.signature_status.and_then(|s| {
                                     serde_json::from_value::<
                                         nixfleet_reconciler::evidence::SignatureStatus,
-                                    >(serde_json::Value::String(s))
+                                    >(serde_json::Value::String(
+                                        s,
+                                    ))
                                     .ok()
                                 });
-                                let buf = reports_w
-                                    .entry(hostname.clone())
-                                    .or_default();
+                                let buf = reports_w.entry(hostname.clone()).or_default();
                                 buf.push_back(crate::server::ReportRecord {
                                     event_id: row.event_id,
                                     received_at: row.received_at,
@@ -247,9 +248,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 );
             }
             Err(_) => {
-                tracing::warn!(
-                    "channel-refs prime timed out; falling back to build-time artifact",
-                );
+                tracing::warn!("channel-refs prime timed out; falling back to build-time artifact",);
             }
         }
     }
@@ -281,22 +280,15 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Revocations poll : refresh `cert_revocations` from a
     // signed sidecar artifact every 60s. Requires a configured DB
     // (the replay target); a None DB silently disables the poll.
-    if let (Some(revocations_source), Some(db)) = (
-        args.revocations.clone(),
-        state.db.clone(),
-    ) {
+    if let (Some(revocations_source), Some(db)) = (args.revocations.clone(), state.db.clone()) {
         crate::revocations_poll::spawn(db, revocations_source);
     }
 
     let app = build_router(state);
 
-    let tls_config = crate::tls::build_server_config(
-        &args.tls_cert,
-        &args.tls_key,
-        args.client_ca.as_deref(),
-    )?;
-    let rustls_config =
-        axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls_config));
+    let tls_config =
+        crate::tls::build_server_config(&args.tls_cert, &args.tls_key, args.client_ca.as_deref())?;
+    let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls_config));
 
     // Wrap RustlsAcceptor in MtlsAcceptor so peer certs are
     // extracted after the handshake and injected into request

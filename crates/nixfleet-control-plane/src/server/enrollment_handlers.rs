@@ -129,11 +129,8 @@ pub(super) async fn enroll(
             tracing::warn!(error = %err, "enroll: parse CSR PEM");
             StatusCode::BAD_REQUEST
         })?;
-    let csr_cn: Option<String> = csr_params
-        .params
-        .distinguished_name
-        .iter()
-        .find_map(|(t, v): (&rcgen::DnType, &rcgen::DnValue)| {
+    let csr_cn: Option<String> = csr_params.params.distinguished_name.iter().find_map(
+        |(t, v): (&rcgen::DnType, &rcgen::DnValue)| {
             if matches!(t, rcgen::DnType::CommonName) {
                 Some(match v {
                     rcgen::DnValue::PrintableString(s) => s.to_string(),
@@ -143,7 +140,8 @@ pub(super) async fn enroll(
             } else {
                 None
             }
-        });
+        },
+    );
     let csr_cn = csr_cn.ok_or_else(|| {
         tracing::warn!("enroll: CSR has no CN");
         StatusCode::BAD_REQUEST
@@ -151,12 +149,9 @@ pub(super) async fn enroll(
     let csr_pubkey_der = csr_params.public_key.der_bytes();
     let csr_fingerprint = crate::issuance::fingerprint(csr_pubkey_der);
 
-    if let Err(err) = crate::issuance::validate_token_claims(
-        &req.token.claims,
-        &csr_cn,
-        &csr_fingerprint,
-        now,
-    ) {
+    if let Err(err) =
+        crate::issuance::validate_token_claims(&req.token.claims, &csr_cn, &csr_fingerprint, now)
+    {
         tracing::warn!(error = %err, hostname = %req.token.claims.hostname, "enroll: claim validation");
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -206,7 +201,10 @@ pub(super) async fn enroll(
         "enrolled"
     );
 
-    Ok(Json(EnrollResponse { cert_pem, not_after }))
+    Ok(Json(EnrollResponse {
+        cert_pem,
+        not_after,
+    }))
 }
 
 /// `POST /v1/agent/renew` — issue a fresh cert for an authenticated
@@ -257,5 +255,8 @@ pub(super) async fn renew(
         "renewed"
     );
 
-    Ok(Json(RenewResponse { cert_pem, not_after }))
+    Ok(Json(RenewResponse {
+        cert_pem,
+        not_after,
+    }))
 }

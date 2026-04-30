@@ -58,11 +58,15 @@ pub struct ServeArgs {
     /// `/v1/agent/closure/<hash>` to. None → endpoint returns 501.
     pub closure_upstream: Option<String>,
     /// Directory containing pre-signed `<rolloutId>.{json,sig}` pairs
-    /// produced by nixfleet-release. None → `GET /v1/rollouts/<id>`
-    /// always returns 503 (manifest distribution disabled). Required
-    /// for any rollout where agents will verify wave membership
-    /// independently (RFC-0002 §4.4).
+    /// produced by nixfleet-release. None → manifest distribution
+    /// falls back to `rollouts_source` HTTP fetch; if both are None,
+    /// `GET /v1/rollouts/<id>` returns 503.
     pub rollouts_dir: Option<PathBuf>,
+    /// HTTP-fetched rollout manifests source. None → fall back to
+    /// `rollouts_dir`. Useful for fleets where the manifests can't
+    /// live in `inputs.self` at closure-build time (the typical case
+    /// since `nixfleet-release` writes them after building closures).
+    pub rollouts_source: Option<crate::rollouts_source::RolloutsSource>,
 }
 
 #[derive(Debug, Clone)]
@@ -118,8 +122,11 @@ pub struct AppState {
     pub fleet_resolved_hash: Arc<RwLock<Option<String>>>,
     pub confirm_deadline_secs: i64,
     /// Filesystem path to the directory holding pre-signed rollout
-    /// manifests. `GET /v1/rollouts/<rolloutId>` looks here.
+    /// manifests. `GET /v1/rollouts/<rolloutId>` looks here first.
     pub rollouts_dir: Option<PathBuf>,
+    /// HTTP-fetched rollout manifests source. Used when `rollouts_dir`
+    /// is None or the requested manifest is missing on disk.
+    pub rollouts_source: Option<crate::rollouts_source::RolloutsSource>,
 }
 
 impl Default for AppState {
@@ -138,6 +145,7 @@ impl Default for AppState {
             fleet_resolved_hash: Arc::new(RwLock::new(None)),
             confirm_deadline_secs: DEFAULT_CONFIRM_DEADLINE_SECS,
             rollouts_dir: None,
+            rollouts_source: None,
         }
     }
 }

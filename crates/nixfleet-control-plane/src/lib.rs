@@ -21,6 +21,7 @@ pub mod observed_projection;
 pub mod prune_timer;
 pub mod revocations_poll;
 pub mod rollback_timer;
+pub mod rollouts_source;
 pub mod server;
 pub mod signed_fetch;
 pub mod state;
@@ -347,8 +348,7 @@ mod tests {
         let lines: Vec<&str> = body.lines().collect();
         // summary + open_rollout + budget-skip + skip_summary = 4
         assert_eq!(lines.len(), 4);
-        let summary_action: serde_json::Value =
-            serde_json::from_str(lines[3]).unwrap();
+        let summary_action: serde_json::Value = serde_json::from_str(lines[3]).unwrap();
         assert_eq!(summary_action["action"], "skip_summary");
         assert_eq!(summary_action["reason"], "offline");
         // Stable sort.
@@ -388,9 +388,12 @@ mod tests {
         let body = render_plan(&out);
         let lines: Vec<&str> = body.lines().collect();
         // summary + ONE skip_summary line (no per-host skip lines).
-        assert_eq!(lines.len(), 2, "expected 1 summary + 1 skip_summary, got: {body}");
-        let summary_action: serde_json::Value =
-            serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected 1 summary + 1 skip_summary, got: {body}"
+        );
+        let summary_action: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(
             summary_action["hosts"],
             serde_json::json!(["host-a", "host-b", "host-c"]),

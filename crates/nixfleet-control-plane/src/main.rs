@@ -113,8 +113,11 @@ struct ServeFlags {
     fleet_ca_key: Option<PathBuf>,
 
     /// JSON-lines, one record per issuance. Best-effort writes.
-    #[arg(long, default_value = "/var/lib/nixfleet-cp/issuance.log",
-          env = "NIXFLEET_CP_AUDIT_LOG")]
+    #[arg(
+        long,
+        default_value = "/var/lib/nixfleet-cp/issuance.log",
+        env = "NIXFLEET_CP_AUDIT_LOG"
+    )]
     audit_log: PathBuf,
 
     /// When unset, in-memory state only.
@@ -128,11 +131,32 @@ struct ServeFlags {
 
     /// Filesystem directory containing pre-signed rollout manifests
     /// (`<rolloutId>.{json,sig}`) produced by `nixfleet-release`.
-    /// `GET /v1/rollouts/<rolloutId>` looks up files here. Unset
-    /// disables manifest distribution — `GET /v1/rollouts/...` returns
-    /// 503 and agents that need manifests will refuse to act.
+    /// `GET /v1/rollouts/<rolloutId>` looks up files here first. When
+    /// the file is absent, falls back to `--rollouts-source-*`
+    /// templates if configured. When BOTH are unset, manifest
+    /// distribution is disabled (503).
     #[arg(long, env = "NIXFLEET_CP_ROLLOUTS_DIR")]
     rollouts_dir: Option<PathBuf>,
+
+    /// URL template for HTTP-fetched rollout manifests. Must contain
+    /// the literal `{rolloutId}` token; the CP substitutes the
+    /// requested rolloutId and GETs the resulting URL when the
+    /// filesystem source misses. Source-agnostic (Forgejo `/raw/`,
+    /// GitHub raw, GitLab `/-/raw/`, plain HTTP). Pairs with
+    /// `--rollouts-source-signature-url-template`.
+    #[arg(long, env = "NIXFLEET_CP_ROLLOUTS_SOURCE_ARTIFACT_URL_TEMPLATE")]
+    rollouts_source_artifact_url_template: Option<String>,
+
+    /// Signature URL template (same `{rolloutId}` substitution as
+    /// the artifact template). Both required to enable HTTP fetch.
+    #[arg(long, env = "NIXFLEET_CP_ROLLOUTS_SOURCE_SIGNATURE_URL_TEMPLATE")]
+    rollouts_source_signature_url_template: Option<String>,
+
+    /// Bearer token file for the rollouts source. Defaults to the
+    /// channel-refs token when unset (typical case: same Forgejo
+    /// instance, same access token).
+    #[arg(long, env = "NIXFLEET_CP_ROLLOUTS_SOURCE_TOKEN_FILE")]
+    rollouts_source_token_file: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -199,22 +223,53 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         flags.channel_refs_signature_url,
     ) {
         (Some(artifact_url), Some(signature_url)) => {
-            Some(nixfleet_control_plane::channel_refs_poll::ChannelRefsSource {
-                artifact_url,
-                signature_url,
-                token_file: flags.channel_refs_token_file.clone(),
-                // Same trust + freshness as the file-backed reconcile
-                // path. Read fresh on every poll so trust-root rotation
-                // propagates without a CP restart.
-                trust_path: flags.trust_file.clone(),
-                freshness_window: Duration::from_secs(flags.freshness_window_secs),
-            })
+            Some(
+                nixfleet_control_plane::channel_refs_poll::ChannelRefsSource {
+                    artifact_url,
+                    signature_url,
+                    token_file: flags.channel_refs_token_file.clone(),
+                    // Same trust + freshness as the file-backed reconcile
+                    // path. Read fresh on every poll so trust-root rotation
+                    // propagates without a CP restart.
+                    trust_path: flags.trust_file.clone(),
+                    freshness_window: Duration::from_secs(flags.freshness_window_secs),
+                },
+            )
         }
         (None, None) => None,
         _ => {
             anyhow::bail!(
                 "channel-refs poll: --channel-refs-artifact-url and \
                  --channel-refs-signature-url must be passed together (or both omitted)."
+            );
+        }
+    };
+
+    // Rollouts HTTP source: optional companion to the filesystem
+    // path. Both URL templates must come together (or both omitted);
+    // token file falls back to the channel-refs one — the typical
+    // case is one Forgejo instance with one access token serving all
+    // three sidecars (fleet.resolved, revocations, rollouts).
+    let rollouts_source = match (
+        flags.rollouts_source_artifact_url_template.clone(),
+        flags.rollouts_source_signature_url_template.clone(),
+    ) {
+        (Some(artifact_tpl), Some(signature_tpl)) => Some(
+            nixfleet_control_plane::rollouts_source::RolloutsSource::new(
+                artifact_tpl,
+                signature_tpl,
+                flags
+                    .rollouts_source_token_file
+                    .clone()
+                    .or(flags.channel_refs_token_file.clone()),
+            )?,
+        ),
+        (None, None) => None,
+        _ => {
+            anyhow::bail!(
+                "rollouts source: --rollouts-source-artifact-url-template and \
+                 --rollouts-source-signature-url-template must be passed together \
+                 (or both omitted)."
             );
         }
     };
@@ -226,8 +281,8 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         flags.revocations_artifact_url,
         flags.revocations_signature_url,
     ) {
-        (Some(artifact_url), Some(signature_url)) => {
-            Some(nixfleet_control_plane::revocations_poll::RevocationsSource {
+        (Some(artifact_url), Some(signature_url)) => Some(
+            nixfleet_control_plane::revocations_poll::RevocationsSource {
                 artifact_url,
                 signature_url,
                 token_file: flags
@@ -235,8 +290,8 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
                     .or(flags.channel_refs_token_file.clone()),
                 trust_path: flags.trust_file.clone(),
                 freshness_window: Duration::from_secs(flags.freshness_window_secs),
-            })
-        }
+            },
+        ),
         (None, None) => None,
         _ => {
             anyhow::bail!(
@@ -262,6 +317,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         confirm_deadline_secs: flags.confirm_deadline_secs,
         channel_refs,
         revocations,
+        rollouts_source,
         db_path: flags.db_path,
         closure_upstream: flags.closure_upstream,
         rollouts_dir: flags.rollouts_dir,

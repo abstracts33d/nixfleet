@@ -34,11 +34,7 @@ pub(super) async fn report(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let event_id = format!(
-        "evt-{}-{}",
-        Utc::now().timestamp_millis(),
-        rand_suffix(8)
-    );
+    let event_id = format!("evt-{}-{}", Utc::now().timestamp_millis(), rand_suffix(8));
     let received_at = Utc::now();
 
     // Render the event variant for the journal in a grep-friendly
@@ -48,10 +44,7 @@ pub(super) async fn report(
         .ok()
         .and_then(|v| v.get("event").and_then(|e| e.as_str()).map(String::from))
         .unwrap_or_else(|| "<unknown>".to_string());
-    let rollout_str = req
-        .rollout
-        .clone()
-        .unwrap_or_else(|| "<none>".to_string());
+    let rollout_str = req.rollout.clone().unwrap_or_else(|| "<none>".to_string());
 
     // root-3 — verify probe-output signatures on the
     // two event variants that carry them. Non-signed events surface
@@ -87,9 +80,9 @@ pub(super) async fn report(
     // behaviour, so no regression).
     if let Some(db) = state.db.as_ref() {
         let signature_status_str = signature_status.as_ref().and_then(|s| {
-            serde_json::to_value(s).ok().and_then(|v| {
-                v.as_str().map(String::from)
-            })
+            serde_json::to_value(s)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
         });
         // Best-effort SQLite persistence. Two failure modes, both
         // handled the same way: log + skip the DB write, let the
@@ -156,9 +149,8 @@ async fn compute_signature_status(
         ActivationFailedSignedPayload, ClosureSignatureMismatchSignedPayload,
         ComplianceFailureSignedPayload, ManifestMismatchSignedPayload,
         ManifestMissingSignedPayload, ManifestVerifyFailedSignedPayload,
-        RealiseFailedSignedPayload, RollbackTriggeredSignedPayload,
-        RuntimeGateErrorSignedPayload, StaleTargetSignedPayload,
-        VerifyMismatchSignedPayload,
+        RealiseFailedSignedPayload, RollbackTriggeredSignedPayload, RuntimeGateErrorSignedPayload,
+        StaleTargetSignedPayload, VerifyMismatchSignedPayload,
     };
     use nixfleet_reconciler::evidence::verify_event;
 

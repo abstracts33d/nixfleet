@@ -136,11 +136,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nixfleet_reconciler::evidence::SignatureStatus;
     use chrono::Utc;
     use nixfleet_proto::agent_wire::{ReportEvent, ReportRequest};
+    use nixfleet_reconciler::evidence::SignatureStatus;
 
-    fn make_record(event: ReportEvent, rollout: Option<&str>, sig: Option<SignatureStatus>) -> ReportRecord {
+    fn make_record(
+        event: ReportEvent,
+        rollout: Option<&str>,
+        sig: Option<SignatureStatus>,
+    ) -> ReportRecord {
         ReportRecord {
             event_id: "evt-test".into(),
             received_at: Utc::now(),
@@ -262,7 +266,9 @@ mod tests {
         );
         assert_eq!(
             r,
-            WaveGateOutcome::Permissive { failing_events_count: 1 }
+            WaveGateOutcome::Permissive {
+                failing_events_count: 1
+            }
         );
         assert!(!r.blocks());
     }
@@ -277,7 +283,11 @@ mod tests {
             std::iter::once(host_input("lab", &records, Some("R1"), None)),
         );
         assert!(r.blocks());
-        if let WaveGateOutcome::EnforceBlock { failing_hosts, failing_events_count } = r {
+        if let WaveGateOutcome::EnforceBlock {
+            failing_hosts,
+            failing_events_count,
+        } = r
+        {
             assert_eq!(failing_hosts, vec!["lab".to_string()]);
             assert_eq!(failing_events_count, 1);
         } else {

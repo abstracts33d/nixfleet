@@ -55,8 +55,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                     // every rolloutId derivation downstream (RFC-0002
                     // §4.4). Re-canonicalising the parsed FleetResolved
                     // is byte-stable.
-                    let fleet_hash =
-                        nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
+                    let fleet_hash = nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
                     *state.verified_fleet.write().await = Some(Arc::new(fleet));
                     if let Some(h) = fleet_hash {
                         *state.fleet_resolved_hash.write().await = Some(h);
@@ -79,10 +78,8 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             }
         }
 
-        let mut ticker = tokio::time::interval_at(
-            Instant::now() + RECONCILE_INTERVAL,
-            RECONCILE_INTERVAL,
-        );
+        let mut ticker =
+            tokio::time::interval_at(Instant::now() + RECONCILE_INTERVAL, RECONCILE_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -177,8 +174,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                     },
                 };
                 if should_overwrite {
-                    let fleet_hash =
-                        nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
+                    let fleet_hash = nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
                     *guard = Some(Arc::new(fleet));
                     drop(guard);
                     if let Some(h) = fleet_hash {
@@ -302,7 +298,10 @@ fn run_tick_with_projection(
         reject_before,
     ) {
         Ok(fleet) => {
-            let signed_at = fleet.meta.signed_at.expect("verified artifact carries meta.signedAt");
+            let signed_at = fleet
+                .meta
+                .signed_at
+                .expect("verified artifact carries meta.signedAt");
             let ci_commit = fleet.meta.ci_commit.clone();
             let observed = crate::observed_projection::project(
                 checkins,

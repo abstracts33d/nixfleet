@@ -98,7 +98,7 @@ mod tests {
                 last_evaluated_target: None,
                 last_fetch_outcome: None,
                 uptime_secs: Some(1),
-        last_confirmed_at: None,
+                last_confirmed_at: None,
             },
         }
     }
@@ -114,7 +114,9 @@ mod tests {
 
         assert_eq!(observed.host_state.len(), 2);
         assert_eq!(
-            observed.host_state["test-host"].current_generation.as_deref(),
+            observed.host_state["test-host"]
+                .current_generation
+                .as_deref(),
             Some("abc")
         );
         assert!(observed.host_state["test-host"].online);
@@ -137,8 +139,7 @@ mod tests {
         // vice versa), the projection's `Failed` fallback fires
         // for live rows and silently halts rollouts. Catch it at
         // test time instead.
-        let migration =
-            include_str!("../migrations/V003__host_rollout_state.sql");
+        let migration = include_str!("../migrations/V003__host_rollout_state.sql");
         // Extract the parenthesised list after `host_state IN (`.
         let needle = "host_state IN (";
         let start = migration.find(needle).expect("CHECK clause present");

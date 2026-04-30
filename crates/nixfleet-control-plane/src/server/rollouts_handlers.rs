@@ -3,20 +3,28 @@
 //! Stateless distributor for the pre-signed rollout manifests
 //! produced by `nixfleet-release` (RFC-0002 §4.4 / RFC-0003 §4.6).
 //! The CP holds NO signing key for rollouts — these handlers serve
-//! the on-disk pre-signed bytes byte-for-byte. The agent performs the
-//! signature verification on receipt: it has the trust roots locally
-//! and that's the load-bearing check.
+//! pre-signed bytes byte-for-byte. The agent performs the signature
+//! verification on receipt: it has the trust roots locally and that's
+//! the load-bearing check.
 //!
-//! The CP does ONE local check: recompute the canonical-bytes hash of
-//! the on-disk manifest and assert it equals the `<rolloutId>` from
-//! the URL. The pair is content-addressed (filename IS the hash), so
-//! a mismatch means the on-disk file was renamed or corrupted and the
-//! CP refuses to spread the inconsistency.
+//! Two sources, tried in order:
+//! 1. `rollouts_dir` — filesystem path (offline / air-gapped fleets,
+//!    or fleets that succeed the bootstrap-without-rebuild).
+//! 2. `rollouts_source` — HTTP fetch from a configured URL pair
+//!    (typical case, since `nixfleet-release` writes manifests AFTER
+//!    building closures and so they aren't in `inputs.self` for the
+//!    closure being activated).
+//!
+//! The CP does ONE local check regardless of source: recompute the
+//! sha256 of the manifest bytes and assert it equals `<rolloutId>`.
+//! Filename IS the hash, so a mismatch means corruption (filesystem)
+//! or upstream serving the wrong bytes (HTTP); the CP refuses to
+//! spread either.
 //!
 //! Failure modes:
-//! - 503 — `rollouts_dir` is None (CP started without manifest distribution).
-//! - 404 — file not found, or `<rolloutId>` is not 64-char hex.
-//! - 500 — files present but recomputed hash doesn't match the path.
+//! - 503 — both `rollouts_dir` AND `rollouts_source` are None.
+//! - 404 — `<rolloutId>` is not 64-char hex, or both sources missed.
+//! - 500 — bytes present but recomputed hash doesn't match the path.
 
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -32,7 +40,9 @@ use super::state::AppState;
 /// fast — saves a filesystem syscall on bogus paths and prevents
 /// path-traversal smuggling (`..`, NUL, etc. fail the hex check).
 fn looks_like_rollout_id(s: &str) -> bool {
-    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    s.len() == 64
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 fn manifest_paths(dir: &FsPath, rollout_id: &str) -> (PathBuf, PathBuf) {
@@ -41,25 +51,19 @@ fn manifest_paths(dir: &FsPath, rollout_id: &str) -> (PathBuf, PathBuf) {
     (manifest, sig)
 }
 
-fn load_pair(state: &AppState, rollout_id: &str) -> Result<(Vec<u8>, Vec<u8>), StatusCode> {
-    let dir = state.rollouts_dir.as_ref().ok_or_else(|| {
-        tracing::debug!(
-            rollout_id = %rollout_id,
-            "rollouts handler: rollouts_dir not configured; returning 503",
-        );
-        StatusCode::SERVICE_UNAVAILABLE
-    })?;
+/// `(manifest_bytes, signature_bytes)` for a rollout id. Aliased to
+/// keep the source-fallback signatures readable.
+type ManifestPair = (Vec<u8>, Vec<u8>);
 
-    if !looks_like_rollout_id(rollout_id) {
-        return Err(StatusCode::NOT_FOUND);
-    }
-
+/// Try the filesystem path. Returns:
+/// - `Ok(Some((manifest, sig)))` — both files present.
+/// - `Ok(None)` — manifest absent (try next source).
+/// - `Err(...)` — manifest present but sig missing, or read errored.
+fn try_load_from_dir(dir: &FsPath, rollout_id: &str) -> Result<Option<ManifestPair>, StatusCode> {
     let (manifest_path, sig_path) = manifest_paths(dir, rollout_id);
     let manifest_bytes = match std::fs::read(&manifest_path) {
         Ok(b) => b,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(StatusCode::NOT_FOUND);
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
             tracing::warn!(
                 rollout_id = %rollout_id,
@@ -91,21 +95,21 @@ fn load_pair(state: &AppState, rollout_id: &str) -> Result<(Vec<u8>, Vec<u8>), S
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
+    Ok(Some((manifest_bytes, sig_bytes)))
+}
 
-    // Content-address sanity: the rolloutId in the URL must be the
-    // sha256 hex of the on-disk manifest. A mismatch means the file
-    // was renamed or corrupted; the CP refuses to spread it. Cheap
-    // (one sha256 over a small file), no trust roots needed.
-    let canonical = match std::str::from_utf8(&manifest_bytes) {
-        Ok(s) => s,
-        Err(_) => {
-            tracing::warn!(
-                rollout_id = %rollout_id,
-                "rollouts handler: manifest bytes are not valid UTF-8",
-            );
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
+/// Recompute the canonical sha256 of the manifest bytes and assert
+/// it equals `rolloutId`. The pair is content-addressed (filename IS
+/// the hash) regardless of source, so a mismatch means corruption
+/// (filesystem) or wrong-bytes-for-id (HTTP); CP refuses to spread.
+fn verify_content_address(manifest_bytes: &[u8], rollout_id: &str) -> Result<(), StatusCode> {
+    let canonical = std::str::from_utf8(manifest_bytes).map_err(|_| {
+        tracing::warn!(
+            rollout_id = %rollout_id,
+            "rollouts handler: manifest bytes are not valid UTF-8",
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let parsed: nixfleet_proto::RolloutManifest =
         serde_json::from_str(canonical).map_err(|err| {
             tracing::warn!(
@@ -127,12 +131,68 @@ fn load_pair(state: &AppState, rollout_id: &str) -> Result<(Vec<u8>, Vec<u8>), S
         tracing::warn!(
             rollout_id = %rollout_id,
             recomputed = %recomputed,
-            "rollouts handler: on-disk manifest hash does not match path — refusing to serve",
+            "rollouts handler: manifest hash does not match path — refusing to serve",
         );
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
+    Ok(())
+}
 
-    Ok((manifest_bytes, sig_bytes))
+async fn load_pair(state: &AppState, rollout_id: &str) -> Result<ManifestPair, StatusCode> {
+    if state.rollouts_dir.is_none() && state.rollouts_source.is_none() {
+        tracing::debug!(
+            rollout_id = %rollout_id,
+            "rollouts handler: neither rollouts_dir nor rollouts_source configured; returning 503",
+        );
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    if !looks_like_rollout_id(rollout_id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // 1. Try filesystem first — air-gapped fleets and the fast path
+    //    when manifests do happen to land in `inputs.self`.
+    if let Some(dir) = state.rollouts_dir.as_ref() {
+        if let Some((manifest_bytes, sig_bytes)) = try_load_from_dir(dir, rollout_id)? {
+            verify_content_address(&manifest_bytes, rollout_id)?;
+            return Ok((manifest_bytes, sig_bytes));
+        }
+    }
+
+    // 2. Filesystem missed — try HTTP source.
+    if let Some(source) = state.rollouts_source.as_ref() {
+        match source.fetch_pair(rollout_id).await {
+            Ok((manifest_bytes, sig_bytes)) => {
+                // `fetch_pair` already verifies the raw-bytes sha256
+                // against `rolloutId`. We re-run the canonical-form
+                // check (parses + recomputes via `compute_rollout_id`)
+                // for parity with the filesystem path — same defence
+                // against a malformed-but-correctly-hashed payload.
+                verify_content_address(&manifest_bytes, rollout_id)?;
+                tracing::info!(
+                    rollout_id = %rollout_id,
+                    "rollouts handler: fetched manifest pair from upstream source",
+                );
+                return Ok((manifest_bytes, sig_bytes));
+            }
+            Err(err) => {
+                tracing::warn!(
+                    rollout_id = %rollout_id,
+                    error = %err,
+                    "rollouts handler: upstream fetch failed",
+                );
+                // Distinguish "upstream said 404" from infra error so
+                // the agent's retry policy can differ. We don't have
+                // the structured status here, so 502 BAD GATEWAY for
+                // anything that wasn't a clean filesystem-then-source
+                // miss; agents already treat 5xx as transient.
+                return Err(StatusCode::BAD_GATEWAY);
+            }
+        }
+    }
+
+    Err(StatusCode::NOT_FOUND)
 }
 
 /// `GET /v1/rollouts/{rolloutId}` — returns the canonical manifest
@@ -141,7 +201,7 @@ pub(super) async fn manifest(
     State(state): State<Arc<AppState>>,
     Path(rollout_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let (manifest_bytes, _sig) = load_pair(&state, &rollout_id)?;
+    let (manifest_bytes, _sig) = load_pair(&state, &rollout_id).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
@@ -156,7 +216,7 @@ pub(super) async fn signature(
     State(state): State<Arc<AppState>>,
     Path(rollout_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let (_manifest, sig_bytes) = load_pair(&state, &rollout_id)?;
+    let (_manifest, sig_bytes) = load_pair(&state, &rollout_id).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,

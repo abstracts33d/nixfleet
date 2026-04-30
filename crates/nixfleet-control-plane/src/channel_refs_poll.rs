@@ -110,7 +110,11 @@ pub async fn prime_once(
 async fn poll_once(
     client: &reqwest::Client,
     config: &ChannelRefsSource,
-) -> Result<(HashMap<String, String>, nixfleet_proto::FleetResolved, String)> {
+) -> Result<(
+    HashMap<String, String>,
+    nixfleet_proto::FleetResolved,
+    String,
+)> {
     let token = signed_fetch::read_token(config.token_file.as_deref())?;
     let (artifact_bytes, signature_bytes) = signed_fetch::fetch_signed_pair(
         client,
@@ -136,9 +140,8 @@ async fn poll_once(
     // derivation downstream. Re-canonicalising the parsed FleetResolved
     // is byte-stable (same JCS implementation produced the bytes we
     // just verified), so this matches what producers and auditors get.
-    let fleet_resolved_hash =
-        nixfleet_reconciler::compute_canonical_hash(&fleet_resolved)
-            .map_err(|e| anyhow::anyhow!("compute_canonical_hash: {e:?}"))?;
+    let fleet_resolved_hash = nixfleet_reconciler::compute_canonical_hash(&fleet_resolved)
+        .map_err(|e| anyhow::anyhow!("compute_canonical_hash: {e:?}"))?;
 
     // Flatten channels → channel_refs (telemetry + the shape the
     // reconciler's `Observed.channel_refs` expects). For now every

@@ -10,9 +10,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use nixfleet_proto::agent_wire::{
-    CheckinRequest, CheckinResponse, ConfirmRequest,
-};
+use nixfleet_proto::agent_wire::{CheckinRequest, CheckinResponse, ConfirmRequest};
 
 use crate::auth_cn::PeerCertificates;
 
@@ -88,10 +86,7 @@ pub(super) async fn checkin(
 /// the CP can absorb the confirm without forcing rollback, `false`
 /// when it should fall through to 410. All failures are non-fatal:
 /// the agent's local rollback still fires on 410.
-async fn try_recover_orphan_confirm(
-    state: &Arc<AppState>,
-    req: &ConfirmRequest,
-) -> bool {
+async fn try_recover_orphan_confirm(state: &Arc<AppState>, req: &ConfirmRequest) -> bool {
     let Some(db) = state.db.as_ref() else {
         return false;
     };
@@ -105,10 +100,7 @@ async fn try_recover_orphan_confirm(
 /// matches the verified fleet's declared target for this host
 /// (closure AND rollout id). None otherwise — caller falls through
 /// to 410.
-async fn validate_orphan_recovery(
-    state: &AppState,
-    req: &ConfirmRequest,
-) -> Option<String> {
+async fn validate_orphan_recovery(state: &AppState, req: &ConfirmRequest) -> Option<String> {
     let fleet = state.verified_fleet.read().await.clone().or_else(|| {
         tracing::debug!(
             hostname = %req.hostname,
@@ -462,7 +454,15 @@ async fn dispatch_target_for_checkin(
             target,
             rollout_id,
             wave_index,
-        } => record_dispatched_target(db, &req.hostname, &rollout_id, wave_index, target, state, now),
+        } => record_dispatched_target(
+            db,
+            &req.hostname,
+            &rollout_id,
+            wave_index,
+            target,
+            state,
+            now,
+        ),
         other => {
             tracing::debug!(
                 target: "dispatch",
@@ -489,7 +489,8 @@ async fn wave_gate_blocks_dispatch(
     let Some(channel) = fleet.channels.get(channel_name) else {
         return false;
     };
-    let resolved_mode = nixfleet_proto::compliance::GateMode::from_wire_str(&channel.compliance.mode);
+    let resolved_mode =
+        nixfleet_proto::compliance::GateMode::from_wire_str(&channel.compliance.mode);
 
     let staged = stage_channel_hosts(state, fleet, channel_name).await;
     let requesting_wave = wave_index_for(fleet, channel_name, &req.hostname);
@@ -497,14 +498,14 @@ async fn wave_gate_blocks_dispatch(
     let outcome = crate::wave_gate::evaluate_channel_gate(
         resolved_mode,
         requesting_wave,
-        staged.iter().map(|(n, recs, rollout, wave_idx)| {
-            crate::wave_gate::HostGateInput {
+        staged.iter().map(
+            |(n, recs, rollout, wave_idx)| crate::wave_gate::HostGateInput {
                 hostname: n.as_str(),
                 records: recs.as_slice(),
                 current_rollout: rollout.as_deref(),
                 wave_index: *wave_idx,
-            }
-        }),
+            },
+        ),
     );
 
     if outcome.blocks() {
@@ -540,7 +541,12 @@ async fn stage_channel_hosts(
     state: &AppState,
     fleet: &nixfleet_proto::FleetResolved,
     channel_name: &str,
-) -> Vec<(String, Vec<crate::server::ReportRecord>, Option<String>, Option<u32>)> {
+) -> Vec<(
+    String,
+    Vec<crate::server::ReportRecord>,
+    Option<String>,
+    Option<u32>,
+)> {
     let reports_guard = state.host_reports.read().await;
     let checkins_guard = state.host_checkins.read().await;
     fleet
@@ -653,10 +659,12 @@ pub(super) async fn confirm(
         StatusCode::SERVICE_UNAVAILABLE
     })?;
 
-    let updated = db.confirm_pending(&req.hostname, &req.rollout).map_err(|err| {
-        tracing::error!(error = %err, "confirm: db update failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let updated = db
+        .confirm_pending(&req.hostname, &req.rollout)
+        .map_err(|err| {
+            tracing::error!(error = %err, "confirm: db update failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     if updated == 0 {
         // Try the orphan-confirm recovery path before
@@ -832,7 +840,9 @@ mod tests {
         let state = Arc::new(AppState {
             db: Some(Arc::clone(&db)),
             verified_fleet: Arc::new(tokio::sync::RwLock::new(Some(Arc::new(fleet)))),
-            fleet_resolved_hash: Arc::new(tokio::sync::RwLock::new(Some(TEST_FLEET_HASH.to_string()))),
+            fleet_resolved_hash: Arc::new(tokio::sync::RwLock::new(Some(
+                TEST_FLEET_HASH.to_string(),
+            ))),
             ..AppState::default()
         });
         (state, db)
@@ -930,7 +940,11 @@ mod tests {
         recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
 
         let snap = db.active_rollouts_snapshot().unwrap();
-        assert_eq!(snap.len(), 1, "snapshot should contain the recovered rollout");
+        assert_eq!(
+            snap.len(),
+            1,
+            "snapshot should contain the recovered rollout"
+        );
         let stamped = snap[0]
             .last_healthy_since
             .get("test-host")

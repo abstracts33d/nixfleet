@@ -101,8 +101,8 @@ impl Db {
                     .with_context(|| format!("create dir {}", parent.display()))?;
             }
         }
-        let conn = Connection::open(path)
-            .with_context(|| format!("open sqlite {}", path.display()))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
 
         // WAL improves concurrent read performance; FK enforces
         // referential integrity that the schema declares.
@@ -208,11 +208,7 @@ impl Db {
                 "DELETE FROM pending_confirms
                  WHERE state IN (?1, ?2)
                    AND dispatched_at < datetime('now', ?3)",
-                params![
-                    rolled_back,
-                    cancelled,
-                    format!("-{max_age_hours} hours")
-                ],
+                params![rolled_back, cancelled, format!("-{max_age_hours} hours")],
             )
             .context("prune pending_confirms")?;
         Ok(n)
@@ -366,7 +362,6 @@ impl Db {
             .context("update pending_confirms confirmed")?;
         Ok(n)
     }
-
 
     /// Pending confirms whose deadline has passed and which haven't
     /// been confirmed yet. Used by the magic-rollback timer task
@@ -575,11 +570,7 @@ impl Db {
     /// the agent's attestation arrives — an existing row reflects
     /// the actual lifecycle (Healthy/Soaked/Reverted/...) and is
     /// more authoritative than a re-attestation.
-    pub fn host_rollout_state_exists(
-        &self,
-        hostname: &str,
-        rollout_id: &str,
-    ) -> Result<bool> {
+    pub fn host_rollout_state_exists(&self, hostname: &str, rollout_id: &str) -> Result<bool> {
         let guard = self.conn()?;
         let n: i64 = guard
             .query_row(
@@ -715,11 +706,11 @@ impl Db {
                 ],
                 |row| {
                     Ok((
-                        row.get::<_, String>(0)?, // rollout_id
-                        row.get::<_, String>(1)?, // hostname
-                        row.get::<_, String>(2)?, // target_closure_hash
-                        row.get::<_, String>(3)?, // target_channel_ref
-                        row.get::<_, String>(4)?, // pc_state
+                        row.get::<_, String>(0)?,         // rollout_id
+                        row.get::<_, String>(1)?,         // hostname
+                        row.get::<_, String>(2)?,         // target_closure_hash
+                        row.get::<_, String>(3)?,         // target_channel_ref
+                        row.get::<_, String>(4)?,         // pc_state
                         row.get::<_, Option<String>>(5)?, // hrs.host_state
                         row.get::<_, Option<String>>(6)?, // hrs.last_healthy_since
                     ))
@@ -797,7 +788,10 @@ impl Db {
             |r| r.get(0),
         );
         match row {
-            Ok(s) => Ok(Some(s.parse::<DateTime<Utc>>().context("parse revocation timestamp")?)),
+            Ok(s) => Ok(Some(
+                s.parse::<DateTime<Utc>>()
+                    .context("parse revocation timestamp")?,
+            )),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -856,13 +850,13 @@ impl Db {
         let rows: rusqlite::Result<Vec<HostReportRow>> = stmt
             .query_map(params![hostname, limit_per_host as i64], |row| {
                 let received_str: String = row.get(1)?;
-                let received_at = received_str
-                    .parse::<DateTime<Utc>>()
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                let received_at = received_str.parse::<DateTime<Utc>>().map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
                         1,
                         rusqlite::types::Type::Text,
                         Box::new(e),
-                    ))?;
+                    )
+                })?;
                 Ok(HostReportRow {
                     event_id: row.get::<_, String>(0)?,
                     received_at,
@@ -885,9 +879,8 @@ impl Db {
     pub fn host_reports_known_hostnames(&self) -> Result<Vec<String>> {
         let guard = self.conn()?;
         let mut stmt = guard.prepare("SELECT DISTINCT hostname FROM host_reports")?;
-        let names: rusqlite::Result<Vec<String>> = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect();
+        let names: rusqlite::Result<Vec<String>> =
+            stmt.query_map([], |row| row.get::<_, String>(0))?.collect();
         names.context("query host_reports hostnames")
     }
 
@@ -978,7 +971,10 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert!(names.contains(&"token_replay".to_string()), "tables: {names:?}");
+        assert!(
+            names.contains(&"token_replay".to_string()),
+            "tables: {names:?}"
+        );
         assert!(names.contains(&"cert_revocations".to_string()));
         assert!(names.contains(&"pending_confirms".to_string()));
         assert!(names.contains(&"host_rollout_state".to_string()));
@@ -1042,7 +1038,10 @@ mod tests {
         ))
         .unwrap();
         let expired = db.pending_confirms_expired().unwrap();
-        assert!(expired.is_empty(), "row in window should not expire: {expired:?}");
+        assert!(
+            expired.is_empty(),
+            "row in window should not expire: {expired:?}"
+        );
     }
 
     /// Test helper: shorthand for the legacy "record host as Healthy
@@ -1134,9 +1133,15 @@ mod tests {
         let n = db.clear_healthy_marker("test-host", "stable@r1").unwrap();
         assert_eq!(n, 0, "clear on missing row is no-op");
         mark_healthy(&db, "test-host", "stable@r1", Utc::now());
-        assert_eq!(db.clear_healthy_marker("test-host", "stable@r1").unwrap(), 1);
+        assert_eq!(
+            db.clear_healthy_marker("test-host", "stable@r1").unwrap(),
+            1
+        );
         // Second clear: row exists, marker already NULL.
-        assert_eq!(db.clear_healthy_marker("test-host", "stable@r1").unwrap(), 0);
+        assert_eq!(
+            db.clear_healthy_marker("test-host", "stable@r1").unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -1212,7 +1217,10 @@ mod tests {
         // After clear_healthy_marker, the row falls out — it's no
         // longer Healthy, so checkin doesn't need to re-clear.
         db.clear_healthy_marker("test-host", "stable@r1").unwrap();
-        assert!(db.healthy_rollouts_for_host("test-host").unwrap().is_empty());
+        assert!(db
+            .healthy_rollouts_for_host("test-host")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1247,7 +1255,10 @@ mod tests {
         // healthy_rollouts_for_host requires both the confirmed row
         // and the Healthy marker to surface — exercising the join.
         // Pre-Healthy: empty.
-        assert!(db.healthy_rollouts_for_host("test-host").unwrap().is_empty());
+        assert!(db
+            .healthy_rollouts_for_host("test-host")
+            .unwrap()
+            .is_empty());
         mark_healthy(&db, "test-host", "stable@orphan", now);
         let healthy = db.healthy_rollouts_for_host("test-host").unwrap();
         assert_eq!(healthy.len(), 1);
@@ -1309,13 +1320,8 @@ mod tests {
         // (RFC §3.2) and no last_healthy_since marker.
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
-        db.record_pending_confirm(&pc_insert(
-            "ohm",
-            "stable@abc12345",
-            "system-r1",
-            future,
-        ))
-        .unwrap();
+        db.record_pending_confirm(&pc_insert("ohm", "stable@abc12345", "system-r1", future))
+            .unwrap();
 
         let snap = db.active_rollouts_snapshot().unwrap();
         assert_eq!(snap.len(), 1);
@@ -1324,7 +1330,10 @@ mod tests {
         assert_eq!(r.channel, "stable");
         assert_eq!(r.target_closure_hash, "system-r1");
         assert_eq!(r.target_channel_ref, "stable@abc12345");
-        assert_eq!(r.host_states.get("ohm").map(String::as_str), Some("ConfirmWindow"));
+        assert_eq!(
+            r.host_states.get("ohm").map(String::as_str),
+            Some("ConfirmWindow")
+        );
         assert!(r.last_healthy_since.is_empty());
     }
 
@@ -1337,21 +1346,22 @@ mod tests {
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
         let now = Utc::now();
-        db.record_pending_confirm(&pc_insert(
-            "ohm",
-            "stable@abc12345",
-            "system-r1",
-            future,
-        ))
-        .unwrap();
+        db.record_pending_confirm(&pc_insert("ohm", "stable@abc12345", "system-r1", future))
+            .unwrap();
         db.confirm_pending("ohm", "stable@abc12345").unwrap();
         mark_healthy(&db, "ohm", "stable@abc12345", now);
 
         let snap = db.active_rollouts_snapshot().unwrap();
         assert_eq!(snap.len(), 1);
         let r = &snap[0];
-        assert_eq!(r.host_states.get("ohm").map(String::as_str), Some("Healthy"));
-        let stored = r.last_healthy_since.get("ohm").expect("Healthy host has soak ts");
+        assert_eq!(
+            r.host_states.get("ohm").map(String::as_str),
+            Some("Healthy")
+        );
+        let stored = r
+            .last_healthy_since
+            .get("ohm")
+            .expect("Healthy host has soak ts");
         assert_eq!(stored.timestamp(), now.timestamp());
     }
 

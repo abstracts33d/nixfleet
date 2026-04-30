@@ -87,6 +87,7 @@ async fn healthz_returns_ok_over_tls() {
         db_path: None,
         closure_upstream: None,
         rollouts_dir: None,
+        rollouts_source: None,
         fleet_ca_cert: None,
         fleet_ca_key: None,
         audit_log_path: None,

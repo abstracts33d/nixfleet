@@ -33,12 +33,8 @@ pub const AGENT_CERT_VALIDITY: Duration = Duration::from_secs(30 * 24 * 60 * 60)
 /// post-incident.
 #[derive(Debug, Clone)]
 pub enum AuditContext {
-    Enroll {
-        token_nonce: String,
-    },
-    Renew {
-        previous_cert_serial: String,
-    },
+    Enroll { token_nonce: String },
+    Renew { previous_cert_serial: String },
 }
 
 /// In-memory replay set for bootstrap-token nonces. AppState wraps
@@ -99,9 +95,7 @@ pub fn validate_token_claims(
         );
     }
     if csr_pubkey_fingerprint != claims.expected_pubkey_fingerprint {
-        anyhow::bail!(
-            "CSR pubkey fingerprint does not match token expected_pubkey_fingerprint"
-        );
+        anyhow::bail!("CSR pubkey fingerprint does not match token expected_pubkey_fingerprint");
     }
     Ok(())
 }
@@ -136,15 +130,14 @@ pub fn issue_cert(
     let ca_key_pem = std::fs::read_to_string(ca_key_path)
         .with_context(|| format!("read fleet CA key {}", ca_key_path.display()))?;
     let ca_key = KeyPair::from_pem(&ca_key_pem).context("parse fleet CA key PEM")?;
-    let ca_params = CertificateParams::from_ca_cert_pem(&ca_cert_pem)
-        .context("parse fleet CA cert PEM")?;
+    let ca_params =
+        CertificateParams::from_ca_cert_pem(&ca_cert_pem).context("parse fleet CA cert PEM")?;
     let ca = ca_params
         .self_signed(&ca_key)
         .context("rebuild fleet CA from PEM (rcgen quirk)")?;
 
     // Parse the CSR into params we can re-emit signed.
-    let csr_params = CertificateSigningRequestParams::from_pem(csr_pem)
-        .context("parse CSR PEM")?;
+    let csr_params = CertificateSigningRequestParams::from_pem(csr_pem).context("parse CSR PEM")?;
     let cn = csr_params
         .params
         .distinguished_name
@@ -168,7 +161,10 @@ pub fn issue_cert(
         _ => format!("{:?}", cn),
     };
     params.subject_alt_names = vec![rcgen::SanType::DnsName(
-        cn_str.clone().try_into().context("CN is not a valid dNSName")?,
+        cn_str
+            .clone()
+            .try_into()
+            .context("CN is not a valid dNSName")?,
     )];
 
     let not_before_sys = SystemTime::UNIX_EPOCH + Duration::from_secs(now.timestamp() as u64);
