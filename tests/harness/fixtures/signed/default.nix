@@ -125,8 +125,24 @@
     name = "${derivationName}-signed";
     jsonContent = builtins.toJSON stamped;
   };
+  # `now` for verify-artifact / agent-verify consumers: signedAt + 1h.
+  # All harness signedAt values land at `T00:00:00Z`, so a literal
+  # string replace is correct + assertion-checked. Anything else
+  # would need a chrono-style parser, which Nix lacks; if a future
+  # fixture overrides signedAt with non-midnight, this assert fires
+  # rather than silently producing the wrong now.
+  signedAtMidnightSuffix = "T00:00:00Z";
+  signedAtPlusHourSuffix = "T01:00:00Z";
+  now =
+    assert lib.hasSuffix signedAtMidnightSuffix signedAt;
+      lib.removeSuffix signedAtMidnightSuffix signedAt + signedAtPlusHourSuffix;
 in
-  pkgs.runCommand derivationName {} ''
+  pkgs.runCommand derivationName {
+    # Expose the build-time stamps so consumers can derive a `now`
+    # value for verify-artifact / agent-verify without coupling-by-
+    # comment to the literal in this file.
+    passthru = {inherit signedAt now;};
+  } ''
     set -euo pipefail
     mkdir -p "$out"
     cp ${signed}/canonical.json "$out/canonical.json"

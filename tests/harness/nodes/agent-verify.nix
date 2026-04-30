@@ -17,13 +17,12 @@
   agentHostName,
   signedFixture,
   verifyArtifactPkg,
-  # Fixed timestamps chosen so the freshness-window check always passes
-  # against the fixture's frozen `signedAt = 2026-05-01T00:00:00Z`:
-  #   now − signedAt = 3600s (1h) << freshnessWindow = 604800s (7d).
-  # See tests/harness/fixtures/signed/default.nix for the stamp source.
-  # Defaults live in mkVerifyingAgentNode, not here: NixOS's module
-  # system resolves function arguments through `_module.args` and does
-  # not consult module-function defaults.
+  # Resolved by mkVerifyingAgentNode: `now` defaults to
+  # `signedFixture.now` (signedAt + 1h) so the freshness gate passes
+  # for any fixture variant. NixOS's module system resolves function
+  # arguments through `_module.args` and does not consult
+  # module-function defaults — so these are unconditionally required
+  # at this layer.
   now,
   freshnessWindowSecs,
   ...

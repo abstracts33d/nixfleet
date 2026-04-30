@@ -38,6 +38,14 @@
   cpPkg,
   agentPkg,
   pkgs,
+  # Convergence target. The `signedFixture` passed in is the
+  # converged variant whose declared closureHash matches this value;
+  # `convergencePreseedModule` makes the agent's reported
+  # current_generation.closure_hash match it too. Today the
+  # scenario's assertions don't depend on convergence, but applying
+  # it pre-emptively eliminates the silent-false-pass class for any
+  # future assertion that gates on it.
+  closureHash,
   ...
 }: let
   cpHostModule = harnessLib.mkRealCpHostModule {
@@ -55,11 +63,14 @@
     dispatched_at = "2026-01-01T00:00:00Z";
   };
 
+  preseedModule = harnessLib.convergencePreseedModule {inherit closureHash;};
+
   agentNode = harnessLib.mkRealAgentNode {
     inherit testCerts signedFixture agentPkg;
     hostName = "agent-01";
     pollIntervalSecs = 10;
     extraModules = [
+      preseedModule
       ({lib, ...}: {
         # ExecStartPre runs as root before the agent's main exec.
         # Stages the stale file into the StateDirectory the agent unit

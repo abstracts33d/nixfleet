@@ -229,11 +229,10 @@
   # invokes the `nixfleet-verify-artifact` binary from
   # `verifyArtifactPkg` (crane-built) and logs the OK marker on success.
   #
-  # `now` and `freshnessWindowSecs` defaults are scoped so the
-  # freshness-window check always passes against the fixture's frozen
-  # `signedAt = 2026-05-01T00:00:00Z`:
-  #   now − signedAt = 3600s (1h) << window = 604800s (7d).
-  # Checkpoint 2 scenarios override these to assert Stale refusal.
+  # `now` defaults to the fixture's `passthru.now` (signedAt + 1h) so
+  # the freshness-window check passes regardless of how the fixture's
+  # signedAt is parameterised. Stale-refusal scenarios override `now`
+  # to a value past `signedAt + freshnessWindowSecs`.
   mkVerifyingAgentNode = {
     testCerts,
     hostName,
@@ -241,7 +240,7 @@
     verifyArtifactPkg,
     controlPlaneHost ? "10.0.2.2",
     controlPlanePort ? 8443,
-    now ? "2026-05-01T01:00:00Z",
+    now ? signedFixture.now,
     freshnessWindowSecs ? 604800,
     extraModules ? [],
   }: {
@@ -298,6 +297,62 @@
 
     networking.hostName = hostName;
     system.stateVersion = lib.mkDefault "24.11";
+  };
+
+  # Convergence preseed: a NixOS module that overrides
+  # /run/current-system to a path whose basename equals `closureHash`,
+  # and writes `<state-dir>/last_confirmed_at` with that hash + the
+  # given `attestedAt` RFC3339 timestamp.
+  #
+  # Together those two pieces let the agent's reported
+  # `current_generation.closure_hash` match the fleet's declared
+  # `hosts[*].closureHash` (set via the signed fixture's
+  # `hostClosureHashes`) AND echo a known last_confirmed_at on every
+  # checkin. Required for any scenario that asserts CP-side soak-state
+  # attestation recovery; harmless for scenarios that don't, so it's
+  # safe to apply pre-emptively to any agent that uses the converged
+  # signed fixture.
+  #
+  # Returns a NixOS module; callers add it to `extraModules`.
+  convergencePreseedModule = {
+    closureHash,
+    attestedAt ? "2026-04-01T00:00:00Z",
+  }: {pkgs, ...}: {
+    systemd.services.harness-agent-preseed = {
+      description = "Pre-seed agent state-dir + override /run/current-system for convergence";
+      wantedBy = ["multi-user.target"];
+      before = ["nixfleet-agent.service"];
+      after = ["local-fs.target"];
+      # `requiredBy` makes the agent unit fail loudly if preseed
+      # fails. Without it, read_last_confirmed silently returns
+      # Ok(None) on a missing file and convergence-dependent
+      # assertions would false-pass.
+      requiredBy = ["nixfleet-agent.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        set -euo pipefail
+
+        # Override /run/current-system. The symlink target doesn't
+        # need to exist — the agent reads the symlink string via
+        # fs::read_link and reports its basename.
+        ${pkgs.coreutils}/bin/ln -sfn \
+          /tmp/${closureHash} /run/current-system
+
+        # Seed last_confirmed_at in the agent's state dir. Format
+        # per crates/nixfleet-agent/src/checkin_state.rs:
+        # <closure_hash>\n<rfc3339>\n. Two-line plaintext.
+        ${pkgs.coreutils}/bin/mkdir -p /var/lib/nixfleet-agent
+        ${pkgs.coreutils}/bin/chmod 0700 /var/lib/nixfleet-agent
+        ${pkgs.coreutils}/bin/printf '%s\n%s\n' \
+          '${closureHash}' '${attestedAt}' \
+          > /var/lib/nixfleet-agent/last_confirmed_at
+        ${pkgs.coreutils}/bin/chmod 0600 \
+          /var/lib/nixfleet-agent/last_confirmed_at
+      '';
+    };
   };
 
   # Wrap a CP host-module + a list of agent microVM modules into a
@@ -365,6 +420,7 @@
     };
 in {
   inherit
+    convergencePreseedModule
     mkAgentNode
     mkCpHostModule
     mkFleetScenario

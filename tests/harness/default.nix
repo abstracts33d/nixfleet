@@ -108,24 +108,29 @@
     then null
     else import ./fixtures/signed/revocations.nix {inherit pkgs nixfleet-canonicalize;};
 
-  # Convergence variant of signedFixture for the teardown scenario.
-  # Same seedSalt → same trust.json verifies it; the difference is
-  # an injected per-host closureHash so the agent's reported
+  # Convergence variant of signedFixture. Same seedSalt → same
+  # trust.json verifies it; the difference is an injected per-host
+  # closureHash so the agent's reported
   # current_generation.closure_hash matches the fleet's expectation
   # (the agent VM overrides /run/current-system to a path with this
-  # basename). That match is what the CP-side soak-state attestation
-  # recovery requires before applying last_confirmed_at.
-  teardownClosureHash = "0000000000000000000000000000000000000000-harness-stub";
-  teardownSignedFixture =
+  # basename via `harnessLib.convergencePreseedModule`). That match
+  # is what the CP-side soak-state attestation recovery requires
+  # before applying last_confirmed_at — and any future scenario that
+  # wants to assert convergence-gated behaviour needs it too. The
+  # plain `signedFixture` leaves closureHash null per host, which
+  # silently produces `Decision::NoDeclaration` on dispatch; using
+  # this variant up-front prevents that latent false-pass.
+  convergedClosureHash = "0000000000000000000000000000000000000000-harness-stub";
+  convergedSignedFixture =
     if nixfleet-canonicalize == null
     then null
     else
       import ./fixtures/signed {
         inherit lib pkgs nixfleet-canonicalize;
-        derivationName = "nixfleet-harness-teardown-signed-fixture";
+        derivationName = "nixfleet-harness-converged-signed-fixture";
         hostClosureHashes = {
-          "agent-01" = teardownClosureHash;
-          "agent-02" = teardownClosureHash;
+          "agent-01" = convergedClosureHash;
+          "agent-02" = convergedClosureHash;
         };
       };
 
@@ -182,13 +187,13 @@
     else
       import ./scenarios/teardown.nix (scenarioArgs
         // {
-          # The teardown scenario uses the convergence variant of the
-          # signed fixture so the agent's reported closure_hash
-          # matches the fleet's declared value (lets the soak-state
-          # recovery path actually run after the CP wipe). Other
-          # consumers keep using signedFixture.
-          signedFixture = teardownSignedFixture;
-          inherit revocationsFixture teardownClosureHash;
+          # Teardown uses the convergence variant of the signed
+          # fixture so the agent's reported closure_hash matches the
+          # fleet's declared value (lets the soak-state recovery
+          # path actually run after the CP wipe).
+          signedFixture = convergedSignedFixture;
+          inherit revocationsFixture;
+          closureHash = convergedClosureHash;
           cpPkg = nixfleet-control-plane;
           agentPkg = nixfleet-agent;
         });
@@ -207,7 +212,16 @@
     else
       import ./scenarios/secret-hygiene.nix (scenarioArgs
         // {
-          inherit signedFixture agenixFixture;
+          # Use the convergence variant + matching preseed so the
+          # agent reaches a steady state with its reported closure
+          # matching the fleet's declared value. Today the scenario's
+          # assertions don't depend on convergence, but applying it
+          # pre-emptively eliminates the silent-false-pass class:
+          # if a future assertion adds a "wait for convergence" gate,
+          # it'll progress instead of early-exiting on NoDeclaration.
+          signedFixture = convergedSignedFixture;
+          closureHash = convergedClosureHash;
+          inherit agenixFixture;
           cpPkg = nixfleet-control-plane;
           agentPkg = nixfleet-agent;
         });
@@ -250,7 +264,11 @@
     else
       import ./scenarios/boot-recovery.nix (scenarioArgs
         // {
-          inherit signedFixture;
+          # Same rationale as secret-hygiene: use the converged
+          # fixture + preseed so any future convergence-gated
+          # assertion can't silently early-exit on NoDeclaration.
+          signedFixture = convergedSignedFixture;
+          closureHash = convergedClosureHash;
           cpPkg = nixfleet-control-plane;
           agentPkg = nixfleet-agent;
         });

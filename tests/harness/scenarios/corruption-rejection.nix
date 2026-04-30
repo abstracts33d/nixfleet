@@ -13,9 +13,10 @@
   verifyArtifactPkg,
   ...
 }: let
-  # The signed fixture's frozen `meta.signedAt` is 2026-05-01T00:00Z;
-  # use 1h later as `now` so the freshness gate doesn't trip.
-  now = "2026-05-01T01:00:00Z";
+  # `now` derives from `signedFixture.signedAt + 1h` (passthru attr)
+  # so the freshness gate doesn't trip — and stays in lock-step if
+  # the fixture's signedAt ever changes.
+  now = signedFixture.now;
   freshnessWindowSecs = 604800;
 in
   pkgs.runCommand "fleet-harness-corruption-rejection" {} ''

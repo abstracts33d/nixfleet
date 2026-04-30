@@ -43,10 +43,10 @@
   revocationsFixture ? null,
   # Convergence target for the soak-state recovery proof. Must match
   # the closureHash injected into `signedFixture`'s fleet.resolved
-  # for both agents — the preseedModule below makes the agent's
+  # for both agents — the preseed module below makes the agent's
   # /run/current-system resolve to a path with this basename so
   # current_generation.closure_hash matches fleet.hosts[*].closureHash.
-  teardownClosureHash,
+  closureHash,
   agentNames ? ["agent-01" "agent-02"],
   ...
 }: let
@@ -54,51 +54,14 @@
     inherit testCerts signedFixture cpPkg revocationsFixture;
   };
 
-  # Pre-seeds last_confirmed_at and overrides /run/current-system so
-  # each agent reports the convergence closure_hash + echoes a
-  # synthetic attestation timestamp on every checkin. Both pieces
-  # are required for the CP's recover_soak_state_from_attestation
-  # path to apply: the closure match unlocks the recovery, the
-  # attestation provides the timestamp to clamp into
-  # host_rollout_state.last_healthy_since.
-  attestedAt = "2026-04-01T00:00:00Z";
-  preseedModule = {pkgs, ...}: {
-    systemd.services.harness-agent-preseed = {
-      description = "Pre-seed agent state-dir + override /run/current-system for convergence";
-      wantedBy = ["multi-user.target"];
-      before = ["nixfleet-agent.service"];
-      after = ["local-fs.target"];
-      # `requiredBy` makes the agent unit fail loudly if preseed
-      # fails. Without it, read_last_confirmed silently returns
-      # Ok(None) on a missing file and the recovery test would
-      # false-pass.
-      requiredBy = ["nixfleet-agent.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-      script = ''
-        set -euo pipefail
-
-        # Override /run/current-system. The symlink target doesn't
-        # need to exist — the agent reads the symlink string via
-        # fs::read_link and reports its basename.
-        ${pkgs.coreutils}/bin/ln -sfn \
-          /tmp/${teardownClosureHash} /run/current-system
-
-        # Seed last_confirmed_at in the agent's state dir. Format
-        # per crates/nixfleet-agent/src/checkin_state.rs:
-        # <closure_hash>\n<rfc3339>\n. Two-line plaintext.
-        ${pkgs.coreutils}/bin/mkdir -p /var/lib/nixfleet-agent
-        ${pkgs.coreutils}/bin/chmod 0700 /var/lib/nixfleet-agent
-        ${pkgs.coreutils}/bin/printf '%s\n%s\n' \
-          '${teardownClosureHash}' '${attestedAt}' \
-          > /var/lib/nixfleet-agent/last_confirmed_at
-        ${pkgs.coreutils}/bin/chmod 0600 \
-          /var/lib/nixfleet-agent/last_confirmed_at
-      '';
-    };
-  };
+  # Convergence preseed: shared helper that pre-seeds
+  # last_confirmed_at and overrides /run/current-system so each
+  # agent reports the convergence closure_hash + echoes a known
+  # attestation timestamp on every checkin. Both pieces are required
+  # for the CP's recover_soak_state_from_attestation path to apply:
+  # the closure match unlocks the recovery, the attestation provides
+  # the timestamp to clamp into host_rollout_state.last_healthy_since.
+  preseedModule = harnessLib.convergencePreseedModule {inherit closureHash;};
 
   mkAgent = name:
     harnessLib.mkRealAgentNode {

@@ -19,11 +19,15 @@
   agenixFixture,
   cpPkg,
   agentPkg,
+  # Convergence target — see boot-recovery.nix for rationale.
+  closureHash,
   ...
 }: let
   cpHostModule = harnessLib.mkRealCpHostModule {
     inherit testCerts signedFixture cpPkg;
   };
+
+  preseedModule = harnessLib.convergencePreseedModule {inherit closureHash;};
 
   # Extra NixOS module that lands on the agent microVM. Stages the
   # encrypted blob + age identity at fixed paths and runs a one-shot
@@ -72,7 +76,7 @@
     inherit testCerts signedFixture agentPkg;
     hostName = "agent-01";
     pollIntervalSecs = 10;
-    extraModules = [decryptModule];
+    extraModules = [preseedModule decryptModule];
   };
 in
   harnessLib.mkFleetScenario {
