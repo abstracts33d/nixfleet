@@ -193,12 +193,18 @@ fn synthesise_orphan_confirm_rows(
         );
         return false;
     }
-    if let Err(err) = db.record_host_healthy(&req.hostname, &req.rollout, now) {
+    if let Err(err) = db.transition_host_state(
+        &req.hostname,
+        &req.rollout,
+        crate::state::HostRolloutState::Healthy,
+        crate::state::HealthyMarker::Set(now),
+        None,
+    ) {
         tracing::warn!(
             hostname = %req.hostname,
             rollout = %req.rollout,
             error = %err,
-            "orphan-confirm recovery: record_host_healthy failed (synthetic row already inserted)",
+            "orphan-confirm recovery: transition to Healthy failed (synthetic row already inserted)",
         );
     }
     tracing::info!(
@@ -313,12 +319,18 @@ async fn recover_soak_state_from_attestation(
         );
         return;
     }
-    if let Err(err) = db.record_host_healthy(&req.hostname, &rollout_id, stamp) {
+    if let Err(err) = db.transition_host_state(
+        &req.hostname,
+        &rollout_id,
+        crate::state::HostRolloutState::Healthy,
+        crate::state::HealthyMarker::Set(stamp),
+        None,
+    ) {
         tracing::warn!(
             hostname = %req.hostname,
             rollout = %rollout_id,
             error = %err,
-            "soak-state recovery: record_host_healthy failed (synthetic confirmed row already inserted)",
+            "soak-state recovery: transition to Healthy failed (synthetic confirmed row already inserted)",
         );
         return;
     }
@@ -359,7 +371,7 @@ async fn clear_left_healthy_for_checkin(state: &AppState, req: &CheckinRequest) 
         if req.current_generation.closure_hash == target_closure {
             continue;
         }
-        match db.clear_host_healthy(&req.hostname, &rollout_id) {
+        match db.clear_healthy_marker(&req.hostname, &rollout_id) {
             Ok(n) if n > 0 => {
                 tracing::info!(
                     target: "soak",
@@ -376,7 +388,7 @@ async fn clear_left_healthy_for_checkin(state: &AppState, req: &CheckinRequest) 
                     hostname = %req.hostname,
                     rollout = %rollout_id,
                     error = %err,
-                    "checkin: clear_host_healthy failed",
+                    "checkin: clear_healthy_marker failed",
                 );
             }
         }
@@ -590,7 +602,7 @@ fn record_dispatched_target(
 ///   agent's reported `closure_hash` matches the host's declared
 ///   target in the verified `FleetResolved`, treat this as a CP-
 ///   rebuild recovery — synthesise a confirmed pending_confirms
-///   row + record_host_healthy + 204. Closure-hash mismatch →
+///   row + transition to Healthy + 204. Closure-hash mismatch →
 ///   genuine 410 (rollout cancelled / wrong rollout / deadline
 ///   expired; agent triggers local rollback per RFC §4.2).
 /// - DB unset → 503 (endpoint requires persistence).
@@ -642,12 +654,18 @@ pub(super) async fn confirm(
         // Standard path: stamp last_healthy_since (
         // ConfirmWindow → Healthy). The orphan-recovery branch
         // already wrote it inline so we don't double-up here.
-        if let Err(err) = db.record_host_healthy(&req.hostname, &req.rollout, Utc::now()) {
+        if let Err(err) = db.transition_host_state(
+            &req.hostname,
+            &req.rollout,
+            crate::state::HostRolloutState::Healthy,
+            crate::state::HealthyMarker::Set(Utc::now()),
+            None,
+        ) {
             tracing::warn!(
                 hostname = %req.hostname,
                 rollout = %req.rollout,
                 error = %err,
-                "confirm: record_host_healthy failed; soak timer will skip this host",
+                "confirm: transition to Healthy failed; soak timer will skip this host",
             );
         }
     }
@@ -918,8 +936,14 @@ mod tests {
         // would derive (channel "stable", short "abc12345" from the
         // fleet's ci_commit).
         let original = Utc::now() - chrono::Duration::seconds(5);
-        db.record_host_healthy("test-host", "stable@abc12345", original)
-            .unwrap();
+        db.transition_host_state(
+            "test-host",
+            "stable@abc12345",
+            crate::state::HostRolloutState::Healthy,
+            crate::state::HealthyMarker::Set(original),
+            None,
+        )
+        .unwrap();
 
         let attested = Utc::now() - chrono::Duration::hours(2);
         let req = checkin_req_with_attestation("test-host", "system-r1", Some(attested));

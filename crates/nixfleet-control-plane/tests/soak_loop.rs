@@ -5,16 +5,16 @@
 //!
 //! 1. `record_pending_confirm` + `confirm_pending` simulate the
 //!    confirm handler's success path.
-//! 2. `record_host_healthy` stamps `last_healthy_since` (gap #2
-//!    step 1).
+//! 2. `transition_host_state(Healthy, Set(now), None)` stamps
+//!    `last_healthy_since` (gap #2 step 1).
 //! 3. `active_rollouts_snapshot` projects the DB into the
 //!    reconciler's observed-state shape (step 2).
 //! 4. `observed_projection::project` builds the Observed struct.
 //! 5. `nixfleet_reconciler::reconcile` decides + emits
 //!    `Action::SoakHost` because the soak window has elapsed
 //!    (step 3).
-//! 6. `mark_host_soaked` applies the SoakHost action (step 3 CP
-//!    handler).
+//! 6. `transition_host_state(Soaked, Untouched, Some(Healthy))`
+//!    applies the SoakHost action (step 3 CP handler).
 //! 7. The next snapshot reflects `host_state = 'Soaked'` and the
 //!    next reconcile tick fires `ConvergeRollout` (single-wave
 //!    fleet, so promotion = convergence).
@@ -29,6 +29,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use nixfleet_control_plane::db::Db;
 use nixfleet_control_plane::observed_projection;
+use nixfleet_control_plane::state::{HealthyMarker, HostRolloutState};
 use nixfleet_proto::fleet_resolved::Meta;
 use nixfleet_proto::{Channel, Compliance, FleetResolved, Host, Wave};
 use nixfleet_reconciler::{reconcile, Action};
@@ -93,7 +94,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
 
     // Step A: simulate the confirm handler's success path.
     // record_pending_confirm + confirm_pending mark the row
-    // confirmed; record_host_healthy stamps the soak marker
+    // confirmed; transition_host_state(Healthy) stamps the soak marker
     // 10 minutes in the past so the wave's 5-minute soak window
     // is elapsed at reconcile time.
     let host = "ohm";
@@ -107,7 +108,14 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
         .unwrap();
     let n = db.confirm_pending(host, rollout_id).unwrap();
     assert_eq!(n, 1, "confirm_pending must mark the row confirmed");
-    db.record_host_healthy(host, rollout_id, healthy_at).unwrap();
+    db.transition_host_state(
+        host,
+        rollout_id,
+        HostRolloutState::Healthy,
+        HealthyMarker::Set(healthy_at),
+        None,
+    )
+    .unwrap();
 
     // Step B: project the DB state into the reconciler's
     // observed-state struct.
@@ -144,8 +152,16 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
 
     // Step D: apply the SoakHost action — what the CP-side
     // action processor does on each tick.
-    let n = db.mark_host_soaked(host, rollout_id).unwrap();
-    assert_eq!(n, 1, "mark_host_soaked must transition Healthy → Soaked");
+    let n = db
+        .transition_host_state(
+            host,
+            rollout_id,
+            HostRolloutState::Soaked,
+            HealthyMarker::Untouched,
+            Some(HostRolloutState::Healthy),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "transition Healthy → Soaked must update one row");
 
     // Step E: re-project + re-reconcile. The host now appears as
     // Soaked, the wave's `wave_all_soaked` check fires, and the
@@ -192,7 +208,14 @@ fn soak_loop_skips_when_window_not_elapsed() {
     )
     .unwrap();
     db.confirm_pending(host, rollout_id).unwrap();
-    db.record_host_healthy(host, rollout_id, healthy_at).unwrap();
+    db.transition_host_state(
+        host,
+        rollout_id,
+        HostRolloutState::Healthy,
+        HealthyMarker::Set(healthy_at),
+        None,
+    )
+    .unwrap();
 
     let rollouts = db.active_rollouts_snapshot().unwrap();
     let observed = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new());

@@ -208,13 +208,19 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
     };
     for action in actions {
         if let Action::SoakHost { rollout, host } = action {
-            match db.mark_host_soaked(host, rollout) {
+            match db.transition_host_state(
+                host,
+                rollout,
+                crate::state::HostRolloutState::Soaked,
+                crate::state::HealthyMarker::Untouched,
+                Some(crate::state::HostRolloutState::Healthy),
+            ) {
                 Ok(0) => {
                     tracing::debug!(
                         target: "soak",
                         host = %host,
                         rollout = %rollout,
-                        "soak: mark_host_soaked no-op (host not in Healthy)",
+                        "soak: transition Healthy → Soaked no-op (host not in Healthy)",
                     );
                 }
                 Ok(_) => {
@@ -230,7 +236,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                         host = %host,
                         rollout = %rollout,
                         error = %err,
-                        "soak: mark_host_soaked failed",
+                        "soak: transition Healthy → Soaked failed",
                     );
                 }
             }
