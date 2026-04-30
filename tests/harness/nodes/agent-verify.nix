@@ -66,6 +66,30 @@
             "$base$url_path" -o "$out"
         }
 
+        # Wait until the CP is reachable before starting the verify
+        # flow. Microvm guest boots independently of the host's CP
+        # service so the first agent attempt can race a not-yet-up
+        # CP — that's a harness-only ordering artefact, not a
+        # production failure mode. Budget: 60s (30 attempts × 2s).
+        # Beyond that, treat as a real outage and emit FAIL.
+        echo "harness-agent: waiting for CP to accept TLS" >&2
+        for attempt in $(seq 1 30); do
+          if curl -sfS \
+            --cacert /etc/nixfleet-harness/ca.pem \
+            --cert /etc/nixfleet-harness/${agentHostName}-cert.pem \
+            --key /etc/nixfleet-harness/${agentHostName}-key.pem \
+            --resolve "cp:${toString controlPlanePort}:${controlPlaneHost}" \
+            --connect-timeout 2 --max-time 4 \
+            -o /dev/null "$base/canonical.json" 2>/dev/null; then
+            break
+          fi
+          if [ "$attempt" -eq 30 ]; then
+            echo "harness-roundtrip-FAIL: CP unreachable after 60s" >&2
+            exit 1
+          fi
+          sleep 2
+        done
+
         echo "harness-agent: fetching signed artifact from $base" >&2
         if ! fetch /canonical.json "$workdir/artifact"; then
           echo "harness-roundtrip-FAIL: canonical.json fetch failed" >&2
