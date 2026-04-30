@@ -64,7 +64,14 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
                 "compliance": { "mode": "disabled", "frameworks": [] },
             }
         },
-        "rolloutPolicies": {},
+        "rolloutPolicies": {
+            "default": {
+                "strategy": "waves",
+                "waves": [],
+                "healthGate": {},
+                "onHealthFailure": "halt",
+            }
+        },
         "waves": {},
         "edges": [],
         "disruptionBudgets": [],
@@ -229,8 +236,20 @@ async fn dispatch_end_to_end_signed_fleet_then_idempotent() {
     let body: CheckinResponse = resp.json().await.unwrap();
     let target = body.target.expect("first checkin should dispatch a target");
     assert_eq!(target.closure_hash, DECLARED_CLOSURE);
-    // Rollout id format: `<channel>@<ci-commit-prefix>` (8 chars).
-    assert_eq!(target.channel_ref, "stable@abc12345");
+    // rolloutId is now a 64-char hex content hash (sha256 over the
+    // canonical bytes of the projected RolloutManifest); channel_ref
+    // mirrors it on the wire. Exact value depends on every input to
+    // the projection — assert shape, not value.
+    assert_eq!(target.channel_ref.len(), 64);
+    assert!(
+        target
+            .channel_ref
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "channel_ref must be hex lowercase: {}",
+        target.channel_ref,
+    );
+    assert_eq!(target.rollout_id.as_deref(), Some(target.channel_ref.as_str()));
 
     // Second checkin (same divergent state): pending row already
     // exists → CP must NOT dispatch again.
