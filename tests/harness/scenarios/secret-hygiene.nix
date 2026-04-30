@@ -96,9 +96,11 @@ in
       # Wait for the decrypt unit's success marker to surface in the
       # microvm's console-forwarded journal. Proves the agent VM
       # actually ran the decrypt — not just that the unit was
-      # configured.
+      # configured. 180s budget covers the full guest-side boot from
+      # qemu-launch to systemd reaching multi-user.target +
+      # decrypt-test-secret oneshot completion.
       decrypt_re = re.compile(r"harness-decrypt-ok: bytes=(\d+)")
-      deadline = time.monotonic() + 60
+      deadline = time.monotonic() + 180
       match = None
       while time.monotonic() < deadline:
           rc, out = host.execute(

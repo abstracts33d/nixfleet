@@ -153,11 +153,15 @@ in
 
 
       # Establish baseline: each agent must check in at least once
-      # against the freshly-booted CP. Agents are on a 10s poll
-      # cadence, so first-checkin should land within 30s post-boot.
+      # against the freshly-booted CP. The cursor is captured at
+      # host time AFTER `microvm@agent-XX.service` reaches active
+      # (= qemu launched), so the budget covers the full guest-side
+      # boot + cert mount + agent startup + first poll cycle. Lab
+      # boot of two microvms typically lands the first checkins
+      # within 90-120s; 180s is the safe upper bound.
       print("step 1: waiting for initial checkins…")
       pre_wipe_cursor = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
-      pre_wipe = wait_for_checkins_since(pre_wipe_cursor, timeout_s=60)
+      pre_wipe = wait_for_checkins_since(pre_wipe_cursor, timeout_s=180)
       print(f"step 1: baseline checkins observed: {pre_wipe}")
 
       # Wipe step: stop the CP, delete the SQLite database,
