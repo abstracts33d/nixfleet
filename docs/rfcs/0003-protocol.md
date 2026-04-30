@@ -69,7 +69,7 @@ The core of the protocol. Agent polls this on its declared interval.
   "target": {
     "closureHash": "sha256-ddeeff...",
     "channelRef": "def456abc",
-    "rollout": "stable@def456",
+    "rollout": "a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1",
     "wave": 2,
     "activate": {
       "confirmWindowSecs": 120,
@@ -85,6 +85,20 @@ The core of the protocol. Agent polls this on its declared interval.
 
 If the host is already at the desired generation, `target` is absent and `nextCheckinSecs` reflects idle polling.
 
+**`target.rollout` is a content hash.** It is the SHA-256 (hex, lowercase) of the canonical bytes of the rollout's `RolloutManifest` (see RFC-0002 §4.4). It is NOT a human-readable label — the human-readable `<channel>@<short-ci-commit>` annotation lives inside the manifest as `displayName`. Operator surfaces (`nixfleet status`, log lines) MAY display a short prefix paired with the annotation, but the wire field carries the full hex.
+
+**Agent verification posture (mandatory).** On first sight of a `rolloutId` it has not seen before, the agent MUST:
+
+1. Fetch `GET /v1/rollouts/<rolloutId>` and the matching `.sig` (§4.6).
+2. Verify the signature against the trust roots it already holds (`ciReleaseKey`).
+3. Recompute `sha256(canonical(manifest))` and assert it equals the advertised `rolloutId`.
+4. Assert `(hostname, wave_index)` ∈ `manifest.host_set`.
+5. Cache the manifest bytes + signature under `<state-dir>/rollouts/<rolloutId>.{json,sig}`.
+
+Failure of any step is a hard refuse-to-act: the agent emits the corresponding `ReportEvent` (`ManifestMissing`, `ManifestVerifyFailed`, `ManifestMismatch`) and does not consume any other field of `target`. There is no fallback path that trusts a CP-advertised `target` for one tick — see RFC-0002 §4.4 for the threat model this closes.
+
+**Subsequent checkins.** For every checkin where `target.rollout` matches a `rolloutId` the agent has already cached, the agent MUST re-assert string equality against the cache. A change in `rolloutId` while the cached one is still in flight is a hard refuse-to-act; the CP cannot replace a rollout's plan mid-flight by content-address (a different plan is a different rollout).
+
 **Idempotency.** Repeated check-ins from the same host with unchanged state are no-ops (but still update `lastSeen` for observability). The control plane must not create duplicate work.
 
 ### 4.2 `POST /agent/confirm`
@@ -96,7 +110,7 @@ Called exactly once by the agent, after a new generation has booted and the agen
 ```json
 {
   "hostname": "m70q-attic",
-  "rollout": "stable@def456",
+  "rollout": "a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1",
   "wave": 2,
   "generation": {
     "closureHash": "sha256-ddeeff...",
@@ -107,6 +121,8 @@ Called exactly once by the agent, after a new generation has booted and the agen
   ]
 }
 ```
+
+`rollout` is the same content hash the agent received in `target.rollout` and persisted to its cache; the CP looks up `(hostname, rollout)` in `host_rollout_state` and asserts the agent is confirming a rollout it actually dispatched.
 
 **Response:** `204 No Content` on acceptance, `410 Gone` if the rollout was cancelled or the wave already failed (agent then triggers local rollback on its own).
 
@@ -137,6 +153,29 @@ Out of scope for this RFC in detail. Summary:
 
 - `POST /enroll` — accepts bootstrap token + CSR, returns signed cert. Token is burned on use.
 - `POST /agent/renew` — accepts current cert (mTLS) + CSR, returns refreshed cert.
+
+### 4.6 `GET /v1/rollouts/<rolloutId>`
+
+Distributes the signed `RolloutManifest` (RFC-0002 §4.4) to agents. mTLS-gated like every other endpoint. The CP serves the on-disk pre-signed pair byte-for-byte; it does not re-derive, re-sign, or otherwise transform the manifest.
+
+**Path parameter.** `rolloutId` is the content hash exactly as the CP advertised it in `/agent/checkin` responses. Hex, lowercase, full SHA-256 (64 chars).
+
+**Response.** Two body shapes, served via the standard HTTP `Accept` content-negotiation pattern:
+
+- `Accept: application/json` (default) returns the manifest JSON bytes.
+- `Accept: application/octet-stream` returns the raw signature bytes (`<rolloutId>.sig`).
+
+Agents fetch both. Implementations MAY also expose a single endpoint that returns both bundled (e.g. `application/json` with the signature in a sibling `X-Nixfleet-Signature` header); the wire-test harness asserts both shapes round-trip identically.
+
+**Status codes.**
+
+- `200 OK` — manifest found, body served.
+- `404 Not Found` — `rolloutId` is unknown to the CP (never adopted, or evicted post-rollout-completion).
+- `503 Service Unavailable` — CP recently rebuilt and has not yet reloaded the rollouts directory; agent retries after `nextCheckinSecs`.
+
+**Idempotency + caching.** Manifests are immutable by content-address: a given `rolloutId` always returns the same bytes, or `404` if it never existed. Agents that have already cached a manifest do NOT need to re-fetch on every checkin — string equality against the cached `rolloutId` is sufficient. Defensive re-fetches (e.g. on agent restart) are safe but wasteful.
+
+**No write side.** There is no `POST` or `PUT` on this endpoint. Manifests are produced by CI alone; the CP holds no signing key for rollouts. Operator workflows that need to "edit a rollout plan" require a new commit (which produces a new `rolloutId`).
 
 ## 5. Polling cadence
 

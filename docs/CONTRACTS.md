@@ -119,6 +119,34 @@ Where:
 
 The CP enforces nothing here — operators that violate the invariant get the chaos cascade described above. Future versions may add a runtime warning at CP startup when `--confirm-deadline-secs` is below the documented minimum.
 
+### 8. Rollout manifest
+
+| | |
+|---|---|
+| **Producer** | CI (one manifest per channel, per `fleet.resolved` commit) |
+| **Consumer** | Control plane (adoption + serve), agents (verify before consuming dispatch), auditors |
+| **Schema** | v1 — shape defined in `nixfleet-proto::rollout_manifest`, semantics in RFC-0002 §4.4 |
+| **Canonicalization** | JCS (RFC 8785), see §III |
+| **Signature** | CI release key (see §II #1) — same trust root as `fleet.resolved.json` and `revocations.json` |
+| **Identifier** | `rolloutId = sha256(canonicalize(manifest))`, hex lowercase. The hash IS the identity; see RFC-0002 §4.4. |
+| **Anchor** | `fleetResolvedHash` — sha256 of the canonical bytes of the projecting `fleet.resolved.json`. Closes mix-and-match across snapshots at the same channel ref. |
+| **Storage** | `releases/rollouts/<rolloutId>.{json,sig}` |
+
+**Evolution discipline.** Within v1, fields may be added; consumers MUST ignore unknown fields. Adding a field changes every existing manifest's content hash by definition (the new field is part of the canonical surface), so `schemaVersion` bumps in lockstep with field additions that reach production CI — there is no "rolling additive" window for this artifact the way there is for `fleet.resolved.json`. Removing or changing the meaning of a field requires `schemaVersion: 2` and a migration window.
+
+**Consumer MUST verify before use:**
+1. JCS bytes match the canonicalized payload.
+2. Signature verifies against the pinned `nixfleet.trust.ciReleaseKey`.
+3. `(now − meta.signedAt) ≤ channel.freshnessWindow` (units: minutes; same gate as `fleet.resolved.json`).
+4. Recomputed `sha256(canonical(manifest))` equals the `rolloutId` the recipient was told to fetch (rejects content-mismatched manifests).
+5. `meta.schemaVersion` is within the consumer's accepted range.
+6. (Agent only) `(hostname, wave_index)` ∈ `manifest.host_set`.
+7. (CP only, on adoption) `manifest.fleetResolvedHash` matches the hash of the `fleet.resolved.json` the CP currently holds verified — refuses adoption otherwise.
+
+**Producer pipeline (`nixfleet-release`).** Same orchestrator as `fleet.resolved.json` — after the resolved snapshot is signed, iterate `fleet.channels`, project each channel into a `RolloutManifest` (sorted `host_set`, target closure, wave layout, health gate, compliance frameworks, `fleetResolvedHash`), canonicalize, sign via the same `--sign-cmd` hook, write `releases/rollouts/<rolloutId>.{json,sig}`. The producer hook contract from §I #1 (`NIXFLEET_INPUT` / `NIXFLEET_OUTPUT` env vars) applies unchanged — one signing seam, three artifact types.
+
+**Trust topology.** The CP holds NO signing key for rollouts. It is a verified stateless distributor: it adopts pre-signed manifests it can verify, refuses those it cannot, and serves the verified bytes byte-for-byte at `GET /v1/rollouts/<rolloutId>`. This preserves the "CP forges no trust" property: every byte an agent acts on traces back to a CI-held key.
+
 ---
 
 ## II. Trust roots

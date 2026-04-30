@@ -152,6 +152,26 @@ Channels roll out independently. A new rev on channel `edge-slow` can progress w
 
 Per-channel: at most one active rollout. A new ref arriving while a rollout is in progress is queued; when the current rollout reaches Converged / Halted / Cancelled, the queued ref triggers a fresh rollout. Queue depth ≤ 1 — if two new refs arrive, only the latest is retained (intermediate commits are skipped).
 
+### 4.4 Rollout manifests
+
+A `RolloutManifest` is the per-rollout signed plan: the frozen view of which hosts are in which wave, signed by CI at the same time it signs `fleet.resolved.json`. The manifest is the artifact that lets agents verify their wave assignment without trusting the CP.
+
+**Why this exists.** `fleet.resolved.json` is the desired-state snapshot — it rolls forward continuously as new CI commits land. A rollout has a different temporal scope: its plan freezes at rollout-open and stays frozen until the rollout terminates. Without a separately-named, frozen artifact, an attacker (or buggy CP) could serve host A "you're in wave 1" and host B "you're in wave 3" of the same logical rollout, and neither agent could detect the inconsistency. Content-addressing the manifest closes that gap.
+
+**Producer.** CI produces *N+1 signed artifacts per commit* where N is the number of channels in `fleet.resolved.channels`: the resolved snapshot itself, plus one manifest per channel. Each manifest is a deterministic projection of `fleet.resolved` for one channel — every input (host membership, wave layout, target closure, health gate, compliance frameworks) is already inside the signed snapshot. CI signs both with the same `ciReleaseKey`. The CP holds no signing key for rollouts; it is a verified stateless distributor.
+
+**Identifier.** `rolloutId = sha256(canonicalize(manifest))`, full hex. The hash IS the identity (cf. content-addressed closures, secrets, revocations). The human-readable `<channel>@<short-ci-commit>` lives inside the manifest as `displayName` for trace and CLI display only — it is not the primary key. Two manifests with different content cannot collide on `rolloutId`; an attacker tampering with any field invalidates the hash.
+
+**Anchor.** The manifest carries `fleetResolvedHash` — sha256 of the canonical bytes of the `fleet.resolved.json` it was projected from. This closes a mix-and-match attack: during a key-rotation overlap window where both predecessor and successor sign valid `fleet.resolved.json` snapshots at the same channel ref, an attacker without the anchor could pair a manifest from snapshot X with the resolved.json from snapshot Y. The anchor makes that inconsistency provably detectable.
+
+**Adoption.** When the reconciler opens a new rollout for channel `c` at ref `r` (step 2a of the reconcile loop), it loads `releases/rollouts/<rolloutId>.json`, verifies the signature against `ciReleaseKey`, recomputes the content hash, and persists `(rollout_id, manifest_hash, host_set)` into `host_rollout_state`. **If the manifest is missing or fails verification, the CP refuses to open the rollout.** There is no fallback path to unsigned dispatch — the inversion-of-trust property does not bend.
+
+**Distribution.** Agents fetch the manifest via `GET /v1/rollouts/<rolloutId>` (RFC-0003 §4.6) on first sight, verify it independently against the trust roots they already hold, recompute the hash, and assert that `(hostname, wave_index)` ∈ `manifest.host_set`. Mismatch is a hard refuse-to-act with `ReportEvent::ManifestMismatch`. The cached manifest is the source of truth for the rollout's lifetime — subsequent checkins re-assert that the CP-advertised `rolloutId` matches the cached one. A second-call manifest with the same `rolloutId` but different content cannot exist (the hash would differ).
+
+**Schema.** Defined in `nixfleet-proto::rollout_manifest`. The `host_set` array MUST be sorted by `hostname` ascending; JCS sorts object keys but not array elements, so the producer's emission order is the canonical order.
+
+**Future work.** With `len(host_set)` in the thousands, full-roster manifests grow into the hundreds of KB. Per-host scoping (one signed object per host) trades manifest count for message size; a Merkle-inclusion proof shape trades both at the cost of a more complex verifier. Single-tenant fleets at v0.2 scale do not need either; they belong in v0.3.
+
 ## 5. Failure handling
 
 ### 5.1 `onHealthFailure` semantics
