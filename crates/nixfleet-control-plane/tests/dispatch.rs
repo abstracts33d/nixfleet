@@ -1,14 +1,20 @@
-//! Dispatch-loop integration test.
+//! Dispatch-loop integration smoke test.
 //!
-//! Drives the full path: a real ed25519-signed `fleet.resolved.json`
-//! is verified at server boot (priming `AppState.verified_fleet`);
-//! an agent checks in with a current generation that diverges from
-//! the declared closure; the response carries a populated `target`;
-//! the DB has a matching `pending_confirms` row.
+//! Drives the full path that pure unit tests in `src/dispatch.rs`
+//! cannot reach: a real ed25519-signed `fleet.resolved.json` is
+//! verified at server boot (priming `AppState.verified_fleet`), an
+//! agent checks in via mTLS, and the CP both issues a target on the
+//! response AND writes a `pending_confirms` DB row. A second checkin
+//! while that row is in flight must NOT re-dispatch (idempotency
+//! gate `pending_confirm_exists`).
 //!
-//! The same agent checking in twice in quick succession must NOT
-//! create a second pending row (idempotency: `pending_confirm_exists`
-//! gate). A converged agent gets `target: null` and no DB row.
+//! Decision-table coverage (Unmanaged, NoDeclaration, Converged,
+//! InFlight, HoldAfterFailure, rollout-id derivation, wave-index
+//! lookup, confirm-window threading) lives in
+//! `src/dispatch.rs::tests` as pure unit tests. This file exists
+//! solely to exercise the wiring those tests can't see: signed-
+//! fleet verification, the checkin handler's DB side effect, and
+//! the live idempotency gate against a real sqlite store.
 
 mod common;
 
@@ -21,7 +27,7 @@ use common::{
     write_bytes, write_pem,
 };
 use ed25519_dalek::{Signer, SigningKey};
-use nixfleet_control_plane::{db::Db, server};
+use nixfleet_control_plane::server;
 use nixfleet_proto::agent_wire::{
     CheckinRequest, CheckinResponse, FetchOutcome, FetchResult, GenerationRef,
 };
@@ -177,13 +183,21 @@ fn checkin_request(current: &str) -> CheckinRequest {
     }
 }
 
+/// End-to-end smoke test for the dispatch wiring. Subsumes a
+/// standalone "dispatch issues target when diverged" test: the first
+/// checkin asserts both that the response carries a populated target
+/// (with the expected closure + rollout-id derived from the signed
+/// fleet's ciCommit) and that the CP wrote a `pending_confirms` row.
+/// The second checkin asserts the in-flight gate suppresses re-
+/// dispatch and no second row is written.
 #[tokio::test]
-async fn dispatch_issues_target_when_diverged() {
+async fn dispatch_end_to_end_signed_fleet_then_idempotent() {
     install_crypto_provider_once();
 
     let dir = TempDir::new().unwrap();
     let (artifact, signature, trust) = write_signed_fleet(&dir, DECLARED_CLOSURE, CI_COMMIT);
-    let (ca, server_cert, server_key, client_cert, client_key) = mint_ca_and_certs(&dir, "test-host");
+    let (ca, server_cert, server_key, client_cert, client_key) =
+        mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
     let port = pick_free_port().await;
 
@@ -201,6 +215,9 @@ async fn dispatch_issues_target_when_diverged() {
     .await;
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
+
+    // First checkin: divergent generation → CP issues a target and
+    // inserts a pending_confirms row.
     let resp = client
         .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&checkin_request("running-system-old"))
@@ -209,104 +226,13 @@ async fn dispatch_issues_target_when_diverged() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: CheckinResponse = resp.json().await.unwrap();
-    let target = body.target.expect("dispatch should issue a target");
+    let target = body.target.expect("first checkin should dispatch a target");
     assert_eq!(target.closure_hash, DECLARED_CLOSURE);
     // Rollout id format: `<channel>@<ci-commit-prefix>` (8 chars).
     assert_eq!(target.channel_ref, "stable@abc12345");
 
-    // Verify the DB has a matching pending_confirms row.
-    let db = Db::open(&db_path).unwrap();
-    assert!(
-        db.pending_confirm_exists("test-host").unwrap(),
-        "expected a pending_confirms row for test-host",
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn dispatch_returns_null_when_converged() {
-    install_crypto_provider_once();
-
-    let dir = TempDir::new().unwrap();
-    let (artifact, signature, trust) = write_signed_fleet(&dir, DECLARED_CLOSURE, CI_COMMIT);
-    let (ca, server_cert, server_key, client_cert, client_key) = mint_ca_and_certs(&dir, "test-host");
-    let db_path = dir.path().join("state.db");
-    let port = pick_free_port().await;
-
-    let handle = spawn_with_signed_fleet(
-        &dir,
-        artifact,
-        signature,
-        trust,
-        server_cert,
-        server_key,
-        ca.clone(),
-        db_path.clone(),
-        port,
-    )
-    .await;
-
-    let client = build_mtls_client(&ca, &client_cert, &client_key);
-    let resp = client
-        .post(format!("https://localhost:{port}/v1/agent/checkin"))
-        .json(&checkin_request(DECLARED_CLOSURE)) // already converged
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: CheckinResponse = resp.json().await.unwrap();
-    assert!(
-        body.target.is_none(),
-        "converged agent should get target: null",
-    );
-    let db = Db::open(&db_path).unwrap();
-    assert!(
-        !db.pending_confirm_exists("test-host").unwrap(),
-        "no pending_confirms row should have been written",
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn dispatch_is_idempotent_across_two_checkins() {
-    install_crypto_provider_once();
-
-    let dir = TempDir::new().unwrap();
-    let (artifact, signature, trust) = write_signed_fleet(&dir, DECLARED_CLOSURE, CI_COMMIT);
-    let (ca, server_cert, server_key, client_cert, client_key) = mint_ca_and_certs(&dir, "test-host");
-    let db_path = dir.path().join("state.db");
-    let port = pick_free_port().await;
-
-    let handle = spawn_with_signed_fleet(
-        &dir,
-        artifact,
-        signature,
-        trust,
-        server_cert,
-        server_key,
-        ca.clone(),
-        db_path.clone(),
-        port,
-    )
-    .await;
-
-    let client = build_mtls_client(&ca, &client_cert, &client_key);
-
-    // First checkin: target dispatched, row inserted.
-    let resp = client
-        .post(format!("https://localhost:{port}/v1/agent/checkin"))
-        .json(&checkin_request("running-system-old"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: CheckinResponse = resp.json().await.unwrap();
-    assert!(body.target.is_some(), "first checkin should dispatch");
-
-    // Second checkin: pending row already exists → CP should NOT
-    // dispatch again (no second row, no target in response).
+    // Second checkin (same divergent state): pending row already
+    // exists → CP must NOT dispatch again.
     let resp = client
         .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&checkin_request("running-system-old"))
@@ -320,7 +246,9 @@ async fn dispatch_is_idempotent_across_two_checkins() {
         "second checkin while pending: target must be null",
     );
 
-    // DB has exactly one row for this host.
+    // DB has exactly one row for this host — confirms both that the
+    // first checkin's side effect landed and that the second checkin
+    // didn't insert a duplicate.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let n: i64 = conn
         .query_row(
