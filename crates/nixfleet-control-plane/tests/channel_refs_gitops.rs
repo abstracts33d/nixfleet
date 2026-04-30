@@ -46,7 +46,7 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
                 "compliance": { "mode": "disabled", "frameworks": [] },
             }
         },
-        "rolloutPolicies": {},
+        "rolloutPolicies": {"default":{"strategy":"waves","waves":[],"healthGate":{},"onHealthFailure":"halt"}},
         "waves": {},
         "edges": [],
         "disruptionBudgets": [],
@@ -254,7 +254,7 @@ async fn poll_retains_snapshot_on_verify_failure() {
         "schemaVersion": 1,
         "hosts": { "sentinel": { "system": "x86_64-linux", "tags": [], "channel": "stable", "closureHash": "sentinel-hash", "pubkey": null } },
         "channels": { "stable": { "rolloutPolicy": "x", "reconcileIntervalMinutes": 1, "freshnessWindow": 1, "signingIntervalMinutes": 1, "compliance": { "mode": "disabled", "frameworks": [] } } },
-        "rolloutPolicies": {},
+        "rolloutPolicies": {"default":{"strategy":"waves","waves":[],"healthGate":{},"onHealthFailure":"halt"}},
         "waves": {},
         "edges": [],
         "disruptionBudgets": [],

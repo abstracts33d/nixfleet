@@ -108,7 +108,14 @@ fn write_signed_fleet(
                 },
             }
         },
-        "rolloutPolicies": {},
+        "rolloutPolicies": {
+            "default": {
+                "strategy": "waves",
+                "waves": [],
+                "healthGate": {},
+                "onHealthFailure": "halt",
+            }
+        },
         "waves": {},
         "edges": [],
         "disruptionBudgets": [],
