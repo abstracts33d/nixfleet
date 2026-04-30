@@ -739,39 +739,25 @@ impl Db {
             // schema drift; routing the inferred fallbacks through
             // `HostRolloutState::as_db_str` keeps the literals
             // single-sourced from the V003 enum.
+            // Derive the host's state literal. `host_rollout_state`
+            // wins when present (post-confirm machine: Healthy /
+            // Soaked / …); otherwise infer from `pending_confirms.state`.
+            // Both arms route through `HostRolloutState`'s typed
+            // accessors so any schema drift fails loudly here.
+            // The RolledBack/Cancelled match guard is unreachable —
+            // the CTE's WHERE pc.state IN ('pending','confirmed')
+            // filters those out (see V002 migration).
             let host_state = match hrs_state {
-                Some(s) => {
-                    // Validate the persisted string round-trips
-                    // through the typed enum so a future schema
-                    // drift surfaces here rather than silently
-                    // propagating downstream.
-                    HostRolloutState::from_db_str(&s)?.as_db_str().to_string()
-                }
+                Some(s) => HostRolloutState::from_db_str(&s)?.as_db_str().to_string(),
                 None => match PendingConfirmState::from_db_str(&pc_state)? {
-                    // Dispatched but pre-confirm: agent is in the
-                    // ConfirmWindow per RFC §3.2.
-                    PendingConfirmState::Pending => {
-                        HostRolloutState::ConfirmWindow.as_db_str().to_string()
-                    }
-                    // Defensive: should not happen — confirm
-                    // handler upserts a host_rollout_state row on
-                    // success. If it does (pre-existing data, or
-                    // the upsert failed-but-confirm-succeeded
-                    // window), surface as Healthy.
-                    PendingConfirmState::Confirmed => {
-                        HostRolloutState::Healthy.as_db_str().to_string()
-                    }
-                    // The CTE's WHERE clause filters pc.state to
-                    // ('pending', 'confirmed') — see V002 migration
-                    // for the lifecycle. Other variants cannot reach
-                    // this match.
+                    PendingConfirmState::Pending => HostRolloutState::ConfirmWindow,
+                    PendingConfirmState::Confirmed => HostRolloutState::Healthy,
                     PendingConfirmState::RolledBack | PendingConfirmState::Cancelled => {
-                        unreachable!(
-                            "WHERE pc.state IN ('pending','confirmed') filters here; \
-                             see migration V002"
-                        )
+                        unreachable!("filtered by CTE WHERE pc.state IN ('pending','confirmed')")
                     }
-                },
+                }
+                .as_db_str()
+                .to_string(),
             };
 
             let channel = rollout_id
