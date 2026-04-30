@@ -150,8 +150,8 @@ in
 
         print("step 5: waiting for soak-state attestation recovery…")
         soak_deadline = time.monotonic() + 60
-        recovered = set()
-        agents_set = set(${builtins.toJSON agentNames})
+        recovered: set[str] = set()
+        agents_set: set[str] = set(${builtins.toJSON agentNames})
         while recovered != agents_set and time.monotonic() < soak_deadline:
             for hostname in list(agents_set - recovered):
                 rc, _ = host.execute(
