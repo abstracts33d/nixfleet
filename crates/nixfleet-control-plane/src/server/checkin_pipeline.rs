@@ -84,25 +84,10 @@ pub(super) async fn checkin(
     }))
 }
 
-/// Gap A orphan-confirm recovery. Returns `true` when the orphan
-/// confirm represents a CP-rebuild recovery case the CP can absorb
-/// without forcing the agent to roll back, `false` when it should
-/// fall through to a 410 (genuine wrong-rollout / cancelled case).
-///
-/// Recovery requires:
-/// 1. A verified fleet snapshot (otherwise we cannot validate the
-///   agent's claimed target).
-/// 2. The agent's `request.generation.closure_hash` matches the
-///   host's declared `closureHash` in the verified
-///   `FleetResolved.hosts[hostname]`. This is the same authorisation
-///   invariant the positive flow trusts (mTLS-CN + closure on file).
-///
-/// On success: synthesise a `confirmed` `pending_confirms` row +
-/// stamp `record_host_healthy`. On any failure (DB error, missing
-/// fleet, missing host, missing closure declaration, closure
-/// mismatch): return false. Failures are non-fatal — the agent
-/// still hears 410 and triggers its local rollback, no worse than
-/// pre-gap-A behaviour.
+/// CP-rebuild recovery for an orphan confirm. Returns `true` when
+/// the CP can absorb the confirm without forcing rollback, `false`
+/// when it should fall through to 410. All failures are non-fatal:
+/// the agent's local rollback still fires on 410.
 async fn try_recover_orphan_confirm(
     state: &Arc<AppState>,
     req: &ConfirmRequest,
@@ -110,27 +95,41 @@ async fn try_recover_orphan_confirm(
     let Some(db) = state.db.as_ref() else {
         return false;
     };
-    let Some(fleet) = state.verified_fleet.read().await.clone() else {
+    let Some(target_closure) = validate_orphan_recovery(state, req).await else {
+        return false;
+    };
+    synthesise_orphan_confirm_rows(db, req, &target_closure)
+}
+
+/// Returns the validated target closure when the orphan confirm
+/// matches the verified fleet's declared target for this host
+/// (closure AND rollout id). None otherwise — caller falls through
+/// to 410.
+async fn validate_orphan_recovery(
+    state: &AppState,
+    req: &ConfirmRequest,
+) -> Option<String> {
+    let fleet = state.verified_fleet.read().await.clone().or_else(|| {
         tracing::debug!(
             hostname = %req.hostname,
             "orphan-confirm recovery: no verified fleet snapshot yet",
         );
-        return false;
-    };
-    let Some(host_decl) = fleet.hosts.get(&req.hostname) else {
+        None
+    })?;
+    let host_decl = fleet.hosts.get(&req.hostname).or_else(|| {
         tracing::debug!(
             hostname = %req.hostname,
             "orphan-confirm recovery: host not in verified fleet",
         );
-        return false;
-    };
-    let Some(target_closure) = host_decl.closure_hash.as_ref() else {
+        None
+    })?;
+    let target_closure = host_decl.closure_hash.as_ref().or_else(|| {
         tracing::debug!(
             hostname = %req.hostname,
             "orphan-confirm recovery: host has no declared closureHash",
         );
-        return false;
-    };
+        None
+    })?;
     if target_closure != &req.generation.closure_hash {
         tracing::info!(
             hostname = %req.hostname,
@@ -139,34 +138,17 @@ async fn try_recover_orphan_confirm(
             target_closure = %target_closure,
             "orphan-confirm recovery: closure_hash mismatch — genuine 410",
         );
-        return false;
+        return None;
     }
 
-    // — defensive rollout-id check. The closure_hash match
-    // above proves the agent activated the closure the fleet declares
-    // for this host, but it doesn't prove `req.rollout` is THIS
-    // fleet's rollout id. A future schema evolution where two
-    // rollouts target the same closure (e.g. a rollback-and-halt
-    // reissuing the prior rev) would let the agent's stale `req.rollout`
-    // synthesise a confirmed row for the wrong rollout and corrupt
-    // the audit trail. Compute the expected rollout id the same way
-    // `dispatch::decide_target` does (channel + 8-char ci_commit prefix
-    // or closure prefix as fallback) and refuse to synthesise on
-    // mismatch.
-    //
-    // KNOWN EDGE CASE — fleet-forward with closure-stable rollout-id
-    // change: if CI signs a new fleet.resolved (new ci_commit) between
-    // the agent's dispatch and its orphan confirm, AND the host's
-    // declared closure is unchanged across both fleets, the
-    // expected_rollout_id derived from the *current* fleet won't match
-    // the agent's *historical* rollout id. We'll return a 410, the
-    // agent will roll back a healthy activation, and the next dispatch
-    // will pick up the new rollout id cleanly. Operationally rare
-    // (CI re-signing without a closure change is unusual: lab's CI
-    // rebuilds + re-signs only on commit) and recoverable in one
-    // poll cycle. Documenting here rather than gating on it because
-    // a fix would require persisting the dispatch-time rollout id
-    // across CP rebuilds — out of scope for .
+    // Defensive: closure match doesn't prove `req.rollout` is THIS
+    // fleet's rollout id (a future schema where two rollouts target
+    // the same closure could collapse them). KNOWN EDGE CASE: if CI
+    // re-signs with a new ci_commit between dispatch and orphan
+    // confirm AND the closure is unchanged, the agent's historical
+    // rollout id won't match — we 410, agent rolls back a healthy
+    // activation, next dispatch picks up the new id cleanly. Rare
+    // and recoverable in one poll cycle.
     let expected_rollout_id = crate::dispatch::derive_rollout_id(
         &host_decl.channel,
         fleet.meta.ci_commit.as_deref(),
@@ -179,9 +161,21 @@ async fn try_recover_orphan_confirm(
             expected_rollout = %expected_rollout_id,
             "orphan-confirm recovery: rollout id mismatch — agent is on a stale rollout, genuine 410",
         );
-        return false;
+        return None;
     }
 
+    Some(target_closure.clone())
+}
+
+/// Insert the synthetic `pending_confirms` (confirmed) + Healthy
+/// marker. Returns true iff the pending_confirms write succeeded;
+/// the host_healthy write is best-effort (worst case the soak timer
+/// restarts on next confirm — same as pre-gap-B).
+fn synthesise_orphan_confirm_rows(
+    db: &crate::db::Db,
+    req: &ConfirmRequest,
+    target_closure: &str,
+) -> bool {
     let now = Utc::now();
     if let Err(err) = db.record_confirmed_pending(
         &req.hostname,
@@ -206,11 +200,6 @@ async fn try_recover_orphan_confirm(
             error = %err,
             "orphan-confirm recovery: record_host_healthy failed (synthetic row already inserted)",
         );
-        // Don't reverse the synthetic insert — leaving it in place
-        // means the rollout audit trail still reflects the
-        // activation, even if the soak marker is missing. The
-        // soak loop's worst case becomes "this host's soak timer
-        // restarts on next confirm" — same as pre-gap-B.
     }
     tracing::info!(
         target: "confirm",

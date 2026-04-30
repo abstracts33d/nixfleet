@@ -94,67 +94,14 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
 
     let args = Args::parse();
     let started_at = Instant::now();
 
-    // Parsed on startup just to fail fast on misconfiguration.
-    let trust_raw = std::fs::read_to_string(&args.trust_file).with_context(|| {
-        format!("read trust file {}", args.trust_file.display())
-    })?;
-    let _trust: nixfleet_proto::TrustConfig =
-        serde_json::from_str(&trust_raw).context("parse trust file")?;
-
-    // Best-effort: missing/unreadable → signer is None → events
-    // post unsigned. Hard-fail only on parse errors (corrupt key).
-    let evidence_signer =
-        match nixfleet_agent::evidence_signer::EvidenceSigner::load(&args.ssh_host_key_file) {
-            Ok(Some(s)) => {
-                tracing::info!(
-                    path = %args.ssh_host_key_file.display(),
-                    "loaded SSH host key — evidence signing active",
-                );
-                Some(s)
-            }
-            Ok(None) => None,
-            Err(err) => {
-                tracing::warn!(
-                    path = %args.ssh_host_key_file.display(),
-                    error = %format!("{err:#}"),
-                    "ssh host key parse error — evidence signing disabled",
-                );
-                None
-            }
-        };
-    let evidence_signer = std::sync::Arc::new(evidence_signer);
-
-    // First-boot enrollment when no client cert exists yet.
-    if let (Some(cert_path), Some(key_path), Some(token_file)) = (
-        args.client_cert.as_deref(),
-        args.client_key.as_deref(),
-        args.bootstrap_token_file.as_deref(),
-    ) {
-        if !cert_path.exists() {
-            tracing::info!(token = %token_file.display(), "no client cert — starting enrollment");
-            let enroll_client = comms::build_client(args.ca_cert.as_deref(), None, None)?;
-            nixfleet_agent::enrollment::enroll(
-                &enroll_client,
-                &args.control_plane_url,
-                &args.machine_id,
-                token_file,
-                cert_path,
-                key_path,
-            )
-            .await?;
-        }
-    }
+    let evidence_signer = load_evidence_signer(&args.ssh_host_key_file);
+    parse_trust_file(&args.trust_file)?;
+    maybe_run_first_boot_enrollment(&args).await?;
 
     let client = comms::build_client(
         args.ca_cert.as_deref(),
@@ -162,17 +109,8 @@ async fn main() -> anyhow::Result<()> {
         args.client_key.as_deref(),
     )?;
 
-    // boot recovery path. Runs once at startup, BEFORE the
-    // poll loop. Detects the post-self-switch case where the agent
-    // got SIGTERMed mid-fire-and-forget poll: the new closure
-    // restarted nixfleet-agent.service, and on the new agent's boot
-    // /run/current-system points at the closure we were trying to
-    // dispatch. In that case, post the retroactive `/v1/agent/confirm`
-    // so the CP doesn't run out the deadline and roll us back on a
-    // success.
-    //
-    // Best-effort: failures are logged but not fatal. The next
-    // regular checkin re-converges via dispatch decision either way.
+    // Best-effort: a recovery failure here is not fatal — the next
+    // regular checkin re-converges via the dispatch decision.
     if let Err(err) = check_boot_recovery(&client, &args).await {
         tracing::warn!(
             error = %err,
@@ -187,197 +125,110 @@ async fn main() -> anyhow::Result<()> {
         "agent starting poll loop"
     );
 
+    run_poll_loop(client, &args, started_at, evidence_signer).await
+}
+
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+}
+
+/// Parse on startup just to fail fast on misconfiguration. The agent
+/// doesn't otherwise consume the parsed value — it's a contract check.
+fn parse_trust_file(path: &std::path::Path) -> anyhow::Result<()> {
+    let trust_raw = std::fs::read_to_string(path)
+        .with_context(|| format!("read trust file {}", path.display()))?;
+    let _trust: nixfleet_proto::TrustConfig =
+        serde_json::from_str(&trust_raw).context("parse trust file")?;
+    Ok(())
+}
+
+/// Best-effort. Missing/unreadable key → signer is None → events post
+/// unsigned. Hard-fail only on parse errors (corrupt key).
+fn load_evidence_signer(
+    path: &std::path::Path,
+) -> std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>> {
+    let signer = match nixfleet_agent::evidence_signer::EvidenceSigner::load(path) {
+        Ok(Some(s)) => {
+            tracing::info!(
+                path = %path.display(),
+                "loaded SSH host key — evidence signing active",
+            );
+            Some(s)
+        }
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %format!("{err:#}"),
+                "ssh host key parse error — evidence signing disabled",
+            );
+            None
+        }
+    };
+    std::sync::Arc::new(signer)
+}
+
+/// First-boot enrollment when no client cert exists yet.
+async fn maybe_run_first_boot_enrollment(args: &Args) -> anyhow::Result<()> {
+    let (Some(cert_path), Some(key_path), Some(token_file)) = (
+        args.client_cert.as_deref(),
+        args.client_key.as_deref(),
+        args.bootstrap_token_file.as_deref(),
+    ) else {
+        return Ok(());
+    };
+    if cert_path.exists() {
+        return Ok(());
+    }
+    tracing::info!(token = %token_file.display(), "no client cert — starting enrollment");
+    let enroll_client = comms::build_client(args.ca_cert.as_deref(), None, None)?;
+    nixfleet_agent::enrollment::enroll(
+        &enroll_client,
+        &args.control_plane_url,
+        &args.machine_id,
+        token_file,
+        cert_path,
+        key_path,
+    )
+    .await
+}
+
+async fn run_poll_loop(
+    client: reqwest::Client,
+    args: &Args,
+    started_at: Instant,
+    evidence_signer: std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+) -> anyhow::Result<()> {
     let mut ticker = tokio::time::interval(Duration::from_secs(args.poll_interval));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut client_handle = client;
-    // : exponential backoff with jitter on errors. Doubles
-    // each consecutive failure, capped at 8× the base interval (~8min
-    // at 60s default). Reset to 1× on first success. Random jitter
-    // ±20% spreads recovery across the fleet.
+    // Exponential backoff with ±20% jitter on consecutive failures.
+    // Doubles each failure, capped at 8× the base interval. Resets
+    // to 1× on first success.
     let mut consecutive_failures: u32 = 0;
 
     loop {
-        // On consecutive failures, sleep extra (in addition to the
-        // ticker's regular cadence). The ticker fires on its own
-        // schedule; backoff is layered.
         if consecutive_failures > 0 {
-            let multiplier = 1u64 << (consecutive_failures.min(3)); // 1, 2, 4, 8
-            let base = args.poll_interval.saturating_mul(multiplier);
-            // ±20% jitter.
-            let jitter_pct: f64 = {
-                use rand::Rng;
-                rand::thread_rng().gen_range(-0.2_f64..=0.2_f64)
-            };
-            let jittered = (base as f64 * (1.0 + jitter_pct)) as u64;
-            tracing::debug!(
-                consecutive_failures,
-                backoff_secs = jittered,
-                "agent: backoff sleep"
-            );
-            tokio::time::sleep(Duration::from_secs(jittered)).await;
+            sleep_with_backoff(consecutive_failures, args.poll_interval).await;
         }
-
         ticker.tick().await;
 
-        // Self-paced renewal at 50% of cert validity. Each tick
-        // checks the cert; if past 50%, generate a fresh CSR and
-        // POST /v1/agent/renew via the current authenticated client.
-        // Failure is non-fatal — next tick retries.
-        if let (Some(cert_path), Some(key_path)) =
-            (args.client_cert.as_deref(), args.client_key.as_deref())
-        {
-            if let Ok((remaining, _)) =
-                nixfleet_agent::enrollment::cert_remaining_fraction(cert_path, chrono::Utc::now())
-            {
-                if remaining < 0.5 {
-                    tracing::info!(remaining, "cert past 50% — renewing");
-                    if let Err(err) = nixfleet_agent::enrollment::renew(
-                        &client_handle,
-                        &args.control_plane_url,
-                        &args.machine_id,
-                        cert_path,
-                        key_path,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %err, "renew failed; retry next tick");
-                        post_report(
-                            &client_handle,
-                            &args.control_plane_url,
-                            &args.machine_id,
-                            None,
-                            ReportEvent::RenewalFailed {
-                                reason: err.to_string(),
-                            },
-                        )
-                        .await;
-                    } else {
-                        // Rebuild the client with the new cert + key.
-                        match comms::build_client(
-                            args.ca_cert.as_deref(),
-                            args.client_cert.as_deref(),
-                            args.client_key.as_deref(),
-                        ) {
-                            Ok(new) => client_handle = new,
-                            Err(err) => {
-                                tracing::error!(error = %err, "rebuild client after renew");
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(new_client) = maybe_renew_cert(&client_handle, args).await {
+            client_handle = new_client;
         }
 
-        match send_checkin(&client_handle, &args, started_at).await {
+        match send_checkin(&client_handle, args, started_at).await {
             Ok(resp) => {
                 consecutive_failures = 0;
                 if let Some(target) = &resp.target {
-                    // freshness gate: refuse to activate a
-                    // target whose backing fleet.resolved is older
-                    // than the channel's freshness_window (with ±60s
-                    // skew slack). Defense-in-depth — the CP applies
-                    // the same gate at tick start, so a stale target
-                    // reaching the agent normally points at a
-                    // CP-side bug or clock-skew issue.
-                    use nixfleet_agent::freshness::{check as freshness_check, FreshnessCheck};
-                    match freshness_check(target, chrono::Utc::now()) {
-                        FreshnessCheck::Stale {
-                            signed_at,
-                            freshness_window_secs,
-                            age_secs,
-                        } => {
-                            tracing::warn!(
-                                closure_hash = %target.closure_hash,
-                                channel_ref = %target.channel_ref,
-                                signed_at = %signed_at,
-                                freshness_window_secs,
-                                age_secs,
-                                "agent: refusing stale target — fleet.resolved older than freshness_window + 60s slack",
-                            );
-                            post_report(
-                                &client_handle,
-                                &args.control_plane_url,
-                                &args.machine_id,
-                                Some(&target.channel_ref),
-                                ReportEvent::StaleTarget {
-                                    closure_hash: target.closure_hash.clone(),
-                                    channel_ref: target.channel_ref.clone(),
-                                    signed_at,
-                                    freshness_window_secs,
-                                    age_secs,
-                                },
-                            )
-                            .await;
-                            continue;
-                        }
-                        FreshnessCheck::Unknown => {
-                            tracing::debug!(
-                                closure_hash = %target.closure_hash,
-                                "agent: target lacks signed_at/freshness_window_secs — older CP, skipping freshness gate",
-                            );
-                        }
-                        FreshnessCheck::Fresh => {}
-                    }
-
-                    // Persist the dispatch BEFORE firing so the
-                    // post-self-switch boot-recovery path
-                    // (`check_boot_recovery`) can detect "the new
-                    // closure is live, send the retroactive confirm".
-                    // Best-effort: failures log but do not block
-                    // activation. The next regular checkin will
-                    // re-dispatch if recovery can't find the record.
-                    let dispatch_record = nixfleet_agent::checkin_state::LastDispatchRecord {
-                        closure_hash: target.closure_hash.clone(),
-                        channel_ref: target.channel_ref.clone(),
-                        rollout_id: target.rollout_id.clone(),
-                        dispatched_at: chrono::Utc::now(),
-                    };
-                    if let Err(err) = nixfleet_agent::checkin_state::write_last_dispatched(
-                        &args.state_dir,
-                        &dispatch_record,
-                    ) {
-                        tracing::warn!(
-                            error = %err,
-                            state_dir = %args.state_dir.display(),
-                            "write_last_dispatched failed; boot-recovery path will fall back to next-checkin re-dispatch",
-                        );
-                    }
-
-                    // pre-fire signal. Lets operators see
-                    // "agent X started activating closure Y at
-                    // timestamp T" in the CP report log, deterministic
-                    // bookend to the post-poll success/failure event.
-                    // Best-effort — failure to post doesn't block the
-                    // activation itself.
-                    post_report(
-                        &client_handle,
-                        &args.control_plane_url,
-                        &args.machine_id,
-                        Some(&target.channel_ref),
-                        ReportEvent::ActivationStarted {
-                            closure_hash: target.closure_hash.clone(),
-                            channel_ref: target.channel_ref.clone(),
-                        },
-                    )
-                    .await;
-
-                    // Realise + switch + verify the target.
-                    // On full FiredAndPolled → POST /v1/agent/confirm.
-                    // On SwitchFailed (system in unexpected state) →
-                    // local rollback. RealiseFailed left nothing
-                    // switched — skip rollback, retry next tick.
-                    // CP returning 410 from /confirm independently
-                    // triggers rollback.
-                    let outcome = nixfleet_agent::activation::activate(target).await;
-                    handle_activation_outcome(
-                        outcome,
-                        target,
-                        &client_handle,
-                        &args,
-                        &evidence_signer,
-                    )
-                    .await;
+                    process_dispatch_target(target, &client_handle, args, &evidence_signer).await;
                 }
             }
             Err(err) => {
@@ -390,6 +241,155 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+}
+
+async fn sleep_with_backoff(consecutive_failures: u32, poll_interval: u64) {
+    let multiplier = 1u64 << (consecutive_failures.min(3)); // 1, 2, 4, 8
+    let base = poll_interval.saturating_mul(multiplier);
+    let jitter_pct: f64 = {
+        use rand::Rng;
+        rand::thread_rng().gen_range(-0.2_f64..=0.2_f64)
+    };
+    let jittered = (base as f64 * (1.0 + jitter_pct)) as u64;
+    tracing::debug!(
+        consecutive_failures,
+        backoff_secs = jittered,
+        "agent: backoff sleep"
+    );
+    tokio::time::sleep(Duration::from_secs(jittered)).await;
+}
+
+/// Self-paced renewal at 50% of cert validity. Returns `Some(new
+/// client)` when renewal happened so the caller can swap; None
+/// otherwise. Failure is non-fatal — next tick retries.
+async fn maybe_renew_cert(client: &reqwest::Client, args: &Args) -> Option<reqwest::Client> {
+    let (Some(cert_path), Some(key_path)) =
+        (args.client_cert.as_deref(), args.client_key.as_deref())
+    else {
+        return None;
+    };
+    let (remaining, _) =
+        nixfleet_agent::enrollment::cert_remaining_fraction(cert_path, chrono::Utc::now()).ok()?;
+    if remaining >= 0.5 {
+        return None;
+    }
+    tracing::info!(remaining, "cert past 50% — renewing");
+    if let Err(err) = nixfleet_agent::enrollment::renew(
+        client,
+        &args.control_plane_url,
+        &args.machine_id,
+        cert_path,
+        key_path,
+    )
+    .await
+    {
+        tracing::warn!(error = %err, "renew failed; retry next tick");
+        post_report(
+            client,
+            &args.control_plane_url,
+            &args.machine_id,
+            None,
+            ReportEvent::RenewalFailed {
+                reason: err.to_string(),
+            },
+        )
+        .await;
+        return None;
+    }
+    match comms::build_client(
+        args.ca_cert.as_deref(),
+        args.client_cert.as_deref(),
+        args.client_key.as_deref(),
+    ) {
+        Ok(new) => Some(new),
+        Err(err) => {
+            tracing::error!(error = %err, "rebuild client after renew");
+            None
+        }
+    }
+}
+
+/// Run the freshness gate, persist the dispatch record (so boot
+/// recovery can confirm a self-killed activation), post the
+/// pre-fire `ActivationStarted`, then activate + handle outcome.
+async fn process_dispatch_target(
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    client: &reqwest::Client,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+) {
+    use nixfleet_agent::freshness::{check as freshness_check, FreshnessCheck};
+    match freshness_check(target, chrono::Utc::now()) {
+        FreshnessCheck::Stale {
+            signed_at,
+            freshness_window_secs,
+            age_secs,
+        } => {
+            tracing::warn!(
+                closure_hash = %target.closure_hash,
+                channel_ref = %target.channel_ref,
+                signed_at = %signed_at,
+                freshness_window_secs,
+                age_secs,
+                "agent: refusing stale target — fleet.resolved older than freshness_window + 60s slack",
+            );
+            post_report(
+                client,
+                &args.control_plane_url,
+                &args.machine_id,
+                Some(&target.channel_ref),
+                ReportEvent::StaleTarget {
+                    closure_hash: target.closure_hash.clone(),
+                    channel_ref: target.channel_ref.clone(),
+                    signed_at,
+                    freshness_window_secs,
+                    age_secs,
+                },
+            )
+            .await;
+            return;
+        }
+        FreshnessCheck::Unknown => {
+            tracing::debug!(
+                closure_hash = %target.closure_hash,
+                "agent: target lacks signed_at/freshness_window_secs — older CP, skipping freshness gate",
+            );
+        }
+        FreshnessCheck::Fresh => {}
+    }
+
+    // Best-effort. Failure means the next regular checkin
+    // re-dispatches instead of boot-recovery confirming.
+    let dispatch_record = nixfleet_agent::checkin_state::LastDispatchRecord {
+        closure_hash: target.closure_hash.clone(),
+        channel_ref: target.channel_ref.clone(),
+        rollout_id: target.rollout_id.clone(),
+        dispatched_at: chrono::Utc::now(),
+    };
+    if let Err(err) =
+        nixfleet_agent::checkin_state::write_last_dispatched(&args.state_dir, &dispatch_record)
+    {
+        tracing::warn!(
+            error = %err,
+            state_dir = %args.state_dir.display(),
+            "write_last_dispatched failed; boot-recovery path will fall back to next-checkin re-dispatch",
+        );
+    }
+
+    post_report(
+        client,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&target.channel_ref),
+        ReportEvent::ActivationStarted {
+            closure_hash: target.closure_hash.clone(),
+            channel_ref: target.channel_ref.clone(),
+        },
+    )
+    .await;
+
+    let outcome = nixfleet_agent::activation::activate(target).await;
+    handle_activation_outcome(outcome, target, client, args, evidence_signer).await;
 }
 
 /// Dispatch on the result of `activation::activate`. Telemetry-only
