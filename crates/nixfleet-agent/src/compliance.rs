@@ -1,31 +1,15 @@
-//! Runtime compliance gate ( / arcanesys/nixfleet#4).
+//! Runtime compliance gate.
 //!
-//! Post fire-and-forget activation, BEFORE the agent posts confirm,
-//! it must verify that compliance probes have re-run against the
-//! newly-active closure and produced fresh evidence. Without this
-//! gate, the rollout engine can promote a non-compliant host on
-//! yesterday's PASS data.
+//! After fire-and-forget activation, before posting confirm: trigger
+//! the evidence collector and verify it produced fresh evidence
+//! against the new closure. Without this gate the rollout engine
+//! could promote a non-compliant host on yesterday's PASS data.
 //!
-//! Mirrors the freshness-verify-after-async-trigger pattern from
-//! fire-and-forget activation:
-//!
-//! | fire-and-forget | Runtime gate (here) |
-//! |--------------------------------------------------|------------------------------------------------------|
-//! | `systemd-run --unit=nixfleet-switch` (async) | `systemctl start compliance-evidence-collector` |
-//! | Poll `/run/current-system` for expected basename | Read `evidence.json.timestamp >= activation_time` |
-//! | Poll budget timeout → SwitchFailed | Collector timeout → RuntimeGateError |
-//! | ±60s skew slack on freshness gate | ±60s skew slack on timestamp comparison |
-//!
-//! Same shape: don't trust the async trigger fired; verify the
-//! observable post-condition.
-//!
-//! ## Graceful degradation
+//! Same freshness-verify-after-async-trigger pattern as activation:
+//! don't trust the async trigger fired, verify the post-condition.
 //!
 //! Fleets without `nixfleet-compliance` deployed have no collector
-//! unit. The gate detects this via `systemctl status` and skips
-//! cleanly with a debug log — never errors out. This keeps the
-//! agent compatible with non-compliance fleets without a feature
-//! flag.
+//! unit; the gate detects this and skips cleanly (debug log).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -35,42 +19,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-/// Default path the `compliance-evidence-collector` writes to.
 /// Matches `compliance.evidence.collector.outputDir` in
-/// nixfleet-compliance (default `/var/lib/nixfleet-compliance`).
-/// Configurable per-host via `--compliance-evidence-path` if the
-/// operator overrode the collector's outputDir.
+/// nixfleet-compliance.
 pub const DEFAULT_EVIDENCE_PATH: &str = "/var/lib/nixfleet-compliance/evidence.json";
 
-/// Default systemd unit name. Matches the unit declared in
-/// `nixfleet-compliance/evidence/collector.nix`.
 pub const COLLECTOR_UNIT: &str = "compliance-evidence-collector.service";
 
-/// How long the agent waits for `systemctl start --wait` to return
-/// before declaring the collector hung. 120s is generous — on lab
-/// the collector typically completes in <2s; the budget covers
-/// hosts with many probes or slow disks. Tunable via
-/// `--compliance-collector-timeout-secs` if needed.
+/// Generous: the collector typically completes in <2s on lab; the
+/// budget covers hosts with many probes or slow disks.
 pub const COLLECTOR_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Symmetric slack applied to the timestamp freshness comparison.
-/// Mirrors `freshness::CLOCK_SKEW_SLACK_SECS`. The agent's clock
-/// and the collector's clock are the same kernel, so the slack is
-/// really for "evidence collected within slack-secs OF
-/// activation_completed_at" rather than clock skew per se.
+/// "Evidence collected within N seconds of activation_completed_at"
+/// — agent and collector share a kernel, so this isn't strictly
+/// clock skew, but the slack absorbs runtime noise.
 pub const TIMESTAMP_SLACK_SECS: i64 = 60;
 
-// Re-export the canonical `GateMode` from nixfleet-proto. Earlier
-// revisions had three parallel definitions (Nix enum / agent enum /
-// CP `&str` matching) — the proto crate is now the single source of
-// truth for the policy vocabulary, and every layer parses + matches
-// against the same variants.
 pub use nixfleet_proto::compliance::GateMode;
 
-/// Wire-shape of `evidence.json` written by the
-/// nixfleet-compliance probe-runner. Public because callers may
-/// want to inspect specific controls; the gate logic only uses a
-/// subset of fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComplianceEvidence {
     pub host: String,
@@ -81,10 +46,8 @@ pub struct ComplianceEvidence {
     pub overall: String,
 }
 
-/// One row of the `controls` array. `framework_articles` is an
-/// attrset on the wire (`{nis2: ["21(b)"], iso27001: ["A.8.15"]}`);
-/// callers flatten it into a `framework:article` string list when
-/// building `ReportEvent::ComplianceFailure`.
+/// `framework_articles` is `{nis2: ["21(b)"], iso27001: ["A.8.15"]}`
+/// on the wire; callers flatten to `framework:article` strings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlEvidence {
     pub control: String,
@@ -95,34 +58,26 @@ pub struct ControlEvidence {
     pub checks: serde_json::Value,
 }
 
-/// Outcome of `run_runtime_gate`. Mirrors `ActivationOutcome` shape
-/// so the caller can pattern-match similarly.
 #[derive(Debug, Clone)]
 pub enum GateOutcome {
-    /// Collector ran, evidence is fresh, all controls compliant or
-    /// the gate is informational-only. Agent proceeds to confirm.
+    /// All controls compliant on fresh evidence. Confirm.
     Pass {
         evidence: ComplianceEvidence,
     },
-    /// Collector ran, evidence is fresh, but at least one control
-    /// is `non-compliant` or `error`. Agent posts one
-    /// `ComplianceFailure` event per failing control. Whether to
-    /// also block the confirm is the CP rollout engine's call
-    /// the agent always reports honestly.
+    /// At least one control non-compliant on fresh evidence. Agent
+    /// posts one `ComplianceFailure` per failing control; CP decides
+    /// whether to block confirm.
     Failures {
         evidence: ComplianceEvidence,
         failures: Vec<ControlEvidence>,
     },
-    /// Collector wasn't even installed on this host. Skip the gate
-    /// silently; non-compliance fleets are valid configurations.
+    /// Collector not installed; non-compliance fleets are valid.
     Skipped {
         reason: String,
     },
-    /// Collector failed, timed out, or evidence is stale relative
-    /// to `activation_completed_at`. Agent posts
-    /// `ReportEvent::RuntimeGateError` and refuses to confirm
-    /// magic-rollback fires on the deadline. Defense-in-depth
-    /// match for 's poll-timeout class.
+    /// Collector failed/timed out, or evidence stale relative to
+    /// `activation_completed_at`. Agent posts `RuntimeGateError`
+    /// and refuses confirm; magic-rollback fires on the deadline.
     GateError {
         reason: String,
         collector_exit_code: Option<i32>,
@@ -130,20 +85,12 @@ pub enum GateOutcome {
     },
 }
 
-/// Resolve the effective gate mode from operator input + collector
-/// presence. Public so the caller can know what mode the gate will
-/// run in — needed to decide whether `RuntimeGateError` should
-/// block confirm.
-///
 /// Resolution:
-/// - explicit `Disabled` → `Disabled` (regardless of presence)
-/// - explicit `Permissive` / `Enforce` + collector present → that mode
-/// - explicit `Permissive` / `Enforce` + collector absent →
-///   `Disabled`, with a warn-log (operator configured for
-///   measurement but no collector deployed — likely an oversight
-///   worth flagging, but NOT a measurement failure). Caller
-///   posts no event for this case.
-/// - `None` (auto) → `Permissive` if present, `Disabled` if absent.
+/// - explicit `Disabled` → `Disabled`
+/// - `Permissive`/`Enforce` + collector present → that mode
+/// - `Permissive`/`Enforce` + collector absent → `Disabled` + warn
+///   (operator misconfigured: measurement requested but no collector)
+/// - `None` (auto) → `Permissive` if present, `Disabled` if absent
 pub async fn resolve_mode(input: Option<GateMode>) -> GateMode {
     let collector_present = collector_unit_present().await;
     match input {
@@ -193,16 +140,12 @@ pub async fn run_runtime_gate(
     effective_mode: GateMode,
 ) -> GateOutcome {
     if matches!(effective_mode, GateMode::Disabled) {
-        // Caller resolved to Disabled either explicitly or via
-        // auto-detection (collector unit absent). Either way:
-        // skip cleanly, no events, no log noise.
         return GateOutcome::Skipped {
             reason: "gate mode disabled (collector absent or operator-suppressed)"
                 .to_string(),
         };
     }
 
-    // Step 2: trigger + wait for the collector.
     let trigger_result = trigger_collector_with_timeout(COLLECTOR_TIMEOUT).await;
     let collector_exit: Option<i32> = match trigger_result {
         Ok(()) => None,
@@ -234,17 +177,9 @@ pub async fn run_runtime_gate(
             };
         }
     };
-    // collector_exit currently always None on success — kept as a
-    // typed binding so future systemctl wrappers that expose exec
-    // status (via systemctl show) can plumb it without an API
-    // change. Unused for now.
     let _: Option<i32> = collector_exit;
-    // Effective_mode is consumed at the end (Pass/Failures
-    // classification doesn't differ between Permissive and Enforce
-    // — only the caller's response to the outcome differs).
     let _ = effective_mode;
 
-    // Step 3: read evidence.json.
     let evidence = match read_evidence(evidence_path).await {
         Ok(e) => e,
         Err(err) => {
@@ -256,11 +191,7 @@ pub async fn run_runtime_gate(
         }
     };
 
-    // Step 4: freshness check. Evidence must have been collected
-    // at or after `activation_completed_at - SLACK` to be
-    // considered post-activation. The slack absorbs sub-second
-    // ordering between fire-and-forget poll completion and the
-    // collector's timestamp generation.
+    // Freshness: evidence must be collected ≥ activation - slack.
     let min_acceptable =
         activation_completed_at - chrono::Duration::seconds(TIMESTAMP_SLACK_SECS);
     if evidence.timestamp < min_acceptable {
@@ -274,7 +205,6 @@ pub async fn run_runtime_gate(
         };
     }
 
-    // Step 5: classify.
     let failures: Vec<ControlEvidence> = evidence
         .controls
         .iter()
@@ -312,11 +242,8 @@ enum TriggerError {
     Spawn(anyhow::Error),
 }
 
-/// `systemctl start --wait <unit>` with a hard wall-clock timeout.
-/// `--wait` blocks until the (oneshot) unit exits, so the agent
-/// has a synchronous "collector done" signal. The wall-clock
-/// timeout protects against a stuck unit (e.g. a probe in a busy
-/// loop) — without it the agent could block forever.
+/// `--wait` blocks until the oneshot unit exits. Wall-clock timeout
+/// protects against a stuck probe.
 async fn trigger_collector_with_timeout(
     timeout: Duration,
 ) -> std::result::Result<(), TriggerError> {
@@ -368,20 +295,14 @@ pub fn flatten_framework_articles(value: &serde_json::Value) -> Vec<String> {
     out
 }
 
-/// Truncate `evidence_snippet` to ~1KB to bound report size on the
-/// wire. The CP records the full structured object, but keeping
-/// per-event payloads small avoids unbounded growth in the agent's
-/// in-memory ring buffer + the proto wire shape.
+/// Bounds wire payload size. Operators have the full `evidence.json`
+/// on-host for triage; the wire copy is a hint, not source of truth.
 pub fn truncate_evidence_snippet(checks: &serde_json::Value) -> serde_json::Value {
     let serialized = serde_json::to_string(checks)
         .expect("serde_json::to_string on a serde_json::Value is infallible");
     if serialized.len() <= 1024 {
         return checks.clone();
     }
-    // Truncate to a string field if the structured form is too
-    // large. Operators always have the full `evidence.json` on the
-    // host for triage; the wire copy is a triage hint, not the
-    // source of truth.
     serde_json::json!({
         "_truncated_": true,
         "_original_size_bytes_": serialized.len(),

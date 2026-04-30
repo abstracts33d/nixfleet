@@ -1,16 +1,6 @@
 //! Live `Observed` projection from in-memory checkin state.
-//!
-//! Default source of truth for the reconcile loop. The file-backed
-//! input stays as `--observed` for offline-replay debugging (operator
-//! dumps in-memory state, reproduces a tick) and as a dev/test
-//! fallback when no agents are checking in yet.
-//!
-//! Active rollouts come from the DB snapshot (step 2 of gap #2 in
-//! docs/roadmap/0002-v0.2-completeness-gaps.md): the caller queries
-//! `Db::active_rollouts_snapshot ` and passes the result in. When
-//! no DB is configured (offline replay, early-boot), pass `&[]` and
-//! the projection emits an empty `active_rollouts` — same shape as
-//! before this PR.
+//! `--observed` (file-backed) stays as a dev/test + offline-replay
+//! fallback. Pass `&[]` for `rollouts` when no DB is configured.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -21,9 +11,7 @@ use nixfleet_reconciler::{HostRolloutState, RolloutState};
 use crate::db::RolloutDbSnapshot;
 use crate::server::HostCheckinRecord;
 
-/// Build an `Observed` from the in-memory checkin records, the
-/// channel-refs cache, and the DB-derived rollout snapshot. Pure
-/// function — caller takes the read locks and runs the DB query.
+/// Pure: caller holds the read locks and runs the DB query.
 pub fn project(
     host_checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
@@ -41,15 +29,9 @@ pub fn project(
         );
     }
 
-    // Without a dedicated rollouts table the CP can't track
-    // rollout-level state directly (Planning/Executing/Halted/...);
-    // step 3's reconciler arm + an `Action::SoakHost` handler will
-    // be the next layer to land. For now, every snapshotted
-    // rollout is surfaced as Executing so `rollout_state.rs`'s
-    // wave handling actually fires for it. `current_wave` defaults
-    // to 0 — the lab fleet is single-wave; multi-wave dispatch
-    // tracking is part of the Phase 4 follow-up that adds the
-    // hosts + rollouts tables.
+    // No dedicated rollouts table yet; every snapshotted rollout
+    // surfaces as Executing. Multi-wave tracking is a Phase 4
+    // follow-up.
     let active_rollouts: Vec<Rollout> = rollouts
         .iter()
         .map(|snap| Rollout {
@@ -58,24 +40,11 @@ pub fn project(
             target_ref: snap.target_channel_ref.clone(),
             state: RolloutState::Executing,
             current_wave: 0,
-            // String → typed conversion at the DB → reconciler seam.
-            //
-            // Unknown strings fall back to `Failed` (NOT `Queued`),
-            // and emit a warn-level trace so operators see the
-            // schema mismatch. `Queued` would be actively harmful:
-            // the reconciler treats it as fresh dispatchable work,
-            // so an unrecognised state value would re-dispatch the
-            // host on every tick — the inverse of resolution-by-
-            // replacement. `Failed` halts the rollout per policy
-            // and is the conservative posture: an operator must
-            // inspect rather than letting the system silently
-            // re-drive activation.
-            //
-            // The fallback should be unreachable in practice:
-            // `HostRolloutState`'s variant set is the canonical
-            // truth for the V003 SQL CHECK, and the
-            // `host_rollout_state_check_matches_enum` test catches
-            // drift between them at compile/test time.
+            // Unknown SQL strings fall back to `Failed` (not
+            // `Queued`!) — `Queued` would re-dispatch the host
+            // every tick, defeating resolution-by-replacement.
+            // The variant set is canonical for V003 CHECK; drift
+            // is caught by `host_rollout_state_check_matches_enum`.
             host_states: snap
                 .host_states
                 .iter()
@@ -100,8 +69,7 @@ pub fn project(
 
     Observed {
         channel_refs: channel_refs.clone(),
-        // Not yet tracked here; reconcile against the empty case is
-        // fine — the dispatch loop is what populates last-rolled-refs.
+        // Dispatch loop populates last_rolled_refs; empty case fine.
         last_rolled_refs: HashMap::new(),
         host_state,
         active_rollouts,

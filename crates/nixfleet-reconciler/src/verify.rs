@@ -53,44 +53,15 @@ pub enum VerifyError {
     NoTrustRoots,
 }
 
-/// Verify a signed `fleet.resolved` artifact per step 0.
+/// `trusted_keys` supports the rotation grace window — current +
+/// previous keys are both valid for up to 30 days. Tries in
+/// declaration order; first match wins. Entries with unsupported
+/// algorithms are skipped silently for forward-compat.
 ///
-/// # Trust root list
-///
-/// `trusted_keys` is a list to support [`CONTRACTS.md §II`]'s rotation
-/// grace window — during a key rotation, the previous and current keys
-/// are BOTH valid trust roots for up to 30 days. The verifier tries
-/// each in declaration order; the first key whose algorithm is
-/// supported AND whose `verify_strict` accepts the signature wins.
-///
-/// Entries with unsupported algorithms are skipped (with no error),
-/// enabling forward compatibility: when `#18` amends §II to add e.g.
-/// `p256`, an older verifier binary can still operate against a
-/// mixed-algorithm `trust.ciReleaseKeys` list; it just only matches
-/// the subset of keys whose algorithms it knows.
-///
-/// # Signature width
-///
-/// `signature` is a byte slice, not a fixed-size array. Per-algorithm
-/// length validation happens inside the dispatcher. ed25519 expects
-/// exactly 64 bytes (32-byte R || 32-byte s). A future `p256` branch
-/// will decide whether to accept raw r||s (64 bytes) or DER-encoded
-/// (variable) — for now, non-ed25519 algorithms bail with
-/// `UnsupportedAlgorithm`.
-///
-/// # Compromise switch
-///
-/// `reject_before` is the slot-wide compromise kill-switch per
-/// [`docs/trust-root-flow.md §7.2`][flow] / `CONTRACTS.md §II #1`.
-/// When `Some(ts)`, any artifact whose `meta.signedAt < ts` is rejected
-/// with [`VerifyError::RejectedBeforeTimestamp`] regardless of which
-/// trust root matched the signature. `None` disables the gate. The
-/// check fires before the `freshness_window` check so alerts can
-/// distinguish an operator-declared incident response from routine
-/// staleness. The comparison is strict `<` — an artifact signed
-/// exactly at `reject_before` is accepted.
-///
-/// [flow]: ../../../docs/trust-root-flow.md
+/// `reject_before`: compromise kill-switch. `meta.signedAt < ts`
+/// is rejected regardless of which key matched. Strict `<` — exact
+/// equality is accepted. Fires before the freshness check so
+/// alerts can distinguish incident response from routine staleness.
 pub fn verify_artifact(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -104,9 +75,8 @@ pub fn verify_artifact(
     finish_verification(&canonical, now, freshness_window, reject_before)
 }
 
-/// Dispatched verification for ed25519. `verify_strict` rejects malleable
-/// signatures (non-canonical R or `s >= L`) — required for root-of-trust
-/// keys per CONTRACTS.md §II #1.
+/// `verify_strict` rejects malleable signatures — required for
+/// root-of-trust keys.
 fn verify_ed25519(
     canonical_bytes: &[u8],
     signature: &[u8],
@@ -142,19 +112,10 @@ fn verify_ed25519(
         .map_err(|_| VerifyError::BadSignature)
 }
 
-/// Dispatched verification for ECDSA P-256 (NIST curve) per #18 §II.
-///
-/// Public key encoding per CONTRACTS.md §II #1: 64 bytes `X ‖ Y`
-/// (uncompressed SEC1 point with the `0x04` tag stripped), base64-encoded.
-/// Signature encoding: 64 bytes `R ‖ S`, raw (no DER wrapping).
-///
-/// Low-s malleability rejection: ECDSA signatures on Weierstrass curves
-/// are malleable — if `(r, s)` is valid, so is `(r, n − s)`. Canonical
-/// p256 signatures have `s <= n / 2`. The `p256` crate's
-/// `Signature::normalize_s ` returns `Some(normalized)` iff the input
-/// was high-s; we reject any such signature outright. Required for
-/// root-of-trust keys per the same hardening pattern as `verify_strict`
-/// on ed25519.
+/// Pubkey: 64 bytes `X || Y` (SEC1 uncompressed minus `0x04` tag),
+/// base64. Sig: 64 bytes `R || S` raw. Low-s malleability rejected
+/// (canonical p256 has `s <= n/2`; `normalize_s().is_some()` ⇒
+/// reject) — same hardening posture as ed25519 `verify_strict`.
 fn verify_ecdsa_p256(
     canonical_bytes: &[u8],
     signature: &[u8],
@@ -181,8 +142,7 @@ fn verify_ecdsa_p256(
         });
     }
 
-    // Re-tag as a 65-byte SEC1 uncompressed point (0x04 || X || Y) for
-    // the p256 decoder.
+    // Re-tag as 65-byte SEC1 uncompressed (0x04 || X || Y).
     let mut tagged = [0u8; 65];
     tagged[0] = 0x04;
     tagged[1..].copy_from_slice(&public_bytes);
@@ -241,12 +201,8 @@ pub fn verify_revocations(
     finish_revocations_verification(&canonical, now, freshness_window, reject_before)
 }
 
-/// Shared step 1-3 of artifact verification: parse → canonicalize
-/// → signature against trust roots. Returns the canonical bytes
-/// as a String so the caller can type-parse them. Both
-/// `verify_artifact` (FleetResolved) and `verify_revocations`
-/// (Revocations) call this; the schema-gate + freshness step is
-/// type-specific.
+/// Shared parse → canonicalize → sig-verify. Returns canonical
+/// bytes; caller does type-specific schema-gate + freshness.
 fn verify_signature_against_trust_roots(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -293,10 +249,8 @@ fn verify_signature_against_trust_roots(
     Err(VerifyError::BadSignature)
 }
 
-/// Schema-gate + reject_before + freshness for revocations.json.
-/// Mirrors `finish_verification` for FleetResolved with the type
-/// swap; kept separate so the two artifacts can drift their
-/// schema versions independently.
+/// Mirrors `finish_verification` for the `Revocations` type.
+/// Separate so the two artifacts can drift schema versions.
 fn finish_revocations_verification(
     canonical: &str,
     now: DateTime<Utc>,
@@ -328,31 +282,21 @@ fn finish_revocations_verification(
     Ok(revs)
 }
 
-/// Steps 4-6 after signature verification: type-parse, schema-gate,
-/// reject_before compromise switch, freshness.
-///
-/// Ordering rationale: `reject_before` is an operator-declared incident
-/// response (slot-wide compromise switch per trust-root §7.2), a
-/// stronger signal than routine staleness. We surface the more specific
-/// error first so logs and alerts can distinguish "key compromised,
-/// rotate" from "CI is behind, re-run".
+/// `reject_before` is checked before freshness so alerts can
+/// distinguish "key compromised, rotate" from "CI is behind".
 fn finish_verification(
     canonical: &str,
     now: DateTime<Utc>,
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
 ) -> Result<FleetResolved, VerifyError> {
-    // Step 4: type-parse.
     let fleet: FleetResolved = serde_json::from_str(canonical)?;
-
-    // Step 5: schemaVersion gate.
     if fleet.schema_version != ACCEPTED_SCHEMA_VERSION {
         return Err(VerifyError::SchemaVersionUnsupported(fleet.schema_version));
     }
 
     let signed_at = fleet.meta.signed_at.ok_or(VerifyError::NotSigned)?;
 
-    // Step 6a: slot-level compromise switch — applies to whichever key matched.
     if let Some(rb) = reject_before {
         if signed_at < rb {
             return Err(VerifyError::RejectedBeforeTimestamp {
@@ -362,16 +306,10 @@ fn finish_verification(
         }
     }
 
-    // Step 6b: freshness.
-    //
-    // / require ≥60s slack so benign clock
-    // drift between the signing host and the verifying host doesn't
-    // trigger spurious staleness errors. The slack is added to the
-    // window itself rather than the timestamp because we want to
-    // tolerate "signed_at appears more recent than now" symmetrically
-    // — a negative `now - signed_at` already passes this comparison.
+    // Slack added to window (not timestamp) tolerates "signed_at >
+    // now" symmetrically — negative diff passes the comparison.
     let window = ChronoDuration::from_std(freshness_window)
-        .expect("freshness_window fits in i64 nanoseconds — multi-century windows are a bug");
+        .expect("freshness_window fits in i64 nanoseconds");
     let effective_window = window + ChronoDuration::seconds(CLOCK_SKEW_SLACK_SECS);
     if now - signed_at > effective_window {
         return Err(VerifyError::Stale {
@@ -384,7 +322,4 @@ fn finish_verification(
     Ok(fleet)
 }
 
-/// Symmetric clock-skew slack added to the freshness window when
-/// rejecting stale `fleet.resolved` artifacts. Spec ( /
-/// ) requires ≥60s; we use exactly 60s.
 pub const CLOCK_SKEW_SLACK_SECS: i64 = 60;

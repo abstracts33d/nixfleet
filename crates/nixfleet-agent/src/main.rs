@@ -1,12 +1,5 @@
 #![allow(clippy::doc_lazy_continuation)]
 //! `nixfleet-agent` — main poll + activation loop.
-//!
-//! Reads cert paths + CP URL from CLI flags, builds an mTLS reqwest
-//! client, polls `/v1/agent/checkin` every `pollInterval` seconds
-//! with a richer body than 's minimum (pending
-//! generation, last-fetch outcome, agent uptime). On a dispatched
-//! target, realises and activates the closure, then confirms via
-//! `/v1/agent/confirm`.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -18,11 +11,8 @@ use nixfleet_proto::agent_wire::{CheckinRequest, ReportEvent, ReportRequest};
 
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Build + POST a `/v1/agent/report` event to the CP. Best-effort:
-/// telemetry MUST NOT crash the activation loop, so any HTTP / TLS
-/// / serde failure is logged at warn and swallowed. The event is
-/// already in the local journal (the caller logs first); the report
-/// is purely for the operator's CP-side view.
+/// Best-effort: telemetry must never crash the activation loop.
+/// Failures log at warn; the event is already in the local journal.
 async fn post_report(
     client: &reqwest::Client,
     cp_url: &str,
@@ -53,81 +43,47 @@ async fn post_report(
     about = "NixFleet fleet agent."
 )]
 struct Args {
-    /// Control plane URL (e.g. https://lab:8080). Trailing slash
-    /// optional.
     #[arg(long, env = "NIXFLEET_AGENT_CP_URL")]
     control_plane_url: String,
 
-    /// This host's identifier — must match the CN in the agent
-    /// client cert. Defaults to the system hostname when set by
-    /// the NixOS module.
+    /// Must match the CN in the agent's client cert.
     #[arg(long, env = "NIXFLEET_AGENT_MACHINE_ID")]
     machine_id: String,
 
-    /// Seconds between checkins. Default 60s, matching
-    /// and the CP's response `nextCheckinSecs`.
     #[arg(long, default_value_t = 60, env = "NIXFLEET_AGENT_POLL_INTERVAL")]
     poll_interval: u64,
 
-    /// Path to trust.json. Read on startup; agent restarts on
-    /// rebuild to pick up changes (docs/trust-root-flow.md §7.1).
     #[arg(long, env = "NIXFLEET_AGENT_TRUST_FILE")]
     trust_file: PathBuf,
 
-    /// CA cert PEM for verifying the CP's TLS cert.
     #[arg(long, env = "NIXFLEET_AGENT_CA_CERT")]
     ca_cert: Option<PathBuf>,
 
-    /// Client cert PEM (the agent's identity to the CP).
     #[arg(long, env = "NIXFLEET_AGENT_CLIENT_CERT")]
     client_cert: Option<PathBuf>,
 
-    /// Client private key PEM paired with `client_cert`.
     #[arg(long, env = "NIXFLEET_AGENT_CLIENT_KEY")]
     client_key: Option<PathBuf>,
 
-    /// Bootstrap token file. When `client_cert` doesn't exist on
-    /// startup AND this is set, the agent enters first-boot
-    /// enrollment: reads token, generates CSR, POSTs /v1/enroll,
-    /// writes the issued cert + key to `client_cert` / `client_key`.
+    /// When `client_cert` doesn't exist on startup AND this is set,
+    /// the agent enrolls via /v1/enroll and writes the issued cert
+    /// to `client_cert` / `client_key`.
     #[arg(long, env = "NIXFLEET_AGENT_BOOTSTRAP_TOKEN_FILE")]
     bootstrap_token_file: Option<PathBuf>,
 
-    /// Per-host state directory. The agent writes
-    /// `last_confirmed_at` here on every successful confirm so it
-    /// can attest the timestamp on every subsequent checkin
-    /// ( in
-    /// docs/roadmap/0002-v0.2-completeness-gaps.md). Survives agent
-    /// process restart; CP-side `recover_soak_state_from_attestation`
-    /// consumes the attestation to rebuild
-    /// `host_rollout_state.last_healthy_since` after a CP rebuild.
-    /// Default `/var/lib/nixfleet-agent`. The systemd unit
-    /// (modules/scopes/nixfleet/_agent.nix or harness equivalent)
-    /// sets `StateDirectory=` to this path.
     #[arg(long, env = "NIXFLEET_AGENT_STATE_DIR", default_value = "/var/lib/nixfleet-agent")]
     state_dir: PathBuf,
 
-    /// Local default for the runtime compliance gate . One
-    /// of `"disabled"`, `"permissive"`, `"enforce"`, `"auto"` (or
-    /// unset / empty → treated as `"auto"`). The CP can relay a
-    /// per-channel `compliance_mode` on the dispatched
-    /// `EvaluatedTarget`; if present, the relay wins. Otherwise this
-    /// flag's value is used. `auto` resolves to `permissive` when the
-    /// `compliance-evidence-collector.service` unit is present on
-    /// this host and `disabled` when absent — the safe default for
-    /// fleets that haven't deployed `nixfleet-compliance`.
+    /// One of `"disabled"`, `"permissive"`, `"enforce"`, `"auto"`.
+    /// CP-relayed channel mode wins when present. `auto` resolves
+    /// to `permissive` when `compliance-evidence-collector.service`
+    /// is on this host, `disabled` when absent.
     #[arg(long, env = "NIXFLEET_AGENT_COMPLIANCE_GATE_MODE")]
     compliance_gate_mode: Option<String>,
 
-    /// Path to the host's OpenSSH ed25519 private key, used to sign
-    /// `ComplianceFailure` / `RuntimeGateError` event payloads
-    /// ( root-3 / #59). The CP verifies the signature
-    /// against `hosts.<hostname>.pubkey` from `fleet.resolved.json`,
-    /// closing the auditor chain `host_pubkey → JCS event → 64-byte
-    /// ed25519 sig`. Default `/etc/ssh/ssh_host_ed25519_key` matches
-    /// the path NixOS' sshd module generates. Missing file is fine
-    /// — signing is best-effort; events without signatures are
-    /// accepted by the CP but flagged unverified.
+    /// Used to sign `ComplianceFailure` / `RuntimeGateError`
+    /// payloads. Missing file is fine — events post unsigned and
+    /// are accepted but flagged unverified by the CP.
     #[arg(
         long,
         env = "NIXFLEET_AGENT_SSH_HOST_KEY_FILE",
@@ -149,21 +105,15 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let started_at = Instant::now();
 
-    // The trust file is parsed on startup just to fail fast if
-    // misconfigured. The agent doesn't currently consume the trust
-    // root for any in-process verification (a future direct-fetch
-    // fallback path would use verify_artifact); for now it's a
-    // contract-shape check.
+    // Parsed on startup just to fail fast on misconfiguration.
     let trust_raw = std::fs::read_to_string(&args.trust_file).with_context(|| {
         format!("read trust file {}", args.trust_file.display())
     })?;
     let _trust: nixfleet_proto::TrustConfig =
         serde_json::from_str(&trust_raw).context("parse trust file")?;
 
-    // Load the host's SSH ed25519 private key for evidence signing
-    // (#12 root-3 / #59). Best-effort: missing or unreadable key →
-    // signer is None → events post unsigned. Hard-fail only on
-    // actual parse errors (corrupt key file).
+    // Best-effort: missing/unreadable → signer is None → events
+    // post unsigned. Hard-fail only on parse errors (corrupt key).
     let evidence_signer =
         match nixfleet_agent::evidence_signer::EvidenceSigner::load(&args.ssh_host_key_file) {
             Ok(Some(s)) => {
@@ -185,10 +135,7 @@ async fn main() -> anyhow::Result<()> {
         };
     let evidence_signer = std::sync::Arc::new(evidence_signer);
 
-    // First-boot enrollment. When the agent starts and finds no
-    // client cert at the configured path, AND a bootstrap token is
-    // available, run /v1/enroll and write the issued cert + key
-    // before continuing to the poll loop.
+    // First-boot enrollment when no client cert exists yet.
     if let (Some(cert_path), Some(key_path), Some(token_file)) = (
         args.client_cert.as_deref(),
         args.client_key.as_deref(),

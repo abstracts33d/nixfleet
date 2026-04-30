@@ -109,22 +109,10 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
         "agent: activating target",
     );
 
-    // Step 0: switch-lock probe (v0.1 nix::is_switch_in_progress).
-    //
-    // If a `switch-to-configuration` from somewhere else is already
-    // running (operator's manual `nh os switch`, a sibling Ansible
-    // play, an in-flight `nixos-rebuild switch`), bow out and let
-    // them complete. The next poll tick will re-attempt; if /run/
-    // current-system already matches the dispatched target by then,
-    // dispatch returns Converged on the next checkin and we never
-    // even enter activate.
-    //
-    // Without this probe, two activators racing on the same lock
-    // produce surprising failure modes: the second one blocks on
-    // the file lock during its switch script's nixos-tmpfiles run,
-    // both spit interleaved logs, and a poll-budget timeout reports
-    // `SwitchFailed` even though the *other* switch eventually
-    // completes successfully.
+    // Step 0: bow out if another switch-to-configuration is in
+    // flight (operator manual run, sibling Ansible play, etc.) —
+    // racing on the same lock produces interleaved logs + spurious
+    // SwitchFailed timeouts even when the other switch succeeds.
     if is_switch_in_progress().await {
         tracing::info!(
             target_closure = %target.closure_hash,
@@ -135,13 +123,9 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
         });
     }
 
-    // Step 1: realise.
-    //
-    // Pre-`nixos-rebuild` so that closure fetch + signature verification
-    // happens explicitly here. nix-store prints the realised path to
-    // stdout when it succeeds — we capture and assert it matches the
-    // path we asked for, in case some future nix changes resolve
-    // through symlinks or substitution-redirects.
+    // Step 1: realise. Forces fetch + sig verify explicitly; we assert
+    // the realised path matches the requested one to catch symlink /
+    // substitution-redirect surprises.
     let store_path = format!("/nix/store/{}", target.closure_hash);
     let realised = match realise(&store_path).await {
         Ok(p) => p,
@@ -182,15 +166,10 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
         });
     }
 
-    // Step 2: set the system profile FIRST.
-    //
-    // Bootloader entry follows the profile, so even if the switch
-    // process dies mid-run the next boot picks up the new closure.
-    // This is independent of the fire-and-forget step below: the
-    // activation script that switch-to-configuration runs DOES set
-    // the profile too, but doing it here closes the window where a
-    // crash between fire and switch-script-profile-bump leaves the
-    // bootloader pointing at an old generation.
+    // Step 2: set the system profile FIRST so the bootloader follows
+    // the new closure even if the switch process dies mid-run. The
+    // activation script also sets the profile, but doing it here
+    // closes the crash window between fire and script-profile-bump.
     let set_status = Command::new("nix-env")
         .arg("--profile")
         .arg("/nix/var/nix/profiles/system")
@@ -212,49 +191,24 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
         });
     }
 
-    // Step 3: fire activation (platform-dispatched fire-and-forget).
-    //
-    // Linux: `systemd-run --unit=nixfleet-switch -- <store>/bin/
-    // switch-to-configuration switch` — detached transient service
-    // independent of the agent's cgroup so the agent can be SIGTERMed
-    // mid-fire without killing the activation.
-    //
-    // Darwin: `<store>/activate-user` (legacy, skip if absent) +
-    // `<store>/activate`, both spawned with `setsid ` so the child
-    // is in its own session — launchd's process-group SIGTERM during
-    // the agent plist reload doesn't propagate.
-    //
-    // See `fire_switch` for the per-platform rationale.
+    // Step 3: fire (platform-dispatched fire-and-forget). See
+    // `fire_switch` for the per-platform detail.
     if let Some(outcome) = fire_switch(target, &store_path).await? {
         return Ok(outcome);
     }
 
-    // Step 4: poll /run/current-system for the expected basename.
-    //
-    // Budget: 300s . Coupled to CP's confirm_deadline_secs
-    // default of 360s = 300s + 60s slack. See
-    // `crates/nixfleet-control-plane/src/server/state.rs::DEFAULT_CONFIRM_DEADLINE_SECS`.
-    //
-    // Fire-and-forget contract: if the agent process gets killed
-    // mid-poll (because the new closure stops nixfleet-agent.service
-    // and systemd hasn't yet started the new agent), the
-    // `nixfleet-switch.service` continues independently. When the
-    // post-switch agent boots, the boot-recovery path
-    // (`recovery::run_boot_recovery`) observes
-    // `/run/current-system == last_dispatched.closure_hash` and
-    // posts the retroactive confirm.
+    // Step 4: poll. If the agent gets killed mid-poll (new closure
+    // stops nixfleet-agent.service), `nixfleet-switch.service`
+    // continues independently and the post-switch agent's
+    // boot-recovery path posts the retroactive confirm.
     let expected = &target.closure_hash;
     match poll_current_system(expected, POLL_BUDGET, POLL_INTERVAL).await {
         Ok(()) => {
-            // Step 5: post-poll profile self-correction (v0.1
-            // `verify_profile`). Defends against the edge case where
-            // the activation script (or a concurrent nix-env caller)
-            // mutated `/nix/var/nix/profiles/system` after our Step 2
-            // `nix-env --set`. If that happened, /run/current-system
-            // could match expected (because the activation script
-            // re-pointed it) but the profile generation pointer is
-            // off — leaving us booting fine now but vulnerable to a
-            // surprise on next reboot.
+            // Step 5: profile self-correction. Defends against the
+            // activation script (or a concurrent nix-env) re-pointing
+            // `/nix/var/nix/profiles/system` after our Step 2 set —
+            // current-system would match but the bootloader pointer
+            // would be off, surprising us on next reboot.
             if let Err(err) = self_correct_profile(&store_path).await {
                 tracing::warn!(
                     error = %err,
@@ -268,11 +222,8 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
             Ok(ActivationOutcome::FiredAndPolled)
         }
         Err(timeout_info) => {
-            // Poll budget exceeded. Read the transient unit's exit
-            // status from systemctl show — best-effort triage signal
-            // for the operator. The unit may still be running (large
-            // closure download), in which case ExecMainStatus is
-            // empty / "0" / something inconclusive.
+            // Best-effort triage: unit may still be running (large
+            // download); ExecMainStatus inconclusive in that case.
             let exit_code = read_unit_exit_code("nixfleet-switch.service").await;
             tracing::error!(
                 target_closure = %expected,
@@ -288,19 +239,12 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
     }
 }
 
-/// Structured failure mode for `realise `. Distinguishing
-/// signature-mismatch from generic failure lets the agent map each
-/// to a different `ReportEvent` variant ( root #2: explicit
-/// surfacing of cache-trust violations vs transient fetch failures).
+/// Distinct so the agent can map signature-mismatch to a different
+/// `ReportEvent` than transient fetch failures.
 pub enum RealiseError {
-    /// nix's substituter trust check refused the narinfo because no
-    /// signature in it matched any key in `trusted-public-keys`
-    /// (sourced from `nixfleet.trust.cacheKeys`). Stderr tail kept
-    /// for triage; trimmed to the last few hundred bytes so the
-    /// `ReportEvent` payload doesn't bloat.
+    /// Stderr trimmed to last ~500 bytes for triage.
     SignatureMismatch { stderr_tail: String },
-    /// Anything else: spawn failure, network error, missing path,
-    /// non-utf8 stdout, etc. Generic — caller maps to RealiseFailed.
+    /// Spawn failure, network error, missing path, non-utf8 stdout, etc.
     Other(anyhow::Error),
 }
 
@@ -310,26 +254,18 @@ impl From<anyhow::Error> for RealiseError {
     }
 }
 
-/// Heuristic: is this stderr from `nix-store --realise` the
-/// signature-trust failure mode? nix has shipped several phrasings
-/// over the years; this matches the stable-as-of-2.18+ wording plus
-/// a few legacy patterns. Cache-substituter-agnostic — the error
-/// originates in nix's own narinfo verifier, not the cache backend.
-///
-/// Tested in `tests::detect_signature_error_*` — when nix changes
-/// the wording, the test breaks rather than the production behavior
-/// silently degrading to generic RealiseFailed.
+/// nix has several wordings for substituter-trust failures across
+/// versions. The set covers 2.18+ stable phrasings plus legacy 2.x.
+/// Tested in `tests::detect_signature_error_*` so a nix wording
+/// change breaks the test rather than silently downgrading to
+/// generic RealiseFailed.
 pub fn looks_like_signature_error(stderr: &str) -> bool {
     let lower = stderr.to_lowercase();
     [
-        // nix 2.18+: "cannot add path '…' because it lacks a valid signature"
         "lacks a valid signature",
-        // nix 2.18+: "no signature is trusted by"
         "no signature is trusted",
-        // legacy 2.x phrasing
         "is not signed by any of the keys",
         "no signatures matched",
-        // narinfo-level failure on substituter side
         "signature mismatch",
         "untrusted signature",
     ]
@@ -337,9 +273,6 @@ pub fn looks_like_signature_error(stderr: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
-/// `nix-store --realise <path>` — fetch + verify, return the realised
-/// path from stdout. nix-store prints one path per line; we expect
-/// exactly one (we passed exactly one input).
 async fn realise(store_path: &str) -> Result<String, RealiseError> {
     let output = Command::new("nix-store")
         .arg("--realise")
@@ -351,9 +284,6 @@ async fn realise(store_path: &str) -> Result<String, RealiseError> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if looks_like_signature_error(&stderr) {
-            // Trim to last ~500 bytes — enough for the matching line
-            // plus context, capped so a chatty trace doesn't bloat
-            // the ReportEvent body.
             let tail_start = stderr.len().saturating_sub(500);
             let tail = stderr[tail_start..].to_string();
             return Err(RealiseError::SignatureMismatch { stderr_tail: tail });
@@ -374,9 +304,6 @@ async fn realise(store_path: &str) -> Result<String, RealiseError> {
     Ok(line.trim().to_string())
 }
 
-/// Read `/run/current-system` as a symlink and return the basename of
-/// its target. The basename is the closure-hash form the wire and the
-/// CP both speak.
 async fn read_current_system_basename() -> Result<String> {
     let target = tokio::fs::read_link("/run/current-system")
         .await
@@ -453,16 +380,9 @@ pub async fn poll_current_system(
     }
 }
 
-/// Verify that `/nix/var/nix/profiles/system` resolves to
-/// `expected_store_path`. If not, re-run `nix-env --set` to point
-/// it back. Ports v0.1's `verify_profile` (deleted at afb5e18^:
-/// crates/agent/src/nix.rs:344-374) — defensive against concurrent
-/// profile mutations during activation.
-///
-/// Returns `Ok( )` if the profile matches (either initially or
-/// after self-correction). Returns `Err` only when self-correction
-/// itself failed; the post-poll caller treats that as non-fatal
-/// (the symlink-level check on /run/current-system already passed).
+/// Defensive against concurrent profile mutations during activation.
+/// `Err` only when self-correction itself failed (caller treats as
+/// non-fatal — current-system already verified).
 async fn self_correct_profile(expected_store_path: &str) -> Result<()> {
     let profile = "/nix/var/nix/profiles/system";
     if profile_matches(expected_store_path, profile) {
@@ -497,10 +417,8 @@ async fn self_correct_profile(expected_store_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Read `/nix/var/nix/profiles/system` (two-level symlink: profile
-/// → `system-<N>-link` → `/nix/store/<basename>`) and compare to
-/// the expected /nix/store path. Returns false on any read error
-/// (caller treats unreadable as mismatch and triggers correction).
+/// Two-level symlink: profile → `system-<N>-link` → `/nix/store/<basename>`.
+/// Returns false on any read error (caller treats as mismatch).
 fn profile_matches(expected_store_path: &str, profile_path: &str) -> bool {
     let Ok(gen_link) = std::fs::read_link(profile_path) else {
         return false;
@@ -520,19 +438,9 @@ fn profile_matches(expected_store_path: &str, profile_path: &str) -> bool {
     final_target.to_string_lossy() == expected_store_path
 }
 
-/// Best-effort read of a transient systemd unit's exit code via
-/// `systemctl show --property=ExecMainStatus`. Used by both
-/// `activate ` (`nixfleet-switch.service`) and `rollback `
-/// (`nixfleet-rollback.service`) to triage poll-timeout cases.
-/// Returns `None` if the command fails or the property is empty/
-/// non-numeric — caller should treat exit status as unknown rather
-/// than synthesize a misleading 0.
-///
-/// **Darwin:** no transient unit exists (the activation runs in a
-/// detached `setsid ` child, not a systemd-run service), so there's
-/// no equivalent exit-status surface. Returns `None` early on macOS
-/// — same semantic as "unknown" on linux: the poll-timeout caller
-/// already declares SwitchFailed, the exit code is purely diagnostic.
+/// Returns `None` on failure / empty / non-numeric — caller treats
+/// as unknown rather than synthesising a misleading 0. Darwin has
+/// no equivalent surface; returns `None` early.
 async fn read_unit_exit_code(unit_name: &str) -> Option<i32> {
     if cfg!(target_os = "macos") {
         return None;
@@ -556,23 +464,8 @@ async fn read_unit_exit_code(unit_name: &str) -> Option<i32> {
     trimmed.parse::<i32>().ok()
 }
 
-/// Platform-dispatched fire-and-forget activation. Returns
-/// `Ok(None)` on a clean fire (caller proceeds to poll); returns
-/// `Ok(Some(outcome))` on a fire-step failure (caller short-circuits
-/// with that outcome); returns `Err` only on spawn-level I/O errors.
-///
-/// On linux: `systemd-run --unit=nixfleet-switch -- <store>/bin/
-/// switch-to-configuration switch`. The transient unit gets its own
-/// cgroup, so the agent's death cannot kill it. `--collect` removes
-/// the unit on exit so the fixed unit name is reusable.
-///
-/// On darwin: spawns `<store>/activate-user` (legacy, skipped if
-/// absent) followed by `<store>/activate`, both detached via
-/// `setsid ` so launchd's process-group SIGTERM during the agent's
-/// own plist reload doesn't propagate to the activation child. Per
-/// v0.1.1 darwin-platform-notes.md `nohup` doesn't work in a
-/// launchd daemon context (no controlling TTY), only `setsid `
-/// gives the new session lifetime that survives the parent.
+/// `Ok(None)` on clean fire (caller polls); `Ok(Some(outcome))`
+/// on fire-step failure; `Err` only on spawn-level I/O errors.
 async fn fire_switch(
     target: &EvaluatedTarget,
     store_path: &str,
@@ -584,39 +477,17 @@ async fn fire_switch(
     }
 }
 
-/// Linux/systemd fire-and-forget. See `fire_switch` for shape;
-/// `Ok(None)` on clean fire, `Ok(Some(SwitchFailed))` on fire-step
-/// non-zero, `Err` on spawn I/O error.
 async fn fire_switch_systemd(
     target: &EvaluatedTarget,
     store_path: &str,
 ) -> Result<Option<ActivationOutcome>> {
-    // Why systemd-run --unit (NOT --scope, NOT --pipe --wait):
-    //
-    // - Direct `Command::spawn` makes switch-to-configuration a child
-    //   in the agent's cgroup. When the new closure changes the
-    //   nixfleet-agent.service unit definition, switch-to-configuration
-    //   stops the agent → systemd SIGTERMs the cgroup → switch dies
-    //   mid-run → /run/current-system never updates. This is what we
-    //   were hitting before.
-    // - `systemd-run --scope` was tried in v0.1 dev: scope is
-    //   created under the calling unit's cgroup and dies with it.
-    //   Same death.
-    // - `systemd-run --pipe --wait` was also tried: the pipe orphans
-    //   when the agent self-terminates mid-wait.
-    // - `systemd-run --unit=...` (default `--service` mode) creates
-    //   an *independent* transient service with its own cgroup. The
-    //   agent's death cannot kill it. Operator can `journalctl -u
-    //   nixfleet-switch` to read its logs.
-    //
-    // `--collect` removes the unit after it stops (success or
-    // failure), so the fixed name `nixfleet-switch` is reusable on
-    // the next activation without a manual `systemctl reset-failed`.
-    //
-    // Pre-emptive reset-failed best-effort guard: if a previous
-    // activation left the unit in a non-collected failed state,
-    // systemd-run rejects the new unit name. `reset-failed` is
-    // idempotent against a non-existent unit (exit 0), so unguarded.
+    // `systemd-run --unit=...` creates an independent transient
+    // service with its own cgroup, so the agent's death (from the
+    // switch script restarting nixfleet-agent.service) cannot kill
+    // it. `--scope` and `--pipe --wait` both inherit the caller's
+    // cgroup and die with it. `--collect` reuses the fixed unit
+    // name across activations; `reset-failed` (idempotent) handles
+    // the case where a prior run left the unit in failed state.
     let _ = Command::new("systemctl")
         .arg("reset-failed")
         .arg("nixfleet-switch.service")
@@ -652,28 +523,11 @@ async fn fire_switch_systemd(
     Ok(None)
 }
 
-/// Darwin/launchd fire-and-forget. Spawns the activation script in a
-/// new session via `setsid ` so the agent's process group SIGTERM
-/// (which launchd issues during plist reload when the new closure
-/// changes the agent binary path) does not propagate to the
-/// activation child.
-///
-/// Sequence (matches `darwin-rebuild switch`):
-/// 1. `<store>/activate-user` — legacy user activation. Some darwin
-///   closures still ship it, others don't. Absent → skip silently.
-/// 2. `<store>/activate` — system activation script. Always present.
-///
-/// Both detach via `pre_exec(setsid)` and redirect stdout/stderr to
-/// `/var/log/nixfleet-activate.log` (best-effort: if the file isn't
-/// writable, fall back to inherit and let launchd's
-/// StandardOutPath/StandardErrorPath catch the output).
-///
-/// Returns immediately after spawning the second `activate`. Caller
-/// polls `/run/current-system` for the expected basename to detect
-/// completion. On macOS the activate script creates
-/// `/run/current-system` as a symlink to the new store path (per
-/// v0.1.1 darwin-platform-notes.md), so the polling contract is
-/// identical across platforms.
+/// `setsid` puts the activate child in its own session so launchd's
+/// process-group SIGTERM (issued during plist reload when the new
+/// closure changes the agent binary path) doesn't propagate to it.
+/// `nohup` doesn't work in launchd-daemon context (no controlling
+/// TTY); only `setsid` gives the survivable session.
 #[cfg(unix)]
 async fn fire_switch_darwin(
     target: &EvaluatedTarget,
@@ -687,17 +541,15 @@ async fn fire_switch_darwin(
         "agent: firing darwin activation (setsid-detached activate-user + activate)",
     );
 
-    // Step 1: activate-user (legacy). Skip if the script doesn't
-    // exist in the new closure — modern darwin closures often omit
-    // it. Errors here are non-fatal in v0.1; same here.
+    // Step 1: activate-user (legacy; modern closures often omit it).
+    // Errors here are non-fatal.
     let activate_user = format!("{store_path}/activate-user");
     if std::path::Path::new(&activate_user).exists() {
         let mut cmd = std::process::Command::new(&activate_user);
         cmd.stdin(Stdio::null());
         attach_activate_log(&mut cmd);
-        // SAFETY: setsid is async-signal-safe and the closure does
-        // no allocation / lock acquisition. The child inherits the
-        // pre_exec hook and runs it after fork before exec.
+        // SAFETY: setsid is async-signal-safe; closure does no
+        // allocation or lock acquisition.
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -728,15 +580,10 @@ async fn fire_switch_darwin(
         );
     }
 
-    // Step 2: system activate. This is the script that may unload +
-    // reload the launchd plist, killing the agent mid-run if the
-    // binary path changed. setsid puts this child in its own session
-    // so launchd's process-group SIGTERM cannot reach it. The agent
-    // either survives (KeepAlive restart) and observes the new
-    // `/run/current-system` via the poll loop, OR dies and gets
-    // restarted by launchd, in which case `recovery::run_boot_recovery`
-    // detects "current matches last_dispatched" and posts the
-    // retroactive confirm.
+    // Step 2: system activate. May unload+reload the launchd plist,
+    // killing the agent if the binary path changed. setsid keeps the
+    // child alive; if the agent dies, launchd restarts it and
+    // `recovery::run_boot_recovery` posts the retroactive confirm.
     let activate = format!("{store_path}/activate");
     let mut cmd = std::process::Command::new(&activate);
     cmd.stdin(Stdio::null());
@@ -771,10 +618,6 @@ async fn fire_switch_darwin(
     }
 }
 
-/// Non-unix stub — never reached at runtime since `cfg!(target_os =
-/// "macos")` is the only branch that calls this, and macOS is unix.
-/// Kept so the function exists for the dispatch site without an
-/// `#[cfg]` on the call. (No supported NixFleet platform is non-unix.)
 #[cfg(not(unix))]
 async fn fire_switch_darwin(
     _target: &EvaluatedTarget,
@@ -783,10 +626,8 @@ async fn fire_switch_darwin(
     Err(anyhow!("fire_switch_darwin called on non-unix host"))
 }
 
-/// Best-effort: attach the activate log file as stdout + stderr.
-/// Falls back to inherit on permission/IO error so the spawn doesn't
-/// fail the whole activation; launchd's StandardOutPath/StandardError
-/// catch the inherited stream when redirection fails.
+/// Falls back to inherit on permission/IO error; launchd's
+/// StandardOutPath/StandardErrorPath catches the inherited stream.
 #[cfg(unix)]
 fn attach_activate_log(cmd: &mut std::process::Command) {
     use std::process::Stdio;
@@ -797,7 +638,7 @@ fn attach_activate_log(cmd: &mut std::process::Command) {
         .open(ACTIVATE_LOG)
     {
         Ok(out) => {
-            // Need two handles — stdout and stderr each consume one.
+            // stdout + stderr each consume one handle.
             let err = match out.try_clone() {
                 Ok(c) => c,
                 Err(e) => {
@@ -823,10 +664,6 @@ fn attach_activate_log(cmd: &mut std::process::Command) {
     }
 }
 
-/// Platform-dispatched fire-and-forget rollback. Symmetric to
-/// `fire_switch`. Returns `Ok(None)` on clean fire (caller proceeds
-/// to poll), `Ok(Some(failure))` on fire-step failure, `Err` on
-/// spawn-level I/O error.
 async fn fire_rollback(target_basename: &str) -> Result<Option<RollbackOutcome>> {
     if cfg!(target_os = "macos") {
         fire_rollback_darwin(target_basename).await
@@ -835,11 +672,8 @@ async fn fire_rollback(target_basename: &str) -> Result<Option<RollbackOutcome>>
     }
 }
 
-/// Linux/systemd rollback fire. Mirrors `fire_switch_systemd` but
-/// fires `nixfleet-rollback.service` against
-/// `/run/current-system/bin/switch-to-configuration` (the symlink
-/// re-pointed by `nix-env --rollback` already, so this hits the
-/// rolled-back closure's switch script).
+/// `nix-env --rollback` already re-pointed `/run/current-system`,
+/// so we fire its switch-to-configuration to actually run activation.
 async fn fire_rollback_systemd() -> Result<Option<RollbackOutcome>> {
     let _ = Command::new("systemctl")
         .arg("reset-failed")
@@ -871,13 +705,6 @@ async fn fire_rollback_systemd() -> Result<Option<RollbackOutcome>> {
     Ok(None)
 }
 
-/// Darwin rollback fire. Same setsid-detached pattern as
-/// `fire_switch_darwin`. The previously-rolled-back generation's
-/// store path is now pointed at by `/nix/var/nix/profiles/system`
-/// (because `rollback ` already ran `nix-env --rollback`), so we
-/// invoke `<resolved-store-path>/activate` to actually run the
-/// activation chain. Polling for `target_basename` in the caller
-/// observes completion.
 #[cfg(unix)]
 async fn fire_rollback_darwin(target_basename: &str) -> Result<Option<RollbackOutcome>> {
     use std::os::unix::process::CommandExt;
@@ -941,19 +768,9 @@ async fn fire_rollback_darwin(_target_basename: &str) -> Result<Option<RollbackO
 /// gets SIGTERMed mid-run when systemd reloads.
 #[derive(Debug)]
 pub enum RollbackOutcome {
-    /// Rollback fired via `systemd-run --unit=nixfleet-rollback` AND
-    /// `/run/current-system` flipped to the rolled-back target
-    /// within the poll budget. Caller can treat the agent's known
-    /// state as "back to previous gen".
     FiredAndPolled,
-    /// One of the rollback steps failed. `phase`:
-    /// - `"nix-env-rollback"`: the profile flip failed. System still
-    ///   on the failed-activation generation.
-    /// - `"discover-target"`: profile flipped but we couldn't read
-    ///   it back (broken symlink / racy state).
-    /// - `"systemd-run-fire"`: queueing the rollback unit failed.
-    /// - `"rollback-poll-timeout"`: poll budget elapsed without
-    ///   `/run/current-system` flipping.
+    /// `phase`: `nix-env-rollback`, `discover-target`,
+    /// `systemd-run-fire`, `rollback-poll-timeout`.
     Failed {
         phase: String,
         exit_code: Option<i32>,
@@ -961,18 +778,15 @@ pub enum RollbackOutcome {
 }
 
 impl RollbackOutcome {
-    /// Convenience helper used by callers that just want a yes/no.
     pub fn success(&self) -> bool {
         matches!(self, RollbackOutcome::FiredAndPolled)
     }
-    /// Exit code if the failure carried one (for ReportEvent).
     pub fn exit_code(&self) -> Option<i32> {
         match self {
             RollbackOutcome::Failed { exit_code, .. } => *exit_code,
             RollbackOutcome::FiredAndPolled => None,
         }
     }
-    /// Phase string if failed (for ReportEvent).
     pub fn phase(&self) -> Option<&str> {
         match self {
             RollbackOutcome::Failed { phase, .. } => Some(phase.as_str()),
@@ -981,42 +795,14 @@ impl RollbackOutcome {
     }
 }
 
-/// Local rollback: revert the system profile one generation back and
-/// run the previous closure's `switch-to-configuration switch` via
-/// the same fire-and-forget mechanism `activate ` uses .
-///
-/// Used when:
-/// - `activate ` returned a non-success outcome that requires
-///   rollback (`SwitchFailed`).
-/// - The agent's confirm window expired before the CP acknowledged
-///   the activation (magic rollback, ).
-///
-/// Sequence:
-/// 1. `nix-env --rollback` flips the profile symlink to the previous
-///   generation (synchronous — fast, no service restarts here).
-/// 2. Read the new profile target to discover what closure to poll
-///   for. Without this we'd be polling for "any change", which is
-///   a weaker contract than "rolled to the expected closure".
-/// 3. Fire `systemd-run --unit=nixfleet-rollback --collect
-/// <new_target>/bin/switch-to-configuration switch`. The detached
-///   transient unit insulates the rollback's switch script from
-///   the agent's cgroup, so even if rollback's activation chain
-///   restarts services the agent depends on, the rollback completes.
-/// 4. Poll `/run/current-system` for the rolled-back basename, same
-///   POLL_BUDGET as activate (300s). Coupled to confirm-deadline.
-///
-/// Bypasses `nixos-rebuild` entirely — `nixos-rebuild-ng` tries to
-/// evaluate `<nixpkgs/nixos>` even on `--rollback`, which fails in
-/// the agent's NIX_PATH-less sandbox.
-///
-/// Idempotent on the profile flip layer: running twice rolls back
-/// twice. The caller is expected to invoke this exactly once per
-/// failed activation.
+/// Bypasses `nixos-rebuild` (`nixos-rebuild-ng` tries to evaluate
+/// `<nixpkgs/nixos>` even on `--rollback`, failing in the agent's
+/// NIX_PATH-less sandbox). Caller must invoke exactly once per
+/// failed activation — running twice rolls back twice.
 pub async fn rollback() -> Result<RollbackOutcome> {
     tracing::warn!("agent: triggering local rollback (fire-and-forget via systemd-run)");
 
-    // Step 1: profile flip. Synchronous — this is just a symlink
-    // re-target, no services touched.
+    // Step 1: profile flip — synchronous symlink re-target.
     let env_status = Command::new("nix-env")
         .arg("--profile")
         .arg("/nix/var/nix/profiles/system")
@@ -1035,11 +821,8 @@ pub async fn rollback() -> Result<RollbackOutcome> {
         });
     }
 
-    // Step 2: discover the target. /nix/var/nix/profiles/system is
-    // a symlink to system-<N>-link, which is itself a symlink to
-    // /nix/store/<basename>. read_link twice to follow both layers,
-    // then take the basename — that's what /run/current-system will
-    // resolve to once the activation script has run.
+    // Step 2: discover the rolled-back target so we can poll for it
+    // (stronger contract than "any change").
     let target_basename = match resolve_profile_target() {
         Ok(b) => b,
         Err(err) => {
@@ -1058,9 +841,7 @@ pub async fn rollback() -> Result<RollbackOutcome> {
         "agent: rollback target discovered; firing detached switch",
     );
 
-    // Step 3: fire rollback (platform-dispatched fire-and-forget).
-    // Linux: `systemd-run --unit=nixfleet-rollback`. Darwin: detached
-    // `<store>/activate` via setsid. See `fire_rollback`.
+    // Step 3: fire rollback (platform-dispatched).
     if let Some(failure) = fire_rollback(&target_basename).await? {
         return Ok(failure);
     }
@@ -1090,14 +871,12 @@ pub async fn rollback() -> Result<RollbackOutcome> {
     }
 }
 
-/// Resolve `/nix/var/nix/profiles/system` to the rolled-back closure's
-/// /nix/store basename. Follows two symlink levels: profile →
-/// `system-<N>-link` (relative) → `/nix/store/<basename>` (absolute).
+/// Two symlink levels: profile → `system-<N>-link` (relative) →
+/// `/nix/store/<basename>` (absolute).
 fn resolve_profile_target() -> Result<String> {
     let profile = std::path::Path::new("/nix/var/nix/profiles/system");
     let gen_link = std::fs::read_link(profile)
         .with_context(|| "readlink /nix/var/nix/profiles/system")?;
-    // Generation link is relative to the profile's parent dir.
     let abs_gen_link = if gen_link.is_relative() {
         profile.parent().unwrap_or(std::path::Path::new("/")).join(&gen_link)
     } else {
@@ -1113,16 +892,9 @@ fn resolve_profile_target() -> Result<String> {
     Ok(basename)
 }
 
-/// POST `/v1/agent/confirm` to acknowledge a successful activation.
-///
-/// Per the agent confirms exactly once after a
-/// successful activation. Returns `ConfirmOutcome` so the activation
-/// loop can react:
-/// - `Acknowledged` (204): nothing else to do.
-/// - `Cancelled` (410): CP says the rollout was cancelled or the
-///   deadline passed — agent runs `nixos-rebuild --rollback`.
-/// - `Other`: logged; the CP-side rollback timer will catch deadline
-///   expiry independently.
+/// `Acknowledged` (204): done. `Cancelled` (410): CP says the
+/// rollout was cancelled or deadline expired — agent rolls back.
+/// `Other`: logged; the CP's rollback timer catches deadline expiry.
 pub async fn confirm_target(
     client: &reqwest::Client,
     cp_url: &str,

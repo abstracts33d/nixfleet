@@ -16,71 +16,32 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
-/// Filename inside `--state-dir` that carries the agent's most
-/// recent successful confirm. Two-line plaintext format:
-/// `<closure_hash>\n<rfc3339-timestamp>\n`
-/// Written after every Acknowledged `/v1/agent/confirm`; read on
-/// every checkin. The closure_hash binds the timestamp to the
-/// generation it applies to — if the agent rolls back (current
-/// generation no longer matches the recorded closure), the
-/// timestamp is suppressed from the next checkin.
-///
-/// Closes the agent half of : the CP-side
-/// projection ([`crates/nixfleet-control-plane/src/server/handlers.rs`]
-/// `recover_soak_state_from_attestation`) consumes
-/// `CheckinRequest.last_confirmed_at` to repopulate
-/// `host_rollout_state.last_healthy_since` after a CP rebuild,
-/// clamped to `min(now, attested)`.
+/// Two-line plaintext: `<closure_hash>\n<rfc3339-timestamp>\n`.
+/// closure_hash binds the timestamp to its generation — agent
+/// rollback suppresses the timestamp on next checkin. CP repopulates
+/// `host_rollout_state.last_healthy_since` from this attestation
+/// after a rebuild, clamped to `min(now, attested)`.
 pub const LAST_CONFIRM_FILENAME: &str = "last_confirmed_at";
 
-/// Filename inside `--state-dir` that carries the most-recently
-/// dispatched target. Written by `main.rs` after a checkin response
-/// returns a target, BEFORE `activate ` is called. Read at agent
-/// startup by `check_boot_recovery ` to detect "we got killed
-/// mid-self-switch but the new closure is now live" — in which case
-/// the agent posts the retroactive `/v1/agent/confirm` instead of
-/// waiting for the next checkin to re-dispatch.
-///
-/// Format is JSON-serialized [`LastDispatchRecord`] (atomic
-/// tempfile + rename write, same as `last_confirmed_at`). JSON over
-/// the line-oriented format used by `last_confirmed_at` because the
-/// dispatch record carries multiple fields whose sizes/escaping
-/// would be awkward to line-encode (channel_ref containing `@`,
-/// future fields).
-///
-/// Closes the agent half of 's "boot recovery" path. With
-/// fire-and-forget activation, the agent commonly gets killed
-/// mid-poll when the new closure restarts `nixfleet-agent.service`
-/// — the post-self-switch agent boots into the new closure and
-/// needs to know "what was I dispatching" to confirm it.
+/// JSON [`LastDispatchRecord`] (atomic tempfile + rename). Written
+/// after dispatch, BEFORE activate. Read at agent startup to detect
+/// "killed mid-self-switch but the new closure is now live" — agent
+/// posts the retroactive confirm instead of waiting for re-dispatch.
 pub const LAST_DISPATCH_FILENAME: &str = "last_dispatched";
 
-/// Persisted record of the most-recently dispatched target.
-///
-/// Carries enough fields to reconstruct a `confirm_target ` call
-/// after an agent restart. Channel + closure are the wire-essential
-/// keys; `rollout_id` is included for diagnostic correlation but
-/// the CP also re-derives it from the channel + closure on confirm.
-/// `dispatched_at` is the agent's wall-clock at write time
-/// purely diagnostic.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct LastDispatchRecord {
     pub closure_hash: String,
     pub channel_ref: String,
-    /// The rollout id the CP populated on the EvaluatedTarget.
-    /// `None` for legacy/synthetic targets (matches the proto's
-    /// optional shape).
+    /// None for legacy/synthetic targets (CP also re-derives it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_id: Option<String>,
     pub dispatched_at: DateTime<Utc>,
 }
 
-/// Persist a freshly-dispatched target before firing activation.
-/// Atomic via tempfile + rename so a crash mid-write doesn't leave
-/// a partial file. Best-effort on the caller's side: failures log,
-/// non-fatal — the worst case is the boot-recovery path can't
-/// retroactively confirm and the next regular checkin re-dispatches
-/// (which is correct behavior, just one cycle slower).
+/// Atomic tempfile + rename. Best-effort: failures non-fatal — worst
+/// case the boot-recovery path can't retroactively confirm and the
+/// next checkin re-dispatches (one cycle slower).
 pub fn write_last_dispatched(state_dir: &Path, record: &LastDispatchRecord) -> Result<()> {
     std::fs::create_dir_all(state_dir)
         .with_context(|| format!("create state dir {}", state_dir.display()))?;
@@ -99,11 +60,8 @@ pub fn write_last_dispatched(state_dir: &Path, record: &LastDispatchRecord) -> R
     Ok(())
 }
 
-/// Read the persisted last-dispatch record, if present and well-formed.
-/// Returns `Ok(None)` for both "file absent" (first boot, never
-/// dispatched) and "file malformed" (treat as if we'd never written
-/// it — the next checkin will re-dispatch). Errors only on
-/// filesystem I/O failures.
+/// `Ok(None)` for both absent and malformed (next checkin
+/// re-dispatches). Errors only on FS I/O failures.
 pub fn read_last_dispatched(state_dir: &Path) -> Result<Option<LastDispatchRecord>> {
     let path = state_dir.join(LAST_DISPATCH_FILENAME);
     let raw = match std::fs::read_to_string(&path) {
@@ -117,9 +75,7 @@ pub fn read_last_dispatched(state_dir: &Path) -> Result<Option<LastDispatchRecor
     }
 }
 
-/// Remove the persisted last-dispatch record. Called after a
-/// successful confirm so the file doesn't linger past its useful
-/// lifetime. Idempotent — absent file returns `Ok`.
+/// Idempotent — absent file returns `Ok`.
 pub fn clear_last_dispatched(state_dir: &Path) -> Result<()> {
     let path = state_dir.join(LAST_DISPATCH_FILENAME);
     match std::fs::remove_file(&path) {
@@ -129,25 +85,12 @@ pub fn clear_last_dispatched(state_dir: &Path) -> Result<()> {
     }
 }
 
-/// Path to the symlink pointing at the currently active system
-/// closure. Reading it as a symlink target gives us the store
-/// path; the basename of that path IS the closure_hash on the
-/// wire (the same shape the CP populates into `EvaluatedTarget.
-/// closure_hash` and `fleet.resolved.hosts[h].closureHash`). The
-/// agent must report the FULL basename, not the 32-char hash
-/// prefix — `dispatch::decide_target` does string-equality on the
-/// two values; a hash-prefix-vs-full-basename mismatch means
-/// dispatch always returns Decision::Dispatch even when the host
-/// is on the declared closure.
+/// closure_hash on the wire is the FULL `/nix/store` basename, not
+/// the 32-char hash prefix — `dispatch::decide_target` does string
+/// equality, mismatch causes infinite re-dispatch.
 const CURRENT_SYSTEM: &str = "/run/current-system";
 
-/// Read `/run/current-system`'s symlink target and extract the
-/// store-path closure hash (the 32-char nix-store hash before the
-/// `-` separator). Returns the full store path on platforms where
-/// the symlink target shape doesn't match the expected pattern, so
-/// the agent still reports something rather than failing the
-/// checkin. Works on both NixOS and nix-darwin — both materialise
-/// `/run/current-system` as a symlink into `/nix/store`.
+/// Works on both NixOS and nix-darwin (both materialise the symlink).
 pub fn current_closure_hash() -> Result<String> {
     let target = std::fs::read_link(CURRENT_SYSTEM)
         .with_context(|| format!("readlink {CURRENT_SYSTEM}"))?;
@@ -175,19 +118,12 @@ pub(crate) fn closure_hash_from_path(p: &Path) -> String {
         .unwrap_or_else(|| s.to_string())
 }
 
-/// Wall-clock seconds since the agent process started. The caller
-/// passes the start `Instant` (captured in `main` before the poll
-/// loop starts).
 pub fn uptime_secs(started_at: Instant) -> u64 {
     started_at.elapsed().as_secs()
 }
 
-/// Persist the moment of a successful confirm so the next checkin
-/// can attest it (and it survives an agent restart). Writes
-/// atomically via `tempfile + rename` so a crash mid-write doesn't
-/// leave a partially-written file. Best-effort: failures log + are
-/// non-fatal — soak attestation is recovery hygiene, not the
-/// activation contract.
+/// Atomic tempfile + rename. Best-effort: failures non-fatal — soak
+/// attestation is recovery hygiene, not the activation contract.
 pub fn write_last_confirmed(state_dir: &Path, closure_hash: &str, at: DateTime<Utc>) -> Result<()> {
     std::fs::create_dir_all(state_dir)
         .with_context(|| format!("create state dir {}", state_dir.display()))?;
@@ -206,20 +142,9 @@ pub fn write_last_confirmed(state_dir: &Path, closure_hash: &str, at: DateTime<U
     Ok(())
 }
 
-/// Read the persisted last-confirm timestamp, if it applies to the
-/// agent's current generation. Returns `None` when:
-/// - the state file doesn't exist (first boot, never confirmed);
-/// - the file's recorded `closure_hash` differs from the agent's
-///   current generation (host rolled back; the timestamp no longer
-///   describes the live system);
-/// - the file is malformed (parse error, missing line);
-/// - the timestamp is in the future of `now` (clock skew or
-///   tamper — we'd be attesting future-dated state which the CP
-///   clamps to `min(now, attested)` anyway, so just suppress).
-///
-/// Errors only on filesystem I/O failures; logical mismatches
-/// return `Ok(None)` so the caller can include the field as
-/// `Option::None` in the checkin without aborting the request.
+/// `None` when: file absent (first boot), recorded closure differs
+/// from current (rolled back), file malformed, or timestamp is
+/// future-dated (clock skew/tamper — CP clamps anyway).
 pub fn read_last_confirmed(
     state_dir: &Path,
     current_closure: &str,

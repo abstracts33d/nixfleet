@@ -1,7 +1,5 @@
-//! Internal observed-state types (CONTRACTS.md §VI: non-contract).
-//!
-//! The CP projects its SQLite state into these structs for each
-//! reconcile tick. The reconciler never mutates them.
+//! Internal observed-state types. CP projects its SQLite state into
+//! these per reconcile tick; reconciler never mutates them.
 
 use crate::host_state::HostRolloutState;
 use crate::rollout_state::RolloutState;
@@ -17,27 +15,10 @@ pub struct Observed {
     pub last_rolled_refs: HashMap<String, String>,
     pub host_state: HashMap<String, HostState>,
     pub active_rollouts: Vec<Rollout>,
-    /// — outstanding (compliance-failure + runtime-gate-
-    /// error) event counts, keyed first by rollout id then by
-    /// hostname. The per-rollout grouping enforces resolution-by-
-    /// replacement at the projection layer: events posted against
-    /// rollout R₀ live under `[R₀][host]`; once the host moves to
-    /// R₁, the reconciler iterates active rollouts and looks up
-    /// `[R₁][host]` — R₀'s old events don't contaminate R₁'s gate
-    /// decision.
-    ///
-    /// Computed by the CP-side projection from
-    /// `Db::outstanding_compliance_events_by_rollout`. Empty inner
-    /// maps (rollouts with zero outstanding events) are absent.
-    ///
-    /// Drives `Action::WaveBlocked` emission in
-    /// `rollout_state::advance_rollout` when the channel mode is
-    /// `enforce` AND there's at least one outstanding event under
-    /// the rollout's id for a host on a wave that the gate is
-    /// trying to promote past.
-    ///
-    /// `#[serde(default)]` keeps file-backed `observed.json`
-    /// fixtures (which predate this field) deserialising cleanly.
+    /// `[rollout_id][host] → count`. Per-rollout grouping enforces
+    /// resolution-by-replacement: events under R₀ don't contaminate
+    /// R₁'s gate decision once the host moves on. Drives
+    /// `Action::WaveBlocked` under enforce mode.
     #[serde(default)]
     pub compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
 }
@@ -56,33 +37,21 @@ pub struct Rollout {
     pub id: String,
     pub channel: String,
     pub target_ref: String,
-    /// Typed wrapper over the wire string . The
-    /// `serde` shim round-trips via [`RolloutState::as_str`] /
-    /// [`RolloutState::from_str`] so `observed.json` fixtures stay
-    /// byte-identical while callers pattern-match on the enum
-    /// without a per-call `from_str` round-trip.
+    /// Serde shim keeps `observed.json` fixtures byte-identical
+    /// while in-memory we get exhaustive pattern matching.
     #[serde(
         serialize_with = "serialize_rollout_state",
         deserialize_with = "deserialize_rollout_state"
     )]
     pub state: RolloutState,
     pub current_wave: usize,
-    /// hostname → typed per-host state . Same shim
-    /// pattern as `state` above: `host_states` JSON stays a string
-    /// map on the wire while in-memory it carries the enum so the
-    /// reconciler's pattern-match sites are exhaustive.
     #[serde(
         serialize_with = "serialize_host_states_map",
         deserialize_with = "deserialize_host_states_map"
     )]
     pub host_states: HashMap<String, HostRolloutState>,
-    /// When each host most recently entered Healthy. Step 3
-    /// (reconciler arm, Healthy → Soaked transition)
-    /// consults `now - last_healthy_since[host] >= wave.soak_minutes`
-    /// to decide whether the host has soaked. Hosts not in Healthy
-    /// are absent from the map. `#[serde(default)]` keeps file-
-    /// backed `observed.json` fixtures (which predate this field)
-    /// deserialising cleanly.
+    /// `now - last_healthy_since[host] >= wave.soak_minutes` →
+    /// host has soaked. Hosts not in Healthy are absent.
     #[serde(default)]
     pub last_healthy_since: HashMap<String, DateTime<Utc>>,
 }

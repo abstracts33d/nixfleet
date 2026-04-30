@@ -1,50 +1,27 @@
-//! Agent-side freshness gate .
-//!
-//! Defense-in-depth check that refuses any dispatched target whose
-//! backing `fleet.resolved.json` artifact is older than the channel's
-//! `freshness_window`. The CP applies the same gate at tick start
-//! (see `nixfleet_reconciler::verify`), so seeing a stale target
-//! reach the agent normally indicates either:
-//!
-//! - clock skew between agent and CP (handled by the ±60s slack), or
-//! - the CP's gate failed open (a bug worth surfacing as a
-//!   `ReportEvent::StaleTarget`).
-//!
-//! The trust boundary here is: the agent trusts the CP's relayed
-//! `signed_at` and `freshness_window_secs` because the agent already
-//! trusts the CP for dispatch. Compromise-resistance against a CP
-//! that lies about `signed_at` requires the agent to fetch and verify
-//! the signed `fleet.resolved.json` itself — a defense-in-depth
-//! follow-up tracked separately.
+//! Defense-in-depth: refuse any dispatched target whose backing
+//! `fleet.resolved.json` is older than the channel's
+//! `freshness_window`. CP applies the same gate at tick start.
+//! Seeing a stale target normally indicates clock skew or a CP gate
+//! that failed open.
 
 use chrono::{DateTime, Utc};
 use nixfleet_proto::agent_wire::EvaluatedTarget;
 
-/// Symmetric clock-skew slack applied to the freshness check.
-/// Spec requires ≥60s; we use exactly 60s.
 pub const CLOCK_SKEW_SLACK_SECS: i64 = 60;
 
-/// Result of a freshness check on an `EvaluatedTarget`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FreshnessCheck {
-    /// Target is fresh — proceed with activation.
     Fresh,
-    /// Target's signed_at + freshness_window + slack is in the past
-    /// relative to `now`. Agent must refuse activation and post
-    /// `ReportEvent::StaleTarget`.
+    /// Agent must refuse activation and post `StaleTarget`.
     Stale {
         signed_at: DateTime<Utc>,
         freshness_window_secs: u32,
         age_secs: i64,
     },
-    /// CP didn't relay enough info (older proto). Fail open: log a
-    /// warning and let activation proceed. Forward-compat path.
+    /// Older CP didn't relay enough info — fail open with warn.
     Unknown,
 }
 
-/// Run the freshness check against `now`. Pure function — no I/O,
-/// no logging — so it's trivial to unit-test the boundary
-/// conditions (exactly-at-window, +1s past, ±60s slack).
 pub fn check(target: &EvaluatedTarget, now: DateTime<Utc>) -> FreshnessCheck {
     let (signed_at, window_secs) = match (target.signed_at, target.freshness_window_secs) {
         (Some(s), Some(w)) => (s, w),

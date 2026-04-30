@@ -1,29 +1,13 @@
-//! HTTP fetch primitives shared by the channel-refs and
-//! revocations poll tasks.
-//!
-//! Both tasks need the same shape: read a Bearer token from a
-//! file (optional, public sources skip), GET an artifact URL +
-//! signature URL pair, return the raw bytes for the verify
-//! pipeline. Centralising the helpers here avoids the two
-//! parallel modules drifting on retry posture, error wording, or
-//! header conventions.
-//!
-//! Verification stays in the per-artifact poll modules — they
-//! diverge there (different artifact types, different replay
-//! targets, different freshness expectations), and a generic
-//! abstraction would force their failure semantics through type
-//! parameters or trait objects. The fetch is the only piece
-//! that's genuinely identical.
+//! Shared HTTP fetch + Bearer-token primitive for the poll tasks.
+//! Verification stays per-task — the artifacts diverge enough that
+//! a generic abstraction would force semantics through trait objects.
 
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-/// Build the HTTP client used by every poll task. Single
-/// configuration point for TLS posture + timeout. The 15s timeout
-/// matches the prior per-module setting; faster fails the poll
-/// quietly during transient upstream blips.
+/// 15s timeout — faster trips on transient upstream blips.
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .use_rustls_tls()
@@ -32,10 +16,8 @@ pub fn build_client() -> reqwest::Client {
         .expect("build signed-fetch client (rustls + 15s timeout)")
 }
 
-/// Read a Bearer token from `path`, trimming surrounding
-/// whitespace. Read fresh on each poll so token rotation
-/// propagates without a CP restart. `None` skips auth — public
-/// sources don't need a token.
+/// Read fresh on each poll so token rotation propagates without
+/// restart. `None` skips auth (public sources).
 pub fn read_token(path: Option<&Path>) -> Result<Option<String>> {
     match path {
         Some(p) => Ok(Some(
@@ -48,16 +30,8 @@ pub fn read_token(path: Option<&Path>) -> Result<Option<String>> {
     }
 }
 
-/// Fetch the (artifact, signature) byte pair from a configured
-/// upstream URL pair, with an optional Bearer token on both
-/// requests. Returns the raw bytes — verification is the
-/// caller's job.
-///
-/// Failure semantics: any non-2xx response or network error
-/// surfaces as `Err` with the URL + status + body in the message.
-/// The caller logs at warn and retains its previous state. This
-/// matches the "log warn + retain" posture documented in
-/// `channel_refs_poll` and `revocations_poll`.
+/// Non-2xx or network error → `Err`. Caller logs warn + retains
+/// previous state.
 pub async fn fetch_signed_pair(
     client: &reqwest::Client,
     artifact_url: &str,

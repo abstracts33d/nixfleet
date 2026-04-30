@@ -1,31 +1,13 @@
-//! Host probe-output signing ( root-3 / #59).
+//! Host probe-output signing — signs JCS-canonical event payloads
+//! with `/etc/ssh/ssh_host_ed25519_key`. CP verifies against
+//! `fleet.nix` `hosts.<hostname>.pubkey`.
 //!
-//! Reads `/etc/ssh/ssh_host_ed25519_key` (OpenSSH PEM format), parses
-//! the raw 32-byte private scalar, and signs the JCS-canonical bytes
-//! of a structured event payload. The CP verifies against the host's
-//! pubkey declared in `fleet.nix` (`hosts.<hostname>.pubkey`).
+//! Why SSH host key (not mTLS cert): the auditor trust root needs to
+//! rotate independently from the mTLS cert. A leaked agent cert
+//! doesn't compromise the third-party auditor chain.
 //!
-//! ## Why SSH host key, not mTLS cert
-//!
-//! The agent's mTLS client cert authenticates "this is host X to the
-//! CP". Probe-output signatures authenticate "this evidence was
-//! generated on host X" *to a third-party auditor* who only has
-//! `fleet.nix` and the signed artifact log. The two trust roots
-//! rotate independently and at different cadences (mTLS cert renews
-//! at 50% validity; SSH host key rotates ~never), so a leaked agent
-//! cert doesn't compromise the auditor chain.
-//!
-//! ## Graceful degradation
-//!
-//! The signer is best-effort — if the SSH host key file is missing,
-//! unreadable, or has a non-ed25519 algorithm, signing returns
-//! `None` and the agent posts the event without a signature. The CP
-//! decides what to do with unsigned events (current policy: accept,
-//! log a warning if the host's pubkey is declared in fleet.nix).
-//!
-//! Hosts on impermanent / first-boot setups may not have a host key
-//! yet at the moment the gate fires; that's a real case, not an
-//! error.
+//! Best-effort: missing/unreadable/wrong-algorithm key returns
+//! `None`; agent posts events unsigned and CP flags them.
 
 use std::path::{Path, PathBuf};
 
@@ -34,34 +16,20 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use serde::Serialize;
 
-// Re-export the canonical signing-payload shapes from
-// nixfleet-proto so existing callers (main.rs) don't need to
-// rewrite their imports. The proto crate is the single source of
-// truth — agent and CP both import from there.
 pub use nixfleet_proto::evidence_signing::{
     ActivationFailedSignedPayload, ComplianceFailureSignedPayload,
     RollbackTriggeredSignedPayload, RuntimeGateErrorSignedPayload,
 };
 
-/// Default OpenSSH host ed25519 private key path. Same path NixOS
-/// generates by default (`services.openssh` / `sshd-pre-start`); same
-/// path `ssh-keygen -A` writes to. Override-able via
-/// `--ssh-host-key-file` if the operator stages it elsewhere
-/// (e.g. impermanent-root setups bind-mounting from /persist).
 pub const DEFAULT_SSH_HOST_KEY_PATH: &str = "/etc/ssh/ssh_host_ed25519_key";
 
-/// Loaded ed25519 signing key. Held by the agent for the process
-/// lifetime — re-loaded on agent restart, which is when SSH keys
-/// would also rotate (NixOS regenerates on first boot only).
 pub struct EvidenceSigner {
     signing_key: SigningKey,
 }
 
 impl EvidenceSigner {
-    /// Load and parse an OpenSSH ed25519 private key from disk.
-    /// Returns `Ok(None)` when the file doesn't exist (graceful — see
-    /// module docs); returns `Err` only on hard failures (parse
-    /// error, wrong algorithm, IO error other than NotFound).
+    /// `Ok(None)` when the file is absent (graceful); `Err` only on
+    /// parse errors, wrong algorithm, or non-NotFound IO.
     pub fn load(path: &Path) -> Result<Option<Self>> {
         let raw = match std::fs::read_to_string(path) {
             Ok(s) => s,
@@ -81,9 +49,8 @@ impl EvidenceSigner {
         let private = ssh_key::PrivateKey::from_openssh(&raw)
             .with_context(|| format!("parse OpenSSH key at {}", path.display()))?;
 
-        // OpenSSH's ed25519 key block carries the full 64-byte
-        // expanded form (32 seed + 32 pubkey). ed25519-dalek's
-        // `SigningKey::from_bytes` wants only the 32-byte seed.
+        // OpenSSH stores 64 bytes (32 seed + 32 pubkey); dalek
+        // wants the 32-byte seed only.
         let key_data = match private.key_data() {
             ssh_key::private::KeypairData::Ed25519(kp) => kp.private.to_bytes(),
             other => {
@@ -99,17 +66,9 @@ impl EvidenceSigner {
         Ok(Some(Self { signing_key }))
     }
 
-    /// Sign a structured payload after JCS-canonicalising it. The
-    /// returned string is base64-standard 64-byte ed25519 sig — the
-    /// exact bytes the CP feeds to `verify_strict`.
-    ///
-    /// Errors only on serde failure (which would indicate a buggy
-    /// ReportEvent variant — fatal); never on signing itself.
+    /// Returns base64-standard 64-byte ed25519 sig. Errors only on
+    /// serde failure (would indicate a buggy ReportEvent variant).
     pub fn sign<T: Serialize>(&self, payload: &T) -> Result<String> {
-        // serde_jcs is the workspace canonicaliser per CONTRACTS §III.
-        // Same crate `nixfleet-canonicalize` wraps; we use it directly
-        // here to canonicalise an in-memory struct rather than a JSON
-        // string round-trip.
         let canonical = serde_jcs::to_vec(payload)
             .context("JCS canonicalisation of evidence payload failed")?;
         let sig = self.signing_key.sign(&canonical);
@@ -117,15 +76,8 @@ impl EvidenceSigner {
     }
 }
 
-// Signed-payload struct definitions live in `nixfleet-proto::evidence_signing`
-// (re-exported above). Earlier revisions of this cycle had two parallel
-// definitions — one here, one in CP's `evidence_verify` — and any silent
-// drift between them would break verification across the wire without a
-// compile error. The proto crate is now the single source of truth.
-
-/// SHA-256 hex-lowercase of an arbitrary serializable payload, after
-/// JCS canonicalisation. Used to bind `evidence_snippet` to the
-/// signed envelope without inflating signed-bytes size.
+/// Hex-lowercase SHA-256 of JCS-canonical bytes. Binds
+/// `evidence_snippet` to the signed envelope without inflating size.
 pub fn sha256_jcs<T: Serialize>(payload: &T) -> Result<String> {
     use sha2::Digest;
     let canonical = serde_jcs::to_vec(payload).context("JCS canonicalisation failed")?;
