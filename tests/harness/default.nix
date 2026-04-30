@@ -92,6 +92,14 @@
   # identity + the plaintext bytes the scenario greps for absence of.
   agenixFixture = import ./fixtures/agenix {inherit pkgs;};
 
+  # Pre-signed probe-output fixture for criterion #2 (auditor offline
+  # chain). Outputs canonical payload + base64 sig + OpenSSH pubkey;
+  # consumed by the auditor-chain scenario via verify-artifact probe.
+  probeFixture =
+    if nixfleet-canonicalize == null
+    then null
+    else import ./fixtures/probe {inherit pkgs nixfleet-canonicalize;};
+
   # Stale variant of the signed fixture (issue #13): deliberately
   # signs the artifact a year and a half in the past so any sane
   # freshness window puts the agent's clock-skewed `now − signedAt`
@@ -193,6 +201,22 @@
           agentPkg = nixfleet-agent;
         });
 
+  # §8 done-criterion #2 auditor-chain scenario. Pure runCommand —
+  # the verify path is offline by definition, no microvm required.
+  auditorChainScenario =
+    if nixfleet-verify-artifact == null || probeFixture == null
+    then
+      throw ''
+        tests/harness: fleet-harness-auditor-chain requires both
+        `nixfleet-canonicalize` (for probeFixture) and
+        `nixfleet-verify-artifact`. Wire via modules/tests/harness.nix.
+      ''
+    else
+      import ./scenarios/auditor-chain.nix {
+        inherit pkgs probeFixture;
+        verifyArtifactPkg = nixfleet-verify-artifact;
+      };
+
   # Issue #2 step 5 deadline-expiry scenario. Real CP with a 3-second
   # confirm deadline; testScript drives the wire flow via curl from
   # the host VM (no agent microVM needed) — POST checkin → receive
@@ -233,6 +257,8 @@ in {
 
   fleet-harness-deadline-expiry = deadlineExpiryScenario;
 
+  fleet-harness-auditor-chain = auditorChainScenario;
+
   # Issue #5 fleet-N variants. fleet-2 is identical to smoke
   # under a different name, kept for criterion completeness.
   fleet-harness-fleet-2 = mkFleetNScenario 2;
@@ -244,4 +270,5 @@ in {
   # so byte-stability regressions surface on every CI run.
   inherit signedFixture;
   inherit agenixFixture;
+  inherit probeFixture;
 }

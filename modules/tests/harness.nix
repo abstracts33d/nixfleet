@@ -56,6 +56,15 @@
           # fixture build -> mTLS serve -> agent fetch ->
           # verify_artifact accept -> OK marker.
           fleet-harness-signed-roundtrip = harness.fleet-harness-signed-roundtrip;
+
+          # §8 done-criterion #2 auditor-chain scenario. Validates
+          # offline probe-output verification (verify-artifact probe)
+          # accepts a well-formed payload and rejects a tampered one.
+          fleet-harness-auditor-chain = harness.fleet-harness-auditor-chain;
+
+          # Probe-output fixture exposed standalone — byte-stability
+          # regression guard, same role as phase-2-signed-fixture.
+          phase-1-2-probe-fixture = harness.probeFixture;
         }
         // lib.optionalAttrs (
           nixfleet-canonicalize
