@@ -68,29 +68,23 @@
       wantedBy = ["multi-user.target"];
       before = ["nixfleet-agent.service"];
       after = ["local-fs.target"];
+      # `requiredBy` makes the agent unit fail loudly if preseed
+      # fails. Without it, read_last_confirmed silently returns
+      # Ok(None) on a missing file and the recovery test would
+      # false-pass.
+      requiredBy = ["nixfleet-agent.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        StandardOutput = "journal+console";
-        StandardError = "journal+console";
       };
-      # Make the agent unit a hard consumer: if preseed fails, the
-      # agent's recovery test would silently false-pass otherwise
-      # (read_last_confirmed returns Ok(None) on missing file with
-      # no warn). Tying via requiredBy surfaces a preseed failure
-      # as an agent-failed unit instead.
-      requiredBy = ["nixfleet-agent.service"];
       script = ''
-        set -euxo pipefail
-        echo "harness-preseed: starting"
+        set -euo pipefail
 
         # Override /run/current-system. The symlink target doesn't
-        # need to exist — the agent only reads the symlink string
-        # via fs::read_link and bases its closure_hash report on
-        # path basename.
+        # need to exist — the agent reads the symlink string via
+        # fs::read_link and reports its basename.
         ${pkgs.coreutils}/bin/ln -sfn \
           /tmp/${teardownClosureHash} /run/current-system
-        ${pkgs.coreutils}/bin/ls -la /run/current-system
 
         # Seed last_confirmed_at in the agent's state dir. Format
         # per crates/nixfleet-agent/src/checkin_state.rs:
@@ -102,9 +96,6 @@
           > /var/lib/nixfleet-agent/last_confirmed_at
         ${pkgs.coreutils}/bin/chmod 0600 \
           /var/lib/nixfleet-agent/last_confirmed_at
-        ${pkgs.coreutils}/bin/ls -la /var/lib/nixfleet-agent/
-        ${pkgs.coreutils}/bin/cat /var/lib/nixfleet-agent/last_confirmed_at
-        echo "harness-preseed: complete"
       '';
     };
   };
