@@ -30,6 +30,7 @@ pub mod enroll_wire;
 pub mod evidence_signing;
 pub mod fleet_resolved;
 pub mod revocations;
+pub mod rollout_manifest;
 pub mod trust;
 
 pub use fleet_resolved::{
@@ -37,4 +38,5 @@ pub use fleet_resolved::{
     Meta, OnHealthFailure, PolicyWave, RolloutPolicy, Selector, SystemdFailedUnits, Wave,
 };
 pub use revocations::{RevocationEntry, Revocations};
+pub use rollout_manifest::{HostWave, RolloutManifest};
 pub use trust::{KeySlot, TrustConfig, TrustedPubkey};
