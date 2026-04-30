@@ -109,6 +109,11 @@
           fleet-harness-fleet-2 = harness.fleet-harness-fleet-2;
           fleet-harness-fleet-5 = harness.fleet-harness-fleet-5;
           fleet-harness-fleet-10 = harness.fleet-harness-fleet-10;
+
+          # Secret-hygiene scenario. Agent decrypts an age-encrypted
+          # blob at boot; testScript greps the CP's disk + journal
+          # and asserts the plaintext does not appear.
+          fleet-harness-secret-hygiene = harness.fleet-harness-secret-hygiene;
         };
     };
 }

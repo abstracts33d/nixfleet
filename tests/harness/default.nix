@@ -166,6 +166,25 @@
           agentPkg = nixfleet-agent;
         });
 
+  # Secret-hygiene scenario. Agent decrypts an age-encrypted blob
+  # at boot, talks to CP normally; testScript greps every CP-side
+  # artifact for the plaintext and asserts no leaks.
+  secretHygieneScenario =
+    if nixfleet-control-plane == null || nixfleet-agent == null
+    then
+      throw ''
+        tests/harness: fleet-harness-secret-hygiene requires both
+        `nixfleet-control-plane` and `nixfleet-agent`. Wire via
+        modules/tests/harness.nix.
+      ''
+    else
+      import ./scenarios/secret-hygiene.nix (scenarioArgs
+        // {
+          inherit signedFixture agenixFixture;
+          cpPkg = nixfleet-control-plane;
+          agentPkg = nixfleet-agent;
+        });
+
   # Stale-target refusal scenario. Real CP serving a
   # year-and-a-half-old fixture (CP accepts because its
   # --freshness-window-secs is bumped huge); real agent receives the
@@ -284,6 +303,8 @@ in {
   fleet-harness-auditor-chain = auditorChainScenario;
 
   fleet-harness-corruption-rejection = corruptionRejectionScenario;
+
+  fleet-harness-secret-hygiene = secretHygieneScenario;
 
   # Fleet-N variants. fleet-2 is identical to smoke
   # under a different name, kept for criterion completeness.
