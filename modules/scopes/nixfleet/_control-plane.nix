@@ -227,6 +227,25 @@ in {
       '';
     };
 
+    # Directory of pre-signed rollout manifests
+    # (`<rolloutId>.{json,sig}`) the CP serves at
+    # `GET /v1/rollouts/<rolloutId>`. Produced by `nixfleet-release`
+    # alongside `fleet.resolved.json` (RFC-0002 §4.4 / CONTRACTS §I #8).
+    # When `null`, agents that receive a `target.rollout_id` will get
+    # 503 on fetch and refuse to dispatch with `ManifestMissing` —
+    # the spec-mandated refuse-to-act posture.
+    rolloutsDir = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/var/lib/nixfleet-cp/releases/rollouts";
+      description = ''
+        Filesystem directory holding pre-signed rollout manifests
+        produced by `nixfleet-release`. Required for the v0.2
+        content-addressed dispatch path; without it agents refuse
+        to act on every dispatched target.
+      '';
+    };
+
     # SQLite path. When set, the CP opens + migrates the DB on
     # startup. Token replay + cert revocations + pending confirms +
     # rollouts persist across CP restarts. When null, in-memory state
@@ -416,6 +435,10 @@ in {
             ++ lib.optionals (cfg.closureUpstream != null) [
               "--closure-upstream"
               (lib.escapeShellArg cfg.closureUpstream)
+            ]
+            ++ lib.optionals (cfg.rolloutsDir != null) [
+              "--rollouts-dir"
+              (lib.escapeShellArg cfg.rolloutsDir)
             ]
             ++ lib.optionals
             (
