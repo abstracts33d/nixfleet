@@ -1,8 +1,6 @@
 # Trust-root data flow: `fleet.nix` → CP `verify_artifact`
 
-Describes how the Nix layer's declarative `nixfleet.trust.*` declarations travel from `fleet.nix` to the Rust runtime's `verify_artifact` call site at the control-plane runtime. Load-bearing Phase 2 design — this wiring is what makes CI-signed `fleet.resolved` actually get verified.
-
-Status: **proposed**, not yet implemented. Lands with the Phase 2 CP integration work.
+Describes how the Nix layer's declarative `nixfleet.trust.*` declarations travel from `fleet.nix` to the Rust runtime's `verify_artifact` call site at the control-plane runtime. This wiring is what makes CI-signed `fleet.resolved` actually get verified.
 
 Cross-references: ARCHITECTURE.md §1.4 (control plane role), CONTRACTS.md §II (trust roots), RFC-0003 §7 (threat model — compromised CP / closure forgery / stale replay).
 
@@ -282,5 +280,3 @@ Evolution rule:
 - Rotation works declaratively — both `current` and `previous` active until `rejectBefore` clears the overlap.
 - Agents get the same pattern via `/etc/nixfleet/agent/trust.json`.
 - `fleet.resolved.json` distribution to the CP is a separate open question — recommendation is local-git-checkout pattern (b).
-
-Implementation PR on nixfleet comes after the #5 harness scaffold's TODO(5) slot-in lands. Suggested scope: `modules/scopes/nixfleet/_control-plane.nix` trust-file wiring + `crates/nixfleet-proto::TrustConfig` + `crates/control-plane` CLI flag + a harness scenario that asserts the CP refuses artifacts signed by a non-declared key.

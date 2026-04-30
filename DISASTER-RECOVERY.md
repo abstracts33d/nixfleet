@@ -1,7 +1,5 @@
 # Disaster recovery — destroying the control plane
 
-**Status:** living document. **Owner:** open. **Last updated:** 2026-04-28.
-
 This is the operator runbook for the load-bearing claim of `ARCHITECTURE.md` §1 / §8 done-criterion #1:
 
 > Destroying the control plane is an outage, not a breach. Rebuilding the CP from the flake and the signed artifacts in storage gives you back the same fleet within one reconcile cycle.
