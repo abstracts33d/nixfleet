@@ -87,6 +87,11 @@
         inherit lib pkgs nixfleet-canonicalize;
       };
 
+  # Encrypted-secret fixture for criterion #3 (CP disk yields zero
+  # plaintext secrets). Outputs an age-encrypted blob + matching
+  # identity + the plaintext bytes the scenario greps for absence of.
+  agenixFixture = import ./fixtures/agenix {inherit pkgs;};
+
   # Stale variant of the signed fixture (issue #13): deliberately
   # signs the artifact a year and a half in the past so any sane
   # freshness window puts the agent's clock-skewed `now − signedAt`
@@ -238,4 +243,5 @@ in {
   # as a flake check (`phase-2-signed-fixture`) in `modules/tests/harness.nix`
   # so byte-stability regressions surface on every CI run.
   inherit signedFixture;
+  inherit agenixFixture;
 }
