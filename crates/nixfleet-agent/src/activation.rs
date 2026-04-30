@@ -22,9 +22,9 @@
 //! - linux: `systemd-run --unit=nixfleet-switch -- switch-to-configuration switch`
 //! - darwin: `setsid` detached `<store>/activate-user` + `<store>/activate`
 //!
-//! See `docs/mdbook/reference/darwin-platform-notes.md` for why
-//! `setsid` + detached child survives the agent's own SIGTERM
-//! during plist reload.
+//! `setsid` + a detached child is what makes darwin activation
+//! survive the agent's own SIGTERM during plist reload (`nohup`
+//! doesn't work in launchd's no-controlling-tty context).
 
 use std::time::Duration;
 
