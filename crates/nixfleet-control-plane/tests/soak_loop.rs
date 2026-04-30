@@ -1,4 +1,4 @@
-//! End-to-end soak-loop integration test (gap #2 closing the
+//! End-to-end soak-loop integration test (closing the
 //! cycle).
 //!
 //! Exercises every piece the cycle wired up in one scenario:
@@ -6,7 +6,7 @@
 //! 1. `record_pending_confirm` + `confirm_pending` simulate the
 //!    confirm handler's success path.
 //! 2. `transition_host_state(Healthy, Set(now), None)` stamps
-//!    `last_healthy_since` (gap #2 step 1).
+//!    `last_healthy_since` (step 1).
 //! 3. `active_rollouts_snapshot` projects the DB into the
 //!    reconciler's observed-state shape (step 2).
 //! 4. `observed_projection::project` builds the Observed struct.

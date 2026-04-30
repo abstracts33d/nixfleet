@@ -83,7 +83,7 @@
         fi
 
         echo "harness-agent: running nixfleet-verify-artifact" >&2
-        verify_out=$(nixfleet-verify-artifact \
+        verify_out=$(nixfleet-verify-artifact artifact \
           --artifact "$workdir/artifact" \
           --signature "$workdir/signature" \
           --trust-file /etc/nixfleet-harness/test-trust.json \

@@ -1,4 +1,4 @@
-//! Wave-staging compliance gate integration test (issue #59).
+//! Wave-staging compliance gate integration test.
 //!
 //! Drives the full chain end-to-end:
 //! - signed `fleet.resolved.json` with `hosts.lab` on a channel
@@ -375,7 +375,7 @@ async fn enforce_mode_blocks_dispatch_after_signed_compliance_failure() {
     handle.abort();
 }
 
-/// Issue #60 acceptance criterion: the wave gate must remain
+/// Acceptance criterion: the wave gate must remain
 /// blocked across a CP restart. Mechanism — at boot, the CP
 /// hydrates the in-memory ring buffer from the persisted
 /// `host_reports` table; the gate's projection sources its

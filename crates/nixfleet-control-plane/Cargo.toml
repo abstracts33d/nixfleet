@@ -16,7 +16,7 @@ path = "src/lib.rs"
 name = "nixfleet-control-plane"
 path = "src/main.rs"
 
-# Phase 3 PR-1: re-add the wire stack PR #36 dropped when it trimmed the
+# Phase 3 PR-1: re-add the wire stack the prior PR dropped when it trimmed the
 # CP module to the Phase 2 oneshot-runner surface. axum/axum-server/
 # rustls/rustls-pki-types ported from v0.1's working CP — same versions,
 # same shape (see crates/control-plane/Cargo.toml on tag v0.1.1). The
@@ -60,8 +60,8 @@ base64 = "0.22"
 # the agent certs; ed25519-dalek verifies bootstrap-token signatures
 # against the org root key from trust.json; sha2 fingerprints CSR
 # pubkeys for the token's expected_pubkey_fingerprint match. **The
-# fleet CA private key is online on the CP under this design — see
-# issue #41 for the deferred TPM-bound replacement.**
+# fleet CA private key is online on the CP under this design; a
+# TPM-bound replacement is deferred.**
 # `x509-parser` feature gates `CertificateParams::from_ca_cert_pem` and
 # `CertificateSigningRequestParams::from_pem`, which we need to load
 # the operator-supplied fleet CA cert + the agent CSR from disk.
@@ -69,7 +69,7 @@ rcgen = { version = "0.13", features = ["x509-parser"] }
 ed25519-dalek = "2"
 sha2 = "0.10"
 nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }
-# Issue #12 root-3 / #59 — host probe-output signature verification.
+# Root-3 — host probe-output signature verification.
 # The CP parses `hosts.<hostname>.pubkey` from fleet.resolved
 # (OpenSSH ed25519 format) and verifies signatures on
 # ComplianceFailure / RuntimeGateError event details. Auditor chain
