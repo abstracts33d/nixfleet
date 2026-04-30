@@ -40,7 +40,7 @@ Closes the framework-scoped gaps required for ARCHITECTURE.md §8 done-criterion
 - **ARCHITECTURE.md §6 Phase 10 — "CP-resident state by recovery profile"** subsection enumerating every SQLite table with its recovery class (soft from agent inputs / hard from signed artifacts in git).
 - **ARCHITECTURE.md §7 Non-goals** points at `docs/commercial-extensions.md` for capabilities deliberately out of scope.
 - **ARCHITECTURE.md §8 done-criterion #1** expanded with the per-table guarantee.
-- **`docs/roadmap/0002-v0.2-completeness-gaps.md`** updated with the cycle's full status; gap #2 marked closed (steps 1+2+3); gaps A/B/C/D enumerated with their closing commits.
+- **v0.2 completeness cycle landed** — gap #2 closed (steps 1+2+3); gaps A/B/C/D enumerated with their closing commits. Tracking moved to GitHub issues (#46/#47/#48/#14, plus open #68/#69/#67 for the remaining items).
 
 #### Issues
 

@@ -179,10 +179,9 @@ fn verify_ecdsa_p256(
         .map_err(|_| VerifyError::BadSignature)
 }
 
-/// Verify a signed `revocations.json` artifact ( of
-/// `docs/roadmap/0002-v0.2-completeness-gaps.md`). Same trust
-/// class as [`verify_artifact`] — both signed by `ciReleaseKey`
-/// per the cycle's design — so the same freshness window +
+/// Verify a signed `revocations.json` artifact. Same trust class
+/// as [`verify_artifact`] — both signed by `ciReleaseKey` — so
+/// the same freshness window +
 /// reject-before kill switch + canonicalization + signature path
 /// applies. The only thing that differs is the type-parse target
 /// (Revocations rather than FleetResolved) and the schema version

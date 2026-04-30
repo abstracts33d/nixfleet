@@ -12,10 +12,10 @@ The capabilities catalogued below are **deliberately out of scope for the open k
 
 ## Soft-state recovery vs hard-state recovery
 
-ARCHITECTURE.md §8 done-criterion #1 — *"destroying the control plane's database and rebuilding from empty state results in full fleet visibility within one reconcile cycle"* — is the load-bearing claim. The roadmap (`docs/roadmap/0002-v0.2-completeness-gaps.md`, gap #7) closes this claim's strict reading by classifying every CP-resident table as either:
+ARCHITECTURE.md §8 done-criterion #1 — *"destroying the control plane's database and rebuilding from empty state results in full fleet visibility within one reconcile cycle"* — is the load-bearing claim. Phase 10 teardown work (#14) closes this claim's strict reading by classifying every CP-resident table as either:
 
 - **Soft state** — recoverable from agent inputs (next checkin cycle) or acceptable as a one-window operational regression. Examples: `pending_confirms`, `host_rollout_state`, `token_replay`.
-- **Hard state** — must come from signed artifacts pre-existing in git or trust roots. Examples: `cert_revocations` once gap #6 (signed `revocations.json`) lands; `trust.json` already today.
+- **Hard state** — must come from signed artifacts pre-existing in git or trust roots. Examples: `cert_revocations` (signed `revocations.json` sidecar — #48); `trust.json` already today.
 
 Both classes are recoverable inside the open kernel. What is NOT recoverable inside the open kernel — and what the catalogue below addresses — is **operations-grade availability and observability** of the CP itself.
 

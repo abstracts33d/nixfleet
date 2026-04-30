@@ -1,6 +1,5 @@
 //! Revocations poll loop.
 //!
-//! Closes of `docs/roadmap/0002-v0.2-completeness-gaps.md`.
 //! Fetches a signed `revocations.json` artifact from a configured
 //! URL pair, runs `nixfleet_reconciler::verify_revocations`
 //! against the same `ciReleaseKey` trust roots that

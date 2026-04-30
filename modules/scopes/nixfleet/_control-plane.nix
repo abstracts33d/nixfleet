@@ -292,8 +292,8 @@ in {
       };
     };
 
-    # Gap C of docs/roadmap/0002-v0.2-completeness-gaps.md: signed
-    # `revocations.json` sidecar. Mirrors `channelRefsSource` —
+    # Gap C (#48): signed `revocations.json` sidecar. Mirrors
+    # `channelRefsSource` —
     # same `(artifact, signature, token)` shape, same Bearer auth,
     # same trust class (ciReleaseKey signs both artifacts). When
     # configured, the CP polls the upstream every 60s and replays

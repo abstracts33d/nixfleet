@@ -597,11 +597,10 @@ fn record_dispatched_target(
 ///
 /// Behaviour:
 /// - Pending row exists, deadline not passed → mark confirmed, 204.
-/// - No matching row in 'pending' state → orphan-recovery path
-///   ( in docs/roadmap/0002-v0.2-completeness-gaps.md): if the
-///   agent's reported `closure_hash` matches the host's declared
-///   target in the verified `FleetResolved`, treat this as a CP-
-///   rebuild recovery — synthesise a confirmed pending_confirms
+/// - No matching row in 'pending' state → orphan-recovery path:
+///   if the agent's reported `closure_hash` matches the host's
+///   declared target in the verified `FleetResolved`, treat as a
+///   CP-rebuild recovery — synthesise a confirmed pending_confirms
 ///   row + transition to Healthy + 204. Closure-hash mismatch →
 ///   genuine 410 (rollout cancelled / wrong rollout / deadline
 ///   expired; agent triggers local rollback per RFC §4.2).

@@ -109,7 +109,7 @@ in {
       '';
     };
 
-    # Gap B-agent of docs/roadmap/0002-v0.2-completeness-gaps.md.
+    # Gap B-agent (deferred to #2 — Magic rollback in the agent).
     # The agent persists `last_confirmed_at` here after every
     # successful confirm so subsequent checkins can attest the
     # timestamp; the CP-side

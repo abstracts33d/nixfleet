@@ -75,7 +75,7 @@
     };
   };
 
-  # --- Revocations (gap C of docs/roadmap/0002-v0.2-completeness-gaps.md) ---
+  # --- Revocations (gap C, #48) ---
   # Operator-declared agent-cert revocation entries. The release
   # pipeline serialises this list, signs it with the same
   # ciReleaseKey that signs `fleet.resolved`, and writes

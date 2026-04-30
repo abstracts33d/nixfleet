@@ -1,7 +1,6 @@
 //! `revocations.json` — signed agent-cert revocation list.
 //!
-//! Sidecar artifact alongside `fleet.resolved.json`. Closes
-//! of `docs/roadmap/0002-v0.2-completeness-gaps.md`: without it,
+//! Sidecar artifact alongside `fleet.resolved.json`. Without it,
 //! `cert_revocations` is the only piece of CP-resident state where
 //! loss-on-rebuild is a security regression rather than an
 //! operational rough edge.
