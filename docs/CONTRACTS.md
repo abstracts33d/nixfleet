@@ -268,16 +268,93 @@ The control plane's SQLite database exists to cache operational state. Every col
 
 ---
 
-## V. Versioning summary
+## V. Versioning patterns
+
+### Current state at a glance
 
 | Contract | Current version | Evolution |
 |---|---|---|
 | `fleet.resolved.json` | `schemaVersion: 1` | Additive within v1; bump for breaking changes. `meta.signatureAlgorithm` added in v1 — optional, defaults to `"ed25519"` when absent. |
+| `RolloutManifest` | `schemaVersion: 1` | Additive within v1; every shape change rebumps in lockstep (§I #8). |
+| `revocations.json` | `schemaVersion: 1` | Same shape as `fleet.resolved.json`. |
 | Wire protocol | v1 (header) | Additive within major; dual-support during migration |
 | Probe descriptor per framework | `<framework>/v1` per framework | New string for new shape; old shape kept during migration |
 | Probe output | Tracked with the control | Same as descriptor |
 | Log/event | `logSchemaVersion: 1` | Same pattern as wire protocol |
 | Agenix format | Pinned by `flake.lock` | Treat upgrade as spine change |
+
+### The three patterns and why they are NOT unified
+
+Three boundary contracts in this framework version themselves three different ways. Each is right in its scope; trying to unify them would lose information.
+
+| Pattern | Used by | Identifier | Scope of a bump |
+|---|---|---|---|
+| **A — `meta.schemaVersion: u32`** | Signed artifacts (`fleet.resolved.json`, `RolloutManifest`, `revocations.json`) | JSON field inside the artifact | The data shape of the artifact bytes |
+| **B — HTTP header** | Agent ↔ CP wire (§I #2), log/event schema (§I #6) | `X-Nixfleet-<Capability>: <major>` per request | Per-request interaction capability |
+| **C — Embedded schema string** | Compliance controls (§I #3, #4) | `<vocabulary>/<version>` per item | One vocabulary item's contract |
+
+Why not pick one across the board:
+
+- **Wire version inside the artifact** (Pattern A everywhere) would couple wire bumps to artifact bumps — every new wire field would force re-signing every artifact in flight, even artifacts whose data shape did not change.
+- **Artifact schema in an HTTP header** (Pattern B everywhere) would destroy self-description: an auditor reading canonical bytes off disk, out of a cache, or shipped by email has no HTTP envelope to read the version from.
+- **Global vocabulary version** (Pattern C everywhere) would force every contract to re-version on any single change, breaking the per-framework / per-artifact cadence assumption that lets compliance frameworks evolve independently.
+
+The patterns are right in their respective scopes; the inconsistency is real but load-bearing.
+
+### Decision tree — picking a versioning pattern for a new contract
+
+**Q1.** Is the contract a self-describing chunk of data that may be read out-of-context (off disk, out of a cache, by an auditor, by a third-party tool, mailed to someone)?
+- **Yes** → **Pattern A** (`meta.schemaVersion: u32`). The bytes carry their own version label.
+
+**Q2.** Is the contract a per-request interaction capability between two endpoints sharing live session state?
+- **Yes** → **Pattern B** (HTTP header). The version applies to the request, not to a persisted blob.
+
+**Q3.** Is the contract an independent vocabulary item that evolves on its own cadence, distinct from peer items in the same family?
+- **Yes** → **Pattern C** (embedded schema string). Each item carries its own version; the family does not aggregate.
+
+If none fit, the contract is probably small enough not to need a versioning mechanism at all — pin by `flake.lock` (e.g., agenix format §I #5) or by review.
+
+### Naming conventions per pattern
+
+| Pattern | Field/key naming | Version literal | Example |
+|---|---|---|---|
+| A | camelCase JSON keys; envelope under `meta.*` | unsigned integer | `"meta": {"schemaVersion": 1}` |
+| B | `X-Nixfleet-<Capability>` HTTP header | bare integer for major | `X-Nixfleet-Protocol: 1` |
+| C | `<vocabulary>/<version>` string | `v<N>` suffix | `"anssi-bp028/v1"` |
+
+### Bump procedure per pattern
+
+**Pattern A — `meta.schemaVersion`.**
+
+1. Additive fields land within the current `schemaVersion`; consumers MUST ignore unknown fields.
+2. Removing or changing the meaning of a field requires bumping `schemaVersion` and shipping a migration window where consumers accept both versions.
+3. Compatibility window default: 30 days from the first signed artifact under the new version. After the window, old-version artifacts are refused.
+4. Sunset notice: announce the bump in `CHANGELOG.md` at least one release before the cutover; flag old-version artifacts in CP logs during the window.
+5. Producers stop emitting the old version at least one full `freshnessWindow` before consumers stop accepting it, so no in-flight artifact ages out mid-rotation.
+
+**Pattern B — HTTP header.**
+
+1. Additive fields within the same major (consumers MUST ignore unknown fields, same posture as Pattern A).
+2. Removing a field or changing semantics requires a major bump (`X-Nixfleet-Protocol: 2`) and dual-version CP support during migration.
+3. Compatibility window default: one full agent renewal cycle (30 days) so a rolling cert renewal naturally drags every agent onto the new major.
+4. Sunset notice: CP logs a deprecation warning when it admits a request under the old major; flips to HTTP 400 after the window.
+5. Wire endpoints are versioned, not rotated — there is no "old key" analogue; the deprecation is the rotation.
+
+**Pattern C — embedded schema string.**
+
+1. Each `<vocabulary>/<version>` pair is immutable once shipped.
+2. New version = new schema string (e.g. `anssi-bp028/v2`); the agent ships a handler registry keyed on `(control_id, schema)`.
+3. Compatibility window: controls MAY support multiple schema versions during migration; the framework imposes no global cutover.
+4. Sunset notice: per-control, declared by the framework's release notes when a new schema version supersedes an old one.
+5. Rotation/deprecation is per-control; the framework does not aggregate across the vocabulary family.
+
+### Concrete lifecycle examples
+
+**Pattern A — adding `meta.signatureAlgorithm` to `fleet.resolved.json`.** Field added optionally within `schemaVersion: 1`. Consumers absent the field interpret it as `"ed25519"` for backward compatibility (§I #1). No bump. This is the prototypical compatible additive change — under stricter discipline it could have been a `schemaVersion: 2` bump, but the "default when absent" rule preserved single-version compatibility for unmodified consumers.
+
+**Pattern B — widening `EvaluatedTarget` (RFC-0003 §4.1).** Three new optional fields (`rollout_id`, `wave_index`, `activate`) added to `CheckinResponse.target`. Per RFC-0003 §6 additive rule, no `X-Nixfleet-Protocol` bump required: old agents that don't deserialize the new fields keep working; new agents reading them from an old CP receive `None`.
+
+**Pattern C — adding a new compliance framework version.** A new `anssi-bp028/v2` lands as a new probe descriptor. The agent registry adds a v2 handler keyed on `(control_id, "anssi-bp028/v2")`. Hosts on channels still emitting v1 probes keep the v1 handler; hosts on channels migrated to v2 receive v2 probes. No global cutover; the v1 handler is removed from the registry only after every channel's compliance config is migrated.
 
 ---
 
