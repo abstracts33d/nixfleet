@@ -48,13 +48,15 @@ pub fn spawn(db: Arc<Db>, db_path: Option<PathBuf>) -> tokio::task::JoinHandle<(
         loop {
             ticker.tick().await;
             let token_pruned = try_prune("token_replay", || {
-                db.prune_token_replay(TOKEN_REPLAY_RETENTION_HOURS)
+                db.tokens().prune_token_replay(TOKEN_REPLAY_RETENTION_HOURS)
             });
             let pending_pruned = try_prune("pending_confirms", || {
-                db.prune_pending_confirms(PENDING_CONFIRMS_RETENTION_HOURS)
+                db.confirms()
+                    .prune_pending_confirms(PENDING_CONFIRMS_RETENTION_HOURS)
             });
             let reports_pruned = try_prune("host_reports", || {
-                db.prune_host_reports(HOST_REPORTS_RETENTION_HOURS)
+                db.reports()
+                    .prune_host_reports(HOST_REPORTS_RETENTION_HOURS)
             });
             let backups_pruned = db_path
                 .as_deref()
@@ -124,7 +126,9 @@ pub(crate) fn prune_backup_files(
             }
         };
         let name = entry.file_name();
-        let Some(name_str) = name.to_str() else { continue };
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
         if !name_str.starts_with(prefix) {
             continue;
         }
@@ -207,7 +211,12 @@ mod tests {
 
     #[test]
     fn prune_backup_files_returns_zero_when_dir_missing() {
-        let n = prune_backup_files(Path::new("/nonexistent/path/that/should/not/exist"), "state.db.pre-", 14).unwrap();
+        let n = prune_backup_files(
+            Path::new("/nonexistent/path/that/should/not/exist"),
+            "state.db.pre-",
+            14,
+        )
+        .unwrap();
         assert_eq!(n, 0);
     }
 }

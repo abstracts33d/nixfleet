@@ -17,7 +17,7 @@ pub fn spawn(db: Arc<Db>) -> tokio::task::JoinHandle<()> {
 
         loop {
             ticker.tick().await;
-            match db.pending_confirms_expired() {
+            match db.confirms().pending_confirms_expired() {
                 Ok(expired) if !expired.is_empty() => {
                     let ids: Vec<i64> = expired.iter().map(|(id, _, _, _, _)| *id).collect();
                     for (id, hostname, rollout_id, wave, target_closure) in &expired {
@@ -31,7 +31,7 @@ pub fn spawn(db: Arc<Db>) -> tokio::task::JoinHandle<()> {
                             "rolling back: confirm window expired"
                         );
                     }
-                    match db.mark_rolled_back(&ids) {
+                    match db.confirms().mark_rolled_back(&ids) {
                         Ok(n) => tracing::debug!(rolled_back = n, "rollback timer: marked"),
                         Err(err) => tracing::warn!(error = %err, "rollback timer: mark failed"),
                     }
@@ -55,7 +55,7 @@ mod tests {
     fn nothing_expired_when_table_empty() {
         let db = Db::open_in_memory().unwrap();
         db.migrate().unwrap();
-        let expired = db.pending_confirms_expired().unwrap();
+        let expired = db.confirms().pending_confirms_expired().unwrap();
         assert!(expired.is_empty());
     }
 

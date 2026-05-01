@@ -95,15 +95,18 @@ pub(super) async fn report(
         // failure.
         match serde_json::to_string(&req) {
             Ok(report_json) => {
-                if let Err(err) = db.record_host_report(&crate::db::HostReportInsert {
-                    hostname: &req.hostname,
-                    event_id: &event_id,
-                    received_at,
-                    event_kind: &event_str,
-                    rollout: req.rollout.as_deref(),
-                    signature_status: signature_status_str.as_deref(),
-                    report_json: &report_json,
-                }) {
+                if let Err(err) = db
+                    .reports()
+                    .record_host_report(&crate::db::HostReportInsert {
+                        hostname: &req.hostname,
+                        event_id: &event_id,
+                        received_at,
+                        event_kind: &event_str,
+                        rollout: req.rollout.as_deref(),
+                        signature_status: signature_status_str.as_deref(),
+                        report_json: &report_json,
+                    })
+                {
                     tracing::warn!(
                         target: "report",
                         hostname = %req.hostname,
@@ -168,7 +171,7 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
     let Some(rollout) = req.rollout.as_deref() else {
         return;
     };
-    match db.transition_host_state(
+    match db.rollout_state().transition_host_state(
         &req.hostname,
         rollout,
         crate::state::HostRolloutState::Reverted,
@@ -201,7 +204,10 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
             // `apply_actions`. Best-effort: a delete error is logged
             // but doesn't fail the report POST. See the architectural
             // note in the docstring above.
-            match db.delete_rollout_host_records(rollout, &req.hostname) {
+            match db
+                .rollout_state()
+                .delete_rollout_host_records(rollout, &req.hostname)
+            {
                 Ok((pc, hrs)) if pc + hrs > 0 => {
                     tracing::info!(
                         target: "report",
@@ -572,17 +578,21 @@ mod tests {
     fn rollback_triggered_flips_failed_to_reverted_then_cleans_up() {
         let db = fresh_db();
         // Seed a Failed row.
-        db.transition_host_state(
-            "ohm",
-            "stable@abc12345",
-            HostRolloutState::Failed,
-            HealthyMarker::Untouched,
-            None,
-        )
-        .unwrap();
+        db.rollout_state()
+            .transition_host_state(
+                "ohm",
+                "stable@abc12345",
+                HostRolloutState::Failed,
+                HealthyMarker::Untouched,
+                None,
+            )
+            .unwrap();
         // Pre-call sanity: row is Failed.
         assert_eq!(
-            db.host_state("ohm", "stable@abc12345").unwrap().as_deref(),
+            db.rollout_state()
+                .host_state("ohm", "stable@abc12345")
+                .unwrap()
+                .as_deref(),
             Some("Failed"),
         );
 
@@ -594,7 +604,7 @@ mod tests {
         // via `delete_rollout_host_records` so it stops surfacing in
         // `active_rollouts_snapshot`. Audit lives in host_reports.
         assert_eq!(
-            db.host_state("ohm", "stable@abc12345").unwrap(),
+            db.rollout_state().host_state("ohm", "stable@abc12345").unwrap(),
             None,
             "row should be deleted post-Reverted cleanup",
         );
@@ -616,12 +626,16 @@ mod tests {
             HostRolloutState::Converged,
         ] {
             let rollout = format!("stable@{}", state.as_db_str().to_lowercase());
-            db.transition_host_state("ohm", &rollout, state, HealthyMarker::Untouched, None)
+            db.rollout_state()
+                .transition_host_state("ohm", &rollout, state, HealthyMarker::Untouched, None)
                 .unwrap();
             let req = rollback_report("ohm", Some(&rollout));
             apply_rollback_state_transition(&db, &req);
             assert_eq!(
-                db.host_state("ohm", &rollout).unwrap().as_deref(),
+                db.rollout_state()
+                    .host_state("ohm", &rollout)
+                    .unwrap()
+                    .as_deref(),
                 Some(state.as_db_str()),
                 "{} should not flip to Reverted",
                 state.as_db_str(),
@@ -636,20 +650,24 @@ mod tests {
         // the agent's state) must not error and must not touch
         // any state row. The report still records elsewhere.
         let db = fresh_db();
-        db.transition_host_state(
-            "ohm",
-            "stable@abc12345",
-            HostRolloutState::Failed,
-            HealthyMarker::Untouched,
-            None,
-        )
-        .unwrap();
+        db.rollout_state()
+            .transition_host_state(
+                "ohm",
+                "stable@abc12345",
+                HostRolloutState::Failed,
+                HealthyMarker::Untouched,
+                None,
+            )
+            .unwrap();
         let req = rollback_report("ohm", None);
         apply_rollback_state_transition(&db, &req);
         // Failed row untouched — no rollout id meant we couldn't
         // even target the right row.
         assert_eq!(
-            db.host_state("ohm", "stable@abc12345").unwrap().as_deref(),
+            db.rollout_state()
+                .host_state("ohm", "stable@abc12345")
+                .unwrap()
+                .as_deref(),
             Some("Failed"),
         );
     }
@@ -661,14 +679,15 @@ mod tests {
         // same handler but follow their own (currently empty)
         // pipelines.
         let db = fresh_db();
-        db.transition_host_state(
-            "ohm",
-            "stable@abc12345",
-            HostRolloutState::Failed,
-            HealthyMarker::Untouched,
-            None,
-        )
-        .unwrap();
+        db.rollout_state()
+            .transition_host_state(
+                "ohm",
+                "stable@abc12345",
+                HostRolloutState::Failed,
+                HealthyMarker::Untouched,
+                None,
+            )
+            .unwrap();
         let req = ReportRequest {
             hostname: "ohm".into(),
             agent_version: "test".into(),
@@ -682,7 +701,10 @@ mod tests {
         };
         apply_rollback_state_transition(&db, &req);
         assert_eq!(
-            db.host_state("ohm", "stable@abc12345").unwrap().as_deref(),
+            db.rollout_state()
+                .host_state("ohm", "stable@abc12345")
+                .unwrap()
+                .as_deref(),
             Some("Failed"),
             "non-RollbackTriggered events must not trigger Failed → Reverted",
         );

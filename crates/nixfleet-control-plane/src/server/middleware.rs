@@ -34,7 +34,7 @@ pub(super) async fn require_cn(
     let cn = peer_certs.leaf_cn().ok_or(StatusCode::UNAUTHORIZED)?;
 
     if let Some(db) = &state.db {
-        match db.cert_revoked_before(&cn) {
+        match db.revocations().cert_revoked_before(&cn) {
             Ok(Some(revoked_before)) => {
                 let cert_nbf = peer_certs
                     .leaf_not_before()
@@ -100,9 +100,7 @@ pub(super) async fn protocol_version_middleware(
             }
         }
     } else if strict {
-        tracing::warn!(
-            "rejecting request without X-Nixfleet-Protocol (strict mode)"
-        );
+        tracing::warn!("rejecting request without X-Nixfleet-Protocol (strict mode)");
         Err(StatusCode::BAD_REQUEST)
     } else {
         tracing::debug!("request without X-Nixfleet-Protocol — accepting (forward-compat)");

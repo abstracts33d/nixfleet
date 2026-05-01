@@ -161,12 +161,12 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // SQLite has the rows, the in-memory ring buffer can be
     // reconstructed.
     if let Some(db_arc) = db.clone() {
-        match db_arc.host_reports_known_hostnames() {
+        match db_arc.reports().host_reports_known_hostnames() {
             Ok(hostnames) => {
                 let mut total = 0usize;
                 let mut reports_w = state.host_reports.write().await;
                 for hostname in &hostnames {
-                    match db_arc.host_reports_recent_per_host(
+                    match db_arc.reports().host_reports_recent_per_host(
                         hostname,
                         crate::server::state::REPORT_RING_CAP,
                     ) {
@@ -381,12 +381,9 @@ mod strict_mode_tests {
     #[tokio::test]
     async fn strict_bails_when_revocations_unset() {
         // client_ca provided, but no revocations → strict still bails.
-        let err = serve(minimal_serve_args(
-            true,
-            Some(PathBuf::from("/dev/null")),
-        ))
-        .await
-        .unwrap_err();
+        let err = serve(minimal_serve_args(true, Some(PathBuf::from("/dev/null"))))
+            .await
+            .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("--revocations"),

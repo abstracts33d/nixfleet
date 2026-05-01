@@ -38,7 +38,7 @@ pub(super) async fn enroll(
     })?;
 
     // 1. Replay defense.
-    match db.token_seen(&req.token.claims.nonce) {
+    match db.tokens().token_seen(&req.token.claims.nonce) {
         Ok(true) => {
             tracing::warn!(nonce = %req.token.claims.nonce, "enroll: token replay rejected");
             return Err(StatusCode::CONFLICT);
@@ -149,15 +149,21 @@ pub(super) async fn enroll(
     let csr_pubkey_der = csr_params.public_key.der_bytes();
     let csr_fingerprint = crate::auth::issuance::fingerprint(csr_pubkey_der);
 
-    if let Err(err) =
-        crate::auth::issuance::validate_token_claims(&req.token.claims, &csr_cn, &csr_fingerprint, now)
-    {
+    if let Err(err) = crate::auth::issuance::validate_token_claims(
+        &req.token.claims,
+        &csr_cn,
+        &csr_fingerprint,
+        now,
+    ) {
         tracing::warn!(error = %err, hostname = %req.token.claims.hostname, "enroll: claim validation");
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     // All checks passed — commit the nonce as seen.
-    if let Err(err) = db.record_token_nonce(&req.token.claims.nonce, &req.token.claims.hostname) {
+    if let Err(err) = db
+        .tokens()
+        .record_token_nonce(&req.token.claims.nonce, &req.token.claims.hostname)
+    {
         tracing::warn!(error = %err, "enroll: db record_token_nonce failed; proceeding");
     }
 
