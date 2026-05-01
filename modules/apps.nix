@@ -175,9 +175,16 @@
 
             if [ "$VM" = "1" ]; then
               echo ""
-              echo "=== VM Integration Tests ==="
+              echo "=== Harness Integration Tests ==="
+              # Match every `fleet-harness-*` flake check — pure-runCommand
+              # auditor scenarios (auditor-chain, corruption-rejection,
+              # manifest-tamper-rejection) and microvm-based scenarios
+              # (smoke, teardown, signed-roundtrip, deadline-expiry,
+              # secret-hygiene, stale-target, boot-recovery,
+              # module-rollouts-wire, rollback-policy, fleet-N).
+              # The previous `vm-.*` regex matched zero scenarios.
               VM_TESTS=$(nix eval ".#checks.${system}" \
-                  --apply 'cs: builtins.concatStringsSep " " (builtins.filter (n: builtins.match "vm-.*" n != null) (builtins.attrNames cs))' \
+                  --apply 'cs: builtins.concatStringsSep " " (builtins.filter (n: builtins.match "fleet-harness-.*" n != null) (builtins.attrNames cs))' \
                   --raw 2>/dev/null)
               VM_ATTRS=""
               for t in $VM_TESTS; do
