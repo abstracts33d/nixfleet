@@ -193,6 +193,36 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
                 rollout = %rollout,
                 "RollbackTriggered: host_rollout_state Failed → Reverted",
             );
+            // Terminal cleanup for the rollback-and-halt path. The
+            // host has been rolled back; the (rollout_id, hostname)
+            // pair has reached a terminal state and should not
+            // re-surface in `active_rollouts_snapshot`. Sibling of
+            // the per-rollout `Action::ConvergeRollout` cleanup in
+            // `apply_actions`. Best-effort: a delete error is logged
+            // but doesn't fail the report POST. See the architectural
+            // note in the docstring above.
+            match db.delete_rollout_host_records(rollout, &req.hostname) {
+                Ok((pc, hrs)) if pc + hrs > 0 => {
+                    tracing::info!(
+                        target: "report",
+                        hostname = %req.hostname,
+                        rollout = %rollout,
+                        pending_confirms_deleted = pc,
+                        host_rollout_state_deleted = hrs,
+                        "RollbackTriggered: terminal cleanup of reverted host records",
+                    );
+                }
+                Ok(_) => {} // already cleaned, no-op
+                Err(err) => {
+                    tracing::warn!(
+                        target: "report",
+                        hostname = %req.hostname,
+                        rollout = %rollout,
+                        error = %err,
+                        "RollbackTriggered: terminal cleanup failed",
+                    );
+                }
+            }
         }
         Err(err) => {
             // Best-effort: a transition error does not fail the
@@ -539,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_triggered_flips_failed_to_reverted() {
+    fn rollback_triggered_flips_failed_to_reverted_then_cleans_up() {
         let db = fresh_db();
         // Seed a Failed row.
         db.transition_host_state(
@@ -550,11 +580,23 @@ mod tests {
             None,
         )
         .unwrap();
-        let req = rollback_report("ohm", Some("stable@abc12345"));
-        apply_rollback_state_transition(&db, &req);
+        // Pre-call sanity: row is Failed.
         assert_eq!(
             db.host_state("ohm", "stable@abc12345").unwrap().as_deref(),
-            Some("Reverted"),
+            Some("Failed"),
+        );
+
+        let req = rollback_report("ohm", Some("stable@abc12345"));
+        apply_rollback_state_transition(&db, &req);
+
+        // Post-call: row is GONE. The handler flips Failed → Reverted
+        // (visible in tracing) and then immediately deletes the row
+        // via `delete_rollout_host_records` so it stops surfacing in
+        // `active_rollouts_snapshot`. Audit lives in host_reports.
+        assert_eq!(
+            db.host_state("ohm", "stable@abc12345").unwrap(),
+            None,
+            "row should be deleted post-Reverted cleanup",
         );
     }
 

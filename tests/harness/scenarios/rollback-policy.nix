@@ -200,25 +200,32 @@ in
 
       # Step 5: agent posts RollbackTriggered → CP report_handler
       # transitions the host_rollout_state row from Failed to
-      # Reverted. `apply_rollback_state_transition` is the writeback
-      # in `server/report_handler.rs:153`.
+      # Reverted, then immediately deletes the row via
+      # `delete_rollout_host_records` (terminal cleanup). The DB row
+      # is gone before the test can poll for it, so wait for the
+      # log line that fires inside `apply_rollback_state_transition`
+      # right before the cleanup.
       print("step 5: waiting for Failed → Reverted transition…")
-      reverted_deadline = time.monotonic() + 60
-      reverted_seen = False
-      while time.monotonic() < reverted_deadline:
-          state_now = host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-      SELECT host_state FROM host_rollout_state
-      WHERE hostname='${agentName}' AND rollout_id='{injected_rollout_id}';
+      wait_for_journal_match(
+          host,
+          since_cursor=pre_signal_cursor,
+          unit="nixfleet-control-plane.service",
+          pattern="RollbackTriggered: host_rollout_state Failed . Reverted",
+          timeout=60,
+          label="Failed → Reverted transition",
+      )
+      print("step 5: Failed → Reverted transition observed")
+
+      # Sanity: the cleanup actually deleted the rows. Active
+      # rollout count should drop by one (the synthetic injection
+      # was the only entry).
+      remaining = host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
+      SELECT count(*) FROM pending_confirms WHERE rollout_id='{injected_rollout_id}';
       SQL""").strip()
-          if state_now == "Reverted":
-              reverted_seen = True
-              break
-          time.sleep(2)
-      if not reverted_seen:
-          raise Exception(
-              "host_rollout_state did not flip Failed → Reverted within 60s"
-          )
-      print("step 5: host_state = Reverted")
+      assert remaining == "0", (
+          f"cleanup did not delete pending_confirms for {injected_rollout_id}; "
+          f"remaining={remaining!r}"
+      )
 
       # Step 6: idempotency. Once the row is Reverted,
       # compute_rollback_signal returns None — subsequent checkins

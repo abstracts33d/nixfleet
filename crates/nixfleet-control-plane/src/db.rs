@@ -248,6 +248,37 @@ impl Db {
         Ok((pc_n, hrs_n))
     }
 
+    /// Per-host counterpart of [`Self::delete_rollout_records`]. Called
+    /// from `apply_rollback_state_transition` when a host transitions
+    /// `Failed → Reverted` under rollback-and-halt. The rollout itself
+    /// may still be active for OTHER hosts (Halted but with siblings
+    /// in pre-terminal states), so cleaning the whole rollout would
+    /// be wrong; this scoped variant clears only the (rollout_id,
+    /// hostname) pair so the Reverted row stops contributing to
+    /// `active_rollouts_snapshot` going forward.
+    ///
+    /// Returns `(pending_confirms_deleted, host_rollout_state_deleted)`.
+    pub fn delete_rollout_host_records(
+        &self,
+        rollout_id: &str,
+        hostname: &str,
+    ) -> Result<(usize, usize)> {
+        let guard = self.conn()?;
+        let pc_n = guard
+            .execute(
+                "DELETE FROM pending_confirms WHERE rollout_id = ?1 AND hostname = ?2",
+                params![rollout_id, hostname],
+            )
+            .context("delete pending_confirms for reverted host")?;
+        let hrs_n = guard
+            .execute(
+                "DELETE FROM host_rollout_state WHERE rollout_id = ?1 AND hostname = ?2",
+                params![rollout_id, hostname],
+            )
+            .context("delete host_rollout_state for reverted host")?;
+        Ok((pc_n, hrs_n))
+    }
+
     // =================================================================
     // cert_revocations
     // =================================================================
