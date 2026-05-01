@@ -25,6 +25,23 @@ pub enum Action {
         rollout: String,
         reason: String,
     },
+    /// RFC-0002 §5.1 `rollback-and-halt` policy: when a host
+    /// transitions to `Failed` and the rollout policy's
+    /// `on_health_failure` is `rollback-and-halt`, the reconciler
+    /// emits this action *alongside* `HaltRollout`. The CP-side
+    /// checkin pipeline mirrors the same condition at request time
+    /// (Failed + RollbackAndHalt) and ships a `RollbackSignal` to
+    /// the agent on its next checkin; the agent re-activates its
+    /// prior generation and posts `RollbackTriggered`. Once the
+    /// agent's reported `RollbackTriggered` flips the host's state
+    /// to `Reverted`, this branch stops firing — so no explicit
+    /// CP-side processing is needed in `apply_actions`; this variant
+    /// is the action-plan record for `nixfleet plan` / journal.
+    RollbackHost {
+        rollout: String,
+        host: String,
+        target_ref: String,
+    },
     /// Healthy → Soaked transition. Emitted when the
     /// reconciler observes that a host has been Healthy for at
     /// least `wave.soak_minutes`. The CP-side action processor

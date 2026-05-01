@@ -361,6 +361,7 @@ mod tests {
                 Action::PromoteWave { .. } => "promote_wave",
                 Action::ConvergeRollout { .. } => "converge_rollout",
                 Action::HaltRollout { .. } => "halt_rollout",
+                Action::RollbackHost { .. } => "rollback_host",
                 Action::SoakHost { .. } => "soak_host",
                 Action::ChannelUnknown { .. } => "channel_unknown",
                 Action::Skip { .. } => "skip",

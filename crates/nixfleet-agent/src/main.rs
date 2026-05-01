@@ -227,6 +227,14 @@ async fn run_poll_loop(
         match send_checkin(&client_handle, args, started_at).await {
             Ok(resp) => {
                 consecutive_failures = 0;
+                // RFC-0002 §5.1 rollback-and-halt: the CP signals
+                // policy-driven rollback via CheckinResponse.rollback.
+                // Process before any new target dispatch — the host
+                // must step away from the failed gen before considering
+                // anything else this tick.
+                if let Some(rb) = &resp.rollback {
+                    handle_cp_rollback_signal(rb, &client_handle, args, &evidence_signer).await;
+                }
                 if let Some(target) = &resp.target {
                     process_dispatch_target(target, &client_handle, args, &evidence_signer).await;
                 }
@@ -773,6 +781,60 @@ async fn confirm_and_finalize(
         }
         Ok(nixfleet_agent::comms::ConfirmOutcome::Other) => {}
         Err(err) => tracing::warn!(error = %err, "confirm post failed"),
+    }
+}
+
+/// CP-driven rollback per `CheckinResponse.rollback`. Invoked when
+/// the CP signals `on_health_failure = "rollback-and-halt"` for a
+/// host that's reached the rollout's `Failed` state. Idempotent:
+/// the agent's own rollback() is a no-op if already on the prior
+/// gen, and the CP keeps re-emitting the signal until the agent's
+/// `RollbackTriggered` post flips the host's state to `Reverted`.
+async fn handle_cp_rollback_signal(
+    rb: &nixfleet_proto::agent_wire::RollbackSignal,
+    client_handle: &reqwest::Client,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+) {
+    tracing::warn!(
+        rollout = %rb.rollout,
+        target_ref = %rb.target_ref,
+        reason = %rb.reason,
+        "agent: CP issued rollback signal (rollback-and-halt policy); rolling back",
+    );
+    let rb_outcome = nixfleet_agent::activation::rollback().await;
+    let reason = rb.reason.clone();
+    let rollback_payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
+        hostname: &args.machine_id,
+        rollout: Some(&rb.rollout),
+        reason: &reason,
+    };
+    let signature = evidence_signer
+        .as_ref()
+        .as_ref()
+        .and_then(|s| s.sign(&rollback_payload).ok());
+    post_report(
+        client_handle,
+        &args.control_plane_url,
+        &args.machine_id,
+        Some(&rb.rollout),
+        ReportEvent::RollbackTriggered {
+            reason,
+            signature,
+        },
+    )
+    .await;
+    match &rb_outcome {
+        Ok(o) if o.success() => {}
+        Ok(o) => tracing::error!(
+            phase = ?o.phase(),
+            exit_code = ?o.exit_code(),
+            "agent: CP-signalled rollback failed (poll/fire layer)",
+        ),
+        Err(err) => tracing::error!(
+            error = %err,
+            "agent: CP-signalled rollback transport-failed",
+        ),
     }
 }
 

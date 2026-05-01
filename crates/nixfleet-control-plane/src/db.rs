@@ -652,6 +652,32 @@ impl Db {
         Ok(rows)
     }
 
+    /// Rollouts the host is currently `Failed` on. RFC-0002 §5.1
+    /// `rollback-and-halt` policy needs (rollout_id, target_ref) at
+    /// checkin time so the agent can be told what failed target to
+    /// step away from. Joined with `pending_confirms` for the
+    /// target_channel_ref; multiple rows per rollout are collapsed
+    /// via `DISTINCT` (the target_ref is rollout-deterministic).
+    pub fn failed_rollouts_for_host(&self, hostname: &str) -> Result<Vec<(String, String)>> {
+        let guard = self.conn()?;
+        let mut stmt = guard.prepare(
+            "SELECT DISTINCT hrs.rollout_id, pc.target_channel_ref
+             FROM host_rollout_state hrs
+             JOIN pending_confirms pc
+               ON pc.hostname = hrs.hostname
+              AND pc.rollout_id = hrs.rollout_id
+             WHERE hrs.hostname = ?1
+               AND hrs.host_state = ?2",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![hostname, HostRolloutState::Failed.as_db_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Snapshot the active rollouts derived from the DB for the
     /// observed-state projection (step 2). For each
     /// (rollout_id, hostname), keep only the latest

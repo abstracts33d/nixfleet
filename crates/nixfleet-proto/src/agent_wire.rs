@@ -123,12 +123,47 @@ pub enum FetchResult {
     None,
 }
 
+/// CP-driven rollback directive. Sent in `CheckinResponse.rollback`
+/// when the host is in `Failed` under a rollout with
+/// `on_health_failure = "rollback-and-halt"` (RFC-0002 §5.1). The
+/// agent re-activates its prior generation and posts
+/// `RollbackTriggered` with `reason`. Absent for hosts that are
+/// converged, healthy, mid-dispatch, or already `Reverted`.
+///
+/// The directive is *idempotent at the protocol level*: as long as
+/// the host's reported `closure_hash` still matches the failed
+/// `target_ref`, the CP keeps emitting the directive. The agent's
+/// rollback is a no-op if it's already on the prior gen, so a lost
+/// `RollbackTriggered` post just retries on the next checkin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackSignal {
+    /// `<channel>@<short>` (legacy) or content-addressed rolloutId.
+    pub rollout: String,
+    /// Failed target the agent is being asked to step away from.
+    /// The agent does NOT use this to choose what to roll TO — it
+    /// rolls back to its own prior gen via the boot-loader's
+    /// previous entry; this field is provenance for the
+    /// `RollbackTriggered` event the agent posts back.
+    pub target_ref: String,
+    /// Operator-readable reason; flows to `RollbackTriggered.reason`.
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckinResponse {
     /// None when the host is converged or no dispatch is in flight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<EvaluatedTarget>,
+    /// Set when the CP has decided this host should roll back per
+    /// the rollout's `on_health_failure = "rollback-and-halt"`
+    /// policy. Mutually exclusive with `target` in practice (a host
+    /// that's Failed has no current dispatch target), but the agent
+    /// is free to honour both: the rollback executes synchronously
+    /// before any new target is fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback: Option<RollbackSignal>,
     pub next_checkin_secs: u32,
 }
 

@@ -199,6 +199,23 @@ pub(crate) fn handle_wave(
                                 policy.on_health_failure
                             ),
                         });
+                        // RFC-0002 §5.1: under `rollback-and-halt`,
+                        // emit a `RollbackHost` action alongside the
+                        // halt for any *Failed* host. `Reverted` is
+                        // already rolled back (agent-attested), so
+                        // re-emitting the action would be no-op
+                        // signalling.
+                        if matches!(
+                            policy.on_health_failure,
+                            nixfleet_proto::OnHealthFailure::RollbackAndHalt
+                        ) && matches!(state, HostRolloutState::Failed)
+                        {
+                            out.actions.push(Action::RollbackHost {
+                                rollout: rollout.id.clone(),
+                                host: host.clone(),
+                                target_ref: rollout.target_ref.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -251,6 +268,195 @@ mod tests {
         assert_eq!(
             HostRolloutState::lookup(&rollout, "missing"),
             HostRolloutState::Queued
+        );
+    }
+
+    /// Build a minimal fleet with one channel + one rollout policy
+    /// at the requested `on_health_failure`. Returns the inputs
+    /// `handle_wave` needs.
+    fn fleet_with_policy(on_health_failure: nixfleet_proto::OnHealthFailure) -> FleetResolved {
+        use nixfleet_proto::{
+            Channel, Compliance, Host, Meta, PolicyWave, RolloutPolicy, Selector,
+        };
+        use std::collections::HashMap;
+
+        let mut hosts = HashMap::new();
+        hosts.insert(
+            "host-a".to_string(),
+            Host {
+                system: "x86_64-linux".into(),
+                tags: vec![],
+                channel: "stable".into(),
+                closure_hash: None,
+                pubkey: None,
+            },
+        );
+        let mut channels = HashMap::new();
+        channels.insert(
+            "stable".to_string(),
+            Channel {
+                rollout_policy: "p".into(),
+                reconcile_interval_minutes: 30,
+                signing_interval_minutes: 60,
+                freshness_window: 86400,
+                compliance: Compliance {
+                    mode: "permissive".into(),
+                    frameworks: vec![],
+                },
+            },
+        );
+        let mut rollout_policies = HashMap::new();
+        rollout_policies.insert(
+            "p".to_string(),
+            RolloutPolicy {
+                strategy: "all-at-once".into(),
+                waves: vec![PolicyWave {
+                    selector: Selector {
+                        tags: vec![],
+                        tags_any: vec![],
+                        hosts: vec![],
+                        channel: None,
+                        all: true,
+                    },
+                    soak_minutes: 0,
+                }],
+                health_gate: nixfleet_proto::HealthGate::default(),
+                on_health_failure,
+            },
+        );
+        FleetResolved {
+            schema_version: 1,
+            hosts,
+            channels,
+            rollout_policies,
+            waves: HashMap::new(),
+            edges: vec![],
+            disruption_budgets: vec![],
+            meta: Meta {
+                schema_version: 1,
+                signed_at: None,
+                ci_commit: None,
+                signature_algorithm: None,
+            },
+        }
+    }
+
+    fn rollout_with_state(host: &str, state: HostRolloutState) -> Rollout {
+        use crate::rollout_state::RolloutState;
+        let mut host_states = std::collections::HashMap::new();
+        host_states.insert(host.into(), state);
+        Rollout {
+            id: "stable@abc12345".into(),
+            channel: "stable".into(),
+            target_ref: "ref-xyz".into(),
+            state: RolloutState::Executing,
+            current_wave: 0,
+            host_states,
+            last_healthy_since: std::collections::HashMap::new(),
+        }
+    }
+
+    fn observed_online(host: &str) -> Observed {
+        use crate::observed::HostState;
+        let mut host_state = std::collections::HashMap::new();
+        host_state.insert(
+            host.into(),
+            HostState {
+                online: true,
+                current_generation: None,
+            },
+        );
+        Observed {
+            channel_refs: std::collections::HashMap::new(),
+            last_rolled_refs: std::collections::HashMap::new(),
+            host_state,
+            active_rollouts: vec![],
+            compliance_failures_by_rollout: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn failed_under_halt_emits_only_halt_rollout() {
+        let fleet = fleet_with_policy(nixfleet_proto::OnHealthFailure::Halt);
+        let rollout = rollout_with_state("host-a", HostRolloutState::Failed);
+        let observed = observed_online("host-a");
+        let wave = Wave {
+            hosts: vec!["host-a".into()],
+            soak_minutes: 0,
+        };
+        let outcome = handle_wave(&fleet, &observed, &rollout, &wave, Utc::now());
+        let halt_count = outcome
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::HaltRollout { .. }))
+            .count();
+        let rollback_count = outcome
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::RollbackHost { .. }))
+            .count();
+        assert_eq!(halt_count, 1, "halt expected; actions={:?}", outcome.actions);
+        assert_eq!(
+            rollback_count, 0,
+            "no RollbackHost under `halt`; actions={:?}",
+            outcome.actions
+        );
+    }
+
+    #[test]
+    fn failed_under_rollback_and_halt_emits_both_actions() {
+        let fleet = fleet_with_policy(nixfleet_proto::OnHealthFailure::RollbackAndHalt);
+        let rollout = rollout_with_state("host-a", HostRolloutState::Failed);
+        let observed = observed_online("host-a");
+        let wave = Wave {
+            hosts: vec!["host-a".into()],
+            soak_minutes: 0,
+        };
+        let outcome = handle_wave(&fleet, &observed, &rollout, &wave, Utc::now());
+        let halt = outcome
+            .actions
+            .iter()
+            .find(|a| matches!(a, Action::HaltRollout { .. }))
+            .expect("HaltRollout still emitted");
+        let rb = outcome
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::RollbackHost {
+                    rollout,
+                    host,
+                    target_ref,
+                } => Some((rollout.clone(), host.clone(), target_ref.clone())),
+                _ => None,
+            })
+            .expect("RollbackHost emitted under rollback-and-halt + Failed");
+        let _ = halt;
+        assert_eq!(rb.0, "stable@abc12345");
+        assert_eq!(rb.1, "host-a");
+        assert_eq!(rb.2, "ref-xyz");
+    }
+
+    #[test]
+    fn reverted_under_rollback_and_halt_does_not_re_emit_rollback() {
+        // Reverted is agent-attested — already rolled back. Re-emitting
+        // RollbackHost would be a no-op signal loop.
+        let fleet = fleet_with_policy(nixfleet_proto::OnHealthFailure::RollbackAndHalt);
+        let rollout = rollout_with_state("host-a", HostRolloutState::Reverted);
+        let observed = observed_online("host-a");
+        let wave = Wave {
+            hosts: vec!["host-a".into()],
+            soak_minutes: 0,
+        };
+        let outcome = handle_wave(&fleet, &observed, &rollout, &wave, Utc::now());
+        let rollback_count = outcome
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::RollbackHost { .. }))
+            .count();
+        assert_eq!(
+            rollback_count, 0,
+            "Reverted suppresses RollbackHost emission; actions={:?}",
+            outcome.actions
         );
     }
 }
