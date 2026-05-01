@@ -95,8 +95,9 @@
     # subsequent checkins can attest the timestamp; the CP-side
     # `recover_soak_state_from_attestation` repopulates
     # `host_rollout_state.last_healthy_since` after a CP rebuild.
-    # Aligned with `StateDirectory=nixfleet-agent` so the systemd
-    # unit creates the directory with the right owner + perms.
+    # Each supervisor pre-creates this with mode 0700 (systemd
+    # `StateDirectory=` on NixOS; preActivation `mkdir`/`chmod` on
+    # darwin) so the agent never has to manage the path itself.
     # Agent-side population of last_confirmed_at folds into the
     # magic-rollback work.
     stateDir = lib.mkOption {
@@ -106,10 +107,10 @@
         Directory the agent uses for per-host persistent state.
         Currently holds `last_confirmed_at` — a two-line plaintext
         file binding the agent's most recent successful confirm
-        timestamp to the closure it applies to. Created with mode
-        0700 by the systemd unit's StateDirectory. Survives agent
-        process restart but NOT `systemd-tmpfiles --remove` style
-        wipes.
+        timestamp to the closure it applies to. Pre-created with
+        mode 0700 by the platform supervisor (systemd's
+        `StateDirectory=` on NixOS; the preActivation script on
+        darwin). Survives agent process restart.
       '';
     };
 
@@ -128,10 +129,11 @@
         Local default for the runtime compliance gate.
 
         - `auto` (default): permissive when the
-          `compliance-evidence-collector.service` unit is present on
-          this host, disabled when absent. Safe for fleets that
-          haven't deployed `nixfleet-compliance` — no events posted,
-          no rollouts blocked.
+          compliance-evidence-collector unit is detected on this host
+          (systemd `compliance-evidence-collector.service` on NixOS;
+          launchd `compliance-evidence-collector` on darwin), disabled
+          when absent. Safe for fleets that haven't deployed
+          `nixfleet-compliance` — no events posted, no rollouts blocked.
         - `permissive`: the gate runs and posts `RuntimeGateError`
           and `ComplianceFailure` events on failure, but does NOT
           block the activation confirm. Use during incremental
