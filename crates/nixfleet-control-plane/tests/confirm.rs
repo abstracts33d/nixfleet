@@ -100,6 +100,7 @@ async fn confirm_happy_path_marks_row_confirmed() {
         db.record_pending_confirm(&PendingConfirmInsert {
             hostname: "test-host",
             rollout_id: "stable@abc123",
+            channel: "stable",
             wave: 0,
             target_closure_hash: "deadbeef-nixos-system",
             target_channel_ref: "main",

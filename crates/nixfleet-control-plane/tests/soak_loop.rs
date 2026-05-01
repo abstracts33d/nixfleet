@@ -106,6 +106,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
 
     db.record_pending_confirm(&PendingConfirmInsert {
         hostname: host,
+        channel: "stable",
         rollout_id,
         wave: 0,
         target_closure_hash: target_closure,
@@ -207,6 +208,7 @@ fn soak_loop_skips_when_window_not_elapsed() {
 
     db.record_pending_confirm(&PendingConfirmInsert {
         hostname: host,
+        channel: "stable",
         rollout_id,
         wave: 0,
         target_closure_hash: target_closure,

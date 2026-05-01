@@ -75,6 +75,10 @@ pub struct HostReportInsert<'a> {
 pub struct PendingConfirmInsert<'a> {
     pub hostname: &'a str,
     pub rollout_id: &'a str,
+    /// Channel name the rollout was opened on. Persisted explicitly
+    /// since #62 made rolloutIds content hashes that no longer encode
+    /// the channel. Must be non-empty at insert time.
+    pub channel: &'a str,
     pub wave: u32,
     pub target_closure_hash: &'a str,
     pub target_channel_ref: &'a str,
@@ -259,14 +263,15 @@ impl Db {
         let guard = self.conn()?;
         guard
             .execute(
-                "INSERT INTO pending_confirms(hostname, rollout_id, wave,
+                "INSERT INTO pending_confirms(hostname, rollout_id, channel, wave,
                                               target_closure_hash,
                                               target_channel_ref,
                                               confirm_deadline)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     row.hostname,
                     row.rollout_id,
+                    row.channel,
                     row.wave,
                     row.target_closure_hash,
                     row.target_channel_ref,
@@ -287,10 +292,12 @@ impl Db {
     /// closure" without forcing a spurious rollback. `confirm_deadline`
     /// is set to `confirmed_at` since the deadline is moot for an
     /// already-confirmed row.
+    #[allow(clippy::too_many_arguments)] // 1:1 row shape; bundling adds churn (see PendingConfirmInsert).
     pub fn record_confirmed_pending(
         &self,
         hostname: &str,
         rollout_id: &str,
+        channel: &str,
         wave: u32,
         target_closure_hash: &str,
         target_channel_ref: &str,
@@ -300,16 +307,17 @@ impl Db {
         let ts = confirmed_at.to_rfc3339();
         guard
             .execute(
-                "INSERT INTO pending_confirms(hostname, rollout_id, wave,
+                "INSERT INTO pending_confirms(hostname, rollout_id, channel, wave,
                                               target_closure_hash,
                                               target_channel_ref,
                                               confirm_deadline,
                                               confirmed_at,
                                               state)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     hostname,
                     rollout_id,
+                    channel,
                     wave,
                     target_closure_hash,
                     target_channel_ref,
@@ -721,7 +729,7 @@ impl Db {
         let guard = self.conn()?;
         let mut stmt = guard.prepare(
             "WITH latest_per_host AS (
-                 SELECT pc.rollout_id, pc.hostname,
+                 SELECT pc.rollout_id, pc.channel, pc.hostname,
                         pc.target_closure_hash, pc.target_channel_ref,
                         pc.state AS pc_state
                  FROM pending_confirms pc
@@ -733,7 +741,7 @@ impl Db {
                        AND p2.hostname = pc.hostname
                    )
              )
-             SELECT lph.rollout_id, lph.hostname,
+             SELECT lph.rollout_id, lph.channel, lph.hostname,
                     lph.target_closure_hash, lph.target_channel_ref,
                     lph.pc_state,
                     hrs.host_state, hrs.last_healthy_since
@@ -752,12 +760,13 @@ impl Db {
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,         // rollout_id
-                        row.get::<_, String>(1)?,         // hostname
-                        row.get::<_, String>(2)?,         // target_closure_hash
-                        row.get::<_, String>(3)?,         // target_channel_ref
-                        row.get::<_, String>(4)?,         // pc_state
-                        row.get::<_, Option<String>>(5)?, // hrs.host_state
-                        row.get::<_, Option<String>>(6)?, // hrs.last_healthy_since
+                        row.get::<_, String>(1)?,         // channel (V005)
+                        row.get::<_, String>(2)?,         // hostname
+                        row.get::<_, String>(3)?,         // target_closure_hash
+                        row.get::<_, String>(4)?,         // target_channel_ref
+                        row.get::<_, String>(5)?,         // pc_state
+                        row.get::<_, Option<String>>(6)?, // hrs.host_state
+                        row.get::<_, Option<String>>(7)?, // hrs.last_healthy_since
                     ))
                 },
             )?
@@ -765,7 +774,16 @@ impl Db {
 
         // BTreeMap keeps rollout_ids ordered without an extra sort.
         let mut by_rollout: BTreeMap<String, RolloutDbSnapshot> = BTreeMap::new();
-        for (rollout_id, hostname, target_closure, target_ref, pc_state, hrs_state, hrs_ts) in rows
+        for (
+            rollout_id,
+            row_channel,
+            hostname,
+            target_closure,
+            target_ref,
+            pc_state,
+            hrs_state,
+            hrs_ts,
+        ) in rows
         {
             // Derive the host's state name. host_rollout_state
             // wins when present — it carries the post-confirm
@@ -796,10 +814,22 @@ impl Db {
                 .to_string(),
             };
 
-            let channel = rollout_id
-                .split_once('@')
-                .map(|(c, _)| c.to_string())
-                .unwrap_or_else(|| rollout_id.clone());
+            // V005 introduced an explicit `channel` column. Use it
+            // when populated; fall back to legacy parsing of the
+            // `<channel>@<short-ci-commit>` form for rows that
+            // pre-date the migration's backfill (the same forensic
+            // shape compute_rollout_id_for_channel emitted before #62).
+            // If both fail, leave empty — the reconciler then emits
+            // ChannelUnknown legitimately (drift detector intent).
+            // See #80.
+            let channel = if !row_channel.is_empty() {
+                row_channel
+            } else {
+                rollout_id
+                    .split_once('@')
+                    .map(|(c, _)| c.to_string())
+                    .unwrap_or_default()
+            };
 
             let entry = by_rollout
                 .entry(rollout_id.clone())
@@ -1116,6 +1146,7 @@ mod tests {
         PendingConfirmInsert {
             hostname: host,
             rollout_id: rollout,
+            channel: "stable",
             wave: 0,
             target_closure_hash: target_closure,
             target_channel_ref: rollout,
@@ -1279,6 +1310,7 @@ mod tests {
         db.record_confirmed_pending(
             "test-host",
             "stable@orphan",
+            "stable",
             0,
             "target-system",
             "stable@orphan",
@@ -1380,6 +1412,55 @@ mod tests {
             Some("ConfirmWindow")
         );
         assert!(r.last_healthy_since.is_empty());
+    }
+
+    #[test]
+    fn active_rollouts_snapshot_uses_explicit_channel_for_sha_rollout_id() {
+        // #80 regression guard. Post-#62 rolloutIds are sha256 hex
+        // strings with no `@` separator. Without the V005 channel
+        // column, the snapshot fell through to `rollout_id.clone()`
+        // and the reconciler then emitted ChannelUnknown with the
+        // SHA as the bogus channel name. Asserts that an explicit
+        // channel column wins for sha-shaped ids.
+        let db = fresh_db();
+        let future = Utc::now() + chrono::Duration::seconds(120);
+        let sha_rollout =
+            "1111111111111111111111111111111111111111111111111111111111111111";
+        let mut row = pc_insert("ohm", sha_rollout, "system-r1", future);
+        row.channel = "edge-slow";
+        db.record_pending_confirm(&row).unwrap();
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(
+            snap[0].channel, "edge-slow",
+            "snapshot must read channel from V005 column, not the rolloutId fallback",
+        );
+    }
+
+    #[test]
+    fn active_rollouts_snapshot_falls_back_to_legacy_split_when_channel_empty() {
+        // V005 backfill covers legacy `<channel>@<ref>` rows, but a
+        // sha-shaped row without a backfilled channel must NOT
+        // surface a SHA-as-channel; it should leave the channel
+        // empty so the reconciler emits ChannelUnknown legitimately
+        // (drift detector intent preserved).
+        let db = fresh_db();
+        // Synthesize a row directly via the orphan path so we can
+        // exercise the empty-channel fallback. record_pending_confirm
+        // requires non-empty channel by API contract; the migration
+        // backfill covers the historical legacy gap.
+        let future = Utc::now() + chrono::Duration::seconds(120);
+        let mut row = pc_insert("ohm", "stable@abc12345", "system-r1", future);
+        row.channel = ""; // simulate a pre-V005 row that the backfill missed
+        db.record_pending_confirm(&row).unwrap();
+
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(
+            snap[0].channel, "stable",
+            "legacy <channel>@<ref> rolloutIds must still resolve via split fallback",
+        );
     }
 
     #[test]

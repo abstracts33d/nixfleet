@@ -165,17 +165,20 @@ async fn try_recover_orphan_confirm(state: &Arc<AppState>, req: &ConfirmRequest)
     let Some(db) = state.db.as_ref() else {
         return false;
     };
-    let Some(target_closure) = validate_orphan_recovery(state, req).await else {
+    let Some((target_closure, channel)) = validate_orphan_recovery(state, req).await else {
         return false;
     };
-    synthesise_orphan_confirm_rows(db, req, &target_closure)
+    synthesise_orphan_confirm_rows(db, req, &target_closure, &channel)
 }
 
 /// Returns the validated target closure when the orphan confirm
 /// matches the verified fleet's declared target for this host
 /// (closure AND rollout id). None otherwise — caller falls through
 /// to 410.
-async fn validate_orphan_recovery(state: &AppState, req: &ConfirmRequest) -> Option<String> {
+async fn validate_orphan_recovery(
+    state: &AppState,
+    req: &ConfirmRequest,
+) -> Option<(String, String)> {
     let fleet = state.verified_fleet.read().await.clone().or_else(|| {
         tracing::debug!(
             hostname = %req.hostname,
@@ -244,7 +247,7 @@ async fn validate_orphan_recovery(state: &AppState, req: &ConfirmRequest) -> Opt
         return None;
     }
 
-    Some(target_closure.clone())
+    Some((target_closure.clone(), host_decl.channel.clone()))
 }
 
 /// Insert the synthetic `pending_confirms` (confirmed) + Healthy
@@ -255,11 +258,13 @@ fn synthesise_orphan_confirm_rows(
     db: &crate::db::Db,
     req: &ConfirmRequest,
     target_closure: &str,
+    channel: &str,
 ) -> bool {
     let now = Utc::now();
     if let Err(err) = db.record_confirmed_pending(
         &req.hostname,
         &req.rollout,
+        channel,
         req.wave,
         target_closure,
         &req.rollout,
@@ -393,6 +398,7 @@ async fn recover_soak_state_from_attestation(
     if let Err(err) = db.record_confirmed_pending(
         &req.hostname,
         &rollout_id,
+        &host_decl.channel,
         0,
         target_closure,
         &rollout_id,
@@ -529,15 +535,26 @@ async fn dispatch_target_for_checkin(
             target,
             rollout_id,
             wave_index,
-        } => record_dispatched_target(
-            db,
-            &req.hostname,
-            &rollout_id,
-            wave_index,
-            target,
-            state,
-            now,
-        ),
+        } => {
+            // Channel must be persisted explicitly (#80 / V005). The
+            // host's declared channel is the source of truth; rollout
+            // ids no longer encode it (post-#62 they're sha256 hex).
+            let channel = fleet
+                .hosts
+                .get(&req.hostname)
+                .map(|h| h.channel.clone())
+                .unwrap_or_default();
+            record_dispatched_target(
+                db,
+                &req.hostname,
+                &rollout_id,
+                &channel,
+                wave_index,
+                target,
+                state,
+                now,
+            )
+        }
         other => {
             tracing::debug!(
                 target: "dispatch",
@@ -660,10 +677,12 @@ fn wave_index_for(
 /// target. Returns the target on success, None if the DB write fails
 /// (the row is the idempotency anchor — without it the next checkin
 /// would re-dispatch, breaking the contract).
+#[allow(clippy::too_many_arguments)] // 1:1 dispatch-row shape; pulled apart for clarity at the call site.
 fn record_dispatched_target(
     db: &crate::db::Db,
     hostname: &str,
     rollout_id: &str,
+    channel: &str,
     wave_index: Option<u32>,
     target: nixfleet_proto::agent_wire::EvaluatedTarget,
     state: &AppState,
@@ -673,6 +692,7 @@ fn record_dispatched_target(
     match db.record_pending_confirm(&crate::db::PendingConfirmInsert {
         hostname,
         rollout_id,
+        channel,
         wave: wave_index.unwrap_or(0),
         target_closure_hash: &target.closure_hash,
         target_channel_ref: &target.channel_ref,
