@@ -1,35 +1,74 @@
-//! Dispatch path: `process_dispatch_target` + the `handle_*`
-//! family. Each function consumes a CP-issued target (or one of
-//! `activation::ActivationOutcome`'s failure variants) and either
-//! calls the wire helpers via the [`Reporter`] trait or chains into
-//! `activation` / `compliance` / `manifest_cache`.
+//! Dispatch path: `process_dispatch_target` + the `DispatchHandler`
+//! family. The handler structs each consume a CP-issued failure
+//! variant (one per `activation::ActivationOutcome` failure case,
+//! plus the manifest-gate failures and the spawn-error catch-all)
+//! and emit a signed `ReportEvent` via the [`Reporter`] trait —
+//! optionally chaining into a local rollback + follow-up event.
 //!
 //! Lives as a binary-local module (`mod dispatch;` in main.rs)
-//! because some handlers still depend on `super::Args` (the
-//! clap-parsed agent CLI struct) for state-dir + compliance-mode.
-//! The CP-bound side-effects route through `&impl Reporter`, so
-//! handlers are unit-testable with a capturing fake — see
-//! `handle_signature_mismatch_posts_signed_event_and_does_not_attempt_rollback`
+//! because handlers depend on `super::Args` (the clap-parsed agent
+//! CLI struct) for state-dir + compliance-mode. Side-effects route
+//! through `&impl Reporter`, so handlers are unit-testable with a
+//! capturing fake — see
+//! `closure_signature_mismatch_handler_posts_signed_event_and_does_not_attempt_rollback`
 //! in this file's tests.
+//!
+//! Adding a 7th failure variant is now a one-file change: declare
+//! a new handler struct, impl `DispatchHandler`, route the matching
+//! `ActivationOutcome` arm in `handle_activation_outcome`.
 //!
 //! Only two leaf functions still take a raw `&reqwest::Client`:
 //! `process_dispatch_target` (manifest fetch) and
 //! `confirm_and_finalize` (POST /v1/agent/confirm). Everything else
 //! is reporter-only.
 
-use nixfleet_proto::agent_wire::ReportEvent;
+use std::future::Future;
+use std::sync::Arc;
+
+use nixfleet_proto::agent_wire::{EvaluatedTarget, ReportEvent};
 
 use nixfleet_agent::comms::Reporter;
+use nixfleet_agent::evidence_signer::EvidenceSigner;
 
 use super::Args;
 
+/// Shared context for every `DispatchHandler` impl: the target being
+/// acted on, the wire reporter, the agent CLI args (hostname,
+/// state-dir, …) and the optional evidence signer.
+pub(crate) struct DispatchCtx<'a, R: Reporter> {
+    pub target: &'a EvaluatedTarget,
+    pub reporter: &'a R,
+    pub args: &'a Args,
+    pub evidence_signer: &'a Arc<Option<EvidenceSigner>>,
+}
+
+/// Handler for a single dispatch-time failure. Each impl builds its
+/// specific signed payload, posts via `ctx.reporter`, and decides
+/// whether to call rollback + emit a follow-up event.
+///
+/// Telemetry-only: handlers never propagate errors. Anything that
+/// could fail (rollback shell-out, reporter post) is logged and
+/// dropped — the activation loop continues.
+pub(crate) trait DispatchHandler {
+    fn handle<R: Reporter>(
+        &self,
+        ctx: &DispatchCtx<'_, R>,
+    ) -> impl Future<Output = ()> + Send;
+}
+
 pub(crate) async fn process_dispatch_target(
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    target: &EvaluatedTarget,
     reporter: &impl Reporter,
     client: &reqwest::Client,
     args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+    evidence_signer: &Arc<Option<EvidenceSigner>>,
 ) {
+    let ctx = DispatchCtx {
+        target,
+        reporter,
+        args,
+        evidence_signer,
+    };
     use nixfleet_agent::freshness::{check as freshness_check, FreshnessCheck};
     match freshness_check(target, chrono::Utc::now()) {
         FreshnessCheck::Stale {
@@ -105,14 +144,11 @@ pub(crate) async fn process_dispatch_target(
                 );
             }
             Err(err) => {
-                handle_manifest_error(
+                ManifestErrorHandler {
                     err,
-                    rollout_id,
-                    target,
-                    reporter,
-                    args,
-                    evidence_signer,
-                )
+                    rollout_id: rollout_id.to_string(),
+                }
+                .handle(&ctx)
                 .await;
                 return;
             }
@@ -153,49 +189,46 @@ pub(crate) async fn process_dispatch_target(
         .await;
 
     let outcome = nixfleet_agent::activation::activate(target).await;
-    handle_activation_outcome(outcome, target, reporter, client, args, evidence_signer).await;
+    handle_activation_outcome(outcome, &ctx, client).await;
 }
 
-/// Dispatch on the result of `activation::activate`. Telemetry-only
-/// failures are logged, never propagated.
-async fn handle_activation_outcome(
+/// Dispatch on the result of `activation::activate`. Each failure
+/// arm constructs the matching `DispatchHandler` impl and calls
+/// `.handle(&ctx)`; the success arm runs the runtime compliance
+/// gate + confirm path. Telemetry-only failures are logged, never
+/// propagated.
+async fn handle_activation_outcome<R: Reporter>(
     outcome: anyhow::Result<nixfleet_agent::activation::ActivationOutcome>,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
+    ctx: &DispatchCtx<'_, R>,
     client_handle: &reqwest::Client,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
     use nixfleet_agent::activation::ActivationOutcome;
     match outcome {
         Ok(ActivationOutcome::FiredAndPolled) => {
-            handle_fired_and_polled(target, reporter, client_handle, args, evidence_signer).await;
+            handle_fired_and_polled(ctx, client_handle).await;
         }
         Ok(ActivationOutcome::RealiseFailed { reason }) => {
-            handle_realise_failed(reason, target, reporter, args, evidence_signer).await;
+            RealiseFailedHandler { reason }.handle(ctx).await;
         }
         Ok(ActivationOutcome::SignatureMismatch {
             closure_hash,
             stderr_tail,
         }) => {
-            handle_signature_mismatch(
+            ClosureSignatureMismatchHandler {
                 closure_hash,
                 stderr_tail,
-                target,
-                reporter,
-                args,
-                evidence_signer,
-            )
+            }
+            .handle(ctx)
             .await;
         }
         Ok(ActivationOutcome::SwitchFailed { phase, exit_code }) => {
-            handle_switch_failed(phase, exit_code, target, reporter, args, evidence_signer).await;
+            SwitchFailedHandler { phase, exit_code }.handle(ctx).await;
         }
         Ok(ActivationOutcome::VerifyMismatch { expected, actual }) => {
-            handle_verify_mismatch(expected, actual, target, reporter, args, evidence_signer).await;
+            VerifyMismatchHandler { expected, actual }.handle(ctx).await;
         }
         Err(err) => {
-            handle_activation_spawn_error(err, target, reporter).await;
+            ActivationSpawnErrorHandler { err }.handle(ctx).await;
         }
     }
 }
@@ -203,35 +236,25 @@ async fn handle_activation_outcome(
 /// Switch fired and polled successfully → run the runtime compliance
 /// gate, then either confirm with the CP or roll back depending on
 /// the gate outcome.
-async fn handle_fired_and_polled(
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
+async fn handle_fired_and_polled<R: Reporter>(
+    ctx: &DispatchCtx<'_, R>,
     client_handle: &reqwest::Client,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
     let activation_completed_at = chrono::Utc::now();
-    let (resolved_mode, gate_outcome) = run_runtime_gate(target, args, activation_completed_at).await;
-    let gate_blocks_confirm = process_gate_outcome(
-        &gate_outcome,
-        resolved_mode,
-        target,
-        reporter,
-        args,
-        evidence_signer,
-        activation_completed_at,
-    )
-    .await;
+    let (resolved_mode, gate_outcome) =
+        run_runtime_gate(ctx.target, ctx.args, activation_completed_at).await;
+    let gate_blocks_confirm =
+        process_gate_outcome(&gate_outcome, resolved_mode, ctx, activation_completed_at).await;
     if gate_blocks_confirm {
         return;
     }
-    confirm_and_finalize(target, reporter, client_handle, args, evidence_signer).await;
+    confirm_and_finalize(ctx, client_handle).await;
 }
 
 /// Resolve the effective compliance mode (CP channel policy beats
 /// the agent's CLI default) and run the runtime gate.
 async fn run_runtime_gate(
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    target: &EvaluatedTarget,
     args: &Args,
     activation_completed_at: chrono::DateTime<chrono::Utc>,
 ) -> (
@@ -262,13 +285,10 @@ async fn run_runtime_gate(
 
 /// Post events for the gate outcome; return true iff the agent
 /// should skip confirm and stay on the rolled-back generation.
-async fn process_gate_outcome(
+async fn process_gate_outcome<R: Reporter>(
     gate_outcome: &nixfleet_agent::compliance::GateOutcome,
     resolved_mode: nixfleet_agent::compliance::GateMode,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+    ctx: &DispatchCtx<'_, R>,
     activation_completed_at: chrono::DateTime<chrono::Utc>,
 ) -> bool {
     use nixfleet_agent::compliance::GateOutcome;
@@ -282,8 +302,7 @@ async fn process_gate_outcome(
             false
         }
         GateOutcome::Failures { evidence, failures } => {
-            post_compliance_failures(failures, evidence, target, reporter, args, evidence_signer)
-                .await;
+            post_compliance_failures(failures, evidence, ctx).await;
             false
         }
         GateOutcome::GateError {
@@ -296,10 +315,7 @@ async fn process_gate_outcome(
                 *collector_exit_code,
                 *evidence_collected_at,
                 resolved_mode,
-                target,
-                reporter,
-                args,
-                evidence_signer,
+                ctx,
                 activation_completed_at,
             )
             .await
@@ -307,13 +323,10 @@ async fn process_gate_outcome(
     }
 }
 
-async fn post_compliance_failures(
+async fn post_compliance_failures<R: Reporter>(
     failures: &[nixfleet_agent::compliance::ControlEvidence],
     evidence: &nixfleet_agent::compliance::ComplianceEvidence,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+    ctx: &DispatchCtx<'_, R>,
 ) {
     tracing::warn!(
         count = failures.len(),
@@ -326,21 +339,22 @@ async fn post_compliance_failures(
         let snippet_sha =
             nixfleet_agent::evidence_signer::sha256_jcs(&snippet).unwrap_or_default();
         let signed_payload = nixfleet_agent::evidence_signer::ComplianceFailureSignedPayload {
-            hostname: &args.machine_id,
-            rollout: Some(&target.channel_ref),
+            hostname: &ctx.args.machine_id,
+            rollout: Some(&ctx.target.channel_ref),
             control_id: &ctrl.control,
             status: &ctrl.status,
             framework_articles: &articles,
             evidence_collected_at: evidence.timestamp,
             evidence_snippet_sha256: snippet_sha,
         };
-        let signature = evidence_signer
+        let signature = ctx
+            .evidence_signer
             .as_ref()
             .as_ref()
             .and_then(|s| s.sign(&signed_payload).ok());
-        reporter
+        ctx.reporter
             .post_report(
-                Some(&target.channel_ref),
+                Some(&ctx.target.channel_ref),
                 ReportEvent::ComplianceFailure {
                     control_id: ctrl.control.clone(),
                     status: ctrl.status.clone(),
@@ -357,16 +371,12 @@ async fn post_compliance_failures(
 /// Post the gate-error event; if enforcing, also roll back and
 /// post the rollback event. Returns true iff confirm must be
 /// skipped (i.e. enforce mode triggered a rollback).
-#[allow(clippy::too_many_arguments)]
-async fn post_runtime_gate_error(
+async fn post_runtime_gate_error<R: Reporter>(
     reason: &str,
     collector_exit_code: Option<i32>,
     evidence_collected_at: Option<chrono::DateTime<chrono::Utc>>,
     resolved_mode: nixfleet_agent::compliance::GateMode,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+    ctx: &DispatchCtx<'_, R>,
     activation_completed_at: chrono::DateTime<chrono::Utc>,
 ) -> bool {
     use nixfleet_agent::compliance::GateMode;
@@ -385,20 +395,21 @@ async fn post_runtime_gate_error(
         );
     }
     let signed_payload = nixfleet_agent::evidence_signer::RuntimeGateErrorSignedPayload {
-        hostname: &args.machine_id,
-        rollout: Some(&target.channel_ref),
+        hostname: &ctx.args.machine_id,
+        rollout: Some(&ctx.target.channel_ref),
         reason,
         collector_exit_code,
         evidence_collected_at,
         activation_completed_at,
     };
-    let signature = evidence_signer
+    let signature = ctx
+        .evidence_signer
         .as_ref()
         .as_ref()
         .and_then(|s| s.sign(&signed_payload).ok());
-    reporter
+    ctx.reporter
         .post_report(
-            Some(&target.channel_ref),
+            Some(&ctx.target.channel_ref),
             ReportEvent::RuntimeGateError {
                 reason: reason.to_string(),
                 collector_exit_code,
@@ -412,17 +423,18 @@ async fn post_runtime_gate_error(
         let _ = nixfleet_agent::activation::rollback().await;
         let rollback_reason = format!("compliance gate error: {reason}");
         let rollback_payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
-            hostname: &args.machine_id,
-            rollout: Some(&target.channel_ref),
+            hostname: &ctx.args.machine_id,
+            rollout: Some(&ctx.target.channel_ref),
             reason: &rollback_reason,
         };
-        let rollback_signature = evidence_signer
+        let rollback_signature = ctx
+            .evidence_signer
             .as_ref()
             .as_ref()
             .and_then(|s| s.sign(&rollback_payload).ok());
-        reporter
+        ctx.reporter
             .post_report(
-                Some(&target.channel_ref),
+                Some(&ctx.target.channel_ref),
                 ReportEvent::RollbackTriggered {
                     reason: rollback_reason,
                     signature: rollback_signature,
@@ -435,26 +447,23 @@ async fn post_runtime_gate_error(
 
 /// Confirm with the CP and persist the post-confirm bookkeeping.
 /// CP-410 (cancelled / deadline-expired rollout) triggers a rollback.
-async fn confirm_and_finalize(
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
+async fn confirm_and_finalize<R: Reporter>(
+    ctx: &DispatchCtx<'_, R>,
     client_handle: &reqwest::Client,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
     let boot_id = nixfleet_agent::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
-    let rollout = &target.channel_ref;
+    let rollout = &ctx.target.channel_ref;
     // RFC-0003 §4.1: report the actual wave the agent activated in,
     // not a placeholder. CP populates `wave_index` at dispatch time
     // (control-plane/src/dispatch.rs); a None comes from older CPs
     // or channels with no wave plan, in which case 0 is the right
     // fallback (the dispatch already treats those as a single wave).
-    let wave: u32 = target.wave_index.unwrap_or(0);
+    let wave: u32 = ctx.target.wave_index.unwrap_or(0);
     match nixfleet_agent::activation::confirm_target(
         client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        target,
+        &ctx.args.control_plane_url,
+        &ctx.args.machine_id,
+        ctx.target,
         rollout,
         wave,
         &boot_id,
@@ -462,10 +471,10 @@ async fn confirm_and_finalize(
     .await
     {
         Ok(nixfleet_agent::comms::ConfirmOutcome::Cancelled) => {
-            handle_cp_cancellation(rollout, reporter, args, evidence_signer).await;
+            handle_cp_cancellation(rollout, ctx).await;
         }
         Ok(nixfleet_agent::comms::ConfirmOutcome::Acknowledged) => {
-            persist_confirmed_state(target, args);
+            persist_confirmed_state(ctx.target, ctx.args);
         }
         Ok(nixfleet_agent::comms::ConfirmOutcome::Other) => {}
         Err(err) => tracing::warn!(error = %err, "confirm post failed"),
@@ -521,24 +530,20 @@ pub(crate) async fn handle_cp_rollback_signal(
     }
 }
 
-async fn handle_cp_cancellation(
-    rollout: &str,
-    reporter: &impl Reporter,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
-) {
+async fn handle_cp_cancellation<R: Reporter>(rollout: &str, ctx: &DispatchCtx<'_, R>) {
     let rb_outcome = nixfleet_agent::activation::rollback().await;
     let reason = "cp-410: rollout cancelled or deadline expired";
     let rollback_payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
-        hostname: &args.machine_id,
+        hostname: &ctx.args.machine_id,
         rollout: Some(rollout),
         reason,
     };
-    let signature = evidence_signer
+    let signature = ctx
+        .evidence_signer
         .as_ref()
         .as_ref()
         .and_then(|s| s.sign(&rollback_payload).ok());
-    reporter
+    ctx.reporter
         .post_report(
             Some(rollout),
             ReportEvent::RollbackTriggered {
@@ -562,7 +567,7 @@ async fn handle_cp_cancellation(
 /// `last_confirmed_at` feeds the CP's soak attestation on next checkin;
 /// `last_dispatched` is cleared so a future agent restart's boot-recovery
 /// path doesn't try to re-confirm an already-confirmed generation.
-fn persist_confirmed_state(target: &nixfleet_proto::agent_wire::EvaluatedTarget, args: &Args) {
+fn persist_confirmed_state(target: &EvaluatedTarget, args: &Args) {
     if let Err(err) = nixfleet_agent::checkin_state::write_last_confirmed(
         &args.state_dir,
         &target.closure_hash,
@@ -579,78 +584,82 @@ fn persist_confirmed_state(target: &nixfleet_proto::agent_wire::EvaluatedTarget,
     }
 }
 
-async fn handle_realise_failed(
-    reason: String,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
-) {
-    tracing::warn!(
-        reason = %reason,
-        "activation: realise failed; nothing switched, retrying next tick",
-    );
-    let payload = nixfleet_agent::evidence_signer::RealiseFailedSignedPayload {
-        hostname: &args.machine_id,
-        rollout: Some(&target.channel_ref),
-        closure_hash: &target.closure_hash,
-        reason: &reason,
-    };
-    let signature = evidence_signer
-        .as_ref()
-        .as_ref()
-        .and_then(|s| s.sign(&payload).ok());
-    reporter
-        .post_report(
-            Some(&target.channel_ref),
-            ReportEvent::RealiseFailed {
-                closure_hash: target.closure_hash.clone(),
-                reason,
-                signature,
-            },
-        )
-        .await;
+// =====================================================================
+// DispatchHandler impls — one per dispatch-time failure variant.
+// =====================================================================
+
+pub(crate) struct RealiseFailedHandler {
+    pub reason: String,
+}
+impl DispatchHandler for RealiseFailedHandler {
+    async fn handle<R: Reporter>(&self, ctx: &DispatchCtx<'_, R>) {
+        tracing::warn!(
+            reason = %self.reason,
+            "activation: realise failed; nothing switched, retrying next tick",
+        );
+        let payload = nixfleet_agent::evidence_signer::RealiseFailedSignedPayload {
+            hostname: &ctx.args.machine_id,
+            rollout: Some(&ctx.target.channel_ref),
+            closure_hash: &ctx.target.closure_hash,
+            reason: &self.reason,
+        };
+        let signature = ctx
+            .evidence_signer
+            .as_ref()
+            .as_ref()
+            .and_then(|s| s.sign(&payload).ok());
+        ctx.reporter
+            .post_report(
+                Some(&ctx.target.channel_ref),
+                ReportEvent::RealiseFailed {
+                    closure_hash: ctx.target.closure_hash.clone(),
+                    reason: self.reason.clone(),
+                    signature,
+                },
+            )
+            .await;
+    }
 }
 
-async fn handle_signature_mismatch(
-    closure_hash: String,
-    stderr_tail: String,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
-) {
-    tracing::error!(
-        closure_hash = %closure_hash,
-        stderr_tail = %stderr_tail,
-        "activation: closure signature mismatch — refused by nix substituter trust",
-    );
-    let stderr_tail_sha256 =
-        nixfleet_agent::evidence_signer::sha256_jcs(&stderr_tail).unwrap_or_default();
-    let payload = nixfleet_agent::evidence_signer::ClosureSignatureMismatchSignedPayload {
-        hostname: &args.machine_id,
-        rollout: Some(&target.channel_ref),
-        closure_hash: &closure_hash,
-        stderr_tail_sha256,
-    };
-    let signature = evidence_signer
-        .as_ref()
-        .as_ref()
-        .and_then(|s| s.sign(&payload).ok());
-    reporter
-        .post_report(
-            Some(&target.channel_ref),
-            ReportEvent::ClosureSignatureMismatch {
-                closure_hash,
-                stderr_tail,
-                signature,
-            },
-        )
-        .await;
+pub(crate) struct ClosureSignatureMismatchHandler {
+    pub closure_hash: String,
+    pub stderr_tail: String,
+}
+impl DispatchHandler for ClosureSignatureMismatchHandler {
+    async fn handle<R: Reporter>(&self, ctx: &DispatchCtx<'_, R>) {
+        tracing::error!(
+            closure_hash = %self.closure_hash,
+            stderr_tail = %self.stderr_tail,
+            "activation: closure signature mismatch — refused by nix substituter trust",
+        );
+        let stderr_tail_sha256 =
+            nixfleet_agent::evidence_signer::sha256_jcs(&self.stderr_tail).unwrap_or_default();
+        let payload = nixfleet_agent::evidence_signer::ClosureSignatureMismatchSignedPayload {
+            hostname: &ctx.args.machine_id,
+            rollout: Some(&ctx.target.channel_ref),
+            closure_hash: &self.closure_hash,
+            stderr_tail_sha256,
+        };
+        let signature = ctx
+            .evidence_signer
+            .as_ref()
+            .as_ref()
+            .and_then(|s| s.sign(&payload).ok());
+        ctx.reporter
+            .post_report(
+                Some(&ctx.target.channel_ref),
+                ReportEvent::ClosureSignatureMismatch {
+                    closure_hash: self.closure_hash.clone(),
+                    stderr_tail: self.stderr_tail.clone(),
+                    signature,
+                },
+            )
+            .await;
+    }
 }
 
 /// Compose the follow-up `ReportEvent` posted after a `rollback()`
-/// call. Shared by `handle_switch_failed` and `handle_verify_mismatch`
+/// call. Shared by `SwitchFailedHandler` and `VerifyMismatchHandler`
 /// — both run the same 3-arm match against `Result<RollbackOutcome>`,
 /// differing only in the success-path reason string and the failure-
 /// path phase prefix.
@@ -658,22 +667,21 @@ async fn handle_signature_mismatch(
 /// - `Ok(success)` → `RollbackTriggered { reason: success_reason, .. }`.
 /// - `Ok(partial-fail)` → `ActivationFailed { phase: "{prefix}/{poll-phase}", exit_code, stderr_tail: None, .. }`.
 /// - `Err(transport)` → `ActivationFailed { phase: prefix, exit_code: None, stderr_tail: Some(err), .. }`.
-fn compose_rollback_followup_event(
+fn compose_rollback_followup_event<R: Reporter>(
     rb_outcome: &anyhow::Result<nixfleet_agent::activation::RollbackOutcome>,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+    ctx: &DispatchCtx<'_, R>,
     success_reason: String,
     failure_phase_prefix: &str,
 ) -> ReportEvent {
     match rb_outcome {
         Ok(o) if o.success() => {
             let payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
+                hostname: &ctx.args.machine_id,
+                rollout: Some(&ctx.target.channel_ref),
                 reason: &success_reason,
             };
-            let signature = evidence_signer
+            let signature = ctx
+                .evidence_signer
                 .as_ref()
                 .as_ref()
                 .and_then(|s| s.sign(&payload).ok());
@@ -691,13 +699,14 @@ fn compose_rollback_followup_event(
             let stderr_tail_sha256 =
                 nixfleet_agent::evidence_signer::sha256_jcs(&"").unwrap_or_default();
             let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
+                hostname: &ctx.args.machine_id,
+                rollout: Some(&ctx.target.channel_ref),
                 phase: &phase_str,
                 exit_code: exit,
                 stderr_tail_sha256,
             };
-            let signature = evidence_signer
+            let signature = ctx
+                .evidence_signer
                 .as_ref()
                 .as_ref()
                 .and_then(|s| s.sign(&payload).ok());
@@ -714,13 +723,14 @@ fn compose_rollback_followup_event(
             let stderr_tail_sha256 =
                 nixfleet_agent::evidence_signer::sha256_jcs(&stderr_tail).unwrap_or_default();
             let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
+                hostname: &ctx.args.machine_id,
+                rollout: Some(&ctx.target.channel_ref),
                 phase: &phase_str,
                 exit_code: None,
                 stderr_tail_sha256,
             };
-            let signature = evidence_signer
+            let signature = ctx
+                .evidence_signer
                 .as_ref()
                 .as_ref()
                 .and_then(|s| s.sign(&payload).ok());
@@ -734,116 +744,119 @@ fn compose_rollback_followup_event(
     }
 }
 
-async fn handle_switch_failed(
-    phase: String,
-    exit_code: Option<i32>,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
-) {
-    tracing::error!(phase = %phase, exit_code = ?exit_code, "activation: switch failed; rolling back");
-    {
-        let stderr_tail_sha256 =
-            nixfleet_agent::evidence_signer::sha256_jcs(&"").unwrap_or_default();
-        let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
-            hostname: &args.machine_id,
-            rollout: Some(&target.channel_ref),
-            phase: &phase,
-            exit_code,
-            stderr_tail_sha256,
-        };
-        let signature = evidence_signer
-            .as_ref()
-            .as_ref()
-            .and_then(|s| s.sign(&payload).ok());
-        reporter
-            .post_report(
-                Some(&target.channel_ref),
-                ReportEvent::ActivationFailed {
-                    phase: phase.clone(),
-                    exit_code,
-                    stderr_tail: None,
-                    signature,
-                },
-            )
-            .await;
-    }
-    let rb_outcome = nixfleet_agent::activation::rollback().await;
-    let rollback_event = compose_rollback_followup_event(
-        &rb_outcome,
-        target,
-        args,
-        evidence_signer,
-        format!("activation phase {phase} failed"),
-        &format!("rollback-after-{phase}"),
-    );
-    reporter
-        .post_report(Some(&target.channel_ref), rollback_event)
-        .await;
-    if let Err(err) = rb_outcome {
+pub(crate) struct SwitchFailedHandler {
+    pub phase: String,
+    pub exit_code: Option<i32>,
+}
+impl DispatchHandler for SwitchFailedHandler {
+    async fn handle<R: Reporter>(&self, ctx: &DispatchCtx<'_, R>) {
         tracing::error!(
-            error = %err,
-            "rollback after failed switch also failed — manual intervention required",
+            phase = %self.phase,
+            exit_code = ?self.exit_code,
+            "activation: switch failed; rolling back",
         );
+        {
+            let stderr_tail_sha256 =
+                nixfleet_agent::evidence_signer::sha256_jcs(&"").unwrap_or_default();
+            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
+                hostname: &ctx.args.machine_id,
+                rollout: Some(&ctx.target.channel_ref),
+                phase: &self.phase,
+                exit_code: self.exit_code,
+                stderr_tail_sha256,
+            };
+            let signature = ctx
+                .evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ctx.reporter
+                .post_report(
+                    Some(&ctx.target.channel_ref),
+                    ReportEvent::ActivationFailed {
+                        phase: self.phase.clone(),
+                        exit_code: self.exit_code,
+                        stderr_tail: None,
+                        signature,
+                    },
+                )
+                .await;
+        }
+        let rb_outcome = nixfleet_agent::activation::rollback().await;
+        let rollback_event = compose_rollback_followup_event(
+            &rb_outcome,
+            ctx,
+            format!("activation phase {} failed", self.phase),
+            &format!("rollback-after-{}", self.phase),
+        );
+        ctx.reporter
+            .post_report(Some(&ctx.target.channel_ref), rollback_event)
+            .await;
+        if let Err(err) = rb_outcome {
+            tracing::error!(
+                error = %err,
+                "rollback after failed switch also failed — manual intervention required",
+            );
+        }
     }
 }
 
 /// Post-switch verify caught `/run/current-system` resolving to a
 /// basename that is neither expected nor pre-switch. Emit a signed
 /// `VerifyMismatch` then roll back, mirroring the failure-and-rollback
-/// shape of `handle_switch_failed`.
-async fn handle_verify_mismatch(
-    expected: String,
-    actual: String,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
-) {
-    tracing::error!(
-        expected = %expected,
-        actual = %actual,
-        "activation: post-switch verify caught flip to unexpected closure; rolling back",
-    );
-    let payload = nixfleet_agent::evidence_signer::VerifyMismatchSignedPayload {
-        hostname: &args.machine_id,
-        rollout: Some(&target.channel_ref),
-        expected: &expected,
-        actual: &actual,
-    };
-    let signature = evidence_signer
-        .as_ref()
-        .as_ref()
-        .and_then(|s| s.sign(&payload).ok());
-    reporter
-        .post_report(
-            Some(&target.channel_ref),
-            ReportEvent::VerifyMismatch {
-                expected: expected.clone(),
-                actual: actual.clone(),
-                signature,
-            },
-        )
-        .await;
-
-    let rb_outcome = nixfleet_agent::activation::rollback().await;
-    let rollback_event = compose_rollback_followup_event(
-        &rb_outcome,
-        target,
-        args,
-        evidence_signer,
-        format!("post-switch verify mismatch (expected {expected}, got {actual})"),
-        "rollback-after-verify-mismatch",
-    );
-    reporter
-        .post_report(Some(&target.channel_ref), rollback_event)
-        .await;
-    if let Err(err) = rb_outcome {
+/// shape of `SwitchFailedHandler`.
+pub(crate) struct VerifyMismatchHandler {
+    pub expected: String,
+    pub actual: String,
+}
+impl DispatchHandler for VerifyMismatchHandler {
+    async fn handle<R: Reporter>(&self, ctx: &DispatchCtx<'_, R>) {
         tracing::error!(
-            error = %err,
-            "rollback after verify mismatch also failed — manual intervention required",
+            expected = %self.expected,
+            actual = %self.actual,
+            "activation: post-switch verify caught flip to unexpected closure; rolling back",
         );
+        let payload = nixfleet_agent::evidence_signer::VerifyMismatchSignedPayload {
+            hostname: &ctx.args.machine_id,
+            rollout: Some(&ctx.target.channel_ref),
+            expected: &self.expected,
+            actual: &self.actual,
+        };
+        let signature = ctx
+            .evidence_signer
+            .as_ref()
+            .as_ref()
+            .and_then(|s| s.sign(&payload).ok());
+        ctx.reporter
+            .post_report(
+                Some(&ctx.target.channel_ref),
+                ReportEvent::VerifyMismatch {
+                    expected: self.expected.clone(),
+                    actual: self.actual.clone(),
+                    signature,
+                },
+            )
+            .await;
+
+        let rb_outcome = nixfleet_agent::activation::rollback().await;
+        let rollback_event = compose_rollback_followup_event(
+            &rb_outcome,
+            ctx,
+            format!(
+                "post-switch verify mismatch (expected {}, got {})",
+                self.expected, self.actual
+            ),
+            "rollback-after-verify-mismatch",
+        );
+        ctx.reporter
+            .post_report(Some(&ctx.target.channel_ref), rollback_event)
+            .await;
+        if let Err(err) = rb_outcome {
+            tracing::error!(
+                error = %err,
+                "rollback after verify mismatch also failed — manual intervention required",
+            );
+        }
     }
 }
 
@@ -853,106 +866,116 @@ async fn handle_verify_mismatch(
 /// signed `ReportEvent` and return — caller does not proceed with
 /// any other field of `target`. No rollback because nothing was
 /// activated.
-async fn handle_manifest_error(
-    err: nixfleet_agent::manifest_cache::ManifestError,
-    rollout_id: &str,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
-    args: &Args,
-    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
-) {
-    use nixfleet_agent::manifest_cache::ManifestError;
-    let reason = err.reason().to_string();
-    tracing::error!(
-        rollout_id = %rollout_id,
-        kind = match err {
+pub(crate) struct ManifestErrorHandler {
+    pub err: nixfleet_agent::manifest_cache::ManifestError,
+    pub rollout_id: String,
+}
+impl DispatchHandler for ManifestErrorHandler {
+    async fn handle<R: Reporter>(&self, ctx: &DispatchCtx<'_, R>) {
+        use nixfleet_agent::manifest_cache::ManifestError;
+        let reason = self.err.reason().to_string();
+        let kind = match self.err {
             ManifestError::Missing(_) => "missing",
             ManifestError::VerifyFailed(_) => "verify-failed",
             ManifestError::Mismatch(_) => "mismatch",
-        },
-        reason = %reason,
-        "agent: refusing dispatch — rollout manifest gate failed",
-    );
+        };
+        tracing::error!(
+            rollout_id = %self.rollout_id,
+            kind,
+            reason = %reason,
+            "agent: refusing dispatch — rollout manifest gate failed",
+        );
 
-    let event = match err {
-        ManifestError::Missing(_) => {
-            let payload = nixfleet_agent::evidence_signer::ManifestMissingSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(rollout_id),
-                rollout_id,
-                reason: &reason,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
-            ReportEvent::ManifestMissing {
-                rollout_id: rollout_id.to_string(),
-                reason,
-                signature,
+        let rollout_id = self.rollout_id.as_str();
+        let event = match self.err {
+            ManifestError::Missing(_) => {
+                let payload = nixfleet_agent::evidence_signer::ManifestMissingSignedPayload {
+                    hostname: &ctx.args.machine_id,
+                    rollout: Some(rollout_id),
+                    rollout_id,
+                    reason: &reason,
+                };
+                let signature = ctx
+                    .evidence_signer
+                    .as_ref()
+                    .as_ref()
+                    .and_then(|s| s.sign(&payload).ok());
+                ReportEvent::ManifestMissing {
+                    rollout_id: rollout_id.to_string(),
+                    reason,
+                    signature,
+                }
             }
-        }
-        ManifestError::VerifyFailed(_) => {
-            let payload = nixfleet_agent::evidence_signer::ManifestVerifyFailedSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(rollout_id),
-                rollout_id,
-                reason: &reason,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
-            ReportEvent::ManifestVerifyFailed {
-                rollout_id: rollout_id.to_string(),
-                reason,
-                signature,
+            ManifestError::VerifyFailed(_) => {
+                let payload = nixfleet_agent::evidence_signer::ManifestVerifyFailedSignedPayload {
+                    hostname: &ctx.args.machine_id,
+                    rollout: Some(rollout_id),
+                    rollout_id,
+                    reason: &reason,
+                };
+                let signature = ctx
+                    .evidence_signer
+                    .as_ref()
+                    .as_ref()
+                    .and_then(|s| s.sign(&payload).ok());
+                ReportEvent::ManifestVerifyFailed {
+                    rollout_id: rollout_id.to_string(),
+                    reason,
+                    signature,
+                }
             }
-        }
-        ManifestError::Mismatch(_) => {
-            let payload = nixfleet_agent::evidence_signer::ManifestMismatchSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(rollout_id),
-                rollout_id,
-                reason: &reason,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
-            ReportEvent::ManifestMismatch {
-                rollout_id: rollout_id.to_string(),
-                reason,
-                signature,
+            ManifestError::Mismatch(_) => {
+                let payload = nixfleet_agent::evidence_signer::ManifestMismatchSignedPayload {
+                    hostname: &ctx.args.machine_id,
+                    rollout: Some(rollout_id),
+                    rollout_id,
+                    reason: &reason,
+                };
+                let signature = ctx
+                    .evidence_signer
+                    .as_ref()
+                    .as_ref()
+                    .and_then(|s| s.sign(&payload).ok());
+                ReportEvent::ManifestMismatch {
+                    rollout_id: rollout_id.to_string(),
+                    reason,
+                    signature,
+                }
             }
-        }
-    };
+        };
 
-    reporter
-        .post_report(Some(&target.channel_ref), event)
-        .await;
+        ctx.reporter
+            .post_report(Some(&ctx.target.channel_ref), event)
+            .await;
+    }
 }
 
-/// Spawn / I/O error inside `activate `. State is unknown (could
-/// have failed before realise even started) so we don't roll back.
-async fn handle_activation_spawn_error(
-    err: anyhow::Error,
-    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    reporter: &impl Reporter,
-) {
-    tracing::error!(error = %err, "activation spawn failed");
-    reporter
-        .post_report(
-            Some(&target.channel_ref),
-            ReportEvent::Other {
-                kind: "activation-spawn-failed".to_string(),
-                detail: Some(serde_json::json!({
-                    "error": err.to_string(),
-                    "target_closure": target.closure_hash,
-                })),
-            },
-        )
-        .await;
+/// Spawn / I/O error inside `activate`. State is unknown (could have
+/// failed before realise even started) so we don't roll back. Posts
+/// an unsigned `Other` event — the wire variant carries no signature
+/// field, hence `ctx.args` / `ctx.evidence_signer` are unused here.
+/// Kept under `DispatchHandler` for shape consistency with the other
+/// 5 variants; if future signed-Other support lands the unused-field
+/// note in this docblock goes away.
+pub(crate) struct ActivationSpawnErrorHandler {
+    pub err: anyhow::Error,
+}
+impl DispatchHandler for ActivationSpawnErrorHandler {
+    async fn handle<R: Reporter>(&self, ctx: &DispatchCtx<'_, R>) {
+        tracing::error!(error = %self.err, "activation spawn failed");
+        ctx.reporter
+            .post_report(
+                Some(&ctx.target.channel_ref),
+                ReportEvent::Other {
+                    kind: "activation-spawn-failed".to_string(),
+                    detail: Some(serde_json::json!({
+                        "error": self.err.to_string(),
+                        "target_closure": ctx.target.closure_hash,
+                    })),
+                },
+            )
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -1023,27 +1046,38 @@ mod tests {
         }
     }
 
-    /// `handle_signature_mismatch` posts exactly one
+    fn ctx<'a, R: Reporter>(
+        target: &'a EvaluatedTarget,
+        reporter: &'a R,
+        args: &'a Args,
+        signer: &'a Arc<Option<EvidenceSigner>>,
+    ) -> DispatchCtx<'a, R> {
+        DispatchCtx {
+            target,
+            reporter,
+            args,
+            evidence_signer: signer,
+        }
+    }
+
+    /// `ClosureSignatureMismatchHandler` posts exactly one
     /// `ClosureSignatureMismatch` event with the supplied closure
     /// hash + stderr, and does NOT trigger a rollback (no rollback()
     /// shell-out, no follow-up `RollbackTriggered` event). The
     /// stderr is captured verbatim on the wire (truncation already
     /// happened upstream in `realise()`).
     #[tokio::test]
-    async fn handle_signature_mismatch_posts_signed_event_and_does_not_attempt_rollback() {
+    async fn closure_signature_mismatch_handler_posts_signed_event_and_does_not_attempt_rollback() {
         let fake = FakeReporter::new();
         let target = sample_target();
         let args = sample_args();
-        let signer = std::sync::Arc::new(None);
+        let signer: Arc<Option<EvidenceSigner>> = Arc::new(None);
 
-        handle_signature_mismatch(
-            "abc123-bad-sig".to_string(),
-            "error: lacks a valid signature".to_string(),
-            &target,
-            &fake,
-            &args,
-            &signer,
-        )
+        ClosureSignatureMismatchHandler {
+            closure_hash: "abc123-bad-sig".to_string(),
+            stderr_tail: "error: lacks a valid signature".to_string(),
+        }
+        .handle(&ctx(&target, &fake, &args, &signer))
         .await;
 
         let calls = fake.calls();
@@ -1067,23 +1101,20 @@ mod tests {
         }
     }
 
-    /// `handle_realise_failed` produces exactly one `RealiseFailed`
+    /// `RealiseFailedHandler` produces exactly one `RealiseFailed`
     /// event with the failure reason, no rollback, no follow-up
     /// activation events.
     #[tokio::test]
-    async fn handle_realise_failed_posts_one_event_no_rollback() {
+    async fn realise_failed_handler_posts_one_event_no_rollback() {
         let fake = FakeReporter::new();
         let target = sample_target();
         let args = sample_args();
-        let signer = std::sync::Arc::new(None);
+        let signer: Arc<Option<EvidenceSigner>> = Arc::new(None);
 
-        handle_realise_failed(
-            "network unreachable".to_string(),
-            &target,
-            &fake,
-            &args,
-            &signer,
-        )
+        RealiseFailedHandler {
+            reason: "network unreachable".to_string(),
+        }
+        .handle(&ctx(&target, &fake, &args, &signer))
         .await;
 
         let calls = fake.calls();
