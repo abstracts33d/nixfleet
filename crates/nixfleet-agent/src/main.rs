@@ -748,8 +748,12 @@ async fn confirm_and_finalize(
 ) {
     let boot_id = nixfleet_agent::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
     let rollout = &target.channel_ref;
-    // Wave 0 — wave/soak staging is deferred.
-    let wave: u32 = 0;
+    // RFC-0003 §4.1: report the actual wave the agent activated in,
+    // not a placeholder. CP populates `wave_index` at dispatch time
+    // (control-plane/src/dispatch.rs); a None comes from older CPs
+    // or channels with no wave plan, in which case 0 is the right
+    // fallback (the dispatch already treats those as a single wave).
+    let wave: u32 = target.wave_index.unwrap_or(0);
     match nixfleet_agent::activation::confirm_target(
         client_handle,
         &args.control_plane_url,
