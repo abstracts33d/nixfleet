@@ -33,7 +33,6 @@ pub struct ServeArgs {
     /// Used by issuance to chain new agent certs. Often the same
     /// path as `client_ca`.
     pub fleet_ca_cert: Option<PathBuf>,
-    /// Online on the CP per the deferred-trust-hardening design.
     pub fleet_ca_key: Option<PathBuf>,
     pub audit_log_path: Option<PathBuf>,
     pub artifact_path: PathBuf,

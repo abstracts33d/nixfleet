@@ -56,12 +56,10 @@ http = "1"
 # reads `/etc/ssl/certs` on Linux at process startup.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
 base64 = "0.22"
-# PR-5 — bootstrap enrollment + cert renewal. rcgen builds + signs
-# the agent certs; ed25519-dalek verifies bootstrap-token signatures
+# Bootstrap enrollment + cert renewal. rcgen builds + signs the
+# agent certs; ed25519-dalek verifies bootstrap-token signatures
 # against the org root key from trust.json; sha2 fingerprints CSR
-# pubkeys for the token's expected_pubkey_fingerprint match. **The
-# fleet CA private key is online on the CP under this design; a
-# TPM-bound replacement is deferred.**
+# pubkeys for the token's expected_pubkey_fingerprint match.
 # `x509-parser` feature gates `CertificateParams::from_ca_cert_pem` and
 # `CertificateSigningRequestParams::from_pem`, which we need to load
 # the operator-supplied fleet CA cert + the agent CSR from disk.

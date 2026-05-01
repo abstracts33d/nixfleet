@@ -2,9 +2,7 @@
 //!
 //! Validates the CSR + token, builds a TBS certificate with the
 //! standard agent-cert profile (clientAuth EKU, SAN dNSName), and
-//! signs with the fleet CA's private key. **The fleet CA private
-//! key is read at issuance time from a path on disk
-//! tracks moving it to TPM-bound signing.**
+//! signs with the fleet CA's private key.
 //!
 //! Audit log: every issuance writes one JSON line to journal AND
 //! appends to a configured audit-log file. The file is plaintext
