@@ -101,7 +101,7 @@ in
       host.wait_for_unit("nixfleet-control-plane.service")
       host.wait_for_open_port(8443)
       host.wait_for_unit("microvms.target", timeout=300)
-      host.wait_for_unit(f"microvm@${agentName}.service", timeout=300)
+      host.wait_for_unit("microvm@${agentName}.service", timeout=300)
 
       # Step 1: baseline — wait for the agent to land at least one
       # checkin against the freshly-booted CP. Polling cadence is 5s
@@ -113,11 +113,11 @@ in
           host,
           since_cursor=pre_inject_cursor,
           unit="nixfleet-control-plane.service",
-          pattern=f"checkin received.*${agentName}",
+          pattern="checkin received.*${agentName}",
           timeout=90,
           label="initial agent checkin",
       )
-      print(f"step 1: baseline checkin observed for ${agentName}")
+      print("step 1: baseline checkin observed for ${agentName}")
 
       # Step 2: inject a synthetic Failed row. We need both a
       # pending_confirms anchor (so dispatch resolves the row) and a
@@ -182,7 +182,7 @@ in
       wait_for_journal_match(
           host,
           since_cursor=pre_signal_cursor,
-          unit=f"microvm@${agentName}.service",
+          unit="microvm@${agentName}.service",
           pattern="CP issued rollback signal",
           timeout=60,
           label="agent rollback-signal handling",
