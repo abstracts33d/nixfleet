@@ -76,9 +76,11 @@ pub struct HostCheckinRecord {
 }
 
 /// `signature_status` is the evidence-verify verdict for events
-/// carrying a signature contract (`ComplianceFailure`,
-/// `RuntimeGateError`). None for events without a contract or
-/// pre-dating the field.
+/// that carry a host-key-bound signature. The full set is enumerated
+/// in `report_handler::compute_signature_status`. None for variants
+/// that intentionally don't sign (pre-fire announcements, enrollment
+/// failures, trust-root parse errors, the `Other` catch-all) or for
+/// events posted before the field was added.
 #[derive(Debug, Clone)]
 pub struct ReportRecord {
     pub event_id: String,

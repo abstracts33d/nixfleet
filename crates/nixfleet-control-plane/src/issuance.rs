@@ -37,12 +37,6 @@ pub enum AuditContext {
     Renew { previous_cert_serial: String },
 }
 
-/// In-memory replay set for bootstrap-token nonces. AppState wraps
-/// this in `Arc<RwLock<HashSet<String>>>`.
-pub fn token_seen(nonces: &std::collections::HashSet<String>, nonce: &str) -> bool {
-    nonces.contains(nonce)
-}
-
 /// Verify a bootstrap token's signature against the org root key.
 /// Caller is responsible for: nonce-replay check, hostname match,
 /// expected-pubkey-fingerprint match, expiry check. This function
