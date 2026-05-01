@@ -28,6 +28,11 @@
   # closure_hash match for convergence-dependent scenarios (e.g.
   # the teardown's soak-state attestation recovery proof).
   hostClosureHashes ? {},
+  # Override `rolloutPolicies.all-at-once.onHealthFailure`. Default
+  # `"halt"` matches the v0.2 production posture; the rollback-policy
+  # harness scenario passes `"rollback-and-halt"` to exercise the
+  # RFC-0002 §5.1 path end-to-end.
+  onHealthFailure ? "halt",
 }: let
   fixedSignedAt = signedAt;
   fixedCiCommit = "0000000000000000000000000000000000000000";
@@ -92,7 +97,7 @@
         }
       ];
       healthGate = {};
-      onHealthFailure = "halt";
+      inherit onHealthFailure;
     };
     edges = [];
     disruptionBudgets = [];

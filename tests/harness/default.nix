@@ -374,6 +374,54 @@
           cpPkg = nixfleet-control-plane;
         });
 
+  # Rollback-policy hardware harness scenario (#76). Real CP + real
+  # agent; injects a Failed row in host_rollout_state under a
+  # `rollback-and-halt` fleet variant and walks the wire round-trip
+  # end-to-end (CP rollback_signal → agent rollback handler →
+  # RollbackTriggered post → Reverted transition → idempotent stop).
+  rollbackPolicyScenario =
+    if nixfleet-control-plane == null || nixfleet-agent == null
+    then
+      throw ''
+        tests/harness: fleet-harness-rollback-policy requires both
+        `nixfleet-control-plane` and `nixfleet-agent`. Wire via
+        modules/tests/harness.nix.
+      ''
+    else let
+      # Rollback-and-halt variant of the convergence-paired signed
+      # fixture. Same closureHash + seedSalt shape as the converged
+      # variant so the agent's reported closure matches; only
+      # `onHealthFailure` flips, which is what unlocks
+      # `compute_rollback_signal`.
+      rollbackHaltSignedFixture =
+        if nixfleet-canonicalize == null
+        then null
+        else
+          import ./fixtures/signed {
+            inherit lib pkgs nixfleet-canonicalize;
+            hostClosureHashes = {
+              "agent-01" = convergedClosureHash;
+              "agent-02" = convergedClosureHash;
+            };
+            onHealthFailure = "rollback-and-halt";
+            derivationName = "nixfleet-harness-signed-fixture-rollback-halt";
+          };
+    in
+      if rollbackHaltSignedFixture == null
+      then
+        throw ''
+          tests/harness: fleet-harness-rollback-policy requires
+          `nixfleet-canonicalize` for the rollback-halt fixture.
+        ''
+      else
+        import ./scenarios/rollback-policy.nix (scenarioArgs
+          // {
+            signedFixture = rollbackHaltSignedFixture;
+            closureHash = convergedClosureHash;
+            cpPkg = nixfleet-control-plane;
+            agentPkg = nixfleet-agent;
+          });
+
   # Helper for the parameterised fleet-N variants — same as smoke
   # but with N agents under the same stub-CP + stub-agent scaffolding.
   mkFleetNScenario = n:
@@ -404,6 +452,8 @@ in {
   fleet-harness-module-rollouts-wire = moduleRolloutsWireScenario;
 
   fleet-harness-secret-hygiene = secretHygieneScenario;
+
+  fleet-harness-rollback-policy = rollbackPolicyScenario;
 
   # Fleet-N variants. fleet-2 is identical to smoke
   # under a different name, kept for criterion completeness.
