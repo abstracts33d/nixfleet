@@ -127,33 +127,33 @@ in
       injected_rollout_id = "stable@injected-failure"
       print(f"step 2: injecting Failed state for ${agentName}@{injected_rollout_id}")
       host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-INSERT INTO pending_confirms (
-  hostname, rollout_id, channel, wave, target_closure_hash,
-  target_channel_ref, dispatched_at, confirm_deadline,
-  state
-) VALUES (
-  '${agentName}', '{injected_rollout_id}', 'stable', 0,
-  '${closureHash}', '{injected_rollout_id}',
-  datetime('now', '-30 seconds'),
-  datetime('now', '+300 seconds'),
-  'pending'
-);
-SQL""")
+      INSERT INTO pending_confirms (
+        hostname, rollout_id, channel, wave, target_closure_hash,
+        target_channel_ref, dispatched_at, confirm_deadline,
+        state
+      ) VALUES (
+        '${agentName}', '{injected_rollout_id}', 'stable', 0,
+        '${closureHash}', '{injected_rollout_id}',
+        datetime('now', '-30 seconds'),
+        datetime('now', '+300 seconds'),
+        'pending'
+      );
+      SQL""")
       host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-INSERT INTO host_rollout_state (
-  rollout_id, hostname, host_state, updated_at
-) VALUES (
-  '{injected_rollout_id}', '${agentName}', 'Failed',
-  datetime('now')
-);
-SQL""")
+      INSERT INTO host_rollout_state (
+        rollout_id, hostname, host_state, updated_at
+      ) VALUES (
+        '{injected_rollout_id}', '${agentName}', 'Failed',
+        datetime('now')
+      );
+      SQL""")
 
       # Sanity: the row is visible under the post-inject cursor.
       pre_signal_cursor = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
       pre_state = host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-SELECT host_state FROM host_rollout_state
-WHERE hostname='${agentName}' AND rollout_id='{injected_rollout_id}';
-SQL""").strip()
+      SELECT host_state FROM host_rollout_state
+      WHERE hostname='${agentName}' AND rollout_id='{injected_rollout_id}';
+      SQL""").strip()
       assert pre_state == "Failed", f"expected Failed pre-signal, got {pre_state!r}"
 
       # Step 3: wait for the CP to emit `rollback_signal` on the next
@@ -193,9 +193,9 @@ SQL""").strip()
       reverted_seen = False
       while time.monotonic() < reverted_deadline:
           state_now = host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-SELECT host_state FROM host_rollout_state
-WHERE hostname='${agentName}' AND rollout_id='{injected_rollout_id}';
-SQL""").strip()
+      SELECT host_state FROM host_rollout_state
+      WHERE hostname='${agentName}' AND rollout_id='{injected_rollout_id}';
+      SQL""").strip()
           if state_now == "Reverted":
               reverted_seen = True
               break
