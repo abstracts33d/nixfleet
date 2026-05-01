@@ -11,8 +11,6 @@
 # scenario fails loudly the first time someone wires a debug log
 # that dumps secret material into a CP-bound request.
 {
-  pkgs,
-  lib,
   harnessLib,
   testCerts,
   signedFixture,

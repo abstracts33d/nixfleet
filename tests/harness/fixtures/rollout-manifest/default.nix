@@ -13,7 +13,6 @@
 # shared sign-bytes primitive so this fixture verifies under any
 # trust.json minted with the same seed.
 {
-  lib,
   pkgs,
   nixfleet-canonicalize,
   seedSalt ? "nixfleet-harness-test-seed-2026",
@@ -30,8 +29,7 @@
     displayName = "stable@def4567";
     channel = "stable";
     channelRef = "def4567abc123def4567abc123def4567abc123d";
-    fleetResolvedHash =
-      "1111111111111111111111111111111111111111111111111111111111111111";
+    fleetResolvedHash = "1111111111111111111111111111111111111111111111111111111111111111";
     hostSet = [
       {
         hostname = "agent-01";

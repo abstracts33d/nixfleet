@@ -21,13 +21,11 @@
 # that boots the real module's `services.nixfleet-control-plane =
 # {...}` declaration.
 {
-  lib,
   pkgs,
   inputs,
   rolloutManifestFixture,
   signedFixture,
   testCerts,
-  cpPkg,
   ...
 }: let
   # Stage the fixture's manifest pair under the filename layout the
@@ -57,11 +55,7 @@ in
     # other harness scenarios (mkFleetScenario in lib.nix).
     node.specialArgs = {inherit inputs;};
 
-    nodes.host = {
-      lib,
-      pkgs,
-      ...
-    }: {
+    nodes.host = {pkgs, ...}: {
       imports = [
         # Declares the `nixfleet.trust.*` option schema that
         # `_control-plane.nix` reads to materialise its trust.json.

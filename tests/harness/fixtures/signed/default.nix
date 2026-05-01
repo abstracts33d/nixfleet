@@ -108,13 +108,12 @@
   resolvedWithClosureHashes =
     fleet.resolved
     // {
-      hosts =
-        lib.mapAttrs (name: host:
-          host
-          // (lib.optionalAttrs (hostClosureHashes ? ${name}) {
-            closureHash = hostClosureHashes.${name};
-          }))
-        fleet.resolved.hosts;
+      hosts = lib.mapAttrs (name: host:
+        host
+        // (lib.optionalAttrs (hostClosureHashes ? ${name}) {
+          closureHash = hostClosureHashes.${name};
+        }))
+      fleet.resolved.hosts;
     };
 
   stamped =
@@ -138,9 +137,8 @@
   # rather than silently producing the wrong now.
   signedAtMidnightSuffix = "T00:00:00Z";
   signedAtPlusHourSuffix = "T01:00:00Z";
-  now =
-    assert lib.hasSuffix signedAtMidnightSuffix signedAt;
-      lib.removeSuffix signedAtMidnightSuffix signedAt + signedAtPlusHourSuffix;
+  now = assert lib.hasSuffix signedAtMidnightSuffix signedAt;
+    lib.removeSuffix signedAtMidnightSuffix signedAt + signedAtPlusHourSuffix;
 in
   pkgs.runCommand derivationName {
     # Expose the build-time stamps so consumers can derive a `now`
