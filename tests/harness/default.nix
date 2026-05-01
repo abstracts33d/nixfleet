@@ -333,6 +333,28 @@
         verifyArtifactPkg = nixfleet-verify-artifact;
       };
 
+  # Module-rollouts-wire scenario. Boots the actual NixOS service
+  # module (modules/scopes/nixfleet/_control-plane.nix) with
+  # `rolloutsDir` configured, and asserts the running CP serves the
+  # fixture's manifest pair at GET /v1/rollouts/<id>{,/sig}. Catches
+  # ExecStart-construction regressions in the module that unit tests
+  # + the auditor / agent-side scenarios cannot.
+  moduleRolloutsWireScenario =
+    if nixfleet-control-plane == null || rolloutManifestFixture == null
+    then
+      throw ''
+        tests/harness: fleet-harness-module-rollouts-wire requires both
+        `nixfleet-control-plane` and `nixfleet-canonicalize` (for the
+        rolloutManifestFixture) to be passed in. Wire via
+        modules/tests/harness.nix.
+      ''
+    else
+      import ./scenarios/module-rollouts-wire.nix {
+        inherit lib pkgs inputs rolloutManifestFixture signedFixture;
+        testCerts = sharedCerts;
+        cpPkg = nixfleet-control-plane;
+      };
+
   # Deadline-expiry scenario. Real CP with a 3-second
   # confirm deadline; testScript drives the wire flow via curl from
   # the host VM (no agent microVM needed) — POST checkin → receive
@@ -378,6 +400,8 @@ in {
   fleet-harness-corruption-rejection = corruptionRejectionScenario;
 
   fleet-harness-manifest-tamper-rejection = manifestTamperRejectionScenario;
+
+  fleet-harness-module-rollouts-wire = moduleRolloutsWireScenario;
 
   fleet-harness-secret-hygiene = secretHygieneScenario;
 

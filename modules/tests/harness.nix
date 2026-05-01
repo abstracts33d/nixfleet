@@ -125,6 +125,14 @@
           # blob at boot; testScript greps the CP's disk + journal
           # and asserts the plaintext does not appear.
           fleet-harness-secret-hygiene = harness.fleet-harness-secret-hygiene;
+
+          # Module-rollouts-wire scenario. Boots the NixOS service
+          # module (`services.nixfleet-control-plane`) with
+          # `rolloutsDir` set, and asserts the running CP serves
+          # `GET /v1/rollouts/<id>{,/sig}` byte-for-byte. The only
+          # scenario that exercises the real module's ExecStart
+          # construction end-to-end against a running service.
+          fleet-harness-module-rollouts-wire = harness.fleet-harness-module-rollouts-wire;
         };
     };
 }
