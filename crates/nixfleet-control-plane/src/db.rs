@@ -1,8 +1,10 @@
 //! SQLite persistence (rusqlite + refinery, WAL + FK).
 //!
-//! A single `Mutex<Connection>` is sufficient for fleet sizes O(100).
-//! Schema lives under `migrations/`; `migrate()` is idempotent +
-//! version-tracked. Mutex poisoning surfaces as anyhow errors.
+//! A single `Mutex<Connection>` is sufficient for fleet sizes ≤ 150
+//! hosts (ADR-012); the migration trigger and pool target are
+//! documented there. Schema lives under `migrations/`; `migrate()` is
+//! idempotent + version-tracked. Mutex poisoning surfaces as anyhow
+//! errors.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};

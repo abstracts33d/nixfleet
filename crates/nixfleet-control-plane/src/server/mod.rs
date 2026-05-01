@@ -234,10 +234,16 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .await
         {
             Ok(Ok((fleet, fleet_hash))) => {
+                // Host-count log line: ADR-012 documents the
+                // Mutex<Connection> SQLite bound at ~150 hosts;
+                // emitting the count at startup lets operators see
+                // the curve in the journal without parsing the DB.
+                let host_count = fleet.hosts.len();
                 *state.verified_fleet.write().await = Some(Arc::new(fleet));
                 *state.fleet_resolved_hash.write().await = Some(fleet_hash);
                 tracing::info!(
                     target: "reconcile",
+                    host_count,
                     "primed verified-fleet from channel-refs source before opening listener",
                 );
             }
