@@ -401,7 +401,25 @@ async fn compute_signature_status(
                 &payload,
             ))
         }
-        _ => None,
+
+        // Variants that intentionally carry no signature. Each line
+        // is a deliberate decision documented in RFC-0003 §7 / agent
+        // wire docs — touching this list means revisiting whether
+        // the auditor chain wants to extend to a new evidence class.
+        //
+        // - ActivationStarted: pre-fire announcement, not evidence.
+        // - EnrollmentFailed:  agent has no host-key-bound cert yet.
+        // - RenewalFailed:     identity material, doesn't gate state.
+        // - TrustError:        trust.json failed to load — signing key
+        //                      can't be verified by an auditor without
+        //                      the very roots that just failed.
+        // - Other:             opaque catch-all; signing it would
+        //                      paper over an unmodelled event class.
+        ReportEvent::ActivationStarted { .. }
+        | ReportEvent::EnrollmentFailed { .. }
+        | ReportEvent::RenewalFailed { .. }
+        | ReportEvent::TrustError { .. }
+        | ReportEvent::Other { .. } => None,
     }
 }
 
