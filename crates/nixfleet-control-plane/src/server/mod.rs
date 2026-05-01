@@ -349,30 +349,18 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 mod strict_mode_tests {
     use super::*;
     use std::path::PathBuf;
-    use std::time::Duration;
 
     fn minimal_serve_args(strict: bool, client_ca: Option<PathBuf>) -> ServeArgs {
         ServeArgs {
-            listen: "127.0.0.1:0".parse().unwrap(),
             tls_cert: PathBuf::from("/dev/null"),
             tls_key: PathBuf::from("/dev/null"),
             client_ca,
-            fleet_ca_cert: None,
-            fleet_ca_key: None,
-            audit_log_path: None,
             artifact_path: PathBuf::from("/dev/null"),
             signature_path: PathBuf::from("/dev/null"),
             trust_path: PathBuf::from("/dev/null"),
             observed_path: PathBuf::from("/dev/null"),
-            freshness_window: Duration::from_secs(86400),
-            confirm_deadline_secs: 360,
-            channel_refs: None,
-            revocations: None,
-            db_path: None,
-            closure_upstream: None,
-            rollouts_dir: None,
-            rollouts_source: None,
             strict,
+            ..Default::default()
         }
     }
 

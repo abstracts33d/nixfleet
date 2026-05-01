@@ -24,6 +24,14 @@ pub(super) const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 /// clock skew + closure download tail latency.
 pub const DEFAULT_CONFIRM_DEADLINE_SECS: i64 = 360;
 
+/// `Default` is provided so tests can use struct-update syntax
+/// (`ServeArgs { listen, tls_cert, ..., ..Default::default() }`)
+/// without rewriting every literal each time a field is added.
+/// Production code never calls `Default::default()` — clap parsing
+/// in `main.rs` populates every field. The defaults here are
+/// deliberately bogus (empty PathBufs, loopback `127.0.0.1:0`) so
+/// any prod path that accidentally relied on Default surfaces at
+/// the first IO call rather than silently mis-binding.
 #[derive(Debug, Clone)]
 pub struct ServeArgs {
     pub listen: SocketAddr,
@@ -73,6 +81,33 @@ pub struct ServeArgs {
     /// preserve current behaviour; intended for production lab.
     /// See `docs/CONTRACTS.md §II` for the rationale.
     pub strict: bool,
+}
+
+impl Default for ServeArgs {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:0".parse().expect("static loopback addr"),
+            tls_cert: PathBuf::new(),
+            tls_key: PathBuf::new(),
+            client_ca: None,
+            fleet_ca_cert: None,
+            fleet_ca_key: None,
+            audit_log_path: None,
+            artifact_path: PathBuf::new(),
+            signature_path: PathBuf::new(),
+            trust_path: PathBuf::new(),
+            observed_path: PathBuf::new(),
+            freshness_window: Duration::from_secs(86400),
+            confirm_deadline_secs: DEFAULT_CONFIRM_DEADLINE_SECS,
+            channel_refs: None,
+            revocations: None,
+            db_path: None,
+            closure_upstream: None,
+            rollouts_dir: None,
+            rollouts_source: None,
+            strict: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

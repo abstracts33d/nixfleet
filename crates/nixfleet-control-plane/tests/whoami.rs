@@ -78,18 +78,8 @@ async fn whoami_returns_verified_cn_when_client_cert_present() {
         signature_path: signature,
         trust_path: trust,
         observed_path: observed,
-        freshness_window: Duration::from_secs(86400),
         confirm_deadline_secs: 120,
-        channel_refs: None,
-        revocations: None,
-        db_path: None,
-        closure_upstream: None,
-        rollouts_dir: None,
-        rollouts_source: None,
-        strict: false,
-        fleet_ca_cert: None,
-        fleet_ca_key: None,
-        audit_log_path: None,
+        ..Default::default()
     })
     .await;
 
@@ -137,18 +127,8 @@ async fn whoami_rejects_request_without_client_cert() {
         signature_path: signature,
         trust_path: trust,
         observed_path: observed,
-        freshness_window: Duration::from_secs(86400),
         confirm_deadline_secs: 120,
-        channel_refs: None,
-        revocations: None,
-        db_path: None,
-        closure_upstream: None,
-        rollouts_dir: None,
-        rollouts_source: None,
-        strict: false,
-        fleet_ca_cert: None,
-        fleet_ca_key: None,
-        audit_log_path: None,
+        ..Default::default()
     })
     .await;
 

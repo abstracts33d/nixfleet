@@ -149,15 +149,9 @@ async fn spawn_server(
         signature_path: signature,
         trust_path: trust,
         observed_path: observed,
-        freshness_window: Duration::from_secs(86400),
         confirm_deadline_secs: 120,
-        channel_refs: None,
-        revocations: None,
         db_path,
-        closure_upstream: None,
-        rollouts_dir: None,
-        rollouts_source: None,
-        strict: false,
+        ..Default::default()
     };
     let handle = tokio::spawn(server::serve(args));
     sleep(Duration::from_millis(300)).await;

@@ -142,9 +142,6 @@ async fn spawn_with_signed_fleet(
         tls_cert: server_cert,
         tls_key: server_key,
         client_ca: Some(ca),
-        fleet_ca_cert: None,
-        fleet_ca_key: None,
-        audit_log_path: None,
         artifact_path: artifact,
         signature_path: signature,
         trust_path: trust,
@@ -154,13 +151,8 @@ async fn spawn_with_signed_fleet(
         // (60 minutes) but verify_artifact also takes the global window.
         freshness_window: Duration::from_secs(86400 * 365 * 5),
         confirm_deadline_secs: 120,
-        channel_refs: None,
-        revocations: None,
         db_path: Some(db_path),
-        closure_upstream: None,
-        rollouts_dir: None,
-        rollouts_source: None,
-        strict: false,
+        ..Default::default()
     };
     let handle = tokio::spawn(server::serve(args));
     // Give the prime path time to verify the artifact + write the

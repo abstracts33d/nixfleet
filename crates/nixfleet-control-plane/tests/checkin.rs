@@ -63,18 +63,8 @@ async fn checkin_records_request_and_returns_null_target() {
         signature_path: signature,
         trust_path: trust,
         observed_path: observed,
-        freshness_window: Duration::from_secs(86400),
         confirm_deadline_secs: 120,
-        channel_refs: None,
-        revocations: None,
-        db_path: None,
-        closure_upstream: None,
-        rollouts_dir: None,
-        rollouts_source: None,
-        strict: false,
-        fleet_ca_cert: None,
-        fleet_ca_key: None,
-        audit_log_path: None,
+        ..Default::default()
     })
     .await;
 
@@ -133,18 +123,8 @@ async fn checkin_rejects_cn_hostname_mismatch() {
         signature_path: signature,
         trust_path: trust,
         observed_path: observed,
-        freshness_window: Duration::from_secs(86400),
         confirm_deadline_secs: 120,
-        channel_refs: None,
-        revocations: None,
-        db_path: None,
-        closure_upstream: None,
-        rollouts_dir: None,
-        rollouts_source: None,
-        strict: false,
-        fleet_ca_cert: None,
-        fleet_ca_key: None,
-        audit_log_path: None,
+        ..Default::default()
     })
     .await;
 
@@ -196,18 +176,8 @@ async fn report_records_event_and_returns_event_id() {
         signature_path: signature,
         trust_path: trust,
         observed_path: observed,
-        freshness_window: Duration::from_secs(86400),
         confirm_deadline_secs: 120,
-        channel_refs: None,
-        revocations: None,
-        db_path: None,
-        closure_upstream: None,
-        rollouts_dir: None,
-        rollouts_source: None,
-        strict: false,
-        fleet_ca_cert: None,
-        fleet_ca_key: None,
-        audit_log_path: None,
+        ..Default::default()
     })
     .await;
 

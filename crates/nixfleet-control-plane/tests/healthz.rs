@@ -75,23 +75,12 @@ async fn healthz_returns_ok_over_tls() {
         listen,
         tls_cert: cert_path,
         tls_key: key_path,
-        client_ca: None,
         artifact_path: artifact,
         signature_path: signature,
         trust_path: trust,
         observed_path: observed,
-        freshness_window: Duration::from_secs(86400),
         confirm_deadline_secs: 120,
-        channel_refs: None,
-        revocations: None,
-        db_path: None,
-        closure_upstream: None,
-        rollouts_dir: None,
-        rollouts_source: None,
-        strict: false,
-        fleet_ca_cert: None,
-        fleet_ca_key: None,
-        audit_log_path: None,
+        ..Default::default()
     };
     let server_handle = tokio::spawn(server::serve(server_args));
 

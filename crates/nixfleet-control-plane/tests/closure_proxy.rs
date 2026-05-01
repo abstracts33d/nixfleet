@@ -54,22 +54,13 @@ async fn spawn_cp(
         tls_cert: server_cert,
         tls_key: server_key,
         client_ca: Some(ca),
-        fleet_ca_cert: None,
-        fleet_ca_key: None,
-        audit_log_path: None,
         artifact_path: artifact,
         signature_path: signature,
         trust_path: trust,
         observed_path: observed,
-        freshness_window: Duration::from_secs(86400),
         confirm_deadline_secs: 120,
-        channel_refs: None,
-        revocations: None,
-        db_path: None,
         closure_upstream,
-        rollouts_dir: None,
-        rollouts_source: None,
-        strict: false,
+        ..Default::default()
     };
     let handle = tokio::spawn(server::serve(args));
     sleep(Duration::from_millis(300)).await;
