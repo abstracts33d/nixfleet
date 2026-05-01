@@ -6,6 +6,25 @@
 //! without ever seeing `cfg(target_os)`.
 //!
 //! Adding a new platform = one new sibling module + one re-export arm.
+//!
+//! ## Why no `HostFacts` trait?
+//!
+//! The sibling-`activation` module exposes a similar shape via the
+//! `ActivationBackend` trait + cfg-selected `DEFAULT_BACKEND`. That
+//! pattern earns its weight there because:
+//! 1. dispatch handlers want to substitute a fake backend in unit
+//!    tests (the audit-driven Reporter+ActivationBackend extraction
+//!    landed for #67), and
+//! 2. future SystemManager / MicroVM impls plug in by writing a new
+//!    trait impl, no caller change.
+//!
+//! Neither driver applies here. `boot_id` and `pending_generation`
+//! are two thin OS-primitive wrappers; no test wants to fake them
+//! (their per-platform impls are themselves the unit tests), and a
+//! third platform's `boot_id` is a one-liner sysctl call no different
+//! in shape from the existing ones. Promoting this to a trait would
+//! be premature abstraction — the simple cfg-gated re-export stays
+//! intentionally simpler than `activation`'s shape.
 
 use anyhow::Result;
 use nixfleet_proto::agent_wire::GenerationRef;

@@ -113,15 +113,6 @@ pub trait ActivationBackend: Send + Sync {
     ) -> impl std::future::Future<Output = Result<Option<RollbackOutcome>>> + Send;
 }
 
-/// Returns `true` when another `switch-to-configuration` (or
-/// platform-equivalent) is currently running.
-///
-/// Façade over `DEFAULT_BACKEND.is_switch_in_progress()`. Tests that
-/// need to inject a fake call the trait method directly on their
-/// own backend.
-pub async fn is_switch_in_progress() -> bool {
-    DEFAULT_BACKEND.is_switch_in_progress().await
-}
 
 /// 300s sized to fit inside the CP's `DEFAULT_CONFIRM_DEADLINE_SECS = 360`.
 pub const POLL_BUDGET: Duration = Duration::from_secs(300);
@@ -970,36 +961,35 @@ mod tests {
         }
     }
 
-    /// Platform dispatch sanity check. The helper picks the right
-    /// fire impl based on `cfg!(target_os)`. We can't unit-test the
+    /// Cfg-selected backend sanity check. We can't unit-test the
     /// actual fire path (would need a real `nix-env`+`activate`/
     /// `systemd-run` rig — that's the harness's job), but we CAN
-    /// assert that `is_switch_in_progress` short-circuits to false
-    /// on darwin (no flock probe) and goes through the file-existence
-    /// gate on linux.
+    /// assert that `DEFAULT_BACKEND.is_switch_in_progress()` short-
+    /// circuits to false on darwin (no flock probe) and goes through
+    /// the file-existence gate on linux.
     #[tokio::test]
-    async fn is_switch_in_progress_short_circuits_on_darwin() {
+    async fn default_backend_is_switch_in_progress_short_circuits_on_darwin() {
         // On darwin: always false (no equivalent lock).
         // On linux: returns false when the lock file is absent.
         // Either way, in CI / dev sandbox the lock file shouldn't
-        // exist, so the function returns false. The platform-specific
+        // exist, so the call returns false. The platform-specific
         // assertion is that on darwin we never even *try* to run
-        // `flock(1)` — the function returns at the first line. We
-        // can't directly observe that without mocking, but we *can*
-        // assert the function returns false fast (well under the
-        // 1s timeout) on a clean dev machine.
+        // `flock(1)` — the call returns at the first line. We can't
+        // directly observe that without mocking, but we *can* assert
+        // it returns false fast (well under the 1s timeout) on a
+        // clean dev machine.
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            is_switch_in_progress(),
+            DEFAULT_BACKEND.is_switch_in_progress(),
         )
         .await;
         assert!(
             result.is_ok(),
-            "is_switch_in_progress should return promptly on a host with no in-flight switch",
+            "DEFAULT_BACKEND.is_switch_in_progress should return promptly on a host with no in-flight switch",
         );
         assert!(
             !result.unwrap(),
-            "is_switch_in_progress: no switch in flight on a clean dev host",
+            "DEFAULT_BACKEND.is_switch_in_progress: no switch in flight on a clean dev host",
         );
     }
 

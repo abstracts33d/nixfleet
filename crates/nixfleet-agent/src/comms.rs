@@ -4,17 +4,15 @@
 //! paths. Provides typed `checkin` and `report` calls that round-
 //! trip the wire types defined in `nixfleet_proto::agent_wire`.
 //!
-//! Two traits abstract the CP-bound side-effects so the dispatch
-//! handlers in `dispatch.rs` can be unit-tested with capturing fakes:
-//!
-//! - [`Reporter`] — wraps `post_report`'s capture of `(client, cp_url,
-//!   hostname, agent_version)`. Production impl: [`ReqwestReporter`].
-//! - [`Confirmer`] — wraps `/v1/agent/confirm` POSTs. Production
-//!   impl: [`ReqwestConfirmer`]. Used by the activation
-//!   `confirm_target` helper and the boot-recovery path; concrete
-//!   callers are still on the free-function form for now (the trait
-//!   surface is wired so a future PR can swap them in without a
-//!   contract change).
+//! [`Reporter`] abstracts `post_report`'s capture of `(client, cp_url,
+//! hostname, agent_version)` so the dispatch handlers in `dispatch.rs`
+//! are unit-testable with a capturing fake. Production impl:
+//! [`ReqwestReporter`]. The `confirm` and `checkin` paths take the
+//! raw `(client, cp_url)` pair directly — they have no per-variant
+//! branch logic that benefits from a trait, and the boot-recovery
+//! tests already exercise the relevant code paths through the real
+//! `reqwest::Client` against a transport-error CP. Add a `Confirmer`
+//! trait if a per-variant test surface for confirm appears.
 
 use std::path::Path;
 use std::time::Duration;
@@ -241,37 +239,3 @@ impl Reporter for ReqwestReporter {
     }
 }
 
-/// Confirmation POSTs (`/v1/agent/confirm`).
-///
-/// Surface is wired alongside [`Reporter`] for consistency; concrete
-/// callers (`activation::confirm_target`, `recovery::decide_and_run`)
-/// still take `&reqwest::Client + cp_url` for now. A future PR can
-/// migrate them when the test surface starts wanting per-variant
-/// confirm assertions.
-pub trait Confirmer: Send + Sync {
-    fn confirm(
-        &self,
-        req: &ConfirmRequest,
-    ) -> impl std::future::Future<Output = Result<ConfirmOutcome>> + Send;
-}
-
-/// Production [`Confirmer`]: wraps `(client, cp_url)`. Borrowed via
-/// `ReqwestReporter::client()` + `ReqwestReporter::cp_url()` so the
-/// agent's run-loop holds a single reqwest client across the
-/// reporter and confirmer surfaces.
-pub struct ReqwestConfirmer<'a> {
-    client: &'a Client,
-    cp_url: &'a str,
-}
-
-impl<'a> ReqwestConfirmer<'a> {
-    pub fn new(client: &'a Client, cp_url: &'a str) -> Self {
-        Self { client, cp_url }
-    }
-}
-
-impl Confirmer for ReqwestConfirmer<'_> {
-    async fn confirm(&self, req: &ConfirmRequest) -> Result<ConfirmOutcome> {
-        confirm(self.client, self.cp_url, req).await
-    }
-}
