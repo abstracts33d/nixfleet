@@ -458,12 +458,18 @@ in {
       # loopback. Plain warning rather than assertion: the lab and dev
       # deployments legitimately run non-strict, but production fleets
       # exposed on a real interface should opt in. See #70.
-      warnings =
-        lib.optional
-        (
-          !cfg.strict
-          && builtins.match "(127\\..*|localhost|\\[::1\\]):[0-9]+" cfg.listen == null
-        ) ''
+      #
+      # Loopback-detection done via prefix checks because Nix's
+      # `builtins.match` uses POSIX ERE, which rejects `\[` outside a
+      # bracket expression — string-prefix checks are clearer anyway.
+      warnings = let
+        listen = cfg.listen;
+        isLoopback =
+          lib.hasPrefix "127." listen
+          || lib.hasPrefix "localhost:" listen
+          || lib.hasPrefix "[::1]:" listen;
+      in
+        lib.optional (!cfg.strict && !isLoopback) ''
           services.nixfleet-control-plane.listen = "${cfg.listen}" exposes
           the CP beyond loopback while strict = false. Consider setting
           strict = true so missing --client-ca / revocations / protocol-
