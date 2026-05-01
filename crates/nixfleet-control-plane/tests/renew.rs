@@ -159,7 +159,11 @@ async fn spawn_server(
     handle
 }
 
-fn build_mtls_client(ca_pem_path: &std::path::Path, agent_pem: &str, agent_key_pem: &str) -> reqwest::Client {
+fn build_mtls_client(
+    ca_pem_path: &std::path::Path,
+    agent_pem: &str,
+    agent_key_pem: &str,
+) -> reqwest::Client {
     let mut combined = agent_pem.as_bytes().to_vec();
     combined.extend_from_slice(agent_key_pem.as_bytes());
     let identity = Identity::from_pem(&combined).unwrap();
@@ -187,9 +191,7 @@ fn build_no_cert_client(ca_pem_path: &std::path::Path) -> reqwest::Client {
 fn mint_csr(hostname: &str) -> String {
     let key = KeyPair::generate().unwrap();
     let mut params = CertificateParams::default();
-    params
-        .distinguished_name
-        .push(DnType::CommonName, hostname);
+    params.distinguished_name.push(DnType::CommonName, hostname);
     let csr: CertificateSigningRequest = params.serialize_request(&key).unwrap();
     csr.pem().unwrap()
 }
@@ -297,7 +299,13 @@ async fn renew_rejects_revoked_cert() {
         let db = Db::open(&db_path).unwrap();
         db.migrate().unwrap();
         let revoked_before = Utc::now() + chrono::Duration::days(365);
-        db.revoke_cert("test-host", revoked_before, Some("test"), Some("test-operator"))
+        db.revocations()
+            .revoke_cert(
+                "test-host",
+                revoked_before,
+                Some("test"),
+                Some("test-operator"),
+            )
             .unwrap();
     }
 
@@ -324,11 +332,7 @@ async fn renew_rejects_revoked_cert() {
         .send()
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        401,
-        "revoked cert must not be able to renew",
-    );
+    assert_eq!(resp.status(), 401, "revoked cert must not be able to renew",);
 
     handle.abort();
 }

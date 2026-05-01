@@ -101,7 +101,11 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             // Errors here are logged + treated as empty so the
             // tick still runs; the reconciler is read-only on
             // active_rollouts so missing data is conservative.
-            let rollouts = match state.db.as_deref().map(|db| db.active_rollouts_snapshot()) {
+            let rollouts = match state
+                .db
+                .as_deref()
+                .map(|db| db.rollout_state().active_rollouts_snapshot())
+            {
                 Some(Ok(v)) => v,
                 Some(Err(err)) => {
                     tracing::warn!(error = %err, "reconcile: active_rollouts_snapshot failed; treating as empty");
@@ -117,7 +121,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             let compliance_failures_by_rollout = match state
                 .db
                 .as_deref()
-                .map(|db| db.outstanding_compliance_events_by_rollout())
+                .map(|db| db.reports().outstanding_compliance_events_by_rollout())
             {
                 Some(Ok(m)) => m,
                 Some(Err(err)) => {
@@ -232,7 +236,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
     for action in actions {
         match action {
             Action::SoakHost { rollout, host } => {
-                match db.transition_host_state(
+                match db.rollout_state().transition_host_state(
                     host,
                     rollout,
                     crate::state::HostRolloutState::Soaked,
@@ -265,28 +269,30 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                     }
                 }
             }
-            Action::ConvergeRollout { rollout } => match db.delete_rollout_records(rollout) {
-                Ok((0, 0)) => {
-                    // Already cleaned up by a prior tick — expected
-                    // on every re-emission after the first.
+            Action::ConvergeRollout { rollout } => {
+                match db.rollout_state().delete_rollout_records(rollout) {
+                    Ok((0, 0)) => {
+                        // Already cleaned up by a prior tick — expected
+                        // on every re-emission after the first.
+                    }
+                    Ok((pc, hrs)) => {
+                        tracing::info!(
+                            target: "converge",
+                            rollout = %rollout,
+                            pending_confirms_deleted = pc,
+                            host_rollout_state_deleted = hrs,
+                            "converge: terminal cleanup of rollout records",
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            rollout = %rollout,
+                            error = %err,
+                            "converge: terminal cleanup failed",
+                        );
+                    }
                 }
-                Ok((pc, hrs)) => {
-                    tracing::info!(
-                        target: "converge",
-                        rollout = %rollout,
-                        pending_confirms_deleted = pc,
-                        host_rollout_state_deleted = hrs,
-                        "converge: terminal cleanup of rollout records",
-                    );
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        rollout = %rollout,
-                        error = %err,
-                        "converge: terminal cleanup failed",
-                    );
-                }
-            },
+            }
             _ => {}
         }
     }

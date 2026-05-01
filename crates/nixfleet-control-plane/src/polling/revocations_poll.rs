@@ -63,7 +63,7 @@ pub fn spawn(db: Arc<Db>, config: RevocationsSource) -> tokio::task::JoinHandle<
                     let n = revs.revocations.len();
                     let mut applied = 0usize;
                     for entry in &revs.revocations {
-                        match db.revoke_cert(
+                        match db.revocations().revoke_cert(
                             &entry.hostname,
                             entry.not_before,
                             entry.reason.as_deref(),

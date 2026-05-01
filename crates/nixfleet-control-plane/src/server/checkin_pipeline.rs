@@ -97,7 +97,7 @@ async fn rollback_signal_for_checkin(
 ) -> Option<nixfleet_proto::agent_wire::RollbackSignal> {
     let db = state.db.as_ref()?;
     let fleet = state.verified_fleet.read().await.clone()?;
-    let failed = match db.failed_rollouts_for_host(&req.hostname) {
+    let failed = match db.rollout_state().failed_rollouts_for_host(&req.hostname) {
         Ok(v) => v,
         Err(err) => {
             tracing::error!(
@@ -150,10 +150,7 @@ fn compute_rollback_signal(
     Some(nixfleet_proto::agent_wire::RollbackSignal {
         rollout: rollout_id.clone(),
         target_ref: target_ref.clone(),
-        reason: format!(
-            "policy: rollback-and-halt; host {} is Failed",
-            hostname,
-        ),
+        reason: format!("policy: rollback-and-halt; host {} is Failed", hostname,),
     })
 }
 
@@ -261,7 +258,7 @@ fn synthesise_orphan_confirm_rows(
     channel: &str,
 ) -> bool {
     let now = Utc::now();
-    if let Err(err) = db.record_confirmed_pending(
+    if let Err(err) = db.confirms().record_confirmed_pending(
         &req.hostname,
         &req.rollout,
         channel,
@@ -278,7 +275,7 @@ fn synthesise_orphan_confirm_rows(
         );
         return false;
     }
-    if let Err(err) = db.transition_host_state(
+    if let Err(err) = db.rollout_state().transition_host_state(
         &req.hostname,
         &req.rollout,
         crate::state::HostRolloutState::Healthy,
@@ -379,7 +376,10 @@ async fn recover_soak_state_from_attestation(
         Ok(None) | Err(_) => return,
     };
 
-    match db.host_rollout_state_exists(&req.hostname, &rollout_id) {
+    match db
+        .rollout_state()
+        .host_rollout_state_exists(&req.hostname, &rollout_id)
+    {
         Ok(true) => return, // already known — leave alone
         Ok(false) => {}
         Err(err) => {
@@ -395,7 +395,7 @@ async fn recover_soak_state_from_attestation(
 
     let stamp = std::cmp::min(now, attested);
 
-    if let Err(err) = db.record_confirmed_pending(
+    if let Err(err) = db.confirms().record_confirmed_pending(
         &req.hostname,
         &rollout_id,
         &host_decl.channel,
@@ -412,7 +412,7 @@ async fn recover_soak_state_from_attestation(
         );
         return;
     }
-    if let Err(err) = db.transition_host_state(
+    if let Err(err) = db.rollout_state().transition_host_state(
         &req.hostname,
         &rollout_id,
         crate::state::HostRolloutState::Healthy,
@@ -449,7 +449,7 @@ async fn clear_left_healthy_for_checkin(state: &AppState, req: &CheckinRequest) 
     let Some(db) = state.db.as_ref() else {
         return;
     };
-    let healthy = match db.healthy_rollouts_for_host(&req.hostname) {
+    let healthy = match db.rollout_state().healthy_rollouts_for_host(&req.hostname) {
         Ok(v) => v,
         Err(err) => {
             tracing::warn!(
@@ -464,7 +464,10 @@ async fn clear_left_healthy_for_checkin(state: &AppState, req: &CheckinRequest) 
         if req.current_generation.closure_hash == target_closure {
             continue;
         }
-        match db.clear_healthy_marker(&req.hostname, &rollout_id) {
+        match db
+            .rollout_state()
+            .clear_healthy_marker(&req.hostname, &rollout_id)
+        {
             Ok(n) if n > 0 => {
                 tracing::info!(
                     target: "soak",
@@ -505,7 +508,7 @@ async fn dispatch_target_for_checkin(
         );
         None
     })?;
-    let pending_for_host = match db.pending_confirm_exists(&req.hostname) {
+    let pending_for_host = match db.confirms().pending_confirm_exists(&req.hostname) {
         Ok(b) => b,
         Err(err) => {
             tracing::error!(
@@ -689,15 +692,17 @@ fn record_dispatched_target(
     now: DateTime<Utc>,
 ) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
     let confirm_deadline = now + chrono::Duration::seconds(state.confirm_deadline_secs);
-    match db.record_pending_confirm(&crate::db::PendingConfirmInsert {
-        hostname,
-        rollout_id,
-        channel,
-        wave: wave_index.unwrap_or(0),
-        target_closure_hash: &target.closure_hash,
-        target_channel_ref: &target.channel_ref,
-        confirm_deadline,
-    }) {
+    match db
+        .confirms()
+        .record_pending_confirm(&crate::db::PendingConfirmInsert {
+            hostname,
+            rollout_id,
+            channel,
+            wave: wave_index.unwrap_or(0),
+            target_closure_hash: &target.closure_hash,
+            target_channel_ref: &target.channel_ref,
+            confirm_deadline,
+        }) {
         Ok(_) => {
             tracing::info!(
                 target: "dispatch",
@@ -755,6 +760,7 @@ pub(super) async fn confirm(
     })?;
 
     let updated = db
+        .confirms()
         .confirm_pending(&req.hostname, &req.rollout)
         .map_err(|err| {
             tracing::error!(error = %err, "confirm: db update failed");
@@ -784,7 +790,7 @@ pub(super) async fn confirm(
         // Standard path: stamp last_healthy_since (
         // ConfirmWindow → Healthy). The orphan-recovery branch
         // already wrote it inline so we don't double-up here.
-        if let Err(err) = db.transition_host_state(
+        if let Err(err) = db.rollout_state().transition_host_state(
             &req.hostname,
             &req.rollout,
             crate::state::HostRolloutState::Healthy,
@@ -960,12 +966,15 @@ mod tests {
             "matching closure should recover",
         );
 
-        let snap = db.active_rollouts_snapshot().unwrap();
+        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].rollout_id, expected_id);
         assert_eq!(snap[0].target_closure_hash, "target-system-r1");
         // Healthy marker stamped in the same call.
-        let healthy = db.healthy_rollouts_for_host("test-host").unwrap();
+        let healthy = db
+            .rollout_state()
+            .healthy_rollouts_for_host("test-host")
+            .unwrap();
         assert_eq!(healthy.len(), 1);
     }
 
@@ -982,7 +991,11 @@ mod tests {
             !try_recover_orphan_confirm(&state, &req).await,
             "mismatched closure must not recover",
         );
-        assert!(db.active_rollouts_snapshot().unwrap().is_empty());
+        assert!(db
+            .rollout_state()
+            .active_rollouts_snapshot()
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -1034,7 +1047,7 @@ mod tests {
 
         recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
 
-        let snap = db.active_rollouts_snapshot().unwrap();
+        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
         assert_eq!(
             snap.len(),
             1,
@@ -1064,7 +1077,7 @@ mod tests {
 
         recover_soak_state_from_attestation(&state, &req, now).await;
 
-        let snap = db.active_rollouts_snapshot().unwrap();
+        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
         let stamped = snap[0].last_healthy_since.get("test-host").unwrap();
         assert_eq!(
             stamped.timestamp(),
@@ -1084,7 +1097,11 @@ mod tests {
         let req = checkin_req_with_attestation("test-host", "different-closure", Some(attested));
 
         recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
-        assert!(db.active_rollouts_snapshot().unwrap().is_empty());
+        assert!(db
+            .rollout_state()
+            .active_rollouts_snapshot()
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -1098,21 +1115,25 @@ mod tests {
         // Pre-populate a Healthy row for the rolloutId the host
         // would derive from the projected manifest.
         let original = Utc::now() - chrono::Duration::seconds(5);
-        db.transition_host_state(
-            "test-host",
-            &expected_id,
-            crate::state::HostRolloutState::Healthy,
-            crate::state::HealthyMarker::Set(original),
-            None,
-        )
-        .unwrap();
+        db.rollout_state()
+            .transition_host_state(
+                "test-host",
+                &expected_id,
+                crate::state::HostRolloutState::Healthy,
+                crate::state::HealthyMarker::Set(original),
+                None,
+            )
+            .unwrap();
 
         let attested = Utc::now() - chrono::Duration::hours(2);
         let req = checkin_req_with_attestation("test-host", "system-r1", Some(attested));
 
         recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
 
-        let map = db.host_soak_state_for_rollout(&expected_id).unwrap();
+        let map = db
+            .rollout_state()
+            .host_soak_state_for_rollout(&expected_id)
+            .unwrap();
         let stamped = map.get("test-host").unwrap();
         assert_eq!(
             stamped.timestamp(),
@@ -1130,7 +1151,11 @@ mod tests {
         let req = checkin_req_with_attestation("test-host", "system-r1", None);
 
         recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
-        assert!(db.active_rollouts_snapshot().unwrap().is_empty());
+        assert!(db
+            .rollout_state()
+            .active_rollouts_snapshot()
+            .unwrap()
+            .is_empty());
     }
 
     /// Override the rollout policy on `fleet_with_host`'s default

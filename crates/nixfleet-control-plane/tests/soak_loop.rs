@@ -104,30 +104,32 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
     let healthy_at = Utc::now() - chrono::Duration::minutes(10);
     let now = Utc::now();
 
-    db.record_pending_confirm(&PendingConfirmInsert {
-        hostname: host,
-        channel: "stable",
-        rollout_id,
-        wave: 0,
-        target_closure_hash: target_closure,
-        target_channel_ref: rollout_id,
-        confirm_deadline,
-    })
-    .unwrap();
-    let n = db.confirm_pending(host, rollout_id).unwrap();
+    db.confirms()
+        .record_pending_confirm(&PendingConfirmInsert {
+            hostname: host,
+            channel: "stable",
+            rollout_id,
+            wave: 0,
+            target_closure_hash: target_closure,
+            target_channel_ref: rollout_id,
+            confirm_deadline,
+        })
+        .unwrap();
+    let n = db.confirms().confirm_pending(host, rollout_id).unwrap();
     assert_eq!(n, 1, "confirm_pending must mark the row confirmed");
-    db.transition_host_state(
-        host,
-        rollout_id,
-        HostRolloutState::Healthy,
-        HealthyMarker::Set(healthy_at),
-        None,
-    )
-    .unwrap();
+    db.rollout_state()
+        .transition_host_state(
+            host,
+            rollout_id,
+            HostRolloutState::Healthy,
+            HealthyMarker::Set(healthy_at),
+            None,
+        )
+        .unwrap();
 
     // Step B: project the DB state into the reconciler's
     // observed-state struct.
-    let rollouts = db.active_rollouts_snapshot().unwrap();
+    let rollouts = db.rollout_state().active_rollouts_snapshot().unwrap();
     assert_eq!(rollouts.len(), 1, "snapshot must surface the rollout");
     assert_eq!(
         rollouts[0].host_states.get(host).map(String::as_str),
@@ -139,7 +141,8 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
         "soak marker must surface for projection",
     );
 
-    let observed = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new());
+    let observed =
+        observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new());
     assert_eq!(observed.active_rollouts.len(), 1);
 
     // Step C: reconcile against a fleet whose wave has soak_minutes
@@ -161,6 +164,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
     // Step D: apply the SoakHost action — what the CP-side
     // action processor does on each tick.
     let n = db
+        .rollout_state()
         .transition_host_state(
             host,
             rollout_id,
@@ -174,13 +178,14 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
     // Step E: re-project + re-reconcile. The host now appears as
     // Soaked, the wave's `wave_all_soaked` check fires, and the
     // single-wave fleet emits ConvergeRollout.
-    let rollouts2 = db.active_rollouts_snapshot().unwrap();
+    let rollouts2 = db.rollout_state().active_rollouts_snapshot().unwrap();
     assert_eq!(
         rollouts2[0].host_states.get(host).map(String::as_str),
         Some("Soaked"),
         "host must surface as Soaked after the action processor",
     );
-    let observed2 = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts2, HashMap::new());
+    let observed2 =
+        observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts2, HashMap::new());
     let actions2 = reconcile(&fleet, &observed2, now);
     assert!(
         actions2
@@ -206,28 +211,31 @@ fn soak_loop_skips_when_window_not_elapsed() {
     let healthy_at = Utc::now() - chrono::Duration::minutes(1);
     let now = Utc::now();
 
-    db.record_pending_confirm(&PendingConfirmInsert {
-        hostname: host,
-        channel: "stable",
-        rollout_id,
-        wave: 0,
-        target_closure_hash: target_closure,
-        target_channel_ref: rollout_id,
-        confirm_deadline: Utc::now() + chrono::Duration::seconds(120),
-    })
-    .unwrap();
-    db.confirm_pending(host, rollout_id).unwrap();
-    db.transition_host_state(
-        host,
-        rollout_id,
-        HostRolloutState::Healthy,
-        HealthyMarker::Set(healthy_at),
-        None,
-    )
-    .unwrap();
+    db.confirms()
+        .record_pending_confirm(&PendingConfirmInsert {
+            hostname: host,
+            channel: "stable",
+            rollout_id,
+            wave: 0,
+            target_closure_hash: target_closure,
+            target_channel_ref: rollout_id,
+            confirm_deadline: Utc::now() + chrono::Duration::seconds(120),
+        })
+        .unwrap();
+    db.confirms().confirm_pending(host, rollout_id).unwrap();
+    db.rollout_state()
+        .transition_host_state(
+            host,
+            rollout_id,
+            HostRolloutState::Healthy,
+            HealthyMarker::Set(healthy_at),
+            None,
+        )
+        .unwrap();
 
-    let rollouts = db.active_rollouts_snapshot().unwrap();
-    let observed = observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new());
+    let rollouts = db.rollout_state().active_rollouts_snapshot().unwrap();
+    let observed =
+        observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new());
     let fleet = fleet_with_single_wave_host(host, target_closure, 5);
     let actions = reconcile(&fleet, &observed, now);
     assert!(

@@ -88,16 +88,17 @@ async fn confirm_happy_path_marks_row_confirmed() {
         let db = Db::open(&db_path).unwrap();
         db.migrate().unwrap();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
-        db.record_pending_confirm(&PendingConfirmInsert {
-            hostname: "test-host",
-            rollout_id: "stable@abc123",
-            channel: "stable",
-            wave: 0,
-            target_closure_hash: "deadbeef-nixos-system",
-            target_channel_ref: "main",
-            confirm_deadline: deadline,
-        })
-        .unwrap();
+        db.confirms()
+            .record_pending_confirm(&PendingConfirmInsert {
+                hostname: "test-host",
+                rollout_id: "stable@abc123",
+                channel: "stable",
+                wave: 0,
+                target_closure_hash: "deadbeef-nixos-system",
+                target_channel_ref: "main",
+                confirm_deadline: deadline,
+            })
+            .unwrap();
     }
 
     let port = pick_free_port().await;
