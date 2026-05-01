@@ -62,64 +62,13 @@ impl PendingConfirmState {
     }
 }
 
-/// Per-host rollout state machine. Persisted as TEXT in
-/// `host_rollout_state.host_state` with a CHECK constraint over the
-/// canonical literals returned by [`HostRolloutState::as_db_str`].
-///
-/// Mirrors [`PendingConfirmState`] — single source of truth for the
-/// V003 migration's CHECK literals so a typo'd `"healhty"` is a
-/// compile error rather than a silent runtime drift. The state-
-/// machine semantics live in
-/// `crates/nixfleet-reconciler/src/host_state.rs`; this enum is the
-/// SQLite-boundary mirror.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HostRolloutState {
-    Queued,
-    Dispatched,
-    Activating,
-    ConfirmWindow,
-    Healthy,
-    Soaked,
-    Converged,
-    Reverted,
-    Failed,
-}
-
-impl HostRolloutState {
-    /// Canonical SQLite literal. Matches the CHECK constraint in
-    /// the V003 migration.
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            HostRolloutState::Queued => "Queued",
-            HostRolloutState::Dispatched => "Dispatched",
-            HostRolloutState::Activating => "Activating",
-            HostRolloutState::ConfirmWindow => "ConfirmWindow",
-            HostRolloutState::Healthy => "Healthy",
-            HostRolloutState::Soaked => "Soaked",
-            HostRolloutState::Converged => "Converged",
-            HostRolloutState::Reverted => "Reverted",
-            HostRolloutState::Failed => "Failed",
-        }
-    }
-
-    /// Parse a TEXT column value back into the typed variant.
-    /// Returns an error on unknown strings so a future schema
-    /// drift surfaces loudly rather than silently mis-classifying.
-    pub fn from_db_str(s: &str) -> Result<Self> {
-        match s {
-            "Queued" => Ok(HostRolloutState::Queued),
-            "Dispatched" => Ok(HostRolloutState::Dispatched),
-            "Activating" => Ok(HostRolloutState::Activating),
-            "ConfirmWindow" => Ok(HostRolloutState::ConfirmWindow),
-            "Healthy" => Ok(HostRolloutState::Healthy),
-            "Soaked" => Ok(HostRolloutState::Soaked),
-            "Converged" => Ok(HostRolloutState::Converged),
-            "Reverted" => Ok(HostRolloutState::Reverted),
-            "Failed" => Ok(HostRolloutState::Failed),
-            other => Err(anyhow!("unknown host_rollout_state.host_state: {other:?}")),
-        }
-    }
-}
+/// Per-host rollout state machine. Re-exported from
+/// [`nixfleet_proto`] so the CP and the reconciler share a single
+/// source of truth for the variant set + literals; the SQL
+/// CHECK constraint in V003 is bridged to this enum by the
+/// `host_rollout_state_check_matches_enum` test in
+/// `observed_projection.rs`.
+pub use nixfleet_proto::HostRolloutState;
 
 /// Side-channel mutation of `host_rollout_state.last_healthy_since`
 /// passed alongside a state transition. Kept off the state-machine
@@ -158,28 +107,8 @@ mod tests {
         assert!(PendingConfirmState::from_db_str("rolledback").is_err());
     }
 
-    #[test]
-    fn host_rollout_state_round_trip_known_values() {
-        for v in [
-            HostRolloutState::Queued,
-            HostRolloutState::Dispatched,
-            HostRolloutState::Activating,
-            HostRolloutState::ConfirmWindow,
-            HostRolloutState::Healthy,
-            HostRolloutState::Soaked,
-            HostRolloutState::Converged,
-            HostRolloutState::Reverted,
-            HostRolloutState::Failed,
-        ] {
-            assert_eq!(HostRolloutState::from_db_str(v.as_db_str()).unwrap(), v);
-        }
-    }
-
-    #[test]
-    fn host_rollout_state_unknown_strings_error() {
-        assert!(HostRolloutState::from_db_str("").is_err());
-        assert!(HostRolloutState::from_db_str("healthy").is_err()); // case-sensitive
-        assert!(HostRolloutState::from_db_str("soaked").is_err());
-        assert!(HostRolloutState::from_db_str("Healhty").is_err()); // typo guard
-    }
+    // HostRolloutState round-trip + unknown-string tests live with
+    // the canonical enum in `nixfleet-proto`. The SQL/enum bridge
+    // (`host_rollout_state_check_matches_enum`) stays here in CP
+    // since it parses the local `migrations/V003__*.sql` file.
 }

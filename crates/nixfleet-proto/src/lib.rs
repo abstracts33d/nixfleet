@@ -29,6 +29,7 @@ pub mod compliance;
 pub mod enroll_wire;
 pub mod evidence_signing;
 pub mod fleet_resolved;
+pub mod host_rollout_state;
 pub mod revocations;
 pub mod rollout_manifest;
 pub mod trust;
@@ -37,6 +38,7 @@ pub use fleet_resolved::{
     Channel, Compliance, ComplianceProbes, DisruptionBudget, Edge, FleetResolved, HealthGate, Host,
     Meta, OnHealthFailure, PolicyWave, RolloutPolicy, Selector, SystemdFailedUnits, Wave,
 };
+pub use host_rollout_state::HostRolloutState;
 pub use revocations::{RevocationEntry, Revocations};
 pub use rollout_manifest::{HostWave, RolloutManifest};
 pub use trust::{KeySlot, TrustConfig, TrustedPubkey};

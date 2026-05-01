@@ -1,6 +1,6 @@
 //! Edge predecessor ordering check .
 
-use crate::host_state::HostRolloutState;
+use crate::host_state::{lookup_host_state, HostRolloutState};
 use crate::observed::Rollout;
 use nixfleet_proto::FleetResolved;
 
@@ -16,7 +16,7 @@ pub(crate) fn predecessor_blocking(
         .iter()
         .filter(|e| e.before == host)
         .find_map(|e| {
-            let s = HostRolloutState::lookup(rollout, &e.after);
+            let s = lookup_host_state(rollout, &e.after);
             if matches!(s, HostRolloutState::Soaked | HostRolloutState::Converged) {
                 None
             } else {

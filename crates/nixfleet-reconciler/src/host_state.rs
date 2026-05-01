@@ -6,97 +6,27 @@
 
 use crate::observed::{Observed, Rollout};
 use crate::{budgets, edges, Action};
-use anyhow::{anyhow, Error, Result};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::{FleetResolved, Wave};
-use std::str::FromStr;
 
-/// per-host rollout state. The reconciler reads
-/// these from `Rollout.host_states: HashMap<String, HostRolloutState>`
-/// (a serde shim on the wire keeps file-backed `observed.json`
-/// fixtures byte-identical) and pattern-matches directly.
-///
-/// `Queued` is the implicit default for hosts absent from the
-/// `host_states` map — they have not been dispatched yet. The
-/// other variants reflect the post-dispatch lifecycle the CP
-/// writes into `host_rollout_state.host_state`.
-///
-/// The variant set is the canonical truth for the
-/// `host_rollout_state.host_state` SQL CHECK constraint
-/// (V003__host_rollout_state.sql). Adding a value here without
-/// extending the CHECK (or vice versa) lets `from_str` reject
-/// rows the SQL accepted, and is caught by the
-/// `host_rollout_state_check_matches_enum` test in the CP crate.
-/// `Reverted` is currently dormant: V003 reserves the wire string
-/// for the explicit-rollback path that lands with the rollout-
-/// halt action handler. The variant exists so the typed
-/// projection round-trips it instead of silently mapping to
-/// `Queued` (which would re-dispatch the host into a loop
-/// the inverse of resolution-by-replacement).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HostRolloutState {
-    Queued,
-    Dispatched,
-    Activating,
-    ConfirmWindow,
-    Healthy,
-    Soaked,
-    Converged,
-    Reverted,
-    Failed,
-}
+/// Per-host rollout state. Canonical enum lives in `nixfleet_proto`
+/// so the CP (SQL CHECK round-trip) and the reconciler share one
+/// variant set; see `nixfleet_proto::host_rollout_state` for the
+/// full doc + accessors. `Reverted` is currently dormant on the wire
+/// — V003 reserves the literal so the explicit-rollback path can
+/// flip into it without an SQL migration.
+pub use nixfleet_proto::HostRolloutState;
 
-impl HostRolloutState {
-    /// Canonical wire-string for this variant. Stays in sync with
-    /// `host_rollout_state.host_state` CHECK constraint and the
-    /// fixture JSON in `tests/fixtures/`.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            HostRolloutState::Queued => "Queued",
-            HostRolloutState::Dispatched => "Dispatched",
-            HostRolloutState::Activating => "Activating",
-            HostRolloutState::ConfirmWindow => "ConfirmWindow",
-            HostRolloutState::Healthy => "Healthy",
-            HostRolloutState::Soaked => "Soaked",
-            HostRolloutState::Converged => "Converged",
-            HostRolloutState::Reverted => "Reverted",
-            HostRolloutState::Failed => "Failed",
-        }
-    }
-
-    /// Look up `host`'s state in `rollout.host_states`, defaulting
-    /// to [`Queued`](Self::Queued) when absent. Hosts not yet
-    /// dispatched have no row in `host_rollout_state`; the
-    /// reconciler treats them as fresh Queued work.
-    pub fn lookup(rollout: &Rollout, host: &str) -> Self {
-        rollout
-            .host_states
-            .get(host)
-            .copied()
-            .unwrap_or(HostRolloutState::Queued)
-    }
-}
-
-impl FromStr for HostRolloutState {
-    type Err = Error;
-
-    /// Parse a wire-string into the typed variant. Returns an
-    /// error on unknown strings — surfaces as a reconciler input
-    /// error rather than silently mis-classifying a host.
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "Queued" => Ok(HostRolloutState::Queued),
-            "Dispatched" => Ok(HostRolloutState::Dispatched),
-            "Activating" => Ok(HostRolloutState::Activating),
-            "ConfirmWindow" => Ok(HostRolloutState::ConfirmWindow),
-            "Healthy" => Ok(HostRolloutState::Healthy),
-            "Soaked" => Ok(HostRolloutState::Soaked),
-            "Converged" => Ok(HostRolloutState::Converged),
-            "Reverted" => Ok(HostRolloutState::Reverted),
-            "Failed" => Ok(HostRolloutState::Failed),
-            other => Err(anyhow!("unknown host_rollout_state: {other:?}")),
-        }
-    }
+/// Look up `host`'s state in `rollout.host_states`, defaulting to
+/// [`HostRolloutState::Queued`] when absent. Hosts not yet
+/// dispatched have no row in `host_rollout_state`; the reconciler
+/// treats them as fresh Queued work.
+pub fn lookup_host_state(rollout: &Rollout, host: &str) -> HostRolloutState {
+    rollout
+        .host_states
+        .get(host)
+        .copied()
+        .unwrap_or(HostRolloutState::Queued)
 }
 
 pub(crate) struct WaveOutcome {
@@ -117,7 +47,7 @@ pub(crate) fn handle_wave(
     };
 
     for host in &wave.hosts {
-        let state = HostRolloutState::lookup(rollout, host);
+        let state = lookup_host_state(rollout, host);
         match state {
             HostRolloutState::Queued => {
                 out.wave_all_soaked = false;
@@ -195,7 +125,7 @@ pub(crate) fn handle_wave(
                             rollout: rollout.id.clone(),
                             reason: format!(
                                 "host {host} {} (policy: {})",
-                                state.as_str().to_lowercase(),
+                                state.as_db_str().to_lowercase(),
                                 policy.on_health_failure
                             ),
                         });
@@ -229,29 +159,9 @@ pub(crate) fn handle_wave(
 mod tests {
     use super::*;
 
-    #[test]
-    fn round_trip_known_values() {
-        for v in [
-            HostRolloutState::Queued,
-            HostRolloutState::Dispatched,
-            HostRolloutState::Activating,
-            HostRolloutState::ConfirmWindow,
-            HostRolloutState::Healthy,
-            HostRolloutState::Soaked,
-            HostRolloutState::Converged,
-            HostRolloutState::Reverted,
-            HostRolloutState::Failed,
-        ] {
-            assert_eq!(HostRolloutState::from_str(v.as_str()).unwrap(), v);
-        }
-    }
-
-    #[test]
-    fn unknown_strings_error() {
-        assert!(HostRolloutState::from_str("").is_err());
-        assert!(HostRolloutState::from_str("queued").is_err()); // case-sensitive
-        assert!(HostRolloutState::from_str("garbage").is_err());
-    }
+    // HostRolloutState round-trip + unknown-string tests live with
+    // the canonical enum in `nixfleet-proto`; reconciler-side
+    // coverage is the lookup default below.
 
     #[test]
     fn lookup_defaults_absent_to_queued() {
@@ -266,7 +176,7 @@ mod tests {
             last_healthy_since: std::collections::HashMap::new(),
         };
         assert_eq!(
-            HostRolloutState::lookup(&rollout, "missing"),
+            lookup_host_state(&rollout, "missing"),
             HostRolloutState::Queued
         );
     }

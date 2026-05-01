@@ -3,7 +3,6 @@
 //! fallback. Pass `&[]` for `rollouts` when no DB is configured.
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use nixfleet_reconciler::observed::{HostState, Observed, Rollout};
 use nixfleet_reconciler::{HostRolloutState, RolloutState};
@@ -49,7 +48,7 @@ pub fn project(
                 .host_states
                 .iter()
                 .map(|(h, s)| {
-                    let parsed = HostRolloutState::from_str(s).unwrap_or_else(|_| {
+                    let parsed = HostRolloutState::from_db_str(s).unwrap_or_else(|_| {
                         tracing::warn!(
                             rollout = %snap.rollout_id,
                             host = %h,
@@ -134,7 +133,7 @@ mod tests {
     #[test]
     fn host_rollout_state_check_matches_enum() {
         // Drift detector: every value in the V003 CHECK list must
-        // be parseable by `HostRolloutState::from_str`. If the SQL
+        // be parseable by `HostRolloutState::from_db_str`. If the SQL
         // gets a new value without the enum being extended (or
         // vice versa), the projection's `Failed` fallback fires
         // for live rows and silently halts rollouts. Catch it at
@@ -153,7 +152,7 @@ mod tests {
             .collect();
         assert!(!values.is_empty(), "expected ≥1 value in CHECK clause");
         for v in &values {
-            HostRolloutState::from_str(v).unwrap_or_else(|_| {
+            HostRolloutState::from_db_str(v).unwrap_or_else(|_| {
                 panic!(
                     "V003 CHECK list value {v:?} is not in HostRolloutState. \
                      Either extend the enum or remove the value from the CHECK."

@@ -8,6 +8,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::str::FromStr;
 
+// `FromStr` is still used here for `RolloutState` round-trips below.
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Observed {
@@ -72,7 +74,7 @@ fn serialize_host_states_map<S: Serializer>(
     use serde::ser::SerializeMap;
     let mut m = ser.serialize_map(Some(map.len()))?;
     for (k, v) in map {
-        m.serialize_entry(k, v.as_str())?;
+        m.serialize_entry(k, v.as_db_str())?;
     }
     m.end()
 }
@@ -83,7 +85,7 @@ fn deserialize_host_states_map<'de, D: Deserializer<'de>>(
     let raw = HashMap::<String, String>::deserialize(de)?;
     raw.into_iter()
         .map(|(k, v)| {
-            HostRolloutState::from_str(&v)
+            HostRolloutState::from_db_str(&v)
                 .map(|s| (k, s))
                 .map_err(serde::de::Error::custom)
         })
