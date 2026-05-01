@@ -294,15 +294,12 @@ pub async fn activate_with<B: ActivationBackend>(
     // continues independently and the post-switch agent's
     // boot-recovery path posts the retroactive confirm.
     let expected = &target.closure_hash;
-    match poll_current_system(
-        expected,
-        Some(&previous_basename),
-        POLL_BUDGET,
-        POLL_INTERVAL,
-    )
-    .await
+    match VerifyPoll::new(expected)
+        .with_previous(&previous_basename)
+        .until_settled()
+        .await
     {
-        Ok(()) => {
+        PollOutcome::Settled => {
             // Step 5: profile self-correction. Defends against the
             // activation script (or a concurrent nix-env) re-pointing
             // `/nix/var/nix/profiles/system` after our Step 2 set —
@@ -320,7 +317,7 @@ pub async fn activate_with<B: ActivationBackend>(
             );
             Ok(ActivationOutcome::FiredAndPolled)
         }
-        Err(PollOutcome::Timeout { last_observed }) => {
+        PollOutcome::Timeout { last_observed } => {
             // Best-effort triage: unit may still be running (large
             // download); ExecMainStatus inconclusive in that case.
             let exit_code = backend.read_unit_exit_code("nixfleet-switch.service").await;
@@ -335,7 +332,7 @@ pub async fn activate_with<B: ActivationBackend>(
                 exit_code,
             })
         }
-        Err(PollOutcome::FlippedToUnexpected { observed }) => {
+        PollOutcome::FlippedToUnexpected { observed } => {
             tracing::error!(
                 target_closure = %expected,
                 actual = %observed,
@@ -435,6 +432,8 @@ async fn read_current_system_basename() -> Result<String> {
 /// Result of polling `/run/current-system` for the expected basename.
 #[derive(Debug, Clone)]
 pub enum PollOutcome {
+    /// Symlink resolved to the expected basename within the budget.
+    Settled,
     /// Budget elapsed without ever observing the expected basename.
     /// `last_observed` distinguishes "switch is still running, just
     /// slow" from "switch died and the symlink is unchanged".
@@ -443,69 +442,92 @@ pub enum PollOutcome {
     /// neither the expected new closure nor the pre-switch basename.
     /// Indicates an activation script (or concurrent process) pointed
     /// the symlink somewhere we never asked for. Caller must roll back.
-    /// Only produced when the caller passes a `Some(previous)` reference.
+    /// Only produced when the caller set `previous_basename = Some(_)`.
     FlippedToUnexpected { observed: String },
 }
 
-/// Poll `/run/current-system` for the expected basename. Returns
-/// `Ok(())` as soon as the symlink resolves to `expected`.
+/// Configuration + execution surface for polling `/run/current-system`
+/// until it resolves to the expected closure basename, or one of the
+/// terminal `PollOutcome` conditions fires.
 ///
-/// When `previous` is `Some(p)`, observing a basename that is neither
-/// `expected` nor `p` is treated as a hard mismatch and returned as
-/// `Err(PollOutcome::FlippedToUnexpected)` immediately — the system
-/// cannot legitimately be at any third basename mid-switch. Pass
-/// `None` to disable that check (used by the rollback path, where a
-/// stable pre-rollback reference isn't always meaningful).
+/// When `previous_basename` is `Some(p)`, observing a basename that is
+/// neither `expected_basename` nor `p` is treated as a hard mismatch
+/// and returned as `PollOutcome::FlippedToUnexpected` immediately —
+/// the system cannot legitimately be at any third basename mid-switch.
+/// Leave it as `None` for the rollback path, where a stable pre-state
+/// reference isn't meaningful and any non-match collapses into the
+/// timeout branch.
 ///
 /// Read errors during polling are non-fatal: the symlink may be
 /// briefly absent during activation. The timer keeps running.
-///
-/// Pure helper — no logging, deterministic timing — so it's
-/// straightforward to test.
-pub async fn poll_current_system(
-    expected: &str,
-    previous: Option<&str>,
-    budget: Duration,
-    interval: Duration,
-) -> std::result::Result<(), PollOutcome> {
-    let deadline = tokio::time::Instant::now() + budget;
-    // Initial None is dead in every iteration of the loop body
-    // (Ok/Err branches both assign before the deadline check), but
-    // it's the natural type for "no read has completed yet" and
-    // we keep the unwrap_or_else fallback for the budget=0 edge.
-    #[allow(unused_assignments)]
-    let mut last_observed: Option<String> = None;
+pub struct VerifyPoll<'a> {
+    pub expected_basename: &'a str,
+    pub previous_basename: Option<&'a str>,
+    pub interval: Duration,
+    pub budget: Duration,
+}
 
-    loop {
-        match read_current_system_basename().await {
-            Ok(basename) => {
-                if basename == expected {
-                    return Ok(());
-                }
-                if let Some(prev) = previous {
-                    if basename != prev {
-                        return Err(PollOutcome::FlippedToUnexpected {
-                            observed: basename,
-                        });
+impl<'a> VerifyPoll<'a> {
+    /// Defaults: `POLL_BUDGET` / `POLL_INTERVAL`, no `previous_basename`.
+    pub fn new(expected_basename: &'a str) -> Self {
+        Self {
+            expected_basename,
+            previous_basename: None,
+            interval: POLL_INTERVAL,
+            budget: POLL_BUDGET,
+        }
+    }
+
+    /// Enable flip-to-unexpected detection by pinning the pre-switch
+    /// basename. Builder-style so call sites stay one expression.
+    pub fn with_previous(mut self, previous: &'a str) -> Self {
+        self.previous_basename = Some(previous);
+        self
+    }
+
+    /// Poll until the symlink resolves to `expected_basename` or the
+    /// budget elapses. Pure — no logging, deterministic timing — so
+    /// it's straightforward to test.
+    pub async fn until_settled(&self) -> PollOutcome {
+        let deadline = tokio::time::Instant::now() + self.budget;
+        // Initial None is dead in every iteration of the loop body
+        // (Ok/Err branches both assign before the deadline check), but
+        // it's the natural type for "no read has completed yet" and
+        // we keep the unwrap_or_else fallback for the budget=0 edge.
+        #[allow(unused_assignments)]
+        let mut last_observed: Option<String> = None;
+
+        loop {
+            match read_current_system_basename().await {
+                Ok(basename) => {
+                    if basename == self.expected_basename {
+                        return PollOutcome::Settled;
                     }
+                    if let Some(prev) = self.previous_basename {
+                        if basename != prev {
+                            return PollOutcome::FlippedToUnexpected {
+                                observed: basename,
+                            };
+                        }
+                    }
+                    last_observed = Some(basename);
                 }
-                last_observed = Some(basename);
+                Err(err) => {
+                    // Symlink missing or unreadable. Capture the error
+                    // message so the timeout diagnostic surfaces what
+                    // happened, but keep polling.
+                    last_observed = Some(format!("<read-error: {err}>"));
+                }
             }
-            Err(err) => {
-                // Symlink missing or unreadable. Capture the error
-                // message so the timeout diagnostic surfaces what
-                // happened, but keep polling.
-                last_observed = Some(format!("<read-error: {err}>"));
-            }
-        }
 
-        if tokio::time::Instant::now() >= deadline {
-            return Err(PollOutcome::Timeout {
-                last_observed: last_observed
-                    .unwrap_or_else(|| String::from("<no-reads-completed>")),
-            });
+            if tokio::time::Instant::now() >= deadline {
+                return PollOutcome::Timeout {
+                    last_observed: last_observed
+                        .unwrap_or_else(|| String::from("<no-reads-completed>")),
+                };
+            }
+            tokio::time::sleep(self.interval).await;
         }
-        tokio::time::sleep(interval).await;
     }
 }
 
@@ -667,20 +689,20 @@ pub async fn rollback_with<B: ActivationBackend>(backend: &B) -> Result<Rollback
         return Ok(failure);
     }
 
-    // Step 4: poll for the rolled-back target. `previous` is None
-    // here — rollback has no meaningful "expected pre-state" reference
-    // (the pre-rollback basename is the failed generation we're
-    // abandoning), so flip-to-unexpected detection is disabled and
-    // any non-match collapses into the timeout branch.
-    match poll_current_system(&target_basename, None, POLL_BUDGET, POLL_INTERVAL).await {
-        Ok(()) => {
+    // Step 4: poll for the rolled-back target. `previous_basename`
+    // stays None — rollback has no meaningful "expected pre-state"
+    // reference (the pre-rollback basename is the failed generation
+    // we're abandoning), so flip-to-unexpected detection is disabled
+    // and any non-match collapses into the timeout branch.
+    match VerifyPoll::new(&target_basename).until_settled().await {
+        PollOutcome::Settled => {
             tracing::info!(
                 target = %target_basename,
                 "agent: rollback fire-and-forget complete",
             );
             Ok(RollbackOutcome::FiredAndPolled)
         }
-        Err(PollOutcome::Timeout { last_observed }) => {
+        PollOutcome::Timeout { last_observed } => {
             let exit_code = backend.read_unit_exit_code("nixfleet-rollback.service").await;
             tracing::error!(
                 target = %target_basename,
@@ -693,9 +715,11 @@ pub async fn rollback_with<B: ActivationBackend>(backend: &B) -> Result<Rollback
                 exit_code,
             })
         }
-        Err(PollOutcome::FlippedToUnexpected { .. }) => {
-            // Unreachable: only emitted when previous is Some.
-            unreachable!("FlippedToUnexpected requires Some(previous); rollback passes None")
+        PollOutcome::FlippedToUnexpected { .. } => {
+            // Unreachable: only emitted when previous_basename is Some.
+            unreachable!(
+                "FlippedToUnexpected requires Some(previous_basename); rollback leaves it None"
+            )
         }
     }
 }
@@ -846,36 +870,41 @@ mod tests {
         assert_eq!(unique.len(), outcomes.len(), "outcome variants collide on Debug");
     }
 
+    fn short_poll<'a>(
+        expected: &'a str,
+        previous: Option<&'a str>,
+        budget_ms: u64,
+    ) -> VerifyPoll<'a> {
+        let mut p = VerifyPoll::new(expected);
+        p.previous_basename = previous;
+        p.budget = Duration::from_millis(budget_ms);
+        p.interval = Duration::from_millis(10);
+        p
+    }
+
     #[tokio::test]
-    async fn poll_current_system_returns_ok_when_match_appears() {
+    async fn verify_poll_settles_when_match_appears() {
         // Skip on systems without /run/current-system (Darwin in CI).
         if !std::path::Path::new("/run/current-system").exists() {
             return;
         }
         let basename = read_current_system_basename().await.unwrap();
-        let result = poll_current_system(
-            &basename,
-            None,
-            Duration::from_millis(100),
-            Duration::from_millis(10),
-        )
-        .await;
-        assert!(result.is_ok(), "poll did not match its own current-system: {result:?}");
+        let outcome = short_poll(&basename, None, 100).until_settled().await;
+        assert!(
+            matches!(outcome, PollOutcome::Settled),
+            "poll did not match its own current-system: {outcome:?}",
+        );
     }
 
     #[tokio::test]
-    async fn poll_current_system_times_out_when_no_match_and_previous_disabled() {
+    async fn verify_poll_times_out_when_no_match_and_previous_disabled() {
         if !std::path::Path::new("/run/current-system").exists() {
             return;
         }
-        let result = poll_current_system(
-            "definitely-not-a-real-closure-hash-xyz",
-            None,
-            Duration::from_millis(50),
-            Duration::from_millis(10),
-        )
-        .await;
-        match result.expect_err("expected timeout") {
+        let outcome = short_poll("definitely-not-a-real-closure-hash-xyz", None, 50)
+            .until_settled()
+            .await;
+        match outcome {
             PollOutcome::Timeout { last_observed } => {
                 assert!(
                     !last_observed.starts_with("<no-reads-completed>"),
@@ -887,7 +916,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_current_system_flips_when_observed_is_neither_expected_nor_previous() {
+    async fn verify_poll_flips_when_observed_is_neither_expected_nor_previous() {
         if !std::path::Path::new("/run/current-system").exists() {
             return;
         }
@@ -895,14 +924,10 @@ mod tests {
         // basename) matches neither, so the first read returns
         // FlippedToUnexpected.
         let actual = read_current_system_basename().await.unwrap();
-        let result = poll_current_system(
-            "expected-is-wrong",
-            Some("previous-is-also-wrong"),
-            Duration::from_millis(100),
-            Duration::from_millis(10),
-        )
-        .await;
-        match result.expect_err("expected flip-to-unexpected") {
+        let outcome = short_poll("expected-is-wrong", Some("previous-is-also-wrong"), 100)
+            .until_settled()
+            .await;
+        match outcome {
             PollOutcome::FlippedToUnexpected { observed } => {
                 assert_eq!(observed, actual, "observed should be the live basename");
             }
@@ -911,21 +936,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_current_system_keeps_polling_when_observed_matches_previous() {
+    async fn verify_poll_keeps_polling_when_observed_matches_previous() {
         if !std::path::Path::new("/run/current-system").exists() {
             return;
         }
         // expected wrong, previous == actual → observed matches
         // previous → keep polling → times out.
         let actual = read_current_system_basename().await.unwrap();
-        let result = poll_current_system(
-            "expected-is-wrong",
-            Some(&actual),
-            Duration::from_millis(50),
-            Duration::from_millis(10),
-        )
-        .await;
-        match result.expect_err("expected timeout") {
+        let outcome = short_poll("expected-is-wrong", Some(&actual), 50)
+            .until_settled()
+            .await;
+        match outcome {
             PollOutcome::Timeout { last_observed } => {
                 assert_eq!(last_observed, actual);
             }
