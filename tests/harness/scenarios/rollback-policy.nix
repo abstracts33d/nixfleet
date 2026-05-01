@@ -224,7 +224,13 @@ in
       # compute_rollback_signal returns None — subsequent checkins
       # carry no rollback field. Sample two more poll cycles and
       # assert no fresh emission lines.
+      #
+      # 2s sleep before cursor capture so journalctl --since (which
+      # rounds DOWN to the second) doesn't include the original
+      # pre-Reverted rollback-signal emission. Same race teardown.nix
+      # mitigates the same way.
       print("step 6: waiting for two more polls + asserting no re-emission…")
+      host.succeed("sleep 2")
       post_revert_cursor = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
       time.sleep(15)  # ~3 agent polls at 5s cadence
       rc, _ = host.execute(

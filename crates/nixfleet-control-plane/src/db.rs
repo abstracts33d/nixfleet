@@ -220,6 +220,34 @@ impl Db {
         Ok(n)
     }
 
+    /// Delete `pending_confirms` + `host_rollout_state` rows for a
+    /// fully-converged rollout. Called from `apply_actions` when the
+    /// reconciler emits `Action::ConvergeRollout`. Without this, every
+    /// confirmed `pending_confirms` row from a converged rollout
+    /// keeps surfacing in `active_rollouts_snapshot` (state
+    /// 'confirmed') forever — bloating the snapshot, double-counting
+    /// hosts in disruption-budget calculations, and emitting
+    /// ChannelUnknown noise (post-#80, with empty channel; pre-#80,
+    /// with the SHA itself).
+    ///
+    /// Returns `(pending_confirms_deleted, host_rollout_state_deleted)`.
+    pub fn delete_rollout_records(&self, rollout_id: &str) -> Result<(usize, usize)> {
+        let guard = self.conn()?;
+        let pc_n = guard
+            .execute(
+                "DELETE FROM pending_confirms WHERE rollout_id = ?1",
+                params![rollout_id],
+            )
+            .context("delete pending_confirms for converged rollout")?;
+        let hrs_n = guard
+            .execute(
+                "DELETE FROM host_rollout_state WHERE rollout_id = ?1",
+                params![rollout_id],
+            )
+            .context("delete host_rollout_state for converged rollout")?;
+        Ok((pc_n, hrs_n))
+    }
+
     // =================================================================
     // cert_revocations
     // =================================================================
@@ -1297,6 +1325,47 @@ mod tests {
             .healthy_rollouts_for_host("test-host")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn delete_rollout_records_clears_both_tables() {
+        let db = fresh_db();
+        let future = Utc::now() + chrono::Duration::seconds(120);
+
+        // Two rollouts, two hosts each, all confirmed + Soaked.
+        for (rollout, host) in [
+            ("stable@conv1", "ohm"),
+            ("stable@conv1", "krach"),
+            ("stable@active", "pixel"),
+            ("stable@active", "aether"),
+        ] {
+            let mut row = pc_insert(host, rollout, "system-r", future);
+            row.channel = "stable";
+            db.record_pending_confirm(&row).unwrap();
+            db.transition_host_state(
+                host,
+                rollout,
+                HostRolloutState::Soaked,
+                HealthyMarker::Untouched,
+                None,
+            )
+            .unwrap();
+        }
+        assert_eq!(db.active_rollouts_snapshot().unwrap().len(), 2);
+
+        // Cleanup the converged one.
+        let (pc_n, hrs_n) = db.delete_rollout_records("stable@conv1").unwrap();
+        assert_eq!(pc_n, 2, "two pending_confirms rows for the converged rollout");
+        assert_eq!(hrs_n, 2, "two host_rollout_state rows for the converged rollout");
+
+        // Active rollout untouched.
+        let snap = db.active_rollouts_snapshot().unwrap();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].rollout_id, "stable@active");
+
+        // Re-running is a no-op.
+        let (pc_n2, hrs_n2) = db.delete_rollout_records("stable@conv1").unwrap();
+        assert_eq!((pc_n2, hrs_n2), (0, 0));
     }
 
     #[test]

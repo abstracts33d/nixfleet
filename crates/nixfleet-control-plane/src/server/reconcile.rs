@@ -199,14 +199,26 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
 }
 
 /// Apply the side-effects of the reconciler's action stream that
-/// require CP-side state mutation. Today that's only
-/// `Action::SoakHost` ( Healthy → Soaked) — the other
-/// variants are emitted for journal/observability and don't write
-/// to the DB. Errors per action are logged + skipped; the tick
+/// require CP-side state mutation:
+///
+/// - `Action::SoakHost` — flip Healthy → Soaked on the host's row.
+/// - `Action::ConvergeRollout` — DELETE the rollout's `pending_confirms`
+///   + `host_rollout_state` rows. Without this, confirmed rows from
+///   converged rollouts linger forever and re-surface in
+///   `active_rollouts_snapshot` (double-counting hosts in disruption
+///   budgets, emitting empty-channel ChannelUnknown noise). The
+///   action is the reconciler's terminal signal — ConvergeRollout
+///   fires only when every wave is fully Soaked, i.e. no host on
+///   that rollout still has work to do.
+///
+/// Other action variants (HaltRollout, RollbackHost, ChannelUnknown,
+/// WaveBlocked, …) are emitted for journal/observability and don't
+/// write to the DB. Errors per action are logged + skipped; the tick
 /// completes regardless. The action stream is at-least-once: the
-/// reconciler re-emits SoakHost on every tick while the host
-/// remains Healthy + soak elapsed, so transient failures retry on
-/// the next tick automatically.
+/// reconciler re-emits SoakHost on every tick while the host remains
+/// Healthy + soak elapsed, so transient failures retry on the next
+/// tick automatically. ConvergeRollout is also re-emitted while the
+/// rows survive — first run deletes, subsequent runs are no-ops.
 async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
     use nixfleet_reconciler::Action;
 
@@ -218,39 +230,64 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
         return;
     };
     for action in actions {
-        if let Action::SoakHost { rollout, host } = action {
-            match db.transition_host_state(
-                host,
-                rollout,
-                crate::state::HostRolloutState::Soaked,
-                crate::state::HealthyMarker::Untouched,
-                Some(crate::state::HostRolloutState::Healthy),
-            ) {
-                Ok(0) => {
-                    tracing::debug!(
-                        target: "soak",
-                        host = %host,
-                        rollout = %rollout,
-                        "soak: transition Healthy → Soaked no-op (host not in Healthy)",
-                    );
+        match action {
+            Action::SoakHost { rollout, host } => {
+                match db.transition_host_state(
+                    host,
+                    rollout,
+                    crate::state::HostRolloutState::Soaked,
+                    crate::state::HealthyMarker::Untouched,
+                    Some(crate::state::HostRolloutState::Healthy),
+                ) {
+                    Ok(0) => {
+                        tracing::debug!(
+                            target: "soak",
+                            host = %host,
+                            rollout = %rollout,
+                            "soak: transition Healthy → Soaked no-op (host not in Healthy)",
+                        );
+                    }
+                    Ok(_) => {
+                        tracing::info!(
+                            target: "soak",
+                            host = %host,
+                            rollout = %rollout,
+                            "soak: host transitioned Healthy → Soaked",
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            host = %host,
+                            rollout = %rollout,
+                            error = %err,
+                            "soak: transition Healthy → Soaked failed",
+                        );
+                    }
                 }
-                Ok(_) => {
+            }
+            Action::ConvergeRollout { rollout } => match db.delete_rollout_records(rollout) {
+                Ok((0, 0)) => {
+                    // Already cleaned up by a prior tick — expected
+                    // on every re-emission after the first.
+                }
+                Ok((pc, hrs)) => {
                     tracing::info!(
-                        target: "soak",
-                        host = %host,
+                        target: "converge",
                         rollout = %rollout,
-                        "soak: host transitioned Healthy → Soaked",
+                        pending_confirms_deleted = pc,
+                        host_rollout_state_deleted = hrs,
+                        "converge: terminal cleanup of rollout records",
                     );
                 }
                 Err(err) => {
                     tracing::warn!(
-                        host = %host,
                         rollout = %rollout,
                         error = %err,
-                        "soak: transition Healthy → Soaked failed",
+                        "converge: terminal cleanup failed",
                     );
                 }
-            }
+            },
+            _ => {}
         }
     }
 }
