@@ -22,6 +22,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::db::Db;
+use crate::polling::poller::SignedArtifactPoller;
 use crate::polling::signed_fetch;
 
 /// Poll cadence — same default as channel-refs poll. Fast enough
@@ -50,57 +51,56 @@ pub struct RevocationsSource {
 /// handles `ON CONFLICT DO UPDATE`), so re-replaying the same
 /// signed artifact every minute is a quiet no-op.
 pub fn spawn(db: Arc<Db>, config: RevocationsSource) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let client = signed_fetch::build_client();
-
-        let mut ticker = tokio::time::interval(POLL_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            ticker.tick().await;
-            match poll_once(&client, &config).await {
-                Ok(revs) => {
-                    let n = revs.revocations.len();
-                    let mut applied = 0usize;
-                    for entry in &revs.revocations {
-                        match db.revocations().revoke_cert(
-                            &entry.hostname,
-                            entry.not_before,
-                            entry.reason.as_deref(),
-                            entry.revoked_by.as_deref(),
-                        ) {
-                            Ok(()) => applied += 1,
-                            Err(err) => tracing::warn!(
-                                hostname = %entry.hostname,
-                                error = %err,
-                                "revocations poll: revoke_cert failed for entry",
-                            ),
-                        }
-                    }
-                    // — heartbeat at INFO on every successful
-                    // tick (not just when applied > 0). Operators tailing
-                    // the journal need a positive signal that the poll
-                    // is alive; cross-checking forgejo access logs to
-                    // prove cadence isn't sustainable. One INFO line per
-                    // 60s tick is cheap and load-bearing for ops.
-                    tracing::info!(
-                        target: "revocations",
-                        entries = n,
-                        applied = applied,
-                        signed_at = ?revs.meta.signed_at,
-                        ci_commit = ?revs.meta.ci_commit,
-                        "revocations poll: list verified",
-                    );
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "revocations poll failed; retaining previous cert_revocations state",
-                    );
-                }
-            }
+    SignedArtifactPoller {
+        interval: POLL_INTERVAL,
+        label: "revocations",
+    }
+    .spawn(move |client| {
+        let db = Arc::clone(&db);
+        let config = config.clone();
+        async move {
+            let revs = poll_once(&client, &config).await?;
+            apply_verified_revocations(&db, &revs);
+            Ok(())
         }
     })
+}
+
+/// Replay every verified revocation into the DB and emit the
+/// per-tick INFO heartbeat. Per-entry write failures are logged but
+/// don't fail the tick — one bad row mustn't poison the rest of the
+/// list.
+fn apply_verified_revocations(db: &Db, revs: &nixfleet_proto::Revocations) {
+    let n = revs.revocations.len();
+    let mut applied = 0usize;
+    for entry in &revs.revocations {
+        match db.revocations().revoke_cert(
+            &entry.hostname,
+            entry.not_before,
+            entry.reason.as_deref(),
+            entry.revoked_by.as_deref(),
+        ) {
+            Ok(()) => applied += 1,
+            Err(err) => tracing::warn!(
+                hostname = %entry.hostname,
+                error = %err,
+                "revocations poll: revoke_cert failed for entry",
+            ),
+        }
+    }
+    // Heartbeat at INFO on every successful tick (not just when
+    // applied > 0). Operators tailing the journal need a positive
+    // signal that the poll is alive; cross-checking forgejo access
+    // logs to prove cadence isn't sustainable. One INFO line per
+    // 60s tick is cheap and load-bearing for ops.
+    tracing::info!(
+        target: "revocations",
+        entries = n,
+        applied = applied,
+        signed_at = ?revs.meta.signed_at,
+        ci_commit = ?revs.meta.ci_commit,
+        "revocations poll: list verified",
+    );
 }
 
 async fn poll_once(

@@ -10,6 +10,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::sync::RwLock;
 
+use crate::polling::poller::SignedArtifactPoller;
 use crate::polling::signed_fetch;
 
 /// CI sign+push latency dominates; faster polling doesn't help.
@@ -41,53 +42,62 @@ pub fn spawn(
     fleet_resolved_hash: Arc<RwLock<Option<String>>>,
     config: ChannelRefsSource,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let client = signed_fetch::build_client();
-
-        let mut ticker = tokio::time::interval(POLL_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            ticker.tick().await;
-            match poll_once(&client, &config).await {
-                Ok((refs, fleet, fleet_hash)) => {
-                    let new_signed_at = fleet.meta.signed_at;
-                    let new_ci_commit = fleet.meta.ci_commit.clone();
-
-                    {
-                        let mut guard = verified_fleet.write().await;
-                        *guard = Some(Arc::new(fleet));
-                    }
-                    {
-                        let mut guard = fleet_resolved_hash.write().await;
-                        *guard = Some(fleet_hash);
-                    }
-
-                    let mut guard = cache.write().await;
-                    let changed = guard.refs != refs;
-                    guard.refs = refs.clone();
-                    guard.last_refreshed_at = Some(chrono::Utc::now());
-                    drop(guard);
-
-                    // INFO heartbeat per tick — operators need a
-                    // positive signal the poll is alive.
-                    tracing::info!(
-                        count = refs.len(),
-                        changed = changed,
-                        signed_at = ?new_signed_at,
-                        ci_commit = ?new_ci_commit,
-                        "channel-refs poll: verified-fleet snapshot refreshed",
-                    );
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "channel-refs poll failed; retaining previous verified-fleet snapshot",
-                    );
-                }
-            }
+    SignedArtifactPoller {
+        interval: POLL_INTERVAL,
+        label: "channel-refs",
+    }
+    .spawn(move |client| {
+        let cache = Arc::clone(&cache);
+        let verified_fleet = Arc::clone(&verified_fleet);
+        let fleet_resolved_hash = Arc::clone(&fleet_resolved_hash);
+        let config = config.clone();
+        async move {
+            let (refs, fleet, fleet_hash) = poll_once(&client, &config).await?;
+            apply_verified_refs(&cache, &verified_fleet, &fleet_resolved_hash, refs, fleet, fleet_hash).await;
+            Ok(())
         }
     })
+}
+
+/// Update the in-memory snapshot triple (cache, verified_fleet,
+/// fleet_resolved_hash) and emit the per-tick INFO heartbeat. Runs
+/// only on successful verify; the poller's per-tick warn covers the
+/// failure path and leaves these untouched.
+async fn apply_verified_refs(
+    cache: &RwLock<ChannelRefsCache>,
+    verified_fleet: &RwLock<Option<Arc<nixfleet_proto::FleetResolved>>>,
+    fleet_resolved_hash: &RwLock<Option<String>>,
+    refs: HashMap<String, String>,
+    fleet: nixfleet_proto::FleetResolved,
+    fleet_hash: String,
+) {
+    let new_signed_at = fleet.meta.signed_at;
+    let new_ci_commit = fleet.meta.ci_commit.clone();
+
+    {
+        let mut guard = verified_fleet.write().await;
+        *guard = Some(Arc::new(fleet));
+    }
+    {
+        let mut guard = fleet_resolved_hash.write().await;
+        *guard = Some(fleet_hash);
+    }
+
+    let mut guard = cache.write().await;
+    let changed = guard.refs != refs;
+    guard.refs = refs.clone();
+    guard.last_refreshed_at = Some(chrono::Utc::now());
+    drop(guard);
+
+    // INFO heartbeat per tick — operators need a positive signal
+    // the poll is alive.
+    tracing::info!(
+        count = refs.len(),
+        changed = changed,
+        signed_at = ?new_signed_at,
+        ci_commit = ?new_ci_commit,
+        "channel-refs poll: verified-fleet snapshot refreshed",
+    );
 }
 
 /// One-shot fetch + verify before the reconcile loop starts. Without
@@ -99,6 +109,9 @@ pub fn spawn(
 ///
 /// Returns `(fleet, fleet_resolved_hash)` — the hash anchors every
 /// rolloutId derivation downstream (RFC-0002 §4.4).
+///
+/// Builds its own client (one-shot path; not on the timer, so it
+/// doesn't share the poller's long-lived client).
 pub async fn prime_once(
     config: &ChannelRefsSource,
 ) -> Result<(nixfleet_proto::FleetResolved, String)> {
