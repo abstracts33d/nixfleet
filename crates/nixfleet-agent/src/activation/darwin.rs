@@ -1,10 +1,9 @@
 //! Darwin (nix-darwin) activation primitives.
 //!
 //! Compiled only on `target_os = "macos"`. The `activation` parent
-//! module re-exports `fire_switch`, `fire_rollback`,
-//! `is_switch_in_progress`, and `read_unit_exit_code` from this
-//! module via `#[cfg(target_os = "macos")] pub use darwin::*` —
-//! callers in the rest of the agent never see `cfg(target_os)`.
+//! module exports `DarwinBackend` as the cfg-selected `DefaultBackend`
+//! type alias; callers in the rest of the agent never see
+//! `cfg(target_os)`.
 //!
 //! Platform contract:
 //!
@@ -29,24 +28,35 @@ use std::process::Stdio;
 use anyhow::Result;
 use nixfleet_proto::agent_wire::EvaluatedTarget;
 
-use super::{ActivationOutcome, RollbackOutcome};
+use super::{ActivationBackend, ActivationOutcome, RollbackOutcome};
 
-/// Darwin has no analog to NixOS's switch-to-configuration lock.
-pub async fn is_switch_in_progress() -> bool {
-    false
-}
+/// Unit-struct backend; method bodies hold the darwin-specific logic.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DarwinBackend;
 
-/// Darwin has no systemd; the agent's poll loop is the authoritative
-/// success signal. Returning `None` lets the caller surface "exit
-/// code unknown" rather than synthesising a misleading 0.
-pub async fn read_unit_exit_code(_unit_name: &str) -> Option<i32> {
-    None
+impl ActivationBackend for DarwinBackend {
+    async fn is_switch_in_progress(&self) -> bool {
+        false
+    }
+    async fn read_unit_exit_code(&self, _unit_name: &str) -> Option<i32> {
+        None
+    }
+    async fn fire_switch(
+        &self,
+        target: &EvaluatedTarget,
+        store_path: &str,
+    ) -> Result<Option<ActivationOutcome>> {
+        fire_switch(target, store_path).await
+    }
+    async fn fire_rollback(&self, target_basename: &str) -> Result<Option<RollbackOutcome>> {
+        fire_rollback(target_basename).await
+    }
 }
 
 /// `setsid` puts the activate child in its own session so launchd's
 /// process-group SIGTERM (issued during plist reload when the new
 /// closure changes the agent binary path) doesn't propagate to it.
-pub async fn fire_switch(
+async fn fire_switch(
     target: &EvaluatedTarget,
     store_path: &str,
 ) -> Result<Option<ActivationOutcome>> {
@@ -134,7 +144,7 @@ pub async fn fire_switch(
     }
 }
 
-pub async fn fire_rollback(target_basename: &str) -> Result<Option<RollbackOutcome>> {
+async fn fire_rollback(target_basename: &str) -> Result<Option<RollbackOutcome>> {
     use std::os::unix::process::CommandExt;
 
     let store_path = format!("/nix/store/{target_basename}");

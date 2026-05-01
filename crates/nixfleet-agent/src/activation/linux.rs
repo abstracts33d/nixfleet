@@ -1,10 +1,9 @@
 //! Linux (NixOS) activation primitives.
 //!
 //! Compiled only on `target_os = "linux"`. The `activation` parent
-//! module re-exports `fire_switch`, `fire_rollback`,
-//! `is_switch_in_progress`, and `read_unit_exit_code` from this
-//! module via `#[cfg(target_os = "linux")] pub use linux::*` —
-//! callers in the rest of the agent never see `cfg(target_os)`.
+//! module exports `LinuxBackend` as the cfg-selected `DefaultBackend`
+//! type alias; callers in the rest of the agent never see
+//! `cfg(target_os)`.
 //!
 //! Platform contract:
 //!
@@ -24,7 +23,30 @@ use anyhow::{Context, Result};
 use nixfleet_proto::agent_wire::EvaluatedTarget;
 use tokio::process::Command;
 
-use super::{ActivationOutcome, RollbackOutcome};
+use super::{ActivationBackend, ActivationOutcome, RollbackOutcome};
+
+/// Unit-struct backend; method bodies hold the linux-specific logic.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LinuxBackend;
+
+impl ActivationBackend for LinuxBackend {
+    async fn is_switch_in_progress(&self) -> bool {
+        is_switch_in_progress().await
+    }
+    async fn read_unit_exit_code(&self, unit_name: &str) -> Option<i32> {
+        read_unit_exit_code(unit_name).await
+    }
+    async fn fire_switch(
+        &self,
+        target: &EvaluatedTarget,
+        store_path: &str,
+    ) -> Result<Option<ActivationOutcome>> {
+        fire_switch(target, store_path).await
+    }
+    async fn fire_rollback(&self, target_basename: &str) -> Result<Option<RollbackOutcome>> {
+        fire_rollback(target_basename).await
+    }
+}
 
 /// Held exclusive by any running `switch-to-configuration`
 /// (nixos-rebuild, our own systemd-run, operator manual run, etc.).
@@ -33,7 +55,7 @@ const SWITCH_LOCK_PATH: &str = "/run/nixos/switch-to-configuration.lock";
 /// Returns `true` only when the lock file exists AND a non-blocking
 /// `flock(1)` attempt fails. Absent file / missing binary → false
 /// (fail-open).
-pub async fn is_switch_in_progress() -> bool {
+async fn is_switch_in_progress() -> bool {
     if !std::path::Path::new(SWITCH_LOCK_PATH).exists() {
         return false;
     }
@@ -56,7 +78,7 @@ pub async fn is_switch_in_progress() -> bool {
 
 /// Returns `None` on failure / empty / non-numeric — caller treats
 /// as unknown rather than synthesising a misleading 0.
-pub async fn read_unit_exit_code(unit_name: &str) -> Option<i32> {
+async fn read_unit_exit_code(unit_name: &str) -> Option<i32> {
     let output = Command::new("systemctl")
         .arg("show")
         .arg("--property=ExecMainStatus")
@@ -86,7 +108,7 @@ pub async fn read_unit_exit_code(unit_name: &str) -> Option<i32> {
 ///
 /// `Ok(None)` on clean fire (caller polls); `Ok(Some(outcome))` on
 /// fire-step failure; `Err` only on spawn-level I/O errors.
-pub async fn fire_switch(
+async fn fire_switch(
     target: &EvaluatedTarget,
     store_path: &str,
 ) -> Result<Option<ActivationOutcome>> {
@@ -130,7 +152,7 @@ pub async fn fire_switch(
 /// to actually run activation. `_target_basename` is unused on linux
 /// (the profile flip is the source of truth) — kept on the wire so
 /// the parent module's dispatch is uniform across platforms.
-pub async fn fire_rollback(_target_basename: &str) -> Result<Option<RollbackOutcome>> {
+async fn fire_rollback(_target_basename: &str) -> Result<Option<RollbackOutcome>> {
     let _ = Command::new("systemctl")
         .arg("reset-failed")
         .arg("nixfleet-rollback.service")

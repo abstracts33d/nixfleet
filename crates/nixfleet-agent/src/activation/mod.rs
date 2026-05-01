@@ -6,8 +6,8 @@
 //!
 //! 1. **Pre-realise** (`nix-store --realise`) — forces substituter
 //!    fetch + signature validation before we commit to switching.
-//! 2. **Switch** — platform-dispatched via `platform::fire_switch`
-//!    (`linux::*` or `darwin::*`).
+//! 2. **Switch** — `ActivationBackend::fire_switch` dispatches to the
+//!    cfg-selected `LinuxBackend` or `DarwinBackend` impl.
 //! 3. **Post-verify** — `/run/current-system` basename must match
 //!    the expected closure_hash; mismatch → local rollback.
 //!
@@ -18,17 +18,26 @@
 //!
 //! ## Platform layout
 //!
-//! Platform-specific primitives live in sibling modules and are
-//! brought in via `#[cfg(target_os = ...)] use platform` — the same
-//! pattern as `host_facts`. Each platform's code only compiles for
-//! its target; there are no runtime `cfg!()` branches and no
-//! cross-platform stub functions.
+//! Platform-specific code lives in sibling modules
+//! (`linux.rs`/`darwin.rs`) which each define a unit-struct backend
+//! implementing the `ActivationBackend` trait. The cfg-selected
+//! impl is exposed as `DefaultBackend` (a type alias) and
+//! `DEFAULT_BACKEND` (a const value). Each platform's code only
+//! compiles for its target; there are no runtime `cfg!()` branches
+//! and no cross-platform stub functions in callers.
 //!
-//! - `linux::*` — `systemd-run --unit=nixfleet-{switch,rollback}`
+//! Unit tests inject a fake `ActivationBackend` via the
+//! `*_with(&backend, ...)` form. Production code calls the
+//! parameterless façades (`activate(target)`, `rollback()`) which
+//! resolve to `DEFAULT_BACKEND` at call time. Issue #67's pluggable
+//! backend extension (SystemManager, microVM) lands by adding a
+//! third unit-struct that implements the same trait.
+//!
+//! - `LinuxBackend` — `systemd-run --unit=nixfleet-{switch,rollback}`
 //!   wrapping `switch-to-configuration`; flock check on
 //!   `/run/nixos/switch-to-configuration.lock`; `systemctl show
 //!   --property=ExecMainStatus` for unit exit codes.
-//! - `darwin::*` — `setsid`-detached `<store>/activate-user` +
+//! - `DarwinBackend` — `setsid`-detached `<store>/activate-user` +
 //!   `<store>/activate`; no in-flight lock primitive; no systemd
 //!   surface for exit-code introspection.
 //!
@@ -48,16 +57,70 @@ mod linux;
 mod darwin;
 
 #[cfg(target_os = "linux")]
-use linux as platform;
+pub use linux::LinuxBackend;
 #[cfg(target_os = "macos")]
-use darwin as platform;
+pub use darwin::DarwinBackend;
+
+/// The cfg-selected default backend type — `LinuxBackend` on linux,
+/// `DarwinBackend` on macos. Production callers use the const
+/// `DEFAULT_BACKEND` rather than constructing one directly.
+#[cfg(target_os = "linux")]
+pub type DefaultBackend = LinuxBackend;
+#[cfg(target_os = "macos")]
+pub type DefaultBackend = DarwinBackend;
+
+/// Process-wide singleton of the cfg-selected backend. Callers
+/// outside this module should use the `activate(target)` / `rollback()`
+/// façades; tests construct a fake `ActivationBackend` and call the
+/// `*_with` form.
+#[cfg(target_os = "linux")]
+pub const DEFAULT_BACKEND: DefaultBackend = LinuxBackend;
+#[cfg(target_os = "macos")]
+pub const DEFAULT_BACKEND: DefaultBackend = DarwinBackend;
+
+/// Platform abstraction. Four primitives — every other piece of the
+/// activation pipeline (realise, profile flip, post-verify poll,
+/// self-correction) is platform-agnostic and lives in `mod.rs`.
+///
+/// Method-level docs in `linux.rs` / `darwin.rs` give the per-impl
+/// contract. Trait-level guarantees:
+///
+/// - `is_switch_in_progress` is fail-open: the caller treats `false`
+///   as "either no contention, OR we couldn't tell" — a false
+///   negative is a stale-lock hazard handled at the lock layer, not
+///   here.
+/// - `read_unit_exit_code` returns `None` on any error or absent
+///   surface; the agent never synthesises a misleading 0.
+/// - `fire_switch` / `fire_rollback` are "fire-and-forget": `Ok(None)`
+///   means the platform-specific async work was dispatched and the
+///   caller should poll `/run/current-system`. `Ok(Some(outcome))`
+///   means the fire step itself failed; no poll. `Err` is reserved
+///   for spawn-level I/O errors.
+pub trait ActivationBackend: Send + Sync {
+    fn is_switch_in_progress(&self) -> impl std::future::Future<Output = bool> + Send;
+    fn read_unit_exit_code(
+        &self,
+        unit_name: &str,
+    ) -> impl std::future::Future<Output = Option<i32>> + Send;
+    fn fire_switch(
+        &self,
+        target: &EvaluatedTarget,
+        store_path: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ActivationOutcome>>> + Send;
+    fn fire_rollback(
+        &self,
+        target_basename: &str,
+    ) -> impl std::future::Future<Output = Result<Option<RollbackOutcome>>> + Send;
+}
 
 /// Returns `true` when another `switch-to-configuration` (or
-/// platform-equivalent) is currently running. Linux: flock-based
-/// check on `/run/nixos/switch-to-configuration.lock`. Darwin:
-/// always `false` (no equivalent lock primitive).
+/// platform-equivalent) is currently running.
+///
+/// Façade over `DEFAULT_BACKEND.is_switch_in_progress()`. Tests that
+/// need to inject a fake call the trait method directly on their
+/// own backend.
 pub async fn is_switch_in_progress() -> bool {
-    platform::is_switch_in_progress().await
+    DEFAULT_BACKEND.is_switch_in_progress().await
 }
 
 /// 300s sized to fit inside the CP's `DEFAULT_CONFIRM_DEADLINE_SECS = 360`.
@@ -107,7 +170,19 @@ pub enum ActivationOutcome {
 /// poll → self-correct. Single attempt per call; retry comes from
 /// the agent's main poll loop (in-call retry would trip the CP's
 /// confirm deadline because each attempt is gated by `POLL_BUDGET`).
+///
+/// Façade over `activate_with(&DEFAULT_BACKEND, target)`.
 pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
+    activate_with(&DEFAULT_BACKEND, target).await
+}
+
+/// Generic-over-backend form. Production calls `activate(target)`;
+/// tests inject a fake to assert per-platform behaviour without
+/// shelling out.
+pub async fn activate_with<B: ActivationBackend>(
+    backend: &B,
+    target: &EvaluatedTarget,
+) -> Result<ActivationOutcome> {
     tracing::info!(
         target_closure = %target.closure_hash,
         target_channel = %target.channel_ref,
@@ -118,7 +193,7 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
     // flight (operator manual run, sibling Ansible play, etc.) —
     // racing on the same lock produces interleaved logs + spurious
     // SwitchFailed timeouts even when the other switch succeeds.
-    if is_switch_in_progress().await {
+    if backend.is_switch_in_progress().await {
         tracing::info!(
             target_closure = %target.closure_hash,
             "agent: skipping activation — another switch-to-configuration is in flight",
@@ -216,9 +291,10 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
         }
     };
 
-    // Step 3: fire (platform-dispatched fire-and-forget). See
-    // `fire_switch` for the per-platform detail.
-    if let Some(outcome) = platform::fire_switch(target, &store_path).await? {
+    // Step 3: fire (backend-dispatched fire-and-forget). See
+    // `LinuxBackend::fire_switch` / `DarwinBackend::fire_switch`
+    // for the per-platform detail.
+    if let Some(outcome) = backend.fire_switch(target, &store_path).await? {
         return Ok(outcome);
     }
 
@@ -256,7 +332,7 @@ pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
         Err(PollOutcome::Timeout { last_observed }) => {
             // Best-effort triage: unit may still be running (large
             // download); ExecMainStatus inconclusive in that case.
-            let exit_code = platform::read_unit_exit_code("nixfleet-switch.service").await;
+            let exit_code = backend.read_unit_exit_code("nixfleet-switch.service").await;
             tracing::error!(
                 target_closure = %expected,
                 last_observed = %last_observed,
@@ -501,8 +577,9 @@ fn profile_matches(expected_store_path: &str, profile_path: &str) -> bool {
 }
 
 // Platform-specific primitives — `fire_switch`, `fire_rollback`,
-// `read_unit_exit_code` — live in `linux.rs` / `darwin.rs` and are
-// reached via the `platform` module alias.
+// `read_unit_exit_code` — live in `linux.rs` / `darwin.rs` as
+// methods on `LinuxBackend` / `DarwinBackend` and are reached
+// through `ActivationBackend` trait dispatch.
 
 /// Outcome of a `rollback ` call. Mirrors `ActivationOutcome`'s
 /// shape so callers can pattern-match similarly. Fire-and-forget
@@ -544,7 +621,15 @@ impl RollbackOutcome {
 /// `<nixpkgs/nixos>` even on `--rollback`, failing in the agent's
 /// NIX_PATH-less sandbox). Caller must invoke exactly once per
 /// failed activation — running twice rolls back twice.
+///
+/// Façade over `rollback_with(&DEFAULT_BACKEND)`.
 pub async fn rollback() -> Result<RollbackOutcome> {
+    rollback_with(&DEFAULT_BACKEND).await
+}
+
+/// Generic-over-backend form. Production calls `rollback()`; tests
+/// inject a fake.
+pub async fn rollback_with<B: ActivationBackend>(backend: &B) -> Result<RollbackOutcome> {
     tracing::warn!("agent: triggering local rollback (fire-and-forget via systemd-run)");
 
     // Step 1: profile flip — synchronous symlink re-target.
@@ -586,8 +671,8 @@ pub async fn rollback() -> Result<RollbackOutcome> {
         "agent: rollback target discovered; firing detached switch",
     );
 
-    // Step 3: fire rollback (platform-dispatched).
-    if let Some(failure) = platform::fire_rollback(&target_basename).await? {
+    // Step 3: fire rollback (backend-dispatched).
+    if let Some(failure) = backend.fire_rollback(&target_basename).await? {
         return Ok(failure);
     }
 
@@ -605,7 +690,7 @@ pub async fn rollback() -> Result<RollbackOutcome> {
             Ok(RollbackOutcome::FiredAndPolled)
         }
         Err(PollOutcome::Timeout { last_observed }) => {
-            let exit_code = platform::read_unit_exit_code("nixfleet-rollback.service").await;
+            let exit_code = backend.read_unit_exit_code("nixfleet-rollback.service").await;
             tracing::error!(
                 target = %target_basename,
                 last_observed = %last_observed,
@@ -931,16 +1016,16 @@ mod tests {
         assert!(s.contains("darwin-activate-spawn"));
     }
 
-    /// Ensure `platform::read_unit_exit_code` returns None on darwin
-    /// without shelling out to a non-existent `systemctl`. The mere
-    /// fact that the call returns (rather than hanging or panicking
-    /// on macOS) is the assertion — the darwin module's stub
-    /// returns None unconditionally.
+    /// Ensure `DEFAULT_BACKEND.read_unit_exit_code` returns None on
+    /// darwin without shelling out to a non-existent `systemctl`. The
+    /// mere fact that the call returns (rather than hanging or
+    /// panicking on macOS) is the assertion — the darwin backend's
+    /// stub returns None unconditionally.
     #[tokio::test]
     async fn read_unit_exit_code_short_circuits_on_darwin() {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            platform::read_unit_exit_code("definitely-not-a-real-unit.service"),
+            DEFAULT_BACKEND.read_unit_exit_code("definitely-not-a-real-unit.service"),
         )
         .await
         .expect("must return promptly");
@@ -1003,5 +1088,55 @@ mod tests {
         // "Lacks a valid signature" still matches.
         let s = "Error: path Lacks A Valid Signature on this host";
         assert!(looks_like_signature_error(s));
+    }
+
+    /// Sanity check: a non-platform `ActivationBackend` impl can be
+    /// constructed and substituted into `is_switch_in_progress` /
+    /// `read_unit_exit_code` without depending on `/run/nixos/...`
+    /// or `systemctl`. The fake's behaviour is what the harness will
+    /// rely on once #67's other backends (system-manager, microvm)
+    /// land — wiring them is then "implement the trait, no caller-
+    /// side change".
+    struct FakeBackend {
+        switch_in_progress: bool,
+        unit_exit_code: Option<i32>,
+    }
+    impl ActivationBackend for FakeBackend {
+        async fn is_switch_in_progress(&self) -> bool {
+            self.switch_in_progress
+        }
+        async fn read_unit_exit_code(&self, _unit_name: &str) -> Option<i32> {
+            self.unit_exit_code
+        }
+        async fn fire_switch(
+            &self,
+            _target: &EvaluatedTarget,
+            _store_path: &str,
+        ) -> Result<Option<ActivationOutcome>> {
+            unreachable!("fire_switch unused in this test")
+        }
+        async fn fire_rollback(
+            &self,
+            _target_basename: &str,
+        ) -> Result<Option<RollbackOutcome>> {
+            unreachable!("fire_rollback unused in this test")
+        }
+    }
+
+    #[tokio::test]
+    async fn activation_backend_trait_dispatches_to_fake() {
+        let fake = FakeBackend {
+            switch_in_progress: true,
+            unit_exit_code: Some(42),
+        };
+        assert!(fake.is_switch_in_progress().await);
+        assert_eq!(fake.read_unit_exit_code("anything").await, Some(42));
+
+        let fake2 = FakeBackend {
+            switch_in_progress: false,
+            unit_exit_code: None,
+        };
+        assert!(!fake2.is_switch_in_progress().await);
+        assert!(fake2.read_unit_exit_code("anything").await.is_none());
     }
 }
