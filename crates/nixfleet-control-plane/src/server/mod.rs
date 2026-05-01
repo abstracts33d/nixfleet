@@ -150,7 +150,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Magic-rollback timer + hourly prune sweep .
     if let Some(db_arc) = db.clone() {
         crate::timers::rollback_timer::spawn(db_arc.clone());
-        crate::timers::prune_timer::spawn(db_arc);
+        crate::timers::prune_timer::spawn(db_arc, args.db_path.clone());
     }
 
     // — hydrate the in-memory `host_reports` ring from
