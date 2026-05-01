@@ -12,19 +12,15 @@
 //! `--observed` flag remains as a dev/test fallback alongside the
 //! live projection from agent check-ins.
 
-pub mod auth_cn;
-pub mod channel_refs_poll;
+pub mod auth;
 pub mod db;
 pub mod dispatch;
-pub mod issuance;
 pub mod observed_projection;
-pub mod prune_timer;
-pub mod revocations_poll;
-pub mod rollback_timer;
+pub mod polling;
 pub mod rollouts_source;
 pub mod server;
-pub mod signed_fetch;
 pub mod state;
+pub mod timers;
 pub mod tls;
 pub mod wave_gate;
 

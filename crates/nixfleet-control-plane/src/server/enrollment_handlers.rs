@@ -9,7 +9,7 @@ use axum::Json;
 use nixfleet_proto::enroll_wire::{EnrollRequest, EnrollResponse, RenewRequest, RenewResponse};
 use rcgen::PublicKeyData;
 
-use crate::auth_cn::PeerCertificates;
+use crate::auth::auth_cn::PeerCertificates;
 
 use super::middleware::require_cn;
 use super::state::AppState;
@@ -109,7 +109,7 @@ pub(super) async fn enroll(
                 continue;
             }
         };
-        if crate::issuance::verify_token_signature(&req.token, &pubkey_bytes).is_ok() {
+        if crate::auth::issuance::verify_token_signature(&req.token, &pubkey_bytes).is_ok() {
             sig_ok = true;
             break;
         }
@@ -147,10 +147,10 @@ pub(super) async fn enroll(
         StatusCode::BAD_REQUEST
     })?;
     let csr_pubkey_der = csr_params.public_key.der_bytes();
-    let csr_fingerprint = crate::issuance::fingerprint(csr_pubkey_der);
+    let csr_fingerprint = crate::auth::issuance::fingerprint(csr_pubkey_der);
 
     if let Err(err) =
-        crate::issuance::validate_token_claims(&req.token.claims, &csr_cn, &csr_fingerprint, now)
+        crate::auth::issuance::validate_token_claims(&req.token.claims, &csr_cn, &csr_fingerprint, now)
     {
         tracing::warn!(error = %err, hostname = %req.token.claims.hostname, "enroll: claim validation");
         return Err(StatusCode::UNAUTHORIZED);
@@ -170,11 +170,11 @@ pub(super) async fn enroll(
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
-    let (cert_pem, not_after) = crate::issuance::issue_cert(
+    let (cert_pem, not_after) = crate::auth::issuance::issue_cert(
         &req.csr_pem,
         &ca_cert,
         &ca_key,
-        crate::issuance::AGENT_CERT_VALIDITY,
+        crate::auth::issuance::AGENT_CERT_VALIDITY,
         now,
     )
     .map_err(|err| {
@@ -183,13 +183,13 @@ pub(super) async fn enroll(
     })?;
 
     if let Some(path) = &audit_log_path {
-        crate::issuance::audit_log(
+        crate::auth::issuance::audit_log(
             path,
             now,
             "<enroll>",
             &req.token.claims.hostname,
             not_after,
-            &crate::issuance::AuditContext::Enroll {
+            &crate::auth::issuance::AuditContext::Enroll {
                 token_nonce: req.token.claims.nonce.clone(),
             },
         );
@@ -224,11 +224,11 @@ pub(super) async fn renew(
         _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
 
-    let (cert_pem, not_after) = crate::issuance::issue_cert(
+    let (cert_pem, not_after) = crate::auth::issuance::issue_cert(
         &req.csr_pem,
         &ca_cert,
         &ca_key,
-        crate::issuance::AGENT_CERT_VALIDITY,
+        crate::auth::issuance::AGENT_CERT_VALIDITY,
         now,
     )
     .map_err(|err| {
@@ -237,13 +237,13 @@ pub(super) async fn renew(
     })?;
 
     if let Some(path) = &audit_log_path {
-        crate::issuance::audit_log(
+        crate::auth::issuance::audit_log(
             path,
             now,
             &cn,
             &cn,
             not_after,
-            &crate::issuance::AuditContext::Renew {
+            &crate::auth::issuance::AuditContext::Renew {
                 previous_cert_serial: "<unknown>".to_string(),
             },
         );

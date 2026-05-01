@@ -14,7 +14,7 @@ use axum::Json;
 use chrono::Utc;
 use serde::Serialize;
 
-use crate::auth_cn::PeerCertificates;
+use crate::auth::auth_cn::PeerCertificates;
 
 use super::middleware::require_cn;
 use super::state::AppState;

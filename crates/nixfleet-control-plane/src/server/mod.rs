@@ -41,7 +41,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use chrono::Utc;
 
-use crate::auth_cn::MtlsAcceptor;
+use crate::auth::auth_cn::MtlsAcceptor;
 use crate::TickInputs;
 
 /// Build the axum router. `/healthz` lives outside the `/v1` namespace
@@ -124,8 +124,8 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     // Magic-rollback timer + hourly prune sweep .
     if let Some(db_arc) = db.clone() {
-        crate::rollback_timer::spawn(db_arc.clone());
-        crate::prune_timer::spawn(db_arc);
+        crate::timers::rollback_timer::spawn(db_arc.clone());
+        crate::timers::prune_timer::spawn(db_arc);
     }
 
     // — hydrate the in-memory `host_reports` ring from
@@ -229,7 +229,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if let Some(channel_refs_source) = args.channel_refs.as_ref() {
         match tokio::time::timeout(
             Duration::from_secs(20),
-            crate::channel_refs_poll::prime_once(channel_refs_source),
+            crate::polling::channel_refs_poll::prime_once(channel_refs_source),
         )
         .await
         {
@@ -275,7 +275,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // shared locks live on `AppState` as `Arc<RwLock<...>>`; the poll
     // task writes through them directly without a mirror task.
     if let Some(channel_refs_source) = args.channel_refs.clone() {
-        crate::channel_refs_poll::spawn(
+        crate::polling::channel_refs_poll::spawn(
             state.channel_refs_cache.clone(),
             state.verified_fleet.clone(),
             state.fleet_resolved_hash.clone(),
@@ -287,7 +287,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // signed sidecar artifact every 60s. Requires a configured DB
     // (the replay target); a None DB silently disables the poll.
     if let (Some(revocations_source), Some(db)) = (args.revocations.clone(), state.db.clone()) {
-        crate::revocations_poll::spawn(db, revocations_source);
+        crate::polling::revocations_poll::spawn(db, revocations_source);
     }
 
     let app = build_router(state);

@@ -47,10 +47,10 @@ pub struct ServeArgs {
     /// GitOps fleet snapshot. None → CP relies on the file-backed
     /// `--artifact` path alone. Source-agnostic (Forgejo raw, GitHub
     /// raw, GitLab raw, plain HTTP).
-    pub channel_refs: Option<crate::channel_refs_poll::ChannelRefsSource>,
+    pub channel_refs: Option<crate::polling::channel_refs_poll::ChannelRefsSource>,
     /// GitOps revocations sidecar. None → operators continue with
     /// direct DB writes (legacy path).
-    pub revocations: Option<crate::revocations_poll::RevocationsSource>,
+    pub revocations: Option<crate::polling::revocations_poll::RevocationsSource>,
     /// None → in-memory state only.
     pub db_path: Option<PathBuf>,
     /// Base URL of a nix binary cache the CP proxies
@@ -110,7 +110,7 @@ pub struct AppState {
     pub last_tick_at: RwLock<Option<DateTime<Utc>>>,
     pub host_checkins: RwLock<HashMap<String, HostCheckinRecord>>,
     pub host_reports: RwLock<HashMap<String, VecDeque<ReportRecord>>>,
-    pub channel_refs_cache: Arc<RwLock<crate::channel_refs_poll::ChannelRefsCache>>,
+    pub channel_refs_cache: Arc<RwLock<crate::polling::channel_refs_poll::ChannelRefsCache>>,
     pub issuance_paths: RwLock<IssuancePaths>,
     pub db: Option<Arc<crate::db::Db>>,
     pub closure_upstream: Option<ClosureUpstream>,
@@ -137,7 +137,7 @@ impl Default for AppState {
             host_checkins: RwLock::new(HashMap::new()),
             host_reports: RwLock::new(HashMap::new()),
             channel_refs_cache: Arc::new(RwLock::new(
-                crate::channel_refs_poll::ChannelRefsCache::default(),
+                crate::polling::channel_refs_poll::ChannelRefsCache::default(),
             )),
             issuance_paths: RwLock::new(IssuancePaths::default()),
             db: None,

@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::sync::RwLock;
 
-use crate::signed_fetch;
+use crate::polling::signed_fetch;
 
 /// CI sign+push latency dominates; faster polling doesn't help.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(60);

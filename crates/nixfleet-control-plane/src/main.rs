@@ -224,7 +224,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
     ) {
         (Some(artifact_url), Some(signature_url)) => {
             Some(
-                nixfleet_control_plane::channel_refs_poll::ChannelRefsSource {
+                nixfleet_control_plane::polling::channel_refs_poll::ChannelRefsSource {
                     artifact_url,
                     signature_url,
                     token_file: flags.channel_refs_token_file.clone(),
@@ -282,7 +282,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         flags.revocations_signature_url,
     ) {
         (Some(artifact_url), Some(signature_url)) => Some(
-            nixfleet_control_plane::revocations_poll::RevocationsSource {
+            nixfleet_control_plane::polling::revocations_poll::RevocationsSource {
                 artifact_url,
                 signature_url,
                 token_file: flags

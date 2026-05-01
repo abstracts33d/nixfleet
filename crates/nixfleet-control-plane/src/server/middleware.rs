@@ -14,7 +14,7 @@ use axum::http::{Request as HttpRequest, StatusCode};
 use axum::middleware::Next;
 use nixfleet_proto::agent_wire::{PROTOCOL_MAJOR_VERSION, PROTOCOL_VERSION_HEADER};
 
-use crate::auth_cn::PeerCertificates;
+use crate::auth::auth_cn::PeerCertificates;
 
 use super::state::AppState;
 

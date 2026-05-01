@@ -22,7 +22,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::db::Db;
-use crate::signed_fetch;
+use crate::polling::signed_fetch;
 
 /// Poll cadence — same default as channel-refs poll. Fast enough
 /// that operator-declared revocations propagate within a minute;

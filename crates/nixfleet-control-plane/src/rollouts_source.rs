@@ -33,7 +33,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::signed_fetch;
+use crate::polling::signed_fetch;
 
 /// URL template substitution token. Both `artifact_url_template` and
 /// `signature_url_template` must contain this literal — the CP errors

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
-use nixfleet_control_plane::channel_refs_poll::{spawn, ChannelRefsCache, ChannelRefsSource};
+use nixfleet_control_plane::polling::channel_refs_poll::{spawn, ChannelRefsCache, ChannelRefsSource};
 use nixfleet_proto::FleetResolved;
 use rand::rngs::OsRng;
 use tempfile::TempDir;
@@ -131,7 +131,7 @@ fn init_tracing() {
             .with_test_writer()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,nixfleet_control_plane::channel_refs_poll=debug")),
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,nixfleet_control_plane::polling::channel_refs_poll=debug")),
             )
             .try_init();
     });

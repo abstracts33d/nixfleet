@@ -10,7 +10,7 @@ use axum::response::Response;
 use axum::Json;
 use serde::Serialize;
 
-use crate::auth_cn::PeerCertificates;
+use crate::auth::auth_cn::PeerCertificates;
 
 use super::middleware::require_cn;
 use super::state::AppState;

@@ -9,7 +9,7 @@ use axum::Json;
 use chrono::Utc;
 use nixfleet_proto::agent_wire::{ReportRequest, ReportResponse};
 
-use crate::auth_cn::PeerCertificates;
+use crate::auth::auth_cn::PeerCertificates;
 
 use super::middleware::require_cn;
 use super::state::{AppState, ReportRecord, REPORT_RING_CAP};
