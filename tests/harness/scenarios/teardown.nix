@@ -88,22 +88,15 @@ in
         # must replay into `cert_revocations` after the wipe. Poll
         # interval is 60s on the CP side, so give it 90s of slack.
         print("step 4: waiting for revocations sidecar replay…")
-        rev_deadline = time.monotonic() + 90
-        rev_seen = False
-        while time.monotonic() < rev_deadline:
-            rc, _ = host.execute(
-                "journalctl -u nixfleet-control-plane.service "
-                f"--since='{post_wipe_cursor}' --no-pager "
-                "| grep -E 'revocations poll: list verified.*entries=1'"
-            )
-            if rc == 0:
-                rev_seen = True
-                break
-            time.sleep(3)
-        if not rev_seen:
-            raise Exception(
-                "revocations sidecar did not replay within 90s after CP wipe"
-            )
+        wait_for_journal_match(
+            host,
+            since_cursor=post_wipe_cursor,
+            unit="nixfleet-control-plane.service",
+            pattern="revocations poll: list verified.*entries=1",
+            timeout=90,
+            sleep_secs=3,
+            label="revocations sidecar replay (1 entry verified)",
+        )
         print("step 4: revocations sidecar replayed (1 entry verified)")
       '';
 

@@ -95,8 +95,6 @@ in
     inherit cpHostModule agents;
     timeout = 600;
     testScript = ''
-      import time
-
       start_all()
 
       host.wait_for_unit("multi-user.target")
@@ -111,18 +109,14 @@ in
       # cert mount + first poll.
       print("step 1: waiting for initial agent checkin…")
       pre_inject_cursor = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
-      checkin_deadline = time.monotonic() + 90
-      while time.monotonic() < checkin_deadline:
-          rc, _ = host.execute(
-              "journalctl -u nixfleet-control-plane.service "
-              f"--since='{pre_inject_cursor}' --no-pager "
-              f"| grep -E 'checkin received.*${agentName}'"
-          )
-          if rc == 0:
-              break
-          time.sleep(2)
-      else:
-          raise Exception("agent did not check in within 90s of boot")
+      wait_for_journal_match(
+          host,
+          since_cursor=pre_inject_cursor,
+          unit="nixfleet-control-plane.service",
+          pattern=f"checkin received.*${agentName}",
+          timeout=90,
+          label="initial agent checkin",
+      )
       print(f"step 1: baseline checkin observed for ${agentName}")
 
       # Step 2: inject a synthetic Failed row. We need both a
@@ -171,52 +165,28 @@ in
       # CheckinResponse. The `rollback_signal_for_checkin` path logs
       # this line at INFO level on every emission.
       print("step 3: waiting for CP rollback-signal emission…")
-      signal_deadline = time.monotonic() + 60
-      signal_seen = False
-      while time.monotonic() < signal_deadline:
-          rc, _ = host.execute(
-              "journalctl -u nixfleet-control-plane.service "
-              f"--since='{pre_signal_cursor}' --no-pager "
-              "| grep -E 'rollback-signal: emitting RollbackSignal'"
-          )
-          if rc == 0:
-              signal_seen = True
-              break
-          time.sleep(2)
-      if not signal_seen:
-          cp_dump = host.succeed(
-              "journalctl -u nixfleet-control-plane.service "
-              f"--since='{pre_signal_cursor}' --no-pager"
-          )
-          print("=== CP journal (rollback-signal expected) ===")
-          print(cp_dump)
-          print("=== end ===")
-          raise Exception("CP did not emit rollback-signal within 60s of injection")
+      wait_for_journal_match(
+          host,
+          since_cursor=pre_signal_cursor,
+          unit="nixfleet-control-plane.service",
+          pattern="rollback-signal: emitting RollbackSignal",
+          timeout=60,
+          label="CP rollback-signal emission",
+      )
       print("step 3: CP emitted rollback-signal as expected")
 
       # Step 4: agent-side handle_cp_rollback_signal fires. The
       # `agent: CP issued rollback signal` log line is emitted from
       # `agent/dispatch.rs:494` before the rollback is fired.
       print("step 4: waiting for agent-side rollback handling…")
-      agent_deadline = time.monotonic() + 60
-      agent_seen = False
-      while time.monotonic() < agent_deadline:
-          rc, _ = host.execute(
-              f"journalctl -u microvm@${agentName}.service --no-pager "
-              "| grep -E 'CP issued rollback signal'"
-          )
-          if rc == 0:
-              agent_seen = True
-              break
-          time.sleep(2)
-      if not agent_seen:
-          vm_dump = host.succeed(
-              f"journalctl -u microvm@${agentName}.service --no-pager"
-          )
-          print(f"=== ${agentName} microvm journal ===")
-          print(vm_dump)
-          print("=== end ===")
-          raise Exception("agent did not handle rollback signal within 60s")
+      wait_for_journal_match(
+          host,
+          since_cursor=pre_signal_cursor,
+          unit=f"microvm@${agentName}.service",
+          pattern="CP issued rollback signal",
+          timeout=60,
+          label="agent rollback-signal handling",
+      )
       print("step 4: agent-side rollback fired")
 
       # Step 5: agent posts RollbackTriggered → CP report_handler

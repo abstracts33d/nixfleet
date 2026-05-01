@@ -355,6 +355,56 @@
     };
   };
 
+  # Python helpers prepended to every scenario's `testScript` by
+  # `mkFleetScenario`. Scenarios that need to wait for a journal line
+  # call `wait_for_journal_match(host, …)` instead of reimplementing
+  # the deadline-grep-sleep loop. Two-arg shape is intentional: the
+  # caller supplies a host (the host VM, since CP runs there + agent
+  # microvms surface through `microvm@<name>.service`) and a
+  # `since_cursor` so callers can scope the search to a specific
+  # phase. Behaviour:
+  #
+  # - Polls `journalctl -u {unit} --since='{since}' --no-pager | grep -E {pattern}`
+  #   every `sleep_secs` until rc == 0 or the timeout expires.
+  # - On timeout, raises with a labelled error AND dumps the unit's
+  #   journal since the cursor for postmortem.
+  # - `label` is a free-form scenario-readable name for the wait
+  #   ("CP rollback-signal emission", "agent rollback-fired log").
+  testScriptPrelude = ''
+    import time
+
+    def wait_for_journal_match(
+        host,
+        *,
+        since_cursor,
+        unit,
+        pattern,
+        timeout=60,
+        sleep_secs=2,
+        label=None,
+    ):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            rc, _ = host.execute(
+                "journalctl -u " + unit
+                + " --since='" + since_cursor + "' --no-pager "
+                + "| grep -E " + repr(pattern)
+            )
+            if rc == 0:
+                return
+            time.sleep(sleep_secs)
+        dump = host.succeed(
+            "journalctl -u " + unit
+            + " --since='" + since_cursor + "' --no-pager"
+        )
+        msg = label if label is not None else pattern
+        raise Exception(
+            msg + " did not appear in " + unit + " within "
+            + str(timeout) + "s\n=== " + unit + " journal ===\n"
+            + dump + "\n=== end ==="
+        )
+  '';
+
   # Wrap a CP host-module + a list of agent microVM modules into a
   # runNixOSTest that boots the host and the agent microVMs. The CP stub
   # runs directly on the host VM (see mkCpHostModule for rationale);
@@ -415,7 +465,7 @@
         environment.systemPackages = [pkgs.jq pkgs.curl];
       };
 
-      inherit testScript;
+      testScript = testScriptPrelude + "\n" + testScript;
       meta.timeout = timeout;
     };
 in {
