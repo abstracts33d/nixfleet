@@ -133,6 +133,14 @@
           # scenario that exercises the real module's ExecStart
           # construction end-to-end against a running service.
           fleet-harness-module-rollouts-wire = harness.fleet-harness-module-rollouts-wire;
+
+          # Rollback-policy scenario (#76). cp-real + agent microvm
+          # under the rollback-and-halt fleet variant; injects a
+          # Failed host_state row, walks the wire round-trip end-
+          # to-end (CP rollback_signal → agent rollback handler →
+          # RollbackTriggered post → Reverted transition → idempotent
+          # stop). Hardware-level proof of the #69 implementation.
+          fleet-harness-rollback-policy = harness.fleet-harness-rollback-policy;
         };
     };
 }
