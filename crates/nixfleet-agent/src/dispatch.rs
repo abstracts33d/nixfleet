@@ -649,6 +649,91 @@ async fn handle_signature_mismatch(
         .await;
 }
 
+/// Compose the follow-up `ReportEvent` posted after a `rollback()`
+/// call. Shared by `handle_switch_failed` and `handle_verify_mismatch`
+/// — both run the same 3-arm match against `Result<RollbackOutcome>`,
+/// differing only in the success-path reason string and the failure-
+/// path phase prefix.
+///
+/// - `Ok(success)` → `RollbackTriggered { reason: success_reason, .. }`.
+/// - `Ok(partial-fail)` → `ActivationFailed { phase: "{prefix}/{poll-phase}", exit_code, stderr_tail: None, .. }`.
+/// - `Err(transport)` → `ActivationFailed { phase: prefix, exit_code: None, stderr_tail: Some(err), .. }`.
+fn compose_rollback_followup_event(
+    rb_outcome: &anyhow::Result<nixfleet_agent::activation::RollbackOutcome>,
+    target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    args: &Args,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+    success_reason: String,
+    failure_phase_prefix: &str,
+) -> ReportEvent {
+    match rb_outcome {
+        Ok(o) if o.success() => {
+            let payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                reason: &success_reason,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::RollbackTriggered {
+                reason: success_reason,
+                signature,
+            }
+        }
+        Ok(o) => {
+            let phase_str = format!(
+                "{failure_phase_prefix}/{}",
+                o.phase().unwrap_or("unknown")
+            );
+            let exit = o.exit_code();
+            let stderr_tail_sha256 =
+                nixfleet_agent::evidence_signer::sha256_jcs(&"").unwrap_or_default();
+            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                phase: &phase_str,
+                exit_code: exit,
+                stderr_tail_sha256,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::ActivationFailed {
+                phase: phase_str,
+                exit_code: exit,
+                stderr_tail: None,
+                signature,
+            }
+        }
+        Err(err) => {
+            let phase_str = failure_phase_prefix.to_string();
+            let stderr_tail = err.to_string();
+            let stderr_tail_sha256 =
+                nixfleet_agent::evidence_signer::sha256_jcs(&stderr_tail).unwrap_or_default();
+            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
+                hostname: &args.machine_id,
+                rollout: Some(&target.channel_ref),
+                phase: &phase_str,
+                exit_code: None,
+                stderr_tail_sha256,
+            };
+            let signature = evidence_signer
+                .as_ref()
+                .as_ref()
+                .and_then(|s| s.sign(&payload).ok());
+            ReportEvent::ActivationFailed {
+                phase: phase_str,
+                exit_code: None,
+                stderr_tail: Some(stderr_tail),
+                signature,
+            }
+        }
+    }
+}
+
 async fn handle_switch_failed(
     phase: String,
     exit_code: Option<i32>,
@@ -685,70 +770,14 @@ async fn handle_switch_failed(
             .await;
     }
     let rb_outcome = nixfleet_agent::activation::rollback().await;
-    let rollback_event = match &rb_outcome {
-        Ok(o) if o.success() => {
-            let reason = format!("activation phase {phase} failed");
-            let payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
-                reason: &reason,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
-            ReportEvent::RollbackTriggered { reason, signature }
-        }
-        Ok(o) => {
-            let phase_str = format!(
-                "rollback-after-{phase}/{}",
-                o.phase().unwrap_or("unknown")
-            );
-            let exit = o.exit_code();
-            let stderr_tail_sha256 =
-                nixfleet_agent::evidence_signer::sha256_jcs(&"").unwrap_or_default();
-            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
-                phase: &phase_str,
-                exit_code: exit,
-                stderr_tail_sha256,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
-            ReportEvent::ActivationFailed {
-                phase: phase_str,
-                exit_code: exit,
-                stderr_tail: None,
-                signature,
-            }
-        }
-        Err(err) => {
-            let phase_str = format!("rollback-after-{phase}");
-            let stderr_tail = err.to_string();
-            let stderr_tail_sha256 =
-                nixfleet_agent::evidence_signer::sha256_jcs(&stderr_tail).unwrap_or_default();
-            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
-                phase: &phase_str,
-                exit_code: None,
-                stderr_tail_sha256,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
-            ReportEvent::ActivationFailed {
-                phase: phase_str,
-                exit_code: None,
-                stderr_tail: Some(stderr_tail),
-                signature,
-            }
-        }
-    };
+    let rollback_event = compose_rollback_followup_event(
+        &rb_outcome,
+        target,
+        args,
+        evidence_signer,
+        format!("activation phase {phase} failed"),
+        &format!("rollback-after-{phase}"),
+    );
     reporter
         .post_report(Some(&target.channel_ref), rollback_event)
         .await;
@@ -799,72 +828,14 @@ async fn handle_verify_mismatch(
         .await;
 
     let rb_outcome = nixfleet_agent::activation::rollback().await;
-    let rollback_event = match &rb_outcome {
-        Ok(o) if o.success() => {
-            let reason = format!(
-                "post-switch verify mismatch (expected {expected}, got {actual})"
-            );
-            let payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
-                reason: &reason,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
-            ReportEvent::RollbackTriggered { reason, signature }
-        }
-        Ok(o) => {
-            let phase_str = format!(
-                "rollback-after-verify-mismatch/{}",
-                o.phase().unwrap_or("unknown")
-            );
-            let exit = o.exit_code();
-            let stderr_tail_sha256 =
-                nixfleet_agent::evidence_signer::sha256_jcs(&"").unwrap_or_default();
-            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
-                phase: &phase_str,
-                exit_code: exit,
-                stderr_tail_sha256,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
-            ReportEvent::ActivationFailed {
-                phase: phase_str,
-                exit_code: exit,
-                stderr_tail: None,
-                signature,
-            }
-        }
-        Err(err) => {
-            let phase_str = "rollback-after-verify-mismatch".to_string();
-            let stderr_tail = err.to_string();
-            let stderr_tail_sha256 =
-                nixfleet_agent::evidence_signer::sha256_jcs(&stderr_tail).unwrap_or_default();
-            let payload = nixfleet_agent::evidence_signer::ActivationFailedSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
-                phase: &phase_str,
-                exit_code: None,
-                stderr_tail_sha256,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
-            ReportEvent::ActivationFailed {
-                phase: phase_str,
-                exit_code: None,
-                stderr_tail: Some(stderr_tail),
-                signature,
-            }
-        }
-    };
+    let rollback_event = compose_rollback_followup_event(
+        &rb_outcome,
+        target,
+        args,
+        evidence_signer,
+        format!("post-switch verify mismatch (expected {expected}, got {actual})"),
+        "rollback-after-verify-mismatch",
+    );
     reporter
         .post_report(Some(&target.channel_ref), rollback_event)
         .await;
