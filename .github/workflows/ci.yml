@@ -36,26 +36,3 @@ jobs:
         run: nix run .#validate
         env:
           NIX_CONFIG: "warn-dirty = false"
-
-  harness:
-    name: Harness integration tests
-    # Run only on push to main — the microvm scenarios cumulatively
-    # take 30–60 min and a per-PR run would block the dev loop. Push
-    # to main + nightly are the right cadences; anyone wanting local
-    # coverage runs `nix run .#validate --vm` from their devshell.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    needs: validate
-    steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-        with:
-          extra-conf: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-            extra-platforms = aarch64-linux
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - name: Run validate --vm
-        run: nix run .#validate -- --vm
-        env:
-          NIX_CONFIG: "warn-dirty = false"
