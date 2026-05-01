@@ -72,6 +72,19 @@
     inherit testCerts signedFixture cpPkg;
   };
 
+  # cp-real doesn't include sqlite3 in systemPackages; the testScript
+  # needs the CLI on the host VM to drive the Failed-state inducement
+  # (deadline-expiry has the same gap and fails silently — its
+  # sqlite3 calls would 127 too if anyone ran it). Scenario-local
+  # override avoids perturbing other scenarios.
+  sqliteHostModule = {pkgs, ...}: {
+    environment.systemPackages = [pkgs.sqlite];
+  };
+
+  combinedHostModule = {
+    imports = [cpHostModule sqliteHostModule];
+  };
+
   # Convergence preseed: same machinery teardown uses, so the
   # agent's reported closure_hash matches `fleet.hosts.<n>.closureHash`
   # (set via the rollback-policy fixture's `hostClosureHashes`). The
@@ -92,7 +105,8 @@
 in
   harnessLib.mkFleetScenario {
     name = "fleet-harness-rollback-policy";
-    inherit cpHostModule agents;
+    cpHostModule = combinedHostModule;
+    inherit agents;
     timeout = 600;
     testScript = ''
       start_all()
