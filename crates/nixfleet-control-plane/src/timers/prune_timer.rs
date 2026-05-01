@@ -47,42 +47,24 @@ pub fn spawn(db: Arc<Db>, db_path: Option<PathBuf>) -> tokio::task::JoinHandle<(
 
         loop {
             ticker.tick().await;
-            let token_pruned = match db.prune_token_replay(TOKEN_REPLAY_RETENTION_HOURS) {
-                Ok(n) => n,
-                Err(err) => {
-                    tracing::warn!(error = %err, "prune timer: token_replay failed");
-                    0
-                }
-            };
-            let pending_pruned = match db.prune_pending_confirms(PENDING_CONFIRMS_RETENTION_HOURS) {
-                Ok(n) => n,
-                Err(err) => {
-                    tracing::warn!(error = %err, "prune timer: pending_confirms failed");
-                    0
-                }
-            };
-            let reports_pruned = match db.prune_host_reports(HOST_REPORTS_RETENTION_HOURS) {
-                Ok(n) => n,
-                Err(err) => {
-                    tracing::warn!(error = %err, "prune timer: host_reports failed");
-                    0
-                }
-            };
-            let backups_pruned = if let Some(parent) = db_path.as_deref().and_then(Path::parent) {
-                match prune_backup_files(parent, BACKUP_FILENAME_PREFIX, BACKUP_RETENTION_DAYS) {
-                    Ok(n) => n,
-                    Err(err) => {
-                        tracing::warn!(
-                            dir = %parent.display(),
-                            error = %err,
-                            "prune timer: backup sweep failed",
-                        );
-                        0
-                    }
-                }
-            } else {
-                0
-            };
+            let token_pruned = try_prune("token_replay", || {
+                db.prune_token_replay(TOKEN_REPLAY_RETENTION_HOURS)
+            });
+            let pending_pruned = try_prune("pending_confirms", || {
+                db.prune_pending_confirms(PENDING_CONFIRMS_RETENTION_HOURS)
+            });
+            let reports_pruned = try_prune("host_reports", || {
+                db.prune_host_reports(HOST_REPORTS_RETENTION_HOURS)
+            });
+            let backups_pruned = db_path
+                .as_deref()
+                .and_then(Path::parent)
+                .map(|parent| {
+                    try_prune("state.db backup sweep", || {
+                        prune_backup_files(parent, BACKUP_FILENAME_PREFIX, BACKUP_RETENTION_DAYS)
+                    })
+                })
+                .unwrap_or(0);
             tracing::info!(
                 target: "prune",
                 token_replay = token_pruned,
@@ -93,6 +75,22 @@ pub fn spawn(db: Arc<Db>, db_path: Option<PathBuf>) -> tokio::task::JoinHandle<(
             );
         }
     })
+}
+
+/// Run a prune step. On `Ok(n)` returns `n`; on `Err` logs a `warn`
+/// with the step's `name` and returns 0 — failures are non-fatal so
+/// the sweep continues to the next step.
+fn try_prune<E>(name: &str, f: impl FnOnce() -> std::result::Result<usize, E>) -> usize
+where
+    E: std::fmt::Display,
+{
+    match f() {
+        Ok(n) => n,
+        Err(err) => {
+            tracing::warn!(error = %err, "prune timer: {name} failed");
+            0
+        }
+    }
 }
 
 /// Delete files in `parent` whose basename starts with `prefix` and
