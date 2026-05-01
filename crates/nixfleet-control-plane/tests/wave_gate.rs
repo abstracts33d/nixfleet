@@ -183,6 +183,7 @@ async fn spawn_with_signed_fleet(
         closure_upstream: None,
         rollouts_dir: None,
         rollouts_source: None,
+        strict: false,
     };
     let handle = tokio::spawn(server::serve(args));
     sleep(Duration::from_millis(400)).await;

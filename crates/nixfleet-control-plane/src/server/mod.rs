@@ -50,6 +50,7 @@ use crate::TickInputs;
 /// version drift). `/v1/*` is the agent-facing surface and gates on
 /// the protocol version header.
 fn build_router(state: Arc<AppState>) -> Router {
+    let strict = state.strict;
     let v1_routes = Router::new()
         .route("/v1/whoami", get(handlers::whoami))
         .route("/v1/agent/checkin", post(checkin_pipeline::checkin))
@@ -68,7 +69,9 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/v1/rollouts/{rolloutId}/sig",
             get(rollouts_handlers::signature),
         )
-        .layer(axum::middleware::from_fn(version_layer));
+        .layer(axum::middleware::from_fn(move |req, next| {
+            version_layer(strict, req, next)
+        }));
 
     Router::new()
         .route("/healthz", get(handlers::healthz))
@@ -79,10 +82,11 @@ fn build_router(state: Arc<AppState>) -> Router {
 /// Thin adapter so the router only sees a free function. Forwards to
 /// the protocol-version middleware in [`middleware`].
 async fn version_layer(
+    strict: bool,
     req: HttpRequest<Body>,
     next: Next,
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
-    middleware::protocol_version_middleware(req, next).await
+    middleware::protocol_version_middleware(strict, req, next).await
 }
 
 /// Serve until interrupted. Builds the TLS config, opens the DB,
@@ -90,6 +94,26 @@ async fn version_layer(
 /// starts the reconcile loop + the Forgejo poll task, binds the
 /// listener, runs forever.
 pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    // Strict mode: refuse to start when any security-fallback flag is
+    // unset. Operator opts in via `--strict` / `NIXFLEET_CP_STRICT=1`.
+    // Default off for v0.2 — see #70 for the rationale.
+    if args.strict {
+        let mut missing: Vec<&str> = Vec::new();
+        if args.client_ca.is_none() {
+            missing.push("--client-ca (mTLS verification disabled — TLS-only mode)");
+        }
+        if args.revocations.is_none() {
+            missing.push("--revocations-{artifact,signature}-url (revocations polling disabled — previously-revoked certs become valid again after CP rebuild)");
+        }
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "--strict refuses to start: the following security flags are unset:\n  - {}\n\
+                 Either set the missing flags or drop --strict for development.",
+                missing.join("\n  - "),
+            );
+        }
+    }
+
     // Open + migrate SQLite if a path is configured.
     let db = if let Some(path) = &args.db_path {
         let db = crate::db::Db::open(path)?;
@@ -118,6 +142,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         closure_upstream,
         rollouts_dir: args.rollouts_dir.clone(),
         rollouts_source: args.rollouts_source.clone(),
+        strict: args.strict,
         ..Default::default()
     };
     let state = Arc::new(app_state);
@@ -318,4 +343,80 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod strict_mode_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn minimal_serve_args(strict: bool, client_ca: Option<PathBuf>) -> ServeArgs {
+        ServeArgs {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            tls_cert: PathBuf::from("/dev/null"),
+            tls_key: PathBuf::from("/dev/null"),
+            client_ca,
+            fleet_ca_cert: None,
+            fleet_ca_key: None,
+            audit_log_path: None,
+            artifact_path: PathBuf::from("/dev/null"),
+            signature_path: PathBuf::from("/dev/null"),
+            trust_path: PathBuf::from("/dev/null"),
+            observed_path: PathBuf::from("/dev/null"),
+            freshness_window: Duration::from_secs(86400),
+            confirm_deadline_secs: 360,
+            channel_refs: None,
+            revocations: None,
+            db_path: None,
+            closure_upstream: None,
+            rollouts_dir: None,
+            rollouts_source: None,
+            strict,
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_bails_when_client_ca_unset() {
+        let err = serve(minimal_serve_args(true, None)).await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--client-ca"),
+            "expected client-ca hint in strict bail; got: {msg}",
+        );
+        assert!(
+            msg.contains("--strict refuses to start"),
+            "expected strict-prefixed message; got: {msg}",
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_bails_when_revocations_unset() {
+        // client_ca provided, but no revocations → strict still bails.
+        let err = serve(minimal_serve_args(
+            true,
+            Some(PathBuf::from("/dev/null")),
+        ))
+        .await
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--revocations"),
+            "expected revocations hint in strict bail; got: {msg}",
+        );
+    }
+
+    #[tokio::test]
+    async fn non_strict_does_not_bail_at_startup() {
+        // strict=false, client_ca=None → must NOT bail with the
+        // strict-mode error. Will still error later (the TLS cert at
+        // /dev/null isn't a real cert), but that error is downstream
+        // of the strict check we're testing.
+        let err = serve(minimal_serve_args(false, None)).await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            !msg.contains("--strict refuses to start"),
+            "non-strict mode should not emit the strict-mode error; got: {msg}",
+        );
+    }
 }

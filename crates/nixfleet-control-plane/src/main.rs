@@ -157,6 +157,15 @@ struct ServeFlags {
     /// instance, same access token).
     #[arg(long, env = "NIXFLEET_CP_ROLLOUTS_SOURCE_TOKEN_FILE")]
     rollouts_source_token_file: Option<PathBuf>,
+
+    /// Refuse to start when any security-relevant flag is unset:
+    /// `--client-ca` (no mTLS verification), revocations source
+    /// (silently re-validates revoked certs after a CP rebuild), or
+    /// the protocol-version header on incoming requests. Default
+    /// `false` for v0.2 to preserve current behaviour; intended for
+    /// production. See #70 / `docs/CONTRACTS.md §II`.
+    #[arg(long, env = "NIXFLEET_CP_STRICT")]
+    strict: bool,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -321,6 +330,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         db_path: flags.db_path,
         closure_upstream: flags.closure_upstream,
         rollouts_dir: flags.rollouts_dir,
+        strict: flags.strict,
     })
     .await
 }

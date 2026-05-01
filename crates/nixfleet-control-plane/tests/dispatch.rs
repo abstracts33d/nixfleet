@@ -160,6 +160,7 @@ async fn spawn_with_signed_fleet(
         closure_upstream: None,
         rollouts_dir: None,
         rollouts_source: None,
+        strict: false,
     };
     let handle = tokio::spawn(server::serve(args));
     // Give the prime path time to verify the artifact + write the

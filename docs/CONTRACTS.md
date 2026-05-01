@@ -226,6 +226,12 @@ nixfleet.trust.ciReleaseKey = {
 
 **Rotation procedure.** If a host's key changes, the old host is considered gone and a new one is being enrolled. Secrets must be re-encrypted for the new recipient; probe-output signatures chain through the boot/generation record.
 
+### Operational note: enforce the trust posture with `strict` mode
+
+The four roots above describe **what** the framework verifies. **Whether** that verification fires depends on the CP being configured to use it: `--client-ca` enables mTLS, `--revocations-{artifact,signature}-url` keeps revocations live across rebuild, and the `X-Nixfleet-Protocol` header guards the wire shape. By default each fallback degrades silently (warn-and-continue) so dev/test isn't blocked.
+
+Production fleets should set `services.nixfleet-control-plane.strict = true` (or pass `--strict` / `NIXFLEET_CP_STRICT=1`). In strict mode the CP refuses to start when any of these flags is unset, and rejects requests missing the protocol header. The NixOS module emits a warning when the listener is exposed beyond loopback while `strict = false`.
+
 ---
 
 ## III. Canonicalization

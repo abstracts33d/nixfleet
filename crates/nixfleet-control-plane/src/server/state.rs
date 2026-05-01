@@ -66,6 +66,13 @@ pub struct ServeArgs {
     /// live in `inputs.self` at closure-build time (the typical case
     /// since `nixfleet-release` writes them after building closures).
     pub rollouts_source: Option<crate::rollouts_source::RolloutsSource>,
+    /// When true, refuse to start if any of the security-flag
+    /// fallbacks would silently degrade the deployment posture
+    /// (`--client-ca` unset, revocations source unset, protocol
+    /// header missing on a request). Default `false` for v0.2 to
+    /// preserve current behaviour; intended for production lab.
+    /// See `docs/CONTRACTS.md §II` for the rationale.
+    pub strict: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +135,9 @@ pub struct AppState {
     /// HTTP-fetched rollout manifests source. Used when `rollouts_dir`
     /// is None or the requested manifest is missing on disk.
     pub rollouts_source: Option<crate::rollouts_source::RolloutsSource>,
+    /// Mirror of `ServeArgs::strict`; read by `protocol_version_middleware`
+    /// to reject requests missing `X-Nixfleet-Protocol`.
+    pub strict: bool,
 }
 
 impl Default for AppState {
@@ -147,6 +157,7 @@ impl Default for AppState {
             confirm_deadline_secs: DEFAULT_CONFIRM_DEADLINE_SECS,
             rollouts_dir: None,
             rollouts_source: None,
+            strict: false,
         }
     }
 }

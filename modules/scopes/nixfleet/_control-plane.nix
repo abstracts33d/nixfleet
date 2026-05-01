@@ -153,6 +153,29 @@ in {
       '';
     };
 
+    strict = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        When `true`, the control plane refuses to start if any of the
+        security-relevant flags are unset:
+
+        - `tls.clientCa` (without it, mTLS verification is disabled and
+          all `/v1/*` endpoints serve TLS-only — the `auth_cn` middleware
+          falls through and identity-bound checks become no-ops).
+        - `revocationsSource.{artifactUrl,signatureUrl}` (without them,
+          revocations polling is silently disabled, so previously revoked
+          certs become valid again after a CP rebuild — contradicts the
+          §6 Phase 10 promise that CP-rebuild recovery preserves
+          revocations).
+        - `X-Nixfleet-Protocol` header on incoming requests (strict mode
+          turns the missing-header forward-compat slack into a 400).
+
+        Default `false` for v0.2 to preserve current behaviour. Strongly
+        recommended for production; see #70 for the rationale.
+      '';
+    };
+
     confirmDeadlineSecs = lib.mkOption {
       type = lib.types.ints.positive;
       default = 360;
@@ -431,6 +454,23 @@ in {
         }
       ];
 
+      # Recommend `strict = true` when the listener is exposed beyond
+      # loopback. Plain warning rather than assertion: the lab and dev
+      # deployments legitimately run non-strict, but production fleets
+      # exposed on a real interface should opt in. See #70.
+      warnings =
+        lib.optional
+        (
+          !cfg.strict
+          && builtins.match "(127\\..*|localhost|\\[::1\\]):[0-9]+" cfg.listen == null
+        ) ''
+          services.nixfleet-control-plane.listen = "${cfg.listen}" exposes
+          the CP beyond loopback while strict = false. Consider setting
+          strict = true so missing --client-ca / revocations / protocol-
+          header flags fail loudly rather than silently degrading the
+          security posture (#70).
+        '';
+
       environment.etc."nixfleet/cp/trust.json".source = trustJson;
 
       systemd.services.nixfleet-control-plane = {
@@ -465,6 +505,7 @@ in {
               "--confirm-deadline-secs"
               (toString cfg.confirmDeadlineSecs)
             ]
+            ++ lib.optionals cfg.strict ["--strict"]
             ++ lib.optionals (cfg.tls.clientCa != null) [
               "--client-ca"
               (lib.escapeShellArg cfg.tls.clientCa)

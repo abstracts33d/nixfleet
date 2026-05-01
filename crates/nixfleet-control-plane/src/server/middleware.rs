@@ -68,11 +68,15 @@ pub(super) async fn require_cn(
 /// during the transition. Header present + mismatched major → 426
 /// Upgrade Required + log warn.
 ///
+/// Strict mode (`AppState.strict`, opt-in via `--strict`): missing
+/// header → 400 Bad Request, no forward-compat slack. See #70.
+///
 /// `/healthz` is not subject to this — it's the operator's status
 /// probe and runs unauthenticated; protocol-versioning the health
 /// check makes the operational debug story worse without buying
 /// anything.
 pub(super) async fn protocol_version_middleware(
+    strict: bool,
     req: HttpRequest<Body>,
     next: Next,
 ) -> Result<axum::response::Response, StatusCode> {
@@ -95,6 +99,11 @@ pub(super) async fn protocol_version_middleware(
                 Err(StatusCode::BAD_REQUEST)
             }
         }
+    } else if strict {
+        tracing::warn!(
+            "rejecting request without X-Nixfleet-Protocol (strict mode)"
+        );
+        Err(StatusCode::BAD_REQUEST)
     } else {
         tracing::debug!("request without X-Nixfleet-Protocol — accepting (forward-compat)");
         Ok(next.run(req).await)
