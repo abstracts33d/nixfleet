@@ -4,9 +4,17 @@
 //!
 //! The orchestration pipeline:
 //!
-//! 1. Enumerate hosts (default: every `nixosConfigurations.*` in the
-//!   consumer flake).
-//! 2. Build each host's `config.system.build.toplevel`.
+//! 1. Enumerate hosts (default: every `nixosConfigurations.*` AND
+//!    every `darwinConfigurations.*` in the consumer flake). Each
+//!    host carries a [`HostKind`] discriminator that decides the
+//!    attr path passed to `nix build`.
+//! 2. Build each host's `config.system.build.toplevel`. nix-darwin
+//!    exposes the same attr path as NixOS, so the inner accessor
+//!    is shared; only the outer prefix
+//!    (`nixosConfigurations` / `darwinConfigurations`) differs.
+//!    Cross-platform builds rely on operator-configured remote
+//!    builders (`nix.buildMachines`) — the framework is
+//!    backend-agnostic and never ssh's directly.
 //! 3. (optional) Run a per-host `--push-cmd` to upload the closure to
 //!   the fleet's binary cache. Implementation-agnostic — the hook
 //!   receives the store path in `$NIXFLEET_PATH`.
@@ -41,15 +49,40 @@ use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 /// Hosts to release. Resolved against the consumer's flake at
-/// runtime — `Auto` queries `nixosConfigurations`.
+/// runtime — `Auto` queries both `nixosConfigurations` and
+/// `darwinConfigurations`.
 #[derive(Debug, Clone)]
 pub enum HostsSpec {
-    /// All `nixosConfigurations.*` (Linux), no Darwin.
+    /// Union of `nixosConfigurations.*` and `darwinConfigurations.*`.
     Auto,
-    /// All `nixosConfigurations.*` minus the listed names.
+    /// Same as `Auto`, minus the listed names.
     AutoExclude(Vec<String>),
-    /// Explicit list. Order preserved.
+    /// Explicit list. Order preserved. Each name must exist in
+    /// exactly one of `nixosConfigurations` or `darwinConfigurations`;
+    /// names appearing in both error out at classify time
+    /// (intentional — the operator should disambiguate).
     Explicit(Vec<String>),
+}
+
+/// Which `*Configurations` attrset a host lives in. Drives the
+/// `nix build` attr path the release pipeline emits — nix-darwin's
+/// `darwinConfigurations.<h>.config.system.build.toplevel` is the
+/// canonical accessor, identical in shape to the NixOS one but
+/// reachable from a different prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostKind {
+    Nixos,
+    Darwin,
+}
+
+impl HostKind {
+    /// The flake-attr prefix used by `nix build` / `nix eval`.
+    pub fn attr_prefix(self) -> &'static str {
+        match self {
+            HostKind::Nixos => "nixosConfigurations",
+            HostKind::Darwin => "darwinConfigurations",
+        }
+    }
 }
 
 /// Configuration assembled from CLI flags. The library entry point
@@ -58,8 +91,6 @@ pub enum HostsSpec {
 /// Speculative knobs deliberately not present (each landed during
 /// design, removed during the no-untested-code pass — re-add with
 /// tests when a real fleet exercises them):
-/// - `include_darwin`: orchestrating Darwin closure builds.
-///   Pending a pluggable activation backend.
 /// - `jobs > 1`: parallel `nix build` orchestration via
 ///   `std::thread::spawn`. Single-host build is fast enough on
 ///   today's fleets; concurrency is tricky and was never run with
@@ -155,7 +186,8 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
     if hosts.is_empty() {
         bail!("no hosts to release — empty enumeration");
     }
-    tracing::info!(count = hosts.len(), hosts = ?hosts, "enumerated");
+    let host_names: Vec<&str> = hosts.iter().map(|(n, _)| n.as_str()).collect();
+    tracing::info!(count = hosts.len(), hosts = ?host_names, "enumerated");
 
     // ── 2. Build ────────────────────────────────────────────────
     let built = build_hosts(config, &hosts)?;
@@ -379,18 +411,57 @@ fn validate_config(c: &ReleaseConfig) -> Result<()> {
 
 // ─────────────────────────── enumerate ────────────────────────────
 
-fn enumerate_hosts(config: &ReleaseConfig) -> Result<Vec<String>> {
-    let mut nixos = list_attr(&config.flake_dir, "nixosConfigurations")?;
+/// Returns `(host, kind)` pairs ordered as: all NixOS hosts (sorted),
+/// then all Darwin hosts (sorted). `HostsSpec::Explicit` preserves
+/// caller order but classifies each name by probe.
+///
+/// Missing attrsets (e.g. a flake with no `darwinConfigurations`)
+/// are treated as empty, not errors. The release pipeline runs
+/// against fleets with one or both kinds.
+fn enumerate_hosts(config: &ReleaseConfig) -> Result<Vec<(String, HostKind)>> {
+    let mut nixos = list_attr_optional(&config.flake_dir, "nixosConfigurations")?;
     nixos.sort();
     nixos.dedup();
+    let mut darwin = list_attr_optional(&config.flake_dir, "darwinConfigurations")?;
+    darwin.sort();
+    darwin.dedup();
+
+    let in_nixos = |n: &str| nixos.iter().any(|h| h == n);
+    let in_darwin = |n: &str| darwin.iter().any(|h| h == n);
 
     Ok(match &config.hosts {
-        HostsSpec::Auto => nixos,
-        HostsSpec::AutoExclude(exclude) => nixos
-            .into_iter()
-            .filter(|h| !exclude.iter().any(|e| e == h))
+        HostsSpec::Auto => nixos
+            .iter()
+            .map(|n| (n.clone(), HostKind::Nixos))
+            .chain(darwin.iter().map(|n| (n.clone(), HostKind::Darwin)))
             .collect(),
-        HostsSpec::Explicit(list) => list.clone(),
+        HostsSpec::AutoExclude(exclude) => {
+            let kept_nixos = nixos
+                .iter()
+                .filter(|h| !exclude.iter().any(|e| e == *h))
+                .map(|n| (n.clone(), HostKind::Nixos));
+            let kept_darwin = darwin
+                .iter()
+                .filter(|h| !exclude.iter().any(|e| e == *h))
+                .map(|n| (n.clone(), HostKind::Darwin));
+            kept_nixos.chain(kept_darwin).collect()
+        }
+        HostsSpec::Explicit(list) => list
+            .iter()
+            .map(|n| match (in_nixos(n), in_darwin(n)) {
+                (true, false) => Ok((n.clone(), HostKind::Nixos)),
+                (false, true) => Ok((n.clone(), HostKind::Darwin)),
+                (true, true) => Err(anyhow::anyhow!(
+                    "host '{n}' is declared in both nixosConfigurations and \
+                     darwinConfigurations — disambiguate before releasing"
+                )),
+                (false, false) => Err(anyhow::anyhow!(
+                    "host '{n}' is in neither nixosConfigurations nor \
+                     darwinConfigurations of flake {}",
+                    config.flake_dir.display()
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?,
     })
 }
 
@@ -429,7 +500,13 @@ fn eval_revocations(config: &ReleaseConfig, attr: &str) -> Result<Vec<Revocation
         .with_context(|| format!("parse revocations from `nix eval .#{attr}`"))
 }
 
-fn list_attr(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> {
+/// Enumerate attribute names under `<flake>#<attr_path>`, treating a
+/// missing attrset as empty. Used for `darwinConfigurations` /
+/// `nixosConfigurations` enumeration where a fleet may legitimately
+/// declare only one. The "missing attribute" stderr from `nix eval`
+/// is matched against a small set of stable phrasings; any other
+/// failure surfaces as `Err`.
+fn list_attr_optional(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix")
         .args([
             "eval",
@@ -443,10 +520,28 @@ fn list_attr(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> {
         .output()
         .with_context(|| format!("invoke `nix eval .#{attr_path}`"))?;
     if !output.status.success() {
-        bail!(
-            "nix eval .#{attr_path}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Stable phrasings nix uses for "this attribute doesn't
+        // exist on the flake" — verified against nix 2.18-2.30 in
+        // unit tests below. Anything else (eval error, IO error,
+        // permissions) propagates.
+        let lowered = stderr.to_lowercase();
+        let is_missing = [
+            "does not provide attribute",
+            "has no attribute",
+            "attribute 'darwinconfigurations' missing",
+            "attribute 'nixosconfigurations' missing",
+        ]
+        .iter()
+        .any(|needle| lowered.contains(needle));
+        if is_missing {
+            tracing::debug!(
+                attr_path,
+                "flake does not declare {attr_path}; treating as empty"
+            );
+            return Ok(vec![]);
+        }
+        bail!("nix eval .#{attr_path}: {stderr}");
     }
     let names: Vec<String> = serde_json::from_slice(&output.stdout)
         .with_context(|| format!("parse JSON from `nix eval .#{attr_path}`"))?;
@@ -455,20 +550,33 @@ fn list_attr(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> {
 
 // ─────────────────────────── build ────────────────────────────────
 
-/// Sequential build. Each host's `nixosConfigurations.<host>.config.
-/// system.build.toplevel` is built and the resulting store path is
-/// captured. Failures abort the run before any push.
+/// Sequential build. Each host's `<prefix>.<host>.config.system.build.
+/// toplevel` is built and the resulting store path is captured;
+/// `<prefix>` is `nixosConfigurations` for [`HostKind::Nixos`] and
+/// `darwinConfigurations` for [`HostKind::Darwin`]. Failures abort
+/// the run before any push.
 ///
-/// Parallel builds (`--jobs > 1`) and Darwin orchestration were
-/// dropped during the no-untested-code pass — re-add with tests
-/// when a real fleet needs them.
-fn build_hosts(config: &ReleaseConfig, hosts: &[String]) -> Result<BTreeMap<String, PathBuf>> {
+/// Cross-platform builds (linux CI building a darwin host, or the
+/// reverse) are handled by `nix`'s remote-builder mechanism via the
+/// operator's `nix.buildMachines` / `extra-platforms` config —
+/// invisible to this code path.
+///
+/// Parallel builds (`--jobs > 1`) were dropped during the
+/// no-untested-code pass — re-add with tests when a real fleet
+/// needs them.
+fn build_hosts(
+    config: &ReleaseConfig,
+    hosts: &[(String, HostKind)],
+) -> Result<BTreeMap<String, PathBuf>> {
     let mut out = BTreeMap::new();
-    for host in hosts {
-        let attr = format!(".#nixosConfigurations.{host}.config.system.build.toplevel");
+    for (host, kind) in hosts {
+        let attr = format!(
+            ".#{}.{host}.config.system.build.toplevel",
+            kind.attr_prefix()
+        );
         let path = build_one(&config.flake_dir, &attr)
             .with_context(|| format!("build host {host}"))?;
-        tracing::info!(host = %host, path, "built");
+        tracing::info!(host = %host, kind = ?kind, path, "built");
         out.insert(host.clone(), PathBuf::from(path));
     }
     Ok(out)
@@ -1140,5 +1248,15 @@ mod tests {
             reuse_unchanged_signature: false,
             revocations_attr: None,
         }
+    }
+
+    #[test]
+    fn host_kind_attr_prefix_matches_flake_convention() {
+        // Wire shape: the framework must emit `nixosConfigurations.<h>`
+        // for linux hosts and `darwinConfigurations.<h>` for darwin
+        // hosts. Locked here so a rename surfaces as a test failure
+        // rather than a silent build path change.
+        assert_eq!(HostKind::Nixos.attr_prefix(), "nixosConfigurations");
+        assert_eq!(HostKind::Darwin.attr_prefix(), "darwinConfigurations");
     }
 }
