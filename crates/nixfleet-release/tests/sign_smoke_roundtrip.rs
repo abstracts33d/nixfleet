@@ -143,3 +143,88 @@ fn shell_hook_contract_invokes_sh_with_env_vars() {
     let copied = std::fs::read(&out_file).unwrap();
     assert_eq!(copied, b"some-canonical-bytes");
 }
+
+// =================================================================
+// Pipeline edge-cases — the helper functions exercised here are
+// public surface (`inject_closure_hashes`, `canonicalize_resolved`,
+// `render_commit_message`) plus library invariants the consumer side
+// of CONTRACTS §I #1 depends on. Adversarial inputs that would
+// otherwise reach a real release run go here.
+// =================================================================
+
+#[test]
+fn inject_closure_hashes_silently_skips_unknown_hosts() {
+    // Per docstring: "Hosts in `hashes` that don't exist in
+    // `resolved.hosts` are silently skipped (matches the legacy jq
+    // behaviour)." Locks the contract — flipping to errors would
+    // break operator workflows that pre-build a hash map covering
+    // hosts removed from the fleet between build and release.
+    let mut resolved = dummy_resolved();
+    let mut hashes = std::collections::BTreeMap::new();
+    hashes.insert("test-host".to_string(), "real-hash".to_string());
+    hashes.insert("ghost-host".to_string(), "phantom".to_string());
+
+    nixfleet_release::inject_closure_hashes(&mut resolved, &hashes);
+
+    assert_eq!(
+        resolved.hosts["test-host"].closure_hash.as_deref(),
+        Some("real-hash"),
+        "known host gets the new hash"
+    );
+    assert!(
+        !resolved.hosts.contains_key("ghost-host"),
+        "unknown host is not added (silent skip, no panic)"
+    );
+}
+
+#[test]
+fn canonicalize_resolved_is_byte_stable_round_trip() {
+    // The smoke-verify invariant: parse(canonical) → canonicalize
+    // again yields the identical bytes. Every release run depends on
+    // this; if it ever fails, the whole sign-then-verify pipeline
+    // produces artifacts the verifier would reject.
+    let resolved = dummy_resolved();
+    let c1 = nixfleet_release::canonicalize_resolved(&resolved).expect("first canonicalize");
+    let parsed: nixfleet_proto::FleetResolved =
+        serde_json::from_str(&c1).expect("canonical bytes must parse as FleetResolved");
+    let c2 = nixfleet_release::canonicalize_resolved(&parsed).expect("second canonicalize");
+    assert_eq!(
+        c1.as_bytes(),
+        c2.as_bytes(),
+        "canonicalize must be byte-stable through one round-trip",
+    );
+}
+
+#[test]
+fn render_commit_message_substitutes_known_placeholders() {
+    // Operator-facing template; locks the placeholder set
+    // (`{sha}`, `{sha:0:8}`, `{ts}`) so a future template-engine
+    // swap doesn't silently change what consumers grep for.
+    let ts = chrono::DateTime::parse_from_rfc3339("2026-04-30T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let msg = nixfleet_release::render_commit_message(
+        "release: {sha} short={sha:0:8} at {ts}",
+        "abc12345deadbeef",
+        ts,
+    );
+    assert!(msg.contains("abc12345deadbeef"), "{{sha}} expanded: {msg}");
+    assert!(
+        msg.contains("short=abc12345 "),
+        "{{sha:0:8}} truncated to 8 chars: {msg}",
+    );
+    assert!(msg.contains("2026-04-30T12:00:00"), "{{ts}} expanded: {msg}");
+}
+
+#[test]
+fn render_commit_message_short_sha_under_8_chars_passes_through() {
+    // Edge case: the truncation helper has `if sha.len() >= 8 …`
+    // — an explicit short sha (e.g. operator-supplied "HEAD")
+    // bypasses the slice and is substituted as-is.
+    let ts = chrono::DateTime::parse_from_rfc3339("2026-04-30T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let msg = nixfleet_release::render_commit_message("at {sha:0:8}", "HEAD", ts);
+    assert_eq!(msg, "at HEAD", "short sha passes through untouched: {msg}");
+}
+

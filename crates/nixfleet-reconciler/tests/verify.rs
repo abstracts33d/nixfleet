@@ -986,3 +986,193 @@ fn compute_rollout_id_changes_with_field_change() {
 
     assert_ne!(id1, id2);
 }
+
+// =================================================================
+// Sidecar coverage matrix — assert the gates `verify_artifact`
+// already exercises are actually wired through the shared
+// `verify_signed_sidecar<T>` generic for the two newer types
+// (revocations + rollout manifest). The underlying pipeline is
+// shared, but a per-sidecar test guards against a future variant
+// adding a bypass that only its own wrapper would miss.
+// =================================================================
+
+#[test]
+fn verify_revocations_rejects_malformed_json() {
+    // Bytes that signature-verify but don't parse as Revocations.
+    // Payload is well-formed JSON but missing the schema fields.
+    let signing_key = fresh_signing_key();
+    let trust = trust_root_for(&signing_key);
+    let canonical = canonicalize(r#"{"not":"a-revocations"}"#).expect("canonicalize");
+    let sig = signing_key.sign(canonical.as_bytes()).to_bytes();
+    let err = verify_revocations(
+        canonical.as_bytes(),
+        &sig,
+        std::slice::from_ref(&trust),
+        Utc::now(),
+        Duration::from_secs(3600),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VerifyError::Parse(_)),
+        "expected ParseError, got {err:?}"
+    );
+}
+
+#[test]
+fn verify_revocations_rejects_when_trust_roots_empty() {
+    let (bytes, sig, _trust, signed_at) = sign_artifact(FIXTURE_REVOCATIONS);
+    let now = signed_at + ChronoDuration::minutes(30);
+    let err = verify_revocations(
+        &bytes,
+        &sig,
+        &[],
+        now,
+        Duration::from_secs(3600),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VerifyError::NoTrustRoots),
+        "empty trust roots → NoTrustRoots; got {err:?}"
+    );
+}
+
+#[test]
+fn verify_revocations_reject_before_rejects_pre_compromise() {
+    // Compromise-kill-switch must apply to every signed sidecar, not
+    // just `verify_artifact`. Same `<` semantic.
+    let (bytes, sig, trust, signed_at) = sign_revocations(FIXTURE_REVOCATIONS);
+    let now = signed_at + ChronoDuration::minutes(30);
+    let reject_before = signed_at + ChronoDuration::seconds(1);
+    let err = verify_revocations(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        Duration::from_secs(3600),
+        Some(reject_before),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VerifyError::RejectedBeforeTimestamp { .. }),
+        "reject_before must apply to revocations; got {err:?}"
+    );
+}
+
+#[test]
+fn verify_revocations_reject_before_none_disables_gate() {
+    let (bytes, sig, trust, signed_at) = sign_revocations(FIXTURE_REVOCATIONS);
+    let now = signed_at + ChronoDuration::minutes(30);
+    verify_revocations(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        Duration::from_secs(3600),
+        None,
+    )
+    .expect("None disables the gate, same as verify_artifact");
+}
+
+#[test]
+fn verify_rollout_manifest_rejects_unsigned() {
+    // signedAt = null → NotSigned. The rollout-manifest verifier
+    // must enforce this — an unsigned manifest is the same trust
+    // class as the rollout-rename attack RFC-0002 §4.4 closes.
+    let signing_key = fresh_signing_key();
+    let trust = trust_root_for(&signing_key);
+    let json = r#"{
+      "schemaVersion": 1,
+      "displayName": "stable@def4567",
+      "channel": "stable",
+      "channelRef": "def4567abc123def4567abc123def4567abc123d",
+      "fleetResolvedHash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "hostSet": [],
+      "healthGate": {},
+      "complianceFrameworks": [],
+      "meta": {
+        "schemaVersion": 1,
+        "signedAt": null,
+        "ciCommit": "def45678",
+        "signatureAlgorithm": "ed25519"
+      }
+    }"#;
+    let reserialized =
+        serde_json::to_string(&serde_json::from_str::<serde_json::Value>(json).unwrap()).unwrap();
+    let canonical = canonicalize(&reserialized).expect("canonicalize");
+    let sig = signing_key.sign(canonical.as_bytes()).to_bytes();
+    let err = verify_rollout_manifest(
+        canonical.as_bytes(),
+        &sig,
+        std::slice::from_ref(&trust),
+        Utc::now(),
+        Duration::from_secs(3600),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VerifyError::NotSigned),
+        "unsigned manifest must be rejected; got {err:?}"
+    );
+}
+
+#[test]
+fn verify_rollout_manifest_rejects_malformed_json() {
+    let signing_key = fresh_signing_key();
+    let trust = trust_root_for(&signing_key);
+    let canonical = canonicalize(r#"{"not":"a-manifest"}"#).expect("canonicalize");
+    let sig = signing_key.sign(canonical.as_bytes()).to_bytes();
+    let err = verify_rollout_manifest(
+        canonical.as_bytes(),
+        &sig,
+        std::slice::from_ref(&trust),
+        Utc::now(),
+        Duration::from_secs(3600),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VerifyError::Parse(_)),
+        "expected ParseError, got {err:?}"
+    );
+}
+
+#[test]
+fn verify_rollout_manifest_rejects_when_trust_roots_empty() {
+    let (bytes, sig, _trust, signed_at) = sign_manifest(FIXTURE_MANIFEST);
+    let now = signed_at + ChronoDuration::minutes(30);
+    let err = verify_rollout_manifest(
+        &bytes,
+        &sig,
+        &[],
+        now,
+        Duration::from_secs(3600),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VerifyError::NoTrustRoots),
+        "empty trust roots → NoTrustRoots; got {err:?}"
+    );
+}
+
+#[test]
+fn verify_rollout_manifest_reject_before_rejects_pre_compromise() {
+    let (bytes, sig, trust, signed_at) = sign_manifest(FIXTURE_MANIFEST);
+    let now = signed_at + ChronoDuration::minutes(30);
+    let reject_before = signed_at + ChronoDuration::seconds(1);
+    let err = verify_rollout_manifest(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        Duration::from_secs(3600),
+        Some(reject_before),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VerifyError::RejectedBeforeTimestamp { .. }),
+        "reject_before must apply to rollout manifest; got {err:?}"
+    );
+}
