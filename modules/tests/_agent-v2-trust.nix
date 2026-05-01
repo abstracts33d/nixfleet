@@ -1,7 +1,8 @@
 # modules/tests/_agent-v2-trust.nix
 #
 # Eval-only assertions for the agent scope module
-# (modules/scopes/nixfleet/_agent.nix). Verifies that:
+# (modules/scopes/nixfleet/_agent.nix; option declarations live in
+# the shared modules/scopes/nixfleet/_agent-options.nix). Verifies that:
 #   - environment.etc materialises /etc/nixfleet/agent/trust.json from
 #     config.nixfleet.trust via pkgs.writers.writeJSON.
 #   - The configured trust payload carries schemaVersion = 1 (required

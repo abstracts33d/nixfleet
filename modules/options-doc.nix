@@ -49,7 +49,7 @@
       }
       {
         heading = "Agent — `services.nixfleet-agent.*`";
-        file = ./scopes/nixfleet/_agent.nix;
+        file = ./scopes/nixfleet/_agent-options.nix;
       }
       {
         heading = "Control plane — `services.nixfleet-control-plane.*`";

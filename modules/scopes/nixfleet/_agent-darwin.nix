@@ -62,74 +62,10 @@
   trustConfig = import ./_trust-json.nix {trust = config.nixfleet.trust;};
   trustJson = pkgs.writers.writeJSON "trust.json" trustConfig;
 in {
+  imports = [./_agent-options.nix];
+
+  # Darwin-only options. Shared options live in `./_agent-options.nix`.
   options.services.nixfleet-agent = {
-    enable = lib.mkEnableOption "NixFleet fleet management agent";
-
-    controlPlaneUrl = lib.mkOption {
-      type = lib.types.str;
-      example = "https://fleet.example.com";
-      description = "URL of the NixFleet control plane.";
-    };
-
-    machineId = lib.mkOption {
-      type = lib.types.str;
-      default = config.hostSpec.hostName or config.networking.hostName or "";
-      defaultText = lib.literalExpression "config.hostSpec.hostName";
-      description = "Machine identifier reported to the control plane.";
-    };
-
-    pollInterval = lib.mkOption {
-      type = lib.types.int;
-      default = 60;
-      description = "Poll interval in seconds (steady-state).";
-    };
-
-    trustFile = lib.mkOption {
-      type = lib.types.path;
-      default = "/etc/nixfleet/agent/trust.json";
-      description = ''
-        Path to the trust-root JSON file (see docs/trust-root-flow.md §3.4).
-        The default is materialised by this module from config.nixfleet.trust
-        via environment.etc; override only when sourcing the file from a
-        secrets manager.
-      '';
-    };
-
-    tls = {
-      caCert = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "/etc/nixfleet/fleet-ca.pem";
-        description = "Path to CA certificate PEM file for verifying the control plane.";
-      };
-      clientCert = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "/run/secrets/agent-cert.pem";
-        description = "Path to client certificate PEM file for mTLS authentication.";
-      };
-      clientKey = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "/run/secrets/agent-key.pem";
-        description = "Path to client private key PEM file for mTLS authentication.";
-      };
-    };
-
-    bootstrapTokenFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "/run/secrets/bootstrap-token-aether";
-      description = ''
-        Path to a one-shot bootstrap token (operator-minted by
-        `nixfleet-mint-token`, signed with the org root key). Used
-        by the agent's first-boot enrollment flow only — once the
-        cert exists at `tls.clientCert`, the token is never read
-        again. Renewal at 50% of cert validity uses the existing
-        cert (mTLS-authenticated /v1/agent/renew), not this token.
-      '';
-    };
-
     sshHostKeyFile = lib.mkOption {
       type = lib.types.str;
       default = "/etc/ssh/ssh_host_ed25519_key";
@@ -139,30 +75,6 @@ in {
         Default matches OpenSSH's stock path on darwin (sshd is
         managed by `services.openssh` in nix-darwin or pre-existing
         on macOS hosts).
-      '';
-    };
-
-    stateDir = lib.mkOption {
-      type = lib.types.str;
-      default = "/var/lib/nixfleet-agent";
-      description = ''
-        Per-host state directory. Holds `last_dispatched.json` and
-        `last_confirmed_at`. Created by the preActivation script
-        with mode 0700; survives agent restart. NOT wiped on
-        impermanent darwin hosts (no equivalent of NixOS impermanence
-        on darwin yet).
-      '';
-    };
-
-    complianceGate.mode = lib.mkOption {
-      type = lib.types.enum ["auto" "disabled" "permissive" "enforce"];
-      default = "auto";
-      description = ''
-        Local default for the runtime compliance gate.
-        Identical semantics to the NixOS module — see _agent.nix for
-        the full description. On darwin the gate's auto-detect probes
-        `launchctl list compliance-evidence-collector` instead of
-        `systemctl status`, but the wire-level behavior is the same.
       '';
     };
 
