@@ -30,7 +30,6 @@
 #     agent-attested last_confirmed_at field on convergence.
 {
   lib,
-  pkgs,
   harnessLib,
   testCerts,
   signedFixture,

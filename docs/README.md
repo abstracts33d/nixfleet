@@ -8,6 +8,7 @@ the code disagrees, the code is being built to match.
 | File | What it is | When to read |
 |---|---|---|
 | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | High-level architecture, component roles, trust flow, build order (Phases 0–10) | First read for new contributors |
+| [`source-layout.md`](source-layout.md) | The four Nix layers (`lib/` / `modules/scopes/` / `contracts/` / `impls/`) and what goes where | When adding Nix code and unsure where it belongs |
 | [`CONTRACTS.md`](CONTRACTS.md) | Every artifact, key, and format that crosses a stream boundary (data, trust roots, canonicalization, storage purity) | When adding or changing anything cross-stream |
 | [`commercial-extensions.md`](commercial-extensions.md) | Capabilities deliberately out of scope for the open kernel (HA, SLA observability, audit packages) | When weighing whether a feature belongs in this repo |
 | [`trust-root-flow.md`](trust-root-flow.md) | How `nixfleet.trust.*` declarations reach `verify_artifact` at runtime | When touching trust-root wiring |

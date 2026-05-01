@@ -35,7 +35,6 @@
   ...
 }: let
   hasRevocations = revocationsFixture != null;
-  staticDir = "/var/lib/nixfleet-cp-static";
 in {
   environment.etc =
     {
