@@ -4,14 +4,16 @@
 //! Binary-local module layout:
 //!
 //! - `main.rs` (this file) — clap-parsed `Args`, run-loop, send_checkin,
-//!   boot-recovery, cert renewal, `post_report` helper.
+//!   boot-recovery, cert renewal.
 //! - `dispatch.rs` — `process_dispatch_target` + the `handle_*`
 //!   family that consume an `EvaluatedTarget` or one of
 //!   `ActivationOutcome`'s failure variants and chain into
 //!   activation / comms / compliance / manifest_cache.
 //!
-//! `Args` and `post_report` are `pub(crate)` so dispatch.rs can use
-//! them; everything else stays file-private.
+//! `Args` is `pub(crate)` so dispatch.rs can read state-dir +
+//! compliance-mode; CP-bound side-effects route through
+//! `comms::Reporter` (production impl: `comms::ReqwestReporter`)
+//! so the dispatch handlers are unit-testable.
 
 mod dispatch;
 
@@ -21,36 +23,11 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::Parser;
 use nixfleet_agent::{checkin_state, comms};
-use nixfleet_proto::agent_wire::{CheckinRequest, ReportEvent, ReportRequest};
+use nixfleet_proto::agent_wire::{CheckinRequest, ReportEvent};
 
 use dispatch::{handle_cp_rollback_signal, process_dispatch_target};
 
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Best-effort: telemetry must never crash the activation loop.
-/// Failures log at warn; the event is already in the local journal.
-pub(crate) async fn post_report(
-    client: &reqwest::Client,
-    cp_url: &str,
-    hostname: &str,
-    rollout: Option<&str>,
-    event: ReportEvent,
-) {
-    let req = ReportRequest {
-        hostname: hostname.to_string(),
-        agent_version: AGENT_VERSION.to_string(),
-        occurred_at: chrono::Utc::now(),
-        rollout: rollout.map(String::from),
-        event,
-    };
-    if let Err(err) = comms::report(client, cp_url, &req).await {
-        tracing::warn!(
-            error = %err,
-            hostname,
-            "report post failed; event is in local journal only",
-        );
-    }
-}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -225,6 +202,12 @@ async fn run_poll_loop(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut client_handle = client;
+    let mut reporter = comms::ReqwestReporter::new(
+        client_handle.clone(),
+        args.control_plane_url.clone(),
+        args.machine_id.clone(),
+        AGENT_VERSION,
+    );
     // Exponential backoff with ±20% jitter on consecutive failures.
     // Doubles each failure, capped at 8× the base interval. Resets
     // to 1× on first success.
@@ -236,8 +219,9 @@ async fn run_poll_loop(
         }
         ticker.tick().await;
 
-        if let Some(new_client) = maybe_renew_cert(&client_handle, args).await {
+        if let Some(new_client) = maybe_renew_cert(&client_handle, &reporter, args).await {
             client_handle = new_client;
+            reporter.replace_client(client_handle.clone());
         }
 
         match send_checkin(&client_handle, args, started_at).await {
@@ -249,10 +233,17 @@ async fn run_poll_loop(
                 // must step away from the failed gen before considering
                 // anything else this tick.
                 if let Some(rb) = &resp.rollback {
-                    handle_cp_rollback_signal(rb, &client_handle, args, &evidence_signer).await;
+                    handle_cp_rollback_signal(rb, &reporter, args, &evidence_signer).await;
                 }
                 if let Some(target) = &resp.target {
-                    process_dispatch_target(target, &client_handle, args, &evidence_signer).await;
+                    process_dispatch_target(
+                        target,
+                        &reporter,
+                        &client_handle,
+                        args,
+                        &evidence_signer,
+                    )
+                    .await;
                 }
             }
             Err(err) => {
@@ -286,7 +277,11 @@ async fn sleep_with_backoff(consecutive_failures: u32, poll_interval: u64) {
 /// Self-paced renewal at 50% of cert validity. Returns `Some(new
 /// client)` when renewal happened so the caller can swap; None
 /// otherwise. Failure is non-fatal — next tick retries.
-async fn maybe_renew_cert(client: &reqwest::Client, args: &Args) -> Option<reqwest::Client> {
+async fn maybe_renew_cert(
+    client: &reqwest::Client,
+    reporter: &impl comms::Reporter,
+    args: &Args,
+) -> Option<reqwest::Client> {
     let (Some(cert_path), Some(key_path)) =
         (args.client_cert.as_deref(), args.client_key.as_deref())
     else {
@@ -308,16 +303,14 @@ async fn maybe_renew_cert(client: &reqwest::Client, args: &Args) -> Option<reqwe
     .await
     {
         tracing::warn!(error = %err, "renew failed; retry next tick");
-        post_report(
-            client,
-            &args.control_plane_url,
-            &args.machine_id,
-            None,
-            ReportEvent::RenewalFailed {
-                reason: err.to_string(),
-            },
-        )
-        .await;
+        reporter
+            .post_report(
+                None,
+                ReportEvent::RenewalFailed {
+                    reason: err.to_string(),
+                },
+            )
+            .await;
         return None;
     }
     match comms::build_client(

@@ -1,28 +1,31 @@
 //! Dispatch path: `process_dispatch_target` + the `handle_*`
 //! family. Each function consumes a CP-issued target (or one of
 //! `activation::ActivationOutcome`'s failure variants) and either
-//! calls the wire helpers in `super::*` or chains into `activation`
-//! / `comms` / `compliance` / `manifest_cache`.
+//! calls the wire helpers via the [`Reporter`] trait or chains into
+//! `activation` / `compliance` / `manifest_cache`.
 //!
 //! Lives as a binary-local module (`mod dispatch;` in main.rs)
-//! because the handlers depend on `super::Args` (the clap-parsed
-//! agent CLI struct). Promoting to a library module would require
-//! lifting `Args` to lib.rs or threading individual fields through
-//! every handler — bigger refactor than the file-organization win
-//! warrants right now. The handler-side trait extraction (which
-//! WOULD pay for that lift) is #67 territory.
+//! because some handlers still depend on `super::Args` (the
+//! clap-parsed agent CLI struct) for state-dir + compliance-mode.
+//! The CP-bound side-effects route through `&impl Reporter`, so
+//! handlers are unit-testable with a capturing fake — see
+//! `handle_signature_mismatch_posts_signed_event_and_does_not_attempt_rollback`
+//! in this file's tests.
 //!
-//! No behaviour change vs the pre-split state: each function moved
-//! across without modification. The only thing main.rs lost is the
-//! 1000 LOC; the only thing dispatch.rs gained is a `use super::*`
-//! at the top.
+//! Only two leaf functions still take a raw `&reqwest::Client`:
+//! `process_dispatch_target` (manifest fetch) and
+//! `confirm_and_finalize` (POST /v1/agent/confirm). Everything else
+//! is reporter-only.
 
 use nixfleet_proto::agent_wire::ReportEvent;
 
-use super::{post_report, Args};
+use nixfleet_agent::comms::Reporter;
+
+use super::Args;
 
 pub(crate) async fn process_dispatch_target(
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    reporter: &impl Reporter,
     client: &reqwest::Client,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
@@ -55,21 +58,19 @@ pub(crate) async fn process_dispatch_target(
                 .as_ref()
                 .as_ref()
                 .and_then(|s| s.sign(&stale_payload).ok());
-            post_report(
-                client,
-                &args.control_plane_url,
-                &args.machine_id,
-                Some(&target.channel_ref),
-                ReportEvent::StaleTarget {
-                    closure_hash: target.closure_hash.clone(),
-                    channel_ref: target.channel_ref.clone(),
-                    signed_at,
-                    freshness_window_secs,
-                    age_secs,
-                    signature,
-                },
-            )
-            .await;
+            reporter
+                .post_report(
+                    Some(&target.channel_ref),
+                    ReportEvent::StaleTarget {
+                        closure_hash: target.closure_hash.clone(),
+                        channel_ref: target.channel_ref.clone(),
+                        signed_at,
+                        freshness_window_secs,
+                        age_secs,
+                        signature,
+                    },
+                )
+                .await;
             return;
         }
         FreshnessCheck::Unknown => {
@@ -108,7 +109,7 @@ pub(crate) async fn process_dispatch_target(
                     err,
                     rollout_id,
                     target,
-                    client,
+                    reporter,
                     args,
                     evidence_signer,
                 )
@@ -141,20 +142,18 @@ pub(crate) async fn process_dispatch_target(
         );
     }
 
-    post_report(
-        client,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        ReportEvent::ActivationStarted {
-            closure_hash: target.closure_hash.clone(),
-            channel_ref: target.channel_ref.clone(),
-        },
-    )
-    .await;
+    reporter
+        .post_report(
+            Some(&target.channel_ref),
+            ReportEvent::ActivationStarted {
+                closure_hash: target.closure_hash.clone(),
+                channel_ref: target.channel_ref.clone(),
+            },
+        )
+        .await;
 
     let outcome = nixfleet_agent::activation::activate(target).await;
-    handle_activation_outcome(outcome, target, client, args, evidence_signer).await;
+    handle_activation_outcome(outcome, target, reporter, client, args, evidence_signer).await;
 }
 
 /// Dispatch on the result of `activation::activate`. Telemetry-only
@@ -162,6 +161,7 @@ pub(crate) async fn process_dispatch_target(
 async fn handle_activation_outcome(
     outcome: anyhow::Result<nixfleet_agent::activation::ActivationOutcome>,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    reporter: &impl Reporter,
     client_handle: &reqwest::Client,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
@@ -169,10 +169,10 @@ async fn handle_activation_outcome(
     use nixfleet_agent::activation::ActivationOutcome;
     match outcome {
         Ok(ActivationOutcome::FiredAndPolled) => {
-            handle_fired_and_polled(target, client_handle, args, evidence_signer).await;
+            handle_fired_and_polled(target, reporter, client_handle, args, evidence_signer).await;
         }
         Ok(ActivationOutcome::RealiseFailed { reason }) => {
-            handle_realise_failed(reason, target, client_handle, args, evidence_signer).await;
+            handle_realise_failed(reason, target, reporter, args, evidence_signer).await;
         }
         Ok(ActivationOutcome::SignatureMismatch {
             closure_hash,
@@ -182,29 +182,20 @@ async fn handle_activation_outcome(
                 closure_hash,
                 stderr_tail,
                 target,
-                client_handle,
+                reporter,
                 args,
                 evidence_signer,
             )
             .await;
         }
         Ok(ActivationOutcome::SwitchFailed { phase, exit_code }) => {
-            handle_switch_failed(phase, exit_code, target, client_handle, args, evidence_signer)
-                .await;
+            handle_switch_failed(phase, exit_code, target, reporter, args, evidence_signer).await;
         }
         Ok(ActivationOutcome::VerifyMismatch { expected, actual }) => {
-            handle_verify_mismatch(
-                expected,
-                actual,
-                target,
-                client_handle,
-                args,
-                evidence_signer,
-            )
-            .await;
+            handle_verify_mismatch(expected, actual, target, reporter, args, evidence_signer).await;
         }
         Err(err) => {
-            handle_activation_spawn_error(err, target, client_handle, args).await;
+            handle_activation_spawn_error(err, target, reporter).await;
         }
     }
 }
@@ -214,6 +205,7 @@ async fn handle_activation_outcome(
 /// the gate outcome.
 async fn handle_fired_and_polled(
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    reporter: &impl Reporter,
     client_handle: &reqwest::Client,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
@@ -224,7 +216,7 @@ async fn handle_fired_and_polled(
         &gate_outcome,
         resolved_mode,
         target,
-        client_handle,
+        reporter,
         args,
         evidence_signer,
         activation_completed_at,
@@ -233,7 +225,7 @@ async fn handle_fired_and_polled(
     if gate_blocks_confirm {
         return;
     }
-    confirm_and_finalize(target, client_handle, args, evidence_signer).await;
+    confirm_and_finalize(target, reporter, client_handle, args, evidence_signer).await;
 }
 
 /// Resolve the effective compliance mode (CP channel policy beats
@@ -274,7 +266,7 @@ async fn process_gate_outcome(
     gate_outcome: &nixfleet_agent::compliance::GateOutcome,
     resolved_mode: nixfleet_agent::compliance::GateMode,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    client_handle: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
     activation_completed_at: chrono::DateTime<chrono::Utc>,
@@ -290,7 +282,7 @@ async fn process_gate_outcome(
             false
         }
         GateOutcome::Failures { evidence, failures } => {
-            post_compliance_failures(failures, evidence, target, client_handle, args, evidence_signer)
+            post_compliance_failures(failures, evidence, target, reporter, args, evidence_signer)
                 .await;
             false
         }
@@ -305,7 +297,7 @@ async fn process_gate_outcome(
                 *evidence_collected_at,
                 resolved_mode,
                 target,
-                client_handle,
+                reporter,
                 args,
                 evidence_signer,
                 activation_completed_at,
@@ -319,7 +311,7 @@ async fn post_compliance_failures(
     failures: &[nixfleet_agent::compliance::ControlEvidence],
     evidence: &nixfleet_agent::compliance::ComplianceEvidence,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    client_handle: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
@@ -346,21 +338,19 @@ async fn post_compliance_failures(
             .as_ref()
             .as_ref()
             .and_then(|s| s.sign(&signed_payload).ok());
-        post_report(
-            client_handle,
-            &args.control_plane_url,
-            &args.machine_id,
-            Some(&target.channel_ref),
-            ReportEvent::ComplianceFailure {
-                control_id: ctrl.control.clone(),
-                status: ctrl.status.clone(),
-                framework_articles: articles,
-                evidence_snippet: Some(snippet),
-                evidence_collected_at: evidence.timestamp,
-                signature,
-            },
-        )
-        .await;
+        reporter
+            .post_report(
+                Some(&target.channel_ref),
+                ReportEvent::ComplianceFailure {
+                    control_id: ctrl.control.clone(),
+                    status: ctrl.status.clone(),
+                    framework_articles: articles,
+                    evidence_snippet: Some(snippet),
+                    evidence_collected_at: evidence.timestamp,
+                    signature,
+                },
+            )
+            .await;
     }
 }
 
@@ -374,7 +364,7 @@ async fn post_runtime_gate_error(
     evidence_collected_at: Option<chrono::DateTime<chrono::Utc>>,
     resolved_mode: nixfleet_agent::compliance::GateMode,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    client_handle: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
     activation_completed_at: chrono::DateTime<chrono::Utc>,
@@ -406,20 +396,18 @@ async fn post_runtime_gate_error(
         .as_ref()
         .as_ref()
         .and_then(|s| s.sign(&signed_payload).ok());
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        ReportEvent::RuntimeGateError {
-            reason: reason.to_string(),
-            collector_exit_code,
-            evidence_collected_at,
-            activation_completed_at,
-            signature,
-        },
-    )
-    .await;
+    reporter
+        .post_report(
+            Some(&target.channel_ref),
+            ReportEvent::RuntimeGateError {
+                reason: reason.to_string(),
+                collector_exit_code,
+                evidence_collected_at,
+                activation_completed_at,
+                signature,
+            },
+        )
+        .await;
     if enforcing {
         let _ = nixfleet_agent::activation::rollback().await;
         let rollback_reason = format!("compliance gate error: {reason}");
@@ -432,17 +420,15 @@ async fn post_runtime_gate_error(
             .as_ref()
             .as_ref()
             .and_then(|s| s.sign(&rollback_payload).ok());
-        post_report(
-            client_handle,
-            &args.control_plane_url,
-            &args.machine_id,
-            Some(&target.channel_ref),
-            ReportEvent::RollbackTriggered {
-                reason: rollback_reason,
-                signature: rollback_signature,
-            },
-        )
-        .await;
+        reporter
+            .post_report(
+                Some(&target.channel_ref),
+                ReportEvent::RollbackTriggered {
+                    reason: rollback_reason,
+                    signature: rollback_signature,
+                },
+            )
+            .await;
     }
     enforcing
 }
@@ -451,6 +437,7 @@ async fn post_runtime_gate_error(
 /// CP-410 (cancelled / deadline-expired rollout) triggers a rollback.
 async fn confirm_and_finalize(
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
+    reporter: &impl Reporter,
     client_handle: &reqwest::Client,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
@@ -475,7 +462,7 @@ async fn confirm_and_finalize(
     .await
     {
         Ok(nixfleet_agent::comms::ConfirmOutcome::Cancelled) => {
-            handle_cp_cancellation(rollout, client_handle, args, evidence_signer).await;
+            handle_cp_cancellation(rollout, reporter, args, evidence_signer).await;
         }
         Ok(nixfleet_agent::comms::ConfirmOutcome::Acknowledged) => {
             persist_confirmed_state(target, args);
@@ -493,7 +480,7 @@ async fn confirm_and_finalize(
 /// `RollbackTriggered` post flips the host's state to `Reverted`.
 pub(crate) async fn handle_cp_rollback_signal(
     rb: &nixfleet_proto::agent_wire::RollbackSignal,
-    client_handle: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
@@ -514,17 +501,12 @@ pub(crate) async fn handle_cp_rollback_signal(
         .as_ref()
         .as_ref()
         .and_then(|s| s.sign(&rollback_payload).ok());
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&rb.rollout),
-        ReportEvent::RollbackTriggered {
-            reason,
-            signature,
-        },
-    )
-    .await;
+    reporter
+        .post_report(
+            Some(&rb.rollout),
+            ReportEvent::RollbackTriggered { reason, signature },
+        )
+        .await;
     match &rb_outcome {
         Ok(o) if o.success() => {}
         Ok(o) => tracing::error!(
@@ -541,7 +523,7 @@ pub(crate) async fn handle_cp_rollback_signal(
 
 async fn handle_cp_cancellation(
     rollout: &str,
-    client_handle: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
@@ -556,17 +538,15 @@ async fn handle_cp_cancellation(
         .as_ref()
         .as_ref()
         .and_then(|s| s.sign(&rollback_payload).ok());
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(rollout),
-        ReportEvent::RollbackTriggered {
-            reason: reason.to_string(),
-            signature,
-        },
-    )
-    .await;
+    reporter
+        .post_report(
+            Some(rollout),
+            ReportEvent::RollbackTriggered {
+                reason: reason.to_string(),
+                signature,
+            },
+        )
+        .await;
     match &rb_outcome {
         Ok(o) if o.success() => {}
         Ok(o) => tracing::error!(
@@ -602,7 +582,7 @@ fn persist_confirmed_state(target: &nixfleet_proto::agent_wire::EvaluatedTarget,
 async fn handle_realise_failed(
     reason: String,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    client_handle: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
@@ -620,25 +600,23 @@ async fn handle_realise_failed(
         .as_ref()
         .as_ref()
         .and_then(|s| s.sign(&payload).ok());
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        ReportEvent::RealiseFailed {
-            closure_hash: target.closure_hash.clone(),
-            reason,
-            signature,
-        },
-    )
-    .await;
+    reporter
+        .post_report(
+            Some(&target.channel_ref),
+            ReportEvent::RealiseFailed {
+                closure_hash: target.closure_hash.clone(),
+                reason,
+                signature,
+            },
+        )
+        .await;
 }
 
 async fn handle_signature_mismatch(
     closure_hash: String,
     stderr_tail: String,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    client_handle: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
@@ -659,25 +637,23 @@ async fn handle_signature_mismatch(
         .as_ref()
         .as_ref()
         .and_then(|s| s.sign(&payload).ok());
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        ReportEvent::ClosureSignatureMismatch {
-            closure_hash,
-            stderr_tail,
-            signature,
-        },
-    )
-    .await;
+    reporter
+        .post_report(
+            Some(&target.channel_ref),
+            ReportEvent::ClosureSignatureMismatch {
+                closure_hash,
+                stderr_tail,
+                signature,
+            },
+        )
+        .await;
 }
 
 async fn handle_switch_failed(
     phase: String,
     exit_code: Option<i32>,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    client_handle: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
@@ -696,19 +672,17 @@ async fn handle_switch_failed(
             .as_ref()
             .as_ref()
             .and_then(|s| s.sign(&payload).ok());
-        post_report(
-            client_handle,
-            &args.control_plane_url,
-            &args.machine_id,
-            Some(&target.channel_ref),
-            ReportEvent::ActivationFailed {
-                phase: phase.clone(),
-                exit_code,
-                stderr_tail: None,
-                signature,
-            },
-        )
-        .await;
+        reporter
+            .post_report(
+                Some(&target.channel_ref),
+                ReportEvent::ActivationFailed {
+                    phase: phase.clone(),
+                    exit_code,
+                    stderr_tail: None,
+                    signature,
+                },
+            )
+            .await;
     }
     let rb_outcome = nixfleet_agent::activation::rollback().await;
     let rollback_event = match &rb_outcome {
@@ -775,14 +749,9 @@ async fn handle_switch_failed(
             }
         }
     };
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        rollback_event,
-    )
-    .await;
+    reporter
+        .post_report(Some(&target.channel_ref), rollback_event)
+        .await;
     if let Err(err) = rb_outcome {
         tracing::error!(
             error = %err,
@@ -799,7 +768,7 @@ async fn handle_verify_mismatch(
     expected: String,
     actual: String,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    client_handle: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
@@ -818,18 +787,16 @@ async fn handle_verify_mismatch(
         .as_ref()
         .as_ref()
         .and_then(|s| s.sign(&payload).ok());
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        ReportEvent::VerifyMismatch {
-            expected: expected.clone(),
-            actual: actual.clone(),
-            signature,
-        },
-    )
-    .await;
+    reporter
+        .post_report(
+            Some(&target.channel_ref),
+            ReportEvent::VerifyMismatch {
+                expected: expected.clone(),
+                actual: actual.clone(),
+                signature,
+            },
+        )
+        .await;
 
     let rb_outcome = nixfleet_agent::activation::rollback().await;
     let rollback_event = match &rb_outcome {
@@ -898,14 +865,9 @@ async fn handle_verify_mismatch(
             }
         }
     };
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        rollback_event,
-    )
-    .await;
+    reporter
+        .post_report(Some(&target.channel_ref), rollback_event)
+        .await;
     if let Err(err) = rb_outcome {
         tracing::error!(
             error = %err,
@@ -924,7 +886,7 @@ async fn handle_manifest_error(
     err: nixfleet_agent::manifest_cache::ManifestError,
     rollout_id: &str,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    client: &reqwest::Client,
+    reporter: &impl Reporter,
     args: &Args,
     evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
 ) {
@@ -995,14 +957,9 @@ async fn handle_manifest_error(
         }
     };
 
-    post_report(
-        client,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        event,
-    )
-    .await;
+    reporter
+        .post_report(Some(&target.channel_ref), event)
+        .await;
 }
 
 /// Spawn / I/O error inside `activate `. State is unknown (could
@@ -1010,23 +967,166 @@ async fn handle_manifest_error(
 async fn handle_activation_spawn_error(
     err: anyhow::Error,
     target: &nixfleet_proto::agent_wire::EvaluatedTarget,
-    client_handle: &reqwest::Client,
-    args: &Args,
+    reporter: &impl Reporter,
 ) {
     tracing::error!(error = %err, "activation spawn failed");
-    post_report(
-        client_handle,
-        &args.control_plane_url,
-        &args.machine_id,
-        Some(&target.channel_ref),
-        ReportEvent::Other {
-            kind: "activation-spawn-failed".to_string(),
-            detail: Some(serde_json::json!({
-                "error": err.to_string(),
-                "target_closure": target.closure_hash,
-            })),
-        },
-    )
-    .await;
+    reporter
+        .post_report(
+            Some(&target.channel_ref),
+            ReportEvent::Other {
+                kind: "activation-spawn-failed".to_string(),
+                detail: Some(serde_json::json!({
+                    "error": err.to_string(),
+                    "target_closure": target.closure_hash,
+                })),
+            },
+        )
+        .await;
 }
 
+#[cfg(test)]
+mod tests {
+    //! Per-variant unit tests for the dispatch handlers via a
+    //! capturing `Reporter`. The handlers' branch logic + payload
+    //! shape are covered here without ever talking to a real CP.
+    //! End-to-end behavior (real activation, real switch poll) is
+    //! exercised by the microvm harness on the lab.
+
+    use super::*;
+    use nixfleet_agent::comms::Reporter;
+    use nixfleet_proto::agent_wire::{EvaluatedTarget, ReportEvent};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// Records every `post_report` call. Cheaply Clone-able (the
+    /// inner Mutex is shared via Arc) so tests can hold one reference
+    /// while the dispatch tree holds another.
+    #[derive(Default)]
+    struct FakeReporter {
+        calls: Mutex<Vec<(Option<String>, ReportEvent)>>,
+    }
+    impl FakeReporter {
+        fn new() -> Self {
+            Self::default()
+        }
+        fn calls(&self) -> Vec<(Option<String>, ReportEvent)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl Reporter for FakeReporter {
+        async fn post_report(&self, rollout: Option<&str>, event: ReportEvent) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((rollout.map(String::from), event));
+        }
+    }
+
+    fn sample_target() -> EvaluatedTarget {
+        EvaluatedTarget {
+            closure_hash: "abc123-test".to_string(),
+            channel_ref: "stable@feedface".to_string(),
+            evaluated_at: chrono::Utc::now(),
+            rollout_id: None,
+            wave_index: None,
+            activate: None,
+            signed_at: None,
+            freshness_window_secs: None,
+            compliance_mode: None,
+        }
+    }
+
+    fn sample_args() -> Args {
+        Args {
+            control_plane_url: "https://cp.test".to_string(),
+            machine_id: "test-host".to_string(),
+            poll_interval: 60,
+            trust_file: PathBuf::from("/dev/null"),
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+            bootstrap_token_file: None,
+            state_dir: PathBuf::from("/tmp/nixfleet-test"),
+            compliance_gate_mode: None,
+            ssh_host_key_file: PathBuf::from("/dev/null"),
+        }
+    }
+
+    /// `handle_signature_mismatch` posts exactly one
+    /// `ClosureSignatureMismatch` event with the supplied closure
+    /// hash + stderr, and does NOT trigger a rollback (no rollback()
+    /// shell-out, no follow-up `RollbackTriggered` event). The
+    /// stderr is captured verbatim on the wire (truncation already
+    /// happened upstream in `realise()`).
+    #[tokio::test]
+    async fn handle_signature_mismatch_posts_signed_event_and_does_not_attempt_rollback() {
+        let fake = FakeReporter::new();
+        let target = sample_target();
+        let args = sample_args();
+        let signer = std::sync::Arc::new(None);
+
+        handle_signature_mismatch(
+            "abc123-bad-sig".to_string(),
+            "error: lacks a valid signature".to_string(),
+            &target,
+            &fake,
+            &args,
+            &signer,
+        )
+        .await;
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "expected exactly one post; got {:?}", calls);
+        let (rollout, event) = &calls[0];
+        assert_eq!(rollout.as_deref(), Some("stable@feedface"));
+        match event {
+            ReportEvent::ClosureSignatureMismatch {
+                closure_hash,
+                stderr_tail,
+                signature,
+            } => {
+                assert_eq!(closure_hash, "abc123-bad-sig");
+                assert_eq!(stderr_tail, "error: lacks a valid signature");
+                assert!(
+                    signature.is_none(),
+                    "no evidence_signer wired → signature must be None",
+                );
+            }
+            other => panic!("expected ClosureSignatureMismatch, got {other:?}"),
+        }
+    }
+
+    /// `handle_realise_failed` produces exactly one `RealiseFailed`
+    /// event with the failure reason, no rollback, no follow-up
+    /// activation events.
+    #[tokio::test]
+    async fn handle_realise_failed_posts_one_event_no_rollback() {
+        let fake = FakeReporter::new();
+        let target = sample_target();
+        let args = sample_args();
+        let signer = std::sync::Arc::new(None);
+
+        handle_realise_failed(
+            "network unreachable".to_string(),
+            &target,
+            &fake,
+            &args,
+            &signer,
+        )
+        .await;
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        match &calls[0].1 {
+            ReportEvent::RealiseFailed {
+                closure_hash,
+                reason,
+                ..
+            } => {
+                assert_eq!(closure_hash, "abc123-test");
+                assert_eq!(reason, "network unreachable");
+            }
+            other => panic!("expected RealiseFailed, got {other:?}"),
+        }
+    }
+}

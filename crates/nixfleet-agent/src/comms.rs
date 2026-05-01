@@ -3,13 +3,25 @@
 //! Builds an mTLS `reqwest::Client` from the operator-supplied PEM
 //! paths. Provides typed `checkin` and `report` calls that round-
 //! trip the wire types defined in `nixfleet_proto::agent_wire`.
+//!
+//! Two traits abstract the CP-bound side-effects so the dispatch
+//! handlers in `dispatch.rs` can be unit-tested with capturing fakes:
+//!
+//! - [`Reporter`] — wraps `post_report`'s capture of `(client, cp_url,
+//!   hostname, agent_version)`. Production impl: [`ReqwestReporter`].
+//! - [`Confirmer`] — wraps `/v1/agent/confirm` POSTs. Production
+//!   impl: [`ReqwestConfirmer`]. Used by the activation
+//!   `confirm_target` helper and the boot-recovery path; concrete
+//!   callers are still on the free-function form for now (the trait
+//!   surface is wired so a future PR can swap them in without a
+//!   contract change).
 
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use nixfleet_proto::agent_wire::{
-    CheckinRequest, CheckinResponse, ConfirmRequest, ReportRequest, ReportResponse,
+    CheckinRequest, CheckinResponse, ConfirmRequest, ReportEvent, ReportRequest, ReportResponse,
     PROTOCOL_MAJOR_VERSION, PROTOCOL_VERSION_HEADER,
 };
 use reqwest::{Certificate, Client, Identity, StatusCode};
@@ -149,4 +161,117 @@ pub async fn report(
         anyhow::bail!("{url}: {status}: {body}");
     }
     resp.json::<ReportResponse>().await.context("parse report response")
+}
+
+/// Out-of-band event posting (the `/v1/agent/report` endpoint).
+///
+/// Best-effort by contract: telemetry must never crash the activation
+/// loop. Implementations log on failure and return; they don't
+/// propagate errors. The matching production impl is
+/// [`ReqwestReporter`]; tests inject a capturing fake.
+pub trait Reporter: Send + Sync {
+    fn post_report(
+        &self,
+        rollout: Option<&str>,
+        event: ReportEvent,
+    ) -> impl std::future::Future<Output = ()> + Send;
+}
+
+/// Production [`Reporter`]: wraps a configured `reqwest::Client`
+/// plus the constants every report needs (`cp_url`, `hostname`,
+/// `agent_version`). Constructed once in `main.rs` and shared
+/// across the dispatch tree.
+pub struct ReqwestReporter {
+    client: Client,
+    cp_url: String,
+    hostname: String,
+    agent_version: String,
+}
+
+impl ReqwestReporter {
+    pub fn new(
+        client: Client,
+        cp_url: impl Into<String>,
+        hostname: impl Into<String>,
+        agent_version: impl Into<String>,
+    ) -> Self {
+        Self {
+            client,
+            cp_url: cp_url.into(),
+            hostname: hostname.into(),
+            agent_version: agent_version.into(),
+        }
+    }
+
+    /// Replace the inner `reqwest::Client` (called after cert renewal
+    /// rebuilds the mTLS identity).
+    pub fn replace_client(&mut self, client: Client) {
+        self.client = client;
+    }
+
+    /// Borrow the inner client for callers that still need to thread
+    /// a `&reqwest::Client` directly (checkin, confirm, manifest
+    /// fetch). Trait-only callers should use the [`Reporter`]
+    /// surface instead.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    pub fn cp_url(&self) -> &str {
+        &self.cp_url
+    }
+}
+
+impl Reporter for ReqwestReporter {
+    async fn post_report(&self, rollout: Option<&str>, event: ReportEvent) {
+        let req = ReportRequest {
+            hostname: self.hostname.clone(),
+            agent_version: self.agent_version.clone(),
+            occurred_at: chrono::Utc::now(),
+            rollout: rollout.map(String::from),
+            event,
+        };
+        if let Err(err) = report(&self.client, &self.cp_url, &req).await {
+            tracing::warn!(
+                error = %err,
+                hostname = %self.hostname,
+                "report post failed; event is in local journal only",
+            );
+        }
+    }
+}
+
+/// Confirmation POSTs (`/v1/agent/confirm`).
+///
+/// Surface is wired alongside [`Reporter`] for consistency; concrete
+/// callers (`activation::confirm_target`, `recovery::decide_and_run`)
+/// still take `&reqwest::Client + cp_url` for now. A future PR can
+/// migrate them when the test surface starts wanting per-variant
+/// confirm assertions.
+pub trait Confirmer: Send + Sync {
+    fn confirm(
+        &self,
+        req: &ConfirmRequest,
+    ) -> impl std::future::Future<Output = Result<ConfirmOutcome>> + Send;
+}
+
+/// Production [`Confirmer`]: wraps `(client, cp_url)`. Borrowed via
+/// `ReqwestReporter::client()` + `ReqwestReporter::cp_url()` so the
+/// agent's run-loop holds a single reqwest client across the
+/// reporter and confirmer surfaces.
+pub struct ReqwestConfirmer<'a> {
+    client: &'a Client,
+    cp_url: &'a str,
+}
+
+impl<'a> ReqwestConfirmer<'a> {
+    pub fn new(client: &'a Client, cp_url: &'a str) -> Self {
+        Self { client, cp_url }
+    }
+}
+
+impl Confirmer for ReqwestConfirmer<'_> {
+    async fn confirm(&self, req: &ConfirmRequest) -> Result<ConfirmOutcome> {
+        confirm(self.client, self.cp_url, req).await
+    }
 }
