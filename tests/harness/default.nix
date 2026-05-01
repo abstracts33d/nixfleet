@@ -418,4 +418,5 @@ in {
   inherit agenixFixture;
   inherit probeFixture;
   inherit revocationsFixture;
+  inherit rolloutManifestFixture;
 }
