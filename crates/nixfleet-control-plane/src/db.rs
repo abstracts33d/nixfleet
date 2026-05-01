@@ -564,6 +564,23 @@ impl Db {
         Ok(n)
     }
 
+    /// Read the current `host_state` for (rollout_id, hostname).
+    /// Returns `Ok(None)` when no row exists. Public so tests in
+    /// sibling modules can assert state transitions without
+    /// re-deriving the projection through `active_rollouts_snapshot`.
+    pub fn host_state(&self, hostname: &str, rollout_id: &str) -> Result<Option<String>> {
+        let guard = self.conn()?;
+        let row = guard
+            .query_row(
+                "SELECT host_state FROM host_rollout_state
+                 WHERE rollout_id = ?1 AND hostname = ?2",
+                params![rollout_id, hostname],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        Ok(row)
+    }
+
     /// True iff any `host_rollout_state` row exists for the given
     /// (rollout_id, hostname). Used by 's soak-state
     /// recovery path to avoid overwriting existing host state when

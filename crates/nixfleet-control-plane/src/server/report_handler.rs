@@ -125,6 +125,21 @@ pub(super) async fn report(
         }
     }
 
+    // — close the rollback-and-halt loop. After the agent
+    // posts `RollbackTriggered`, advance host_rollout_state from
+    // `Failed` to `Reverted` so `compute_rollback_signal` stops
+    // emitting the signal on every checkin (otherwise the agent's
+    // idempotent `rollback()` keeps churning fresh
+    // `RollbackTriggered` posts forever). The wire docstring on
+    // `RollbackSignal` already promises this behaviour; this arm
+    // makes the promise real. Best-effort: a transition error must
+    // NOT fail the report POST — the report endpoint is a
+    // write-only sink for evidence, and a stale state row gets
+    // re-detected on the next reconcile tick.
+    if let Some(db) = state.db.as_ref() {
+        apply_rollback_state_transition(db, &req);
+    }
+
     let mut reports = state.host_reports.write().await;
     let buf = reports.entry(req.hostname).or_default();
     if buf.len() >= REPORT_RING_CAP {
@@ -133,6 +148,65 @@ pub(super) async fn report(
     buf.push_back(record);
 
     Ok(Json(ReportResponse { event_id }))
+}
+
+/// Flip `host_rollout_state.host_state` from `Failed` to `Reverted`
+/// when a `RollbackTriggered` event arrives. No-op for any other
+/// event variant or when the report carries no `rollout` id (the
+/// CP-410 cancellation path can post `RollbackTriggered` without
+/// a rollout context). Guarded with `expected_from = Failed` so
+/// the other emitters of `RollbackTriggered` (`handle_cp_cancellation`
+/// in CP-410, `handle_switch_failed` for agent self-detected
+/// activation failure) leave non-Failed rows untouched —
+/// `transition_host_state` returns `Ok(0)` when the WHERE clause
+/// doesn't match.
+fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
+    use nixfleet_proto::agent_wire::ReportEvent;
+    if !matches!(req.event, ReportEvent::RollbackTriggered { .. }) {
+        return;
+    }
+    let Some(rollout) = req.rollout.as_deref() else {
+        return;
+    };
+    match db.transition_host_state(
+        &req.hostname,
+        rollout,
+        crate::state::HostRolloutState::Reverted,
+        crate::state::HealthyMarker::Untouched,
+        Some(crate::state::HostRolloutState::Failed),
+    ) {
+        Ok(0) => {
+            // Row not in Failed (or absent). Expected for the CP-410
+            // cancellation and agent self-detected activation-failure
+            // paths; the guard intentionally leaves them alone.
+            tracing::debug!(
+                target: "report",
+                hostname = %req.hostname,
+                rollout = %rollout,
+                "RollbackTriggered: no Failed row to transition (guard preserved non-Failed state)",
+            );
+        }
+        Ok(_) => {
+            tracing::info!(
+                target: "report",
+                hostname = %req.hostname,
+                rollout = %rollout,
+                "RollbackTriggered: host_rollout_state Failed → Reverted",
+            );
+        }
+        Err(err) => {
+            // Best-effort: a transition error does not fail the
+            // report POST. The reconciler will re-detect on the
+            // next tick.
+            tracing::warn!(
+                target: "report",
+                hostname = %req.hostname,
+                rollout = %rollout,
+                error = %err,
+                "RollbackTriggered: Failed → Reverted transition failed; report still persisted",
+            );
+        }
+    }
 }
 
 /// Compute the signature verdict for an incoming report (
@@ -432,4 +506,143 @@ fn rand_suffix(n: usize) -> String {
     (0..n)
         .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for `apply_rollback_state_transition` — the
+    //! Failed → Reverted flip that closes the rollback-and-halt
+    //! signal loop after the agent's `RollbackTriggered` post.
+    use super::*;
+    use crate::db::Db;
+    use crate::state::{HealthyMarker, HostRolloutState};
+    use chrono::Utc;
+    use nixfleet_proto::agent_wire::{ReportEvent, ReportRequest};
+
+    fn fresh_db() -> Db {
+        let db = Db::open_in_memory().unwrap();
+        db.migrate().unwrap();
+        db
+    }
+
+    fn rollback_report(host: &str, rollout: Option<&str>) -> ReportRequest {
+        ReportRequest {
+            hostname: host.to_string(),
+            agent_version: "test".into(),
+            occurred_at: Utc::now(),
+            rollout: rollout.map(String::from),
+            event: ReportEvent::RollbackTriggered {
+                reason: "test".into(),
+                signature: None,
+            },
+        }
+    }
+
+    #[test]
+    fn rollback_triggered_flips_failed_to_reverted() {
+        let db = fresh_db();
+        // Seed a Failed row.
+        db.transition_host_state(
+            "ohm",
+            "stable@abc12345",
+            HostRolloutState::Failed,
+            HealthyMarker::Untouched,
+            None,
+        )
+        .unwrap();
+        let req = rollback_report("ohm", Some("stable@abc12345"));
+        apply_rollback_state_transition(&db, &req);
+        assert_eq!(
+            db.host_state("ohm", "stable@abc12345").unwrap().as_deref(),
+            Some("Reverted"),
+        );
+    }
+
+    #[test]
+    fn rollback_triggered_leaves_non_failed_states_untouched() {
+        // The CP-410 cancel path and agent self-detected
+        // activation-failure path both post `RollbackTriggered`
+        // without entering `Failed` first. The DB-level guard
+        // (`expected_from = Failed`) leaves Healthy / Soaked /
+        // ConfirmWindow rows alone.
+        let db = fresh_db();
+        for state in [
+            HostRolloutState::Healthy,
+            HostRolloutState::Soaked,
+            HostRolloutState::ConfirmWindow,
+            HostRolloutState::Activating,
+            HostRolloutState::Converged,
+        ] {
+            let rollout = format!("stable@{}", state.as_db_str().to_lowercase());
+            db.transition_host_state("ohm", &rollout, state, HealthyMarker::Untouched, None)
+                .unwrap();
+            let req = rollback_report("ohm", Some(&rollout));
+            apply_rollback_state_transition(&db, &req);
+            assert_eq!(
+                db.host_state("ohm", &rollout).unwrap().as_deref(),
+                Some(state.as_db_str()),
+                "{} should not flip to Reverted",
+                state.as_db_str(),
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_triggered_without_rollout_is_a_noop() {
+        // A `RollbackTriggered` post with no rollout id (e.g. a
+        // CP-410 cancellation that wasn't tied to a rollout in
+        // the agent's state) must not error and must not touch
+        // any state row. The report still records elsewhere.
+        let db = fresh_db();
+        db.transition_host_state(
+            "ohm",
+            "stable@abc12345",
+            HostRolloutState::Failed,
+            HealthyMarker::Untouched,
+            None,
+        )
+        .unwrap();
+        let req = rollback_report("ohm", None);
+        apply_rollback_state_transition(&db, &req);
+        // Failed row untouched — no rollout id meant we couldn't
+        // even target the right row.
+        assert_eq!(
+            db.host_state("ohm", "stable@abc12345").unwrap().as_deref(),
+            Some("Failed"),
+        );
+    }
+
+    #[test]
+    fn non_rollback_events_do_not_transition_state() {
+        // The transition arm must only fire on `RollbackTriggered`.
+        // ActivationFailed / RealiseFailed / etc. arrive in the
+        // same handler but follow their own (currently empty)
+        // pipelines.
+        let db = fresh_db();
+        db.transition_host_state(
+            "ohm",
+            "stable@abc12345",
+            HostRolloutState::Failed,
+            HealthyMarker::Untouched,
+            None,
+        )
+        .unwrap();
+        let req = ReportRequest {
+            hostname: "ohm".into(),
+            agent_version: "test".into(),
+            occurred_at: Utc::now(),
+            rollout: Some("stable@abc12345".into()),
+            event: ReportEvent::RealiseFailed {
+                closure_hash: "abc".into(),
+                reason: "substituter 503".into(),
+                signature: None,
+            },
+        };
+        apply_rollback_state_transition(&db, &req);
+        assert_eq!(
+            db.host_state("ohm", "stable@abc12345").unwrap().as_deref(),
+            Some("Failed"),
+            "non-RollbackTriggered events must not trigger Failed → Reverted",
+        );
+    }
 }
