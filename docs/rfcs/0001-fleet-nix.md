@@ -1,8 +1,9 @@
 # RFC-0001: Declarative fleet topology (`fleet.nix`)
 
-**Status.** Draft.
+**Status.** Accepted.
 **Target.** `arcanesys/nixfleet` issue #1.
 **Scope.** Schema and evaluation contract for the `fleet` flake output. Does not cover reconciliation semantics (that's #3) or activation (that's #2).
+**Implementation.** `lib/mk-fleet.nix` (the schema), `crates/nixfleet-proto/src/fleet_resolved.rs` (the wire types), `crates/nixfleet-release` (the producer), `tests/lib/mk-fleet/` (the eval harness). See `ARCHITECTURE.md` §1.1 / §3.
 
 ## 1. Motivation
 

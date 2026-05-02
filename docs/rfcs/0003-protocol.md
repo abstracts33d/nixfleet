@@ -1,8 +1,9 @@
 # RFC-0003: Agent ↔ control-plane protocol
 
-**Status.** Draft.
+**Status.** Accepted.
 **Depends on.** RFC-0001, RFC-0002, nixfleet #2 (magic rollback).
 **Scope.** Wire protocol between agent and control plane. Identity, endpoints, polling, versioning, security properties. Does not cover control-plane-internal APIs.
+**Implementation.** `crates/nixfleet-proto/src/agent_wire.rs` + `enroll_wire.rs` (request/response types), `crates/nixfleet-control-plane/src/server/` (the `/v1/*` handlers and mTLS gate), `crates/nixfleet-agent/` (the poll loop, enrollment, magic-rollback timer). See `ARCHITECTURE.md` §1.4 / §1.5 / §6 Phase 3.
 
 ## 1. Design goals
 
