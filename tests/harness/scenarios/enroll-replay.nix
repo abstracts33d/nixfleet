@@ -151,7 +151,7 @@ in
       # both concurrent posts in step 4 use the same token (same
       # nonce), so exactly one is allowed to record it.
       print("step 3: mint bootstrap token…")
-      host.succeed(
+      mint_rc, _ = host.execute(
           "nixfleet-mint-token "
           "--hostname agent-99 "
           f"--csr-pubkey-fingerprint '{fp}' "
@@ -160,6 +160,14 @@ in
           "> /tmp/enroll-test/token.json "
           "2> /tmp/enroll-test/mint.stderr"
       )
+      if mint_rc != 0:
+          # Surface the binary's stderr on failure — without this the
+          # harness only reports "RequestedAssertionFailed: command ...
+          # failed (exit code 1)" and the actual error is invisible.
+          stderr_dump = host.succeed("cat /tmp/enroll-test/mint.stderr || true")
+          raise Exception(
+              f"nixfleet-mint-token failed (rc={mint_rc}). stderr:\n{stderr_dump}"
+          )
       mint_stderr = host.succeed("cat /tmp/enroll-test/mint.stderr")
       # Parse the nonce out of the stderr line "nonce: <hex>".
       nonce = None

@@ -69,31 +69,19 @@ struct Args {
 fn read_signing_key(path: &PathBuf) -> Result<SigningKey> {
     let bytes = std::fs::read(path)
         .with_context(|| format!("read org root key {}", path.display()))?;
-    // Accept three formats:
-    // - 32 raw bytes
-    // - hex-encoded 64 chars (with optional 0x/whitespace)
+    // Accept three formats. PEM is checked first because newlines are
+    // load-bearing for the line-based body extraction; the all-
+    // whitespace strip used for the raw + hex paths would collapse
+    // BEGIN/body/END onto one line and break `lines()`.
     // - PEM PKCS#8 (BEGIN PRIVATE KEY ... END PRIVATE KEY)
-    let trimmed: Vec<u8> = bytes.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect();
-    if trimmed.len() == 32 {
-        let arr: [u8; 32] = trimmed[..32]
-            .try_into()
-            .expect("slice of length 32 fits [u8; 32] — len checked above");
-        return Ok(SigningKey::from_bytes(&arr));
-    }
-    if let Ok(s) = std::str::from_utf8(&trimmed) {
-        let s = s.trim_start_matches("0x").trim();
-        if s.len() == 64 {
-            let raw = hex::decode(s).context("hex decode org root key")?;
-            let arr: [u8; 32] = raw[..32]
-                .try_into()
-                .expect("hex decode of 64 chars yields 32 bytes — fits [u8; 32]");
-            return Ok(SigningKey::from_bytes(&arr));
-        }
-        if s.starts_with("-----BEGIN") {
+    // - 32 raw bytes (whitespace-tolerant)
+    // - hex-encoded 64 chars (with optional 0x/whitespace)
+    if let Ok(orig) = std::str::from_utf8(&bytes) {
+        if orig.trim_start().starts_with("-----BEGIN") {
             // PKCS#8 PEM. Manual extraction since we don't pull
             // rustls-pemfile here. The 32-byte raw key is at the end
             // of the DER blob.
-            let body: String = s
+            let body: String = orig
                 .lines()
                 .filter(|l| !l.starts_with("-----"))
                 .collect::<Vec<_>>()
@@ -112,9 +100,77 @@ fn read_signing_key(path: &PathBuf) -> Result<SigningKey> {
             return Ok(SigningKey::from_bytes(&arr));
         }
     }
+
+    let trimmed: Vec<u8> = bytes.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect();
+    if trimmed.len() == 32 {
+        let arr: [u8; 32] = trimmed[..32]
+            .try_into()
+            .expect("slice of length 32 fits [u8; 32] — len checked above");
+        return Ok(SigningKey::from_bytes(&arr));
+    }
+    if let Ok(s) = std::str::from_utf8(&trimmed) {
+        let s = s.trim_start_matches("0x").trim();
+        if s.len() == 64 {
+            let raw = hex::decode(s).context("hex decode org root key")?;
+            let arr: [u8; 32] = raw[..32]
+                .try_into()
+                .expect("hex decode of 64 chars yields 32 bytes — fits [u8; 32]");
+            return Ok(SigningKey::from_bytes(&arr));
+        }
+    }
     anyhow::bail!(
         "couldn't parse org root key — expected 32 raw bytes, hex, or PEM PKCS#8"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn pkcs8_pem_for_seed(seed: &[u8; 32]) -> String {
+        // Same DER prefix the harness `org-root-key` fixture uses:
+        // SEQUENCE(46) { v=0 ; AlgId(Ed25519) ; OCTET-STRING(32){seed} }
+        let mut der = hex::decode("302e020100300506032b657004220420").unwrap();
+        der.extend_from_slice(seed);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
+        format!("-----BEGIN PRIVATE KEY-----\n{b64}\n-----END PRIVATE KEY-----\n")
+    }
+
+    #[test]
+    fn read_signing_key_accepts_pkcs8_pem() {
+        // Regression: pre-fix, `read_signing_key` ran the PEM body
+        // extractor over a string that had been pre-stripped of all
+        // whitespace, so `lines()` saw a single concatenated line
+        // (BEGIN…body…END), the filter dropped it, and the body was
+        // empty → "PEM too short for PKCS#8 ed25519". This is the
+        // exact failure that surfaced in fleet-harness-enroll-replay.
+        let seed = [0x42u8; 32];
+        let pem = pkcs8_pem_for_seed(&seed);
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(pem.as_bytes()).unwrap();
+        let key = read_signing_key(&tmp.path().to_path_buf()).expect("PEM should parse");
+        assert_eq!(key.to_bytes(), seed);
+    }
+
+    #[test]
+    fn read_signing_key_accepts_raw_32_bytes() {
+        let seed = [0x55u8; 32];
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&seed).unwrap();
+        let key = read_signing_key(&tmp.path().to_path_buf()).unwrap();
+        assert_eq!(key.to_bytes(), seed);
+    }
+
+    #[test]
+    fn read_signing_key_accepts_hex() {
+        let seed = [0x77u8; 32];
+        let hex = hex::encode(seed);
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(hex.as_bytes()).unwrap();
+        let key = read_signing_key(&tmp.path().to_path_buf()).unwrap();
+        assert_eq!(key.to_bytes(), seed);
+    }
 }
 
 fn random_nonce() -> String {
