@@ -48,7 +48,6 @@
 #    metrics, and cache concerns live outside the agent binary now.
 {
   config,
-  inputs,
   lib,
   pkgs,
   ...

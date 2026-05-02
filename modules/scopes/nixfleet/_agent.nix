@@ -18,7 +18,6 @@
 # Auto-included by mkHost (disabled by default).
 {
   config,
-  inputs,
   lib,
   pkgs,
   ...
