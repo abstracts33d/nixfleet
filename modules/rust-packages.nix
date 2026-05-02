@@ -29,8 +29,9 @@
 
             cp ${config.packages.options-doc} docs/mdbook/src/options.md
 
-            mkdir -p docs/mdbook/src/rfcs
-            cp docs/rfcs/*.md docs/mdbook/src/rfcs/
+            # RFC sources stay in docs/rfcs/; mdbook's {{#include}}
+            # preprocessor (in docs/mdbook/src/rfcs/000{1,2,3}-*.md)
+            # pulls them in at build time. Single source of truth.
 
             mdbook build docs/mdbook
 

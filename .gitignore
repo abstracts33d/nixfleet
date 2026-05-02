@@ -11,8 +11,7 @@ TODO.md
 *.local.bak
 
 # Doc pipeline outputs — built fresh by `nix run .#docs`.
-# RFCs in src/rfcs/ are copies of the canonical files under repo `rfcs/`;
-# only index.md is hand-authored and tracked.
+# Tracked source: docs/rfcs/*.md (canonical RFC text), pulled into
+# mdbook via {{#include}} preprocessor in docs/mdbook/src/rfcs/.
 /docs/mdbook/book/
-/docs/mdbook/src/rfcs/0*.md
 /docs/mdbook/src/options.md
