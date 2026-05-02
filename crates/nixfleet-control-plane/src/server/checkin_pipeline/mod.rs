@@ -7,7 +7,8 @@
 //! - [`rollback_signal`] — RFC-0002 §5.1 rollback-and-halt signal
 //!   emission + the per-checkin "left Healthy" sweep.
 //! - [`dispatch_target`] — dispatch decision + persist the
-//!   `pending_confirms` row that anchors idempotency.
+//!   `host_dispatch_state` operational + `dispatch_history` audit
+//!   rows that anchor idempotency.
 //! - [`wave_gate`] — checkin-side caller around the pure
 //!   `evaluate_channel_gate` evaluator (top-level `crate::wave_gate`).
 
@@ -99,17 +100,18 @@ pub(super) async fn checkin(
 }
 
 /// `POST /v1/agent/confirm` — agent confirms successful activation.
-/// Marks the matching `pending_confirms` row as confirmed.
+/// Flips the matching `host_dispatch_state` row from 'pending' to
+/// 'confirmed'.
 ///
 /// Behaviour:
-/// - Pending row exists, deadline not passed → mark confirmed, 204.
+/// - Pending row exists, deadline not passed → flip confirmed, 204.
 /// - No matching row in 'pending' state → orphan-recovery path:
 ///   if the agent's reported `closure_hash` matches the host's
 ///   declared target in the verified `FleetResolved`, treat as a
-///   CP-rebuild recovery — synthesise a confirmed pending_confirms
-///   row + transition to Healthy + 204. Closure-hash mismatch →
-///   genuine 410 (rollout cancelled / wrong rollout / deadline
-///   expired; agent triggers local rollback per RFC §4.2).
+///   CP-rebuild recovery — synthesise a confirmed operational row
+///   + transition to Healthy + 204. Closure-hash mismatch → genuine
+///   410 (rollout cancelled / wrong rollout / deadline expired;
+///   agent triggers local rollback per RFC §4.2).
 /// - DB unset → 503 (endpoint requires persistence).
 pub(super) async fn confirm(
     State(state): State<Arc<AppState>>,
@@ -132,8 +134,8 @@ pub(super) async fn confirm(
     })?;
 
     let updated = db
-        .confirms()
-        .confirm_pending(&req.hostname, &req.rollout)
+        .host_dispatch_state()
+        .confirm(&req.hostname, &req.rollout)
         .map_err(|err| {
             tracing::error!(error = %err, "confirm: db update failed");
             StatusCode::INTERNAL_SERVER_ERROR

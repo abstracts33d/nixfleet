@@ -104,7 +104,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             let rollouts = match state
                 .db
                 .as_deref()
-                .map(|db| db.rollout_state().active_rollouts_snapshot())
+                .map(|db| db.host_dispatch_state().active_rollouts_snapshot())
             {
                 Some(Ok(v)) => v,
                 Some(Err(err)) => {
@@ -206,14 +206,13 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
 /// require CP-side state mutation:
 ///
 /// - `Action::SoakHost` — flip Healthy → Soaked on the host's row.
-/// - `Action::ConvergeRollout` — DELETE the rollout's `pending_confirms`
-///   + `host_rollout_state` rows. Without this, confirmed rows from
-///   converged rollouts linger forever and re-surface in
-///   `active_rollouts_snapshot` (double-counting hosts in disruption
-///   budgets, emitting empty-channel ChannelUnknown noise). The
-///   action is the reconciler's terminal signal — ConvergeRollout
-///   fires only when every wave is fully Soaked, i.e. no host on
-///   that rollout still has work to do.
+/// - `Action::ConvergeRollout` — stamp every open `dispatch_history`
+///   row for the rollout with `terminal_state = 'converged'`. The
+///   operational `host_dispatch_state` row stays Confirmed and is
+///   replaced on the next dispatch (#81). The action is the
+///   reconciler's terminal signal — ConvergeRollout fires only when
+///   every wave is fully Soaked, i.e. no host on that rollout still
+///   has work to do.
 ///
 /// Other action variants (HaltRollout, RollbackHost, ChannelUnknown,
 /// WaveBlocked, …) are emitted for journal/observability and don't
@@ -270,25 +269,36 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                 }
             }
             Action::ConvergeRollout { rollout } => {
-                match db.rollout_state().delete_rollout_records(rollout) {
-                    Ok((0, 0)) => {
-                        // Already cleaned up by a prior tick — expected
+                // Stamp every open `dispatch_history` row for this
+                // rollout with `terminal_state = 'converged'`. The
+                // operational `host_dispatch_state` rows are
+                // intentionally left as 'confirmed' — they're the
+                // host's current state and will be UPSERTed by the
+                // next dispatch. No host_rollout_state cleanup
+                // either; ConvergeRollout is idempotent and
+                // re-emits each tick (handle_wave keeps reading
+                // 'Soaked' rows as wave_all_soaked = true).
+                match db
+                    .dispatch_history()
+                    .mark_rollout_converged(rollout, chrono::Utc::now())
+                {
+                    Ok(0) => {
+                        // Already stamped by a prior tick — expected
                         // on every re-emission after the first.
                     }
-                    Ok((pc, hrs)) => {
+                    Ok(n) => {
                         tracing::info!(
                             target: "converge",
                             rollout = %rollout,
-                            pending_confirms_deleted = pc,
-                            host_rollout_state_deleted = hrs,
-                            "converge: terminal cleanup of rollout records",
+                            history_rows_marked = n,
+                            "converge: stamped dispatch_history terminal_state=converged",
                         );
                     }
                     Err(err) => {
                         tracing::warn!(
                             rollout = %rollout,
                             error = %err,
-                            "converge: terminal cleanup failed",
+                            "converge: dispatch_history terminal stamp failed",
                         );
                     }
                 }

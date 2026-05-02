@@ -8,14 +8,14 @@
 //!
 //! Keeping the enum in a sibling module to `db.rs` avoids pulling
 //! a domain-specific type into the proto crate (it's CP-private
-//! the agent never sees `pending_confirms.state` strings) while
+//! the agent never sees `host_dispatch_state.state` strings) while
 //! still letting `db.rs`, `rollback_timer.rs`, and any future SQL
 //! call sites share the same compile-time-checked variant names.
 
 use anyhow::{anyhow, Result};
 
-/// activation lifecycle. Persisted as TEXT in
-/// `pending_confirms.state` with a CHECK constraint over the
+/// Per-host activation lifecycle. Persisted as TEXT in
+/// `host_dispatch_state.state` with a CHECK constraint over the
 /// canonical literals returned by [`PendingConfirmState::as_db_str`].
 ///
 /// Lifecycle:
@@ -25,7 +25,8 @@ use anyhow::{anyhow, Result};
 ///   `/v1/agent/confirm` (or the orphan-recovery path inserted a
 ///   synthetic row directly in this state).
 /// - [`RolledBack`](Self::RolledBack): the magic-rollback timer
-///   tripped — `confirm_deadline` passed without confirmation.
+///   tripped — `confirm_deadline` passed without confirmation —
+///   or the report handler closed the rollback-and-halt loop.
 /// - [`Cancelled`](Self::Cancelled): operator-driven cancellation
 ///   path (reserved; no caller emits this yet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,7 +39,7 @@ pub enum PendingConfirmState {
 
 impl PendingConfirmState {
     /// Canonical SQLite literal. Matches the CHECK constraint in
-    /// the V001 migration.
+    /// the V006 migration's `host_dispatch_state.state` column.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             PendingConfirmState::Pending => "pending",
@@ -57,7 +58,33 @@ impl PendingConfirmState {
             "confirmed" => Ok(PendingConfirmState::Confirmed),
             "rolled-back" => Ok(PendingConfirmState::RolledBack),
             "cancelled" => Ok(PendingConfirmState::Cancelled),
-            other => Err(anyhow!("unknown pending_confirms.state: {other:?}")),
+            other => Err(anyhow!("unknown host_dispatch_state.state: {other:?}")),
+        }
+    }
+}
+
+/// Terminal classification stamped on `dispatch_history.terminal_state`
+/// when a host's dispatch reaches the end of its lifecycle. Distinct
+/// from [`PendingConfirmState`]: operational state has both pre-
+/// terminal (Pending/Confirmed) and terminal (RolledBack/Cancelled)
+/// values, while audit only records what terminal a dispatch
+/// eventually reached. Confirmed rows that the reconciler later
+/// converges land here as `Converged`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminalState {
+    Converged,
+    RolledBack,
+    Cancelled,
+}
+
+impl TerminalState {
+    /// Canonical SQLite literal. Matches the CHECK constraint in
+    /// the V006 migration's `dispatch_history.terminal_state`.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            TerminalState::Converged => "converged",
+            TerminalState::RolledBack => "rolled-back",
+            TerminalState::Cancelled => "cancelled",
         }
     }
 }
@@ -105,6 +132,16 @@ mod tests {
         assert!(PendingConfirmState::from_db_str("").is_err());
         assert!(PendingConfirmState::from_db_str("Pending").is_err()); // case-sensitive
         assert!(PendingConfirmState::from_db_str("rolledback").is_err());
+    }
+
+    #[test]
+    fn terminal_state_literals_match_check_constraint() {
+        // Bridge to the V006 migration's CHECK constraint on
+        // dispatch_history.terminal_state. Hard-coded so a future
+        // rename catches the drift.
+        assert_eq!(TerminalState::Converged.as_db_str(), "converged");
+        assert_eq!(TerminalState::RolledBack.as_db_str(), "rolled-back");
+        assert_eq!(TerminalState::Cancelled.as_db_str(), "cancelled");
     }
 
     // HostRolloutState round-trip + unknown-string tests live with

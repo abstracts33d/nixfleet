@@ -127,8 +127,8 @@ impl Reports<'_> {
     }
 
     /// Drop host_reports rows older than `max_age_hours`. Mirror of
-    /// `Confirms::prune_pending_confirms`; same 7-day retention
-    /// default. Wired into `prune_timer.rs`.
+    /// `Tokens::prune_token_replay`; 7-day retention default. Wired
+    /// into `prune_timer.rs`.
     pub fn prune_host_reports(&self, max_age_hours: i64) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let n = guard

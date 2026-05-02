@@ -1,8 +1,9 @@
-//! Per-checkin dispatch decision: query the in-flight pending
-//! confirms, consult the wave-staging gate, ask `dispatch::decide_target`
-//! for a target, and if the answer is Dispatch, persist a
-//! `pending_confirms` row as the idempotency anchor. Helpers staging
-//! per-channel host snapshots for the gate live alongside.
+//! Per-checkin dispatch decision: query the in-flight operational
+//! row, consult the wave-staging gate, ask `dispatch::decide_target`
+//! for a target, and if the answer is Dispatch, UPSERT the
+//! `host_dispatch_state` row + append to `dispatch_history` as the
+//! idempotency anchor. Helpers staging per-channel host snapshots
+//! for the gate live alongside.
 
 use chrono::{DateTime, Utc};
 use nixfleet_proto::agent_wire::CheckinRequest;
@@ -26,13 +27,16 @@ pub(super) async fn dispatch_target_for_checkin(
         );
         None
     })?;
-    let pending_for_host = match db.confirms().pending_confirm_exists(&req.hostname) {
+    let pending_for_host = match db
+        .host_dispatch_state()
+        .pending_dispatch_exists(&req.hostname)
+    {
         Ok(b) => b,
         Err(err) => {
             tracing::error!(
                 hostname = %req.hostname,
                 error = %err,
-                "dispatch: pending_confirm_exists query failed",
+                "dispatch: pending_dispatch_exists query failed",
             );
             return None;
         }
@@ -135,7 +139,7 @@ pub(super) fn wave_index_for(
     })
 }
 
-/// Persist the `pending_confirms` row for a freshly-dispatched
+/// Persist the operational + audit rows for a freshly-dispatched
 /// target. Returns the target on success, None if the DB write fails
 /// (the row is the idempotency anchor — without it the next checkin
 /// would re-dispatch, breaking the contract).
@@ -152,8 +156,8 @@ fn record_dispatched_target(
 ) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
     let confirm_deadline = now + chrono::Duration::seconds(state.confirm_deadline_secs);
     match db
-        .confirms()
-        .record_pending_confirm(&crate::db::PendingConfirmInsert {
+        .host_dispatch_state()
+        .record_dispatch(&crate::db::DispatchInsert {
             hostname,
             rollout_id,
             channel,
@@ -162,7 +166,7 @@ fn record_dispatched_target(
             target_channel_ref: &target.channel_ref,
             confirm_deadline,
         }) {
-        Ok(_) => {
+        Ok(()) => {
             tracing::info!(
                 target: "dispatch",
                 hostname = %hostname,
@@ -178,7 +182,7 @@ fn record_dispatched_target(
                 hostname = %hostname,
                 rollout = %rollout_id,
                 error = %err,
-                "dispatch: record_pending_confirm failed; returning no target",
+                "dispatch: record_dispatch failed; returning no target",
             );
             None
         }

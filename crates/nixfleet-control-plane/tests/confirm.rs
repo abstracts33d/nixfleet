@@ -1,10 +1,11 @@
 //! `/v1/agent/confirm` integration tests.
 //!
 //! Coverage:
-//! - happy path: pending row exists, agent posts matching confirm,
-//!   gets 204, row's state flips to 'confirmed'.
-//! - 410 Gone: agent posts confirm for a rollout that has no
-//!   pending row (cancelled, rolled-back, or never dispatched).
+//! - happy path: operational row in 'pending', agent posts matching
+//!   confirm, gets 204, row's state flips to 'confirmed'.
+//! - 410 Gone: agent posts confirm for a rollout the host isn't
+//!   currently dispatched to (cancelled, rolled-back, or never
+//!   dispatched).
 //! - 403: cert CN doesn't match body hostname.
 //! - 503: server has no DB configured.
 
@@ -18,7 +19,7 @@ use common::{
     build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port, write_pem,
 };
 use nixfleet_control_plane::{
-    db::{Db, PendingConfirmInsert},
+    db::{Db, DispatchInsert},
     server,
 };
 use nixfleet_proto::agent_wire::{ConfirmRequest, GenerationRef};
@@ -83,13 +84,13 @@ async fn confirm_happy_path_marks_row_confirmed() {
         mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
 
-    // Pre-populate a pending_confirms row via direct DB access.
+    // Pre-populate an operational dispatch row via direct DB access.
     {
         let db = Db::open(&db_path).unwrap();
         db.migrate().unwrap();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
-        db.confirms()
-            .record_pending_confirm(&PendingConfirmInsert {
+        db.host_dispatch_state()
+            .record_dispatch(&DispatchInsert {
                 hostname: "test-host",
                 rollout_id: "stable@abc123",
                 channel: "stable",
@@ -138,7 +139,7 @@ async fn confirm_happy_path_marks_row_confirmed() {
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let state: String = conn
         .query_row(
-            "SELECT state FROM pending_confirms WHERE hostname=?1 AND rollout_id=?2",
+            "SELECT state FROM host_dispatch_state WHERE hostname=?1 AND rollout_id=?2",
             rusqlite::params!["test-host", "stable@abc123"],
             |r| r.get(0),
         )

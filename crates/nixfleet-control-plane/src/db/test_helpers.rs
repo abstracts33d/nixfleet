@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 
-use super::confirms::PendingConfirmInsert;
+use super::host_dispatch_state::DispatchInsert;
 use super::reports::HostReportInsert;
 use super::Db;
 use crate::state::{HealthyMarker, HostRolloutState};
@@ -30,16 +30,16 @@ pub(crate) fn mark_healthy(db: &Db, host: &str, rollout: &str, now: DateTime<Utc
         .unwrap();
 }
 
-/// Build a `PendingConfirmInsert` with the common shape used across
-/// the test module (rollout_id reused as channel_ref, mirroring how
-/// `dispatch.rs` populates the row).
-pub(crate) fn pc_insert<'a>(
+/// Build a `DispatchInsert` with the common shape used across the
+/// test module (rollout_id reused as channel_ref, mirroring how
+/// `dispatch_target.rs` populates the row).
+pub(crate) fn dispatch_insert<'a>(
     host: &'a str,
     rollout: &'a str,
     target_closure: &'a str,
     deadline: DateTime<Utc>,
-) -> PendingConfirmInsert<'a> {
-    PendingConfirmInsert {
+) -> DispatchInsert<'a> {
+    DispatchInsert {
         hostname: host,
         rollout_id: rollout,
         channel: "stable",
