@@ -84,8 +84,16 @@
     };
   };
 
+  # cp-real doesn't include sqlite3 in systemPackages; the testScript
+  # needs the CLI on the host VM to inject the expired-deadline row.
+  # Same scenario-local override rollback-policy uses for the same
+  # reason.
+  sqliteHostModule = {pkgs, ...}: {
+    environment.systemPackages = [pkgs.sqlite];
+  };
+
   combinedHostModule = {
-    imports = [cpHostModule shortDeadlineModule];
+    imports = [cpHostModule shortDeadlineModule sqliteHostModule];
   };
 in
   harnessLib.mkFleetScenario {
