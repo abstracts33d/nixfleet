@@ -88,6 +88,10 @@ pub(super) async fn checkin(
 
     rollback_signal::clear_left_healthy_for_checkin(&state, &req).await;
     recovery::recover_soak_state_from_attestation(&state, &req, now).await;
+    // Catches the deadline-fired-before-confirm-arrived race: agent
+    // is on the target but the row got marked rolled-back. Revives
+    // to confirmed; lab/2026-05-02 split-brain class.
+    let _ = recovery::try_recover_pending_from_checkin(&state, &req).await;
 
     let target = dispatch_target::dispatch_target_for_checkin(&state, &req, now).await;
     let rollback = rollback_signal::rollback_signal_for_checkin(&state, &req).await;
