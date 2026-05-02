@@ -32,9 +32,13 @@
     # into the real-binary nodes via these.
     nixfleet-control-plane = config.packages.nixfleet-control-plane or null;
     nixfleet-agent = config.packages.nixfleet-agent or null;
+    # Operator-side helper binaries — `nixfleet-mint-token` is the
+    # binary the enroll-replay scenario invokes inside the host VM
+    # to mint bootstrap tokens at runtime.
+    nixfleet-cli = config.packages.nixfleet-cli or null;
     harness = import ../../tests/harness {
       inherit lib pkgs inputs nixfleet-canonicalize nixfleet-verify-artifact;
-      inherit nixfleet-control-plane nixfleet-agent;
+      inherit nixfleet-control-plane nixfleet-agent nixfleet-cli;
     };
   in
     lib.optionalAttrs (system == "x86_64-linux") {
@@ -150,6 +154,23 @@
           # RollbackTriggered post → Reverted transition → idempotent
           # stop). Hardware-level proof of the #69 implementation.
           fleet-harness-rollback-policy = harness.fleet-harness-rollback-policy;
+        }
+        # Enroll-replay scenario gate: needs the cli too (for
+        # nixfleet-mint-token at runtime).
+        // lib.optionalAttrs (
+          nixfleet-canonicalize
+          != null
+          && nixfleet-control-plane != null
+          && nixfleet-cli != null
+        ) {
+          # Token-replay race scenario. Two parallel POSTs to
+          # /v1/enroll with the same bootstrap-token nonce; asserts
+          # exactly one 200 + one 409 (the post-fix
+          # AlreadyRecorded branch of the token_replay PK race) +
+          # exactly one row in token_replay + the operator-readable
+          # log line. Edge case: dropped table → 500 (closes the
+          # pre-fix fail-open on DB error).
+          fleet-harness-enroll-replay = harness.fleet-harness-enroll-replay;
         };
     };
 }

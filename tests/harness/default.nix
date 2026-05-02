@@ -36,6 +36,12 @@
   # signed-roundtrip scenarios.
   nixfleet-control-plane ? null,
   nixfleet-agent ? null,
+  # Operator-side helper binaries (`nixfleet-mint-token`,
+  # `nixfleet-derive-pubkey`). Used by the enroll-replay scenario
+  # to mint bootstrap tokens at runtime inside the host VM. Default
+  # null so callers without the crane workspace still get the
+  # other scenarios.
+  nixfleet-cli ? null,
 }: let
   harnessLib = import ./lib.nix {inherit lib pkgs inputs;};
 
@@ -91,6 +97,50 @@
   # an age-encrypted blob + matching identity + the plaintext bytes
   # the scenario greps for absence of in CP-side disk dumps.
   agenixFixture = import ./fixtures/agenix {inherit pkgs;};
+
+  # Org-root ed25519 keypair fixture for the enroll-replay scenario
+  # (and any future enrolment-flow scenario). The trust.json shipped
+  # alongside wires `orgRootKey.current` (so the CP's enrol handler
+  # accepts tokens signed by this keypair). Stitched together with
+  # the signedFixture's pubkey at runCommand-time so the same trust
+  # file ALSO carries `ciReleaseKey.current`, letting the CP boot
+  # against the harness's signed fleet bytes without two trust
+  # files. The signed-fixture's pubkey is read from a derivation
+  # path inside the runCommand, not at Nix eval time.
+  orgRootKeyFixture =
+    if nixfleet-canonicalize == null
+    then null
+    else let
+      # Standalone keypair (no trust.json embedded). The combined
+      # trust.json is built by the runCommand below.
+      bareKey = import ./fixtures/org-root-key {
+        inherit pkgs;
+      };
+    in
+      pkgs.runCommand "nixfleet-harness-org-root-key-with-trust" {} ''
+        set -euo pipefail
+        mkdir -p "$out"
+        cp ${bareKey}/private.pem "$out/private.pem"
+        cp ${bareKey}/pubkey.b64 "$out/pubkey.b64"
+        org_pub=$(cat ${bareKey}/pubkey.b64)
+        ci_pub=$(cat ${signedFixture}/verify-pubkey.b64)
+        cat > "$out/trust.json" <<EOF
+        {
+          "schemaVersion": 1,
+          "ciReleaseKey": {
+            "current": { "algorithm": "ed25519", "public": "$ci_pub" },
+            "previous": null,
+            "rejectBefore": null
+          },
+          "cacheKeys": [],
+          "orgRootKey": {
+            "current": { "algorithm": "ed25519", "public": "$org_pub" },
+            "previous": null,
+            "rejectBefore": null
+          }
+        }
+        EOF
+      '';
 
   # Pre-signed probe-output fixture for the auditor-chain scenario.
   # Outputs canonical payload + base64 sig + OpenSSH pubkey; consumed
@@ -331,6 +381,29 @@
         verifyArtifactPkg = nixfleet-verify-artifact;
       };
 
+  # Enroll-replay race scenario. cp-real + non-mTLS curls firing
+  # two parallel POSTs to /v1/enroll with the same nonce; asserts
+  # exactly one 200 + one 409 (the AlreadyRecorded branch of the
+  # token_replay PRIMARY KEY race), one row in token_replay, and
+  # the operator-readable log line. Edge case: stops CP, drops
+  # the table, asserts a fresh enroll fails closed (not 200).
+  enrollReplayScenario =
+    if nixfleet-control-plane == null || nixfleet-cli == null || orgRootKeyFixture == null
+    then
+      throw ''
+        tests/harness: fleet-harness-enroll-replay requires
+        `nixfleet-control-plane`, `nixfleet-cli`, and
+        `nixfleet-canonicalize` (for the org-root key fixture).
+        Wire via modules/tests/harness.nix.
+      ''
+    else
+      import ./scenarios/enroll-replay.nix (scenarioArgs
+        // {
+          inherit signedFixture orgRootKeyFixture;
+          cpPkg = nixfleet-control-plane;
+          cliPkg = nixfleet-cli;
+        });
+
   # Manifest-tamper-rejection scenario. Pure runCommand — exercises
   # the rollout-manifest leg of the offline auditor chain (RFC-0002
   # §4.4). Asserts well-formed verify, byte-tampered manifest +
@@ -465,6 +538,8 @@ in {
   fleet-harness-corruption-rejection = corruptionRejectionScenario;
 
   fleet-harness-future-dated-rejection = futureDatedRejectionScenario;
+
+  fleet-harness-enroll-replay = enrollReplayScenario;
 
   fleet-harness-manifest-tamper-rejection = manifestTamperRejectionScenario;
 
