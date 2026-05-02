@@ -290,7 +290,7 @@
       ++ extraModules;
 
     _module.args = {
-      inherit testCerts controlPlaneHost controlPlanePort agentPkg signedFixture pollIntervalSecs;
+      inherit inputs testCerts controlPlaneHost controlPlanePort agentPkg signedFixture pollIntervalSecs;
       harnessMicrovmDefaults = microvmGuestDefaults;
       agentHostName = hostName;
     };
