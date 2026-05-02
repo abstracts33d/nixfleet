@@ -29,6 +29,7 @@ mod status_handlers;
 
 pub use state::{
     AppState, ClosureUpstream, HostCheckinRecord, IssuancePaths, ReportRecord, ServeArgs,
+    VerifiedFleetSnapshot,
 };
 
 use std::sync::Arc;
@@ -264,8 +265,11 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 // emitting the count at startup lets operators see
                 // the curve in the journal without parsing the DB.
                 let host_count = fleet.hosts.len();
-                *state.verified_fleet.write().await = Some(Arc::new(fleet));
-                *state.fleet_resolved_hash.write().await = Some(fleet_hash);
+                *state.verified_fleet.write().await =
+                    Some(crate::server::VerifiedFleetSnapshot {
+                        fleet: Arc::new(fleet),
+                        fleet_resolved_hash: fleet_hash,
+                    });
                 tracing::info!(
                     target: "reconcile",
                     host_count,
@@ -303,7 +307,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         crate::polling::channel_refs_poll::spawn(
             state.channel_refs_cache.clone(),
             state.verified_fleet.clone(),
-            state.fleet_resolved_hash.clone(),
             channel_refs_source,
         );
     }

@@ -176,7 +176,9 @@ async fn poll_refreshes_verified_fleet_snapshot() {
     .await;
 
     let cache = Arc::new(RwLock::new(ChannelRefsCache::default()));
-    let verified_fleet: Arc<RwLock<Option<Arc<FleetResolved>>>> = Arc::new(RwLock::new(None));
+    let verified_fleet: Arc<
+        RwLock<Option<nixfleet_control_plane::server::VerifiedFleetSnapshot>>,
+    > = Arc::new(RwLock::new(None));
 
     let cfg = ChannelRefsSource {
         artifact_url: format!("http://127.0.0.1:{port}{artifact_route}"),
@@ -186,13 +188,13 @@ async fn poll_refreshes_verified_fleet_snapshot() {
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
-    let _poll = spawn(cache.clone(), verified_fleet.clone(), Arc::new(RwLock::new(None)), cfg);
+    let _poll = spawn(cache.clone(), verified_fleet.clone(), cfg);
 
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let mut last_snapshot: Option<Arc<FleetResolved>> = None;
     while std::time::Instant::now() < deadline {
-        if let Some(s) = verified_fleet.read().await.clone() {
-            last_snapshot = Some(s);
+        if let Some(snap) = verified_fleet.read().await.clone() {
+            last_snapshot = Some(snap.fleet);
             break;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -262,8 +264,14 @@ async fn poll_retains_snapshot_on_verify_failure() {
     }).to_string()).unwrap();
 
     let cache = Arc::new(RwLock::new(ChannelRefsCache::default()));
-    let verified_fleet: Arc<RwLock<Option<Arc<FleetResolved>>>> =
-        Arc::new(RwLock::new(Some(Arc::new(sentinel))));
+    let verified_fleet: Arc<
+        RwLock<Option<nixfleet_control_plane::server::VerifiedFleetSnapshot>>,
+    > = Arc::new(RwLock::new(Some(
+        nixfleet_control_plane::server::VerifiedFleetSnapshot {
+            fleet: Arc::new(sentinel),
+            fleet_resolved_hash: "sentinel-hash".to_string(),
+        },
+    )));
 
     let cfg = ChannelRefsSource {
         artifact_url: format!("http://127.0.0.1:{port}{artifact_route}"),
@@ -273,11 +281,11 @@ async fn poll_retains_snapshot_on_verify_failure() {
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
-    let _poll = spawn(cache.clone(), verified_fleet.clone(), Arc::new(RwLock::new(None)), cfg);
+    let _poll = spawn(cache.clone(), verified_fleet.clone(), cfg);
 
     tokio::time::sleep(Duration::from_secs(2)).await;
     let snapshot = verified_fleet.read().await.clone();
-    let fleet = snapshot.expect("sentinel must be retained on verify failure");
+    let fleet = snapshot.expect("sentinel must be retained on verify failure").fleet;
     assert_eq!(
         fleet.hosts.get("sentinel").and_then(|h| h.closure_hash.as_deref()),
         Some("sentinel-hash"),

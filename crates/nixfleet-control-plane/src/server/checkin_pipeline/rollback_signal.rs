@@ -22,7 +22,7 @@ pub(super) async fn rollback_signal_for_checkin(
     req: &CheckinRequest,
 ) -> Option<nixfleet_proto::agent_wire::RollbackSignal> {
     let db = state.db.as_ref()?;
-    let fleet = state.verified_fleet.read().await.clone()?;
+    let fleet = state.verified_fleet.read().await.clone()?.fleet;
     let failed = match db.rollout_state().failed_rollouts_for_host(&req.hostname) {
         Ok(v) => v,
         Err(err) => {

@@ -19,14 +19,12 @@ pub(super) async fn dispatch_target_for_checkin(
     now: DateTime<Utc>,
 ) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
     let db = state.db.as_ref()?;
-    let fleet = state.verified_fleet.read().await.clone()?;
-    let fleet_resolved_hash = state.fleet_resolved_hash.read().await.clone().or_else(|| {
-        tracing::debug!(
-            hostname = %req.hostname,
-            "dispatch: no fleet_resolved_hash yet; skipping",
-        );
-        None
-    })?;
+    // Atomic snapshot read: the (fleet, fleet_resolved_hash) pair
+    // comes out of one RwLock guard so dispatch can never see a
+    // torn snapshot (RFC-0002 §4.4 anchor consistency).
+    let snap = state.verified_fleet.read().await.clone()?;
+    let fleet = snap.fleet;
+    let fleet_resolved_hash = snap.fleet_resolved_hash;
     let pending_for_host = match db
         .host_dispatch_state()
         .pending_dispatch_exists(&req.hostname)

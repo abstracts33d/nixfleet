@@ -38,8 +38,7 @@ pub struct ChannelRefsCache {
 /// (transient outage / bad sig must not blank out a good snapshot).
 pub fn spawn(
     cache: Arc<RwLock<ChannelRefsCache>>,
-    verified_fleet: Arc<RwLock<Option<Arc<nixfleet_proto::FleetResolved>>>>,
-    fleet_resolved_hash: Arc<RwLock<Option<String>>>,
+    verified_fleet: Arc<RwLock<Option<crate::server::VerifiedFleetSnapshot>>>,
     config: ChannelRefsSource,
 ) -> tokio::task::JoinHandle<()> {
     SignedArtifactPoller {
@@ -49,24 +48,24 @@ pub fn spawn(
     .spawn(move |client| {
         let cache = Arc::clone(&cache);
         let verified_fleet = Arc::clone(&verified_fleet);
-        let fleet_resolved_hash = Arc::clone(&fleet_resolved_hash);
         let config = config.clone();
         async move {
             let (refs, fleet, fleet_hash) = poll_once(&client, &config).await?;
-            apply_verified_refs(&cache, &verified_fleet, &fleet_resolved_hash, refs, fleet, fleet_hash).await;
+            apply_verified_refs(&cache, &verified_fleet, refs, fleet, fleet_hash).await;
             Ok(())
         }
     })
 }
 
-/// Update the in-memory snapshot triple (cache, verified_fleet,
-/// fleet_resolved_hash) and emit the per-tick INFO heartbeat. Runs
-/// only on successful verify; the poller's per-tick warn covers the
-/// failure path and leaves these untouched.
+/// Update the in-memory snapshot pair (cache + atomic verified_fleet)
+/// and emit the per-tick INFO heartbeat. Runs only on successful
+/// verify; the poller's per-tick warn covers the failure path and
+/// leaves these untouched. The (fleet, fleet_resolved_hash) pair is
+/// written under one RwLock so dispatch readers can never see a
+/// torn snapshot.
 async fn apply_verified_refs(
     cache: &RwLock<ChannelRefsCache>,
-    verified_fleet: &RwLock<Option<Arc<nixfleet_proto::FleetResolved>>>,
-    fleet_resolved_hash: &RwLock<Option<String>>,
+    verified_fleet: &RwLock<Option<crate::server::VerifiedFleetSnapshot>>,
     refs: HashMap<String, String>,
     fleet: nixfleet_proto::FleetResolved,
     fleet_hash: String,
@@ -76,11 +75,10 @@ async fn apply_verified_refs(
 
     {
         let mut guard = verified_fleet.write().await;
-        *guard = Some(Arc::new(fleet));
-    }
-    {
-        let mut guard = fleet_resolved_hash.write().await;
-        *guard = Some(fleet_hash);
+        *guard = Some(crate::server::VerifiedFleetSnapshot {
+            fleet: Arc::new(fleet),
+            fleet_resolved_hash: fleet_hash,
+        });
     }
 
     let mut guard = cache.write().await;

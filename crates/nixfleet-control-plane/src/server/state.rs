@@ -130,6 +130,19 @@ pub struct ReportRecord {
     pub signature_status: Option<nixfleet_reconciler::evidence::SignatureStatus>,
 }
 
+/// Atomically-updated pair: the verified fleet bytes and the
+/// SHA-256 of their canonical (JCS) bytes. Held together under one
+/// RwLock so readers can never see a fresh `fleet` paired with a
+/// stale `fleet_resolved_hash` — that mismatch would corrupt the
+/// rolloutId anchor at the heart of RFC-0002 §4.4. Cheap to clone:
+/// `fleet` is `Arc`-wrapped, `fleet_resolved_hash` is a short hex
+/// string.
+#[derive(Clone, Debug)]
+pub struct VerifiedFleetSnapshot {
+    pub fleet: Arc<FleetResolved>,
+    pub fleet_resolved_hash: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct ClosureUpstream {
     pub base_url: String,
@@ -156,13 +169,14 @@ pub struct AppState {
     pub issuance_paths: RwLock<IssuancePaths>,
     pub db: Option<Arc<crate::db::Db>>,
     pub closure_upstream: Option<ClosureUpstream>,
-    pub verified_fleet: Arc<RwLock<Option<Arc<FleetResolved>>>>,
-    /// SHA-256 hex of the canonical bytes of `verified_fleet`. Updated
-    /// in lockstep with verified_fleet by the channel-refs poll. Used
-    /// by `compute_rollout_id_for_channel` to anchor every rolloutId
-    /// advertisement to the specific signed snapshot it was projected
-    /// from (RFC-0002 §4.4 anchor).
-    pub fleet_resolved_hash: Arc<RwLock<Option<String>>>,
+    /// The verified fleet bytes plus their canonical SHA-256, held
+    /// together so readers see a consistent (fleet, fleet_resolved_hash)
+    /// pair under a single RwLock. Previously these were two separate
+    /// RwLocks updated in sequence — a reader between the two writes
+    /// could see a fresh `verified_fleet` paired with a stale
+    /// `fleet_resolved_hash`, corrupting the rolloutId anchor
+    /// (RFC-0002 §4.4). Now atomically updated as a single struct.
+    pub verified_fleet: Arc<RwLock<Option<VerifiedFleetSnapshot>>>,
     pub confirm_deadline_secs: i64,
     /// Filesystem path to the directory holding pre-signed rollout
     /// manifests. `GET /v1/rollouts/<rolloutId>` looks here first.
@@ -188,7 +202,6 @@ impl Default for AppState {
             db: None,
             closure_upstream: None,
             verified_fleet: Arc::new(RwLock::new(None)),
-            fleet_resolved_hash: Arc::new(RwLock::new(None)),
             confirm_deadline_secs: DEFAULT_CONFIRM_DEADLINE_SECS,
             rollouts_dir: None,
             rollouts_source: None,

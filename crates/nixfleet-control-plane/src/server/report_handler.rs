@@ -288,7 +288,7 @@ async fn compute_signature_status(
         let fleet_guard = state.verified_fleet.read().await;
         fleet_guard
             .as_ref()
-            .and_then(|f| f.hosts.get(&req.hostname))
+            .and_then(|snap| snap.fleet.hosts.get(&req.hostname))
             .and_then(|h| h.pubkey.clone())
     };
 

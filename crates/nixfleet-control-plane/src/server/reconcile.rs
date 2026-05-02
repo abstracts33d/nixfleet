@@ -54,11 +54,15 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                     // Compute the canonical-bytes hash that anchors
                     // every rolloutId derivation downstream (RFC-0002
                     // §4.4). Re-canonicalising the parsed FleetResolved
-                    // is byte-stable.
+                    // is byte-stable. Atomic write of (fleet, hash)
+                    // pair: a torn snapshot would corrupt the anchor.
                     let fleet_hash = nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
-                    *state.verified_fleet.write().await = Some(Arc::new(fleet));
                     if let Some(h) = fleet_hash {
-                        *state.fleet_resolved_hash.write().await = Some(h);
+                        *state.verified_fleet.write().await =
+                            Some(crate::server::VerifiedFleetSnapshot {
+                                fleet: Arc::new(fleet),
+                                fleet_resolved_hash: h,
+                            });
                     }
                     tracing::info!(
                         target: "reconcile",
@@ -170,19 +174,25 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                 let mut guard = state.verified_fleet.write().await;
                 let should_overwrite = match guard.as_ref() {
                     None => true,
-                    Some(existing) => match (existing.meta.signed_at, fleet.meta.signed_at) {
-                        (Some(prev), Some(new)) => new >= prev,
-                        // Either lacks signed_at (shouldn't happen for
-                        // verified artifacts) → fall back to overwriting.
-                        _ => true,
-                    },
+                    Some(existing) => {
+                        match (existing.fleet.meta.signed_at, fleet.meta.signed_at) {
+                            (Some(prev), Some(new)) => new >= prev,
+                            // Either lacks signed_at (shouldn't happen
+                            // for verified artifacts) → fall back to
+                            // overwriting.
+                            _ => true,
+                        }
+                    }
                 };
                 if should_overwrite {
-                    let fleet_hash = nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
-                    *guard = Some(Arc::new(fleet));
-                    drop(guard);
-                    if let Some(h) = fleet_hash {
-                        *state.fleet_resolved_hash.write().await = Some(h);
+                    if let Some(h) = nixfleet_reconciler::compute_canonical_hash(&fleet).ok() {
+                        // Atomic write of (fleet, hash) pair under a
+                        // single lock: dispatch readers can never see
+                        // a torn snapshot.
+                        *guard = Some(crate::server::VerifiedFleetSnapshot {
+                            fleet: Arc::new(fleet),
+                            fleet_resolved_hash: h,
+                        });
                     }
                 }
             }

@@ -50,7 +50,8 @@ pub(super) async fn channel_status(
     let _cn = require_cn(&state, &peer_certs).await?;
 
     let snapshot = state.verified_fleet.read().await.clone();
-    let fleet = snapshot.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let snap = snapshot.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let fleet = snap.fleet;
     let channel = fleet.channels.get(&name).ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(ChannelStatusResponse {
@@ -133,7 +134,8 @@ pub(super) async fn hosts_status(
         .read()
         .await
         .clone()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?
+        .fleet;
     let checkins = state.host_checkins.read().await;
     let reports = state.host_reports.read().await;
 

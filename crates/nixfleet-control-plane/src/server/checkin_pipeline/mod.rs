@@ -326,9 +326,11 @@ pub(super) mod tests {
         db.migrate().unwrap();
         let state = Arc::new(AppState {
             db: Some(Arc::clone(&db)),
-            verified_fleet: Arc::new(tokio::sync::RwLock::new(Some(Arc::new(fleet)))),
-            fleet_resolved_hash: Arc::new(tokio::sync::RwLock::new(Some(
-                TEST_FLEET_HASH.to_string(),
+            verified_fleet: Arc::new(tokio::sync::RwLock::new(Some(
+                crate::server::VerifiedFleetSnapshot {
+                    fleet: Arc::new(fleet),
+                    fleet_resolved_hash: TEST_FLEET_HASH.to_string(),
+                },
             ))),
             ..AppState::default()
         });

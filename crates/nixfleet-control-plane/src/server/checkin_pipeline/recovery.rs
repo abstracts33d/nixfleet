@@ -39,20 +39,15 @@ async fn validate_orphan_recovery(
     state: &AppState,
     req: &ConfirmRequest,
 ) -> Option<(String, String)> {
-    let fleet = state.verified_fleet.read().await.clone().or_else(|| {
+    let snap = state.verified_fleet.read().await.clone().or_else(|| {
         tracing::debug!(
             hostname = %req.hostname,
             "orphan-confirm recovery: no verified fleet snapshot yet",
         );
         None
     })?;
-    let fleet_resolved_hash = state.fleet_resolved_hash.read().await.clone().or_else(|| {
-        tracing::debug!(
-            hostname = %req.hostname,
-            "orphan-confirm recovery: no fleet_resolved_hash yet (CP just booted?)",
-        );
-        None
-    })?;
+    let fleet = snap.fleet;
+    let fleet_resolved_hash = snap.fleet_resolved_hash;
     let host_decl = fleet.hosts.get(&req.hostname).or_else(|| {
         tracing::debug!(
             hostname = %req.hostname,
@@ -208,12 +203,11 @@ pub(super) async fn recover_soak_state_from_attestation(
     let Some(db) = state.db.as_ref() else {
         return;
     };
-    let Some(fleet) = state.verified_fleet.read().await.clone() else {
+    let Some(snap) = state.verified_fleet.read().await.clone() else {
         return;
     };
-    let Some(fleet_resolved_hash) = state.fleet_resolved_hash.read().await.clone() else {
-        return;
-    };
+    let fleet = snap.fleet;
+    let fleet_resolved_hash = snap.fleet_resolved_hash;
     let Some(host_decl) = fleet.hosts.get(&req.hostname) else {
         return;
     };
