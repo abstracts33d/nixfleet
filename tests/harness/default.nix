@@ -107,7 +107,7 @@
   rolloutManifestFixture =
     if nixfleet-canonicalize == null
     then null
-    else import ./fixtures/rollout-manifest {inherit lib pkgs nixfleet-canonicalize;};
+    else import ./fixtures/rollout-manifest {inherit pkgs nixfleet-canonicalize;};
 
   # Signed `revocations.json` sidecar — verifies under the same
   # test-trust.json as signedFixture (shared seedSalt). Consumed by
