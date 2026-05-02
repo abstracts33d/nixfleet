@@ -27,7 +27,7 @@
 #      The org-root private key is mounted at /etc/harness/org-root.pem
 #      so the testScript can mint tokens via `nixfleet-mint-token`.
 #   2. testScript generates a CSR with openssl, computes the
-#      pubkey-fingerprint the way the CP's `enrollment_handlers` does
+#      pubkey-fingerprint the way the CP's `routes::enrollment` does
 #      (sha256 of the raw 32-byte ed25519 pubkey, base64), mints a
 #      bootstrap token, and assembles the EnrollRequest JSON.
 #   3. Fire two POSTs to `/v1/enroll` in parallel via two backgrounded
@@ -231,7 +231,7 @@ in
 
       # Step 7: CP journal must carry the AlreadyRecorded branch's
       # log line. The 409 path emits this from
-      # enrollment_handlers.rs (under the
+      # routes/enrollment.rs (under the
       # `RecordTokenOutcome::AlreadyRecorded` arm).
       host.succeed(
           "journalctl -u nixfleet-control-plane.service --no-pager "

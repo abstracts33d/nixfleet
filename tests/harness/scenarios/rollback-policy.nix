@@ -198,13 +198,22 @@ in
       )
       print("step 4: agent-side rollback fired")
 
-      # Step 5: agent posts RollbackTriggered → CP report_handler
+      # Step 5: agent posts RollbackTriggered → CP routes::reports
       # transitions the host_rollout_state row from Failed to
       # Reverted, then immediately deletes the row via
       # `delete_rollout_host_records` (terminal cleanup). The DB row
       # is gone before the test can poll for it, so wait for the
       # log line that fires inside `apply_rollback_state_transition`
       # right before the cleanup.
+      #
+      # FIXME(#81): SQL queries below reference `pending_confirms`,
+      # which V006 dropped. After the table split, operational state
+      # lives in `host_dispatch_state`; the cleanup-via-DELETE was
+      # replaced by terminal-state stamping. This scenario needs a
+      # compat pass against the post-#81 schema (separate followup
+      # — the failure mode is "no such table: pending_confirms" on
+      # the host.succeed sqlite3 call below). Out of scope for this
+      # cleanup batch.
       print("step 5: waiting for Failed → Reverted transition…")
       wait_for_journal_match(
           host,

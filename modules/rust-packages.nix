@@ -57,11 +57,14 @@
       meta.description = "NixFleet control plane server";
     };
 
-    apps.nixfleet = {
-      type = "app";
-      program = "${workspace.packages.nixfleet-cli}/bin/nixfleet";
-      meta.description = "NixFleet fleet management CLI";
-    };
+    # NB: there is no `apps.nixfleet` — `nixfleet-cli` ships
+    # `nixfleet-mint-token` + `nixfleet-derive-pubkey` only. The
+    # historical `apps.nixfleet` pointed at a binary that never
+    # existed (left over from an early-design CLI plan), causing
+    # `nix run .#nixfleet` to fail with "No such file or directory".
+    # Operators reach the helpers via `nix shell nixfleet#nixfleet-cli`
+    # (gets both binaries on PATH); the validate app + per-binary
+    # apps below cover the rest.
 
     apps.nixfleet-canonicalize = {
       type = "app";
