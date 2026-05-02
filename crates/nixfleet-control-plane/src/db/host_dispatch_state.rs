@@ -2,14 +2,14 @@
 //!
 //! Recovery class: **soft state** (ARCHITECTURE.md §6 Phase 10).
 //! Loss could force the agent into an unnecessary local rollback when
-//! its confirm POST hits a 410. Mitigated by orphan-confirm recovery
-//! (#46): when the agent's reported `closure_hash` matches the
-//! verified target, the handler synthesises a confirmed row via
+//! its confirm POST hits a 410. Mitigated by orphan-confirm recovery:
+//! when the agent's reported `closure_hash` matches the verified
+//! target, the handler synthesises a confirmed row via
 //! [`HostDispatchState::record_confirmed_dispatch`] and returns 204.
 //!
-//! Split out of `pending_confirms` in V006 (#81). The audit half lives
-//! in [`super::dispatch_history`]; this module owns the live state
-//! and the `active_rollouts_snapshot` projection.
+//! Paired with [`super::dispatch_history`]: this module owns the live
+//! one-row-per-host operational state + the `active_rollouts_snapshot`
+//! projection; dispatch_history is the append-only audit log.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -141,20 +141,18 @@ impl HostDispatchState<'_> {
 
     /// Mark a pending dispatch as confirmed. Called by the
     /// `/v1/agent/confirm` handler. Returns the number of rows
-    /// updated — 0 means no matching pending row (could be: rollout
-    /// cancelled, deadline already expired, agent confirming twice,
-    /// or — post-#81 — the host has been overwritten by a newer
-    /// dispatch).
+    /// updated — 0 means no matching pending row (rollout cancelled,
+    /// deadline already expired, agent confirming twice, or the host
+    /// has been overwritten by a newer dispatch).
     ///
     /// The `confirm_deadline > datetime('now')` clause is load-bearing:
     /// without it, late confirms whose deadline has already passed
     /// would still flip pending → confirmed, sneaking past the
-    /// rollback contract. The pre-#81 `pending_confirms.confirm`
-    /// carried the same gate; the table split dropped it (silent
-    /// regression caught by `fleet-harness-deadline-expiry`). The
-    /// orphan-confirm-recovery path is the legitimate "late confirm
-    /// from a CP-rebuild" escape hatch — it re-checks the closure
-    /// hash against the verified target before synthesizing a row.
+    /// rollback contract. The orphan-confirm-recovery path is the
+    /// legitimate "late confirm from a CP-rebuild" escape hatch —
+    /// it re-checks the closure hash against the verified target
+    /// before synthesizing a row, and is exercised by
+    /// `fleet-harness-deadline-expiry`.
     pub fn confirm(&self, hostname: &str, rollout_id: &str) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let n = guard
@@ -187,7 +185,7 @@ impl HostDispatchState<'_> {
     /// the same canonical shape `datetime('now')` returns; naked
     /// string compare ranks 'T' (0x54) above ' ' (0x20) at position
     /// 10, so deadlines look greater than now forever and the timer
-    /// is a no-op. Caught on lab pre-#81 against the legacy table.
+    /// is a no-op.
     pub fn pending_deadlines(&self) -> Result<Vec<ExpiredDispatch>> {
         let guard = super::lock_conn(self.conn)?;
         let mut stmt = guard.prepare(
@@ -315,10 +313,10 @@ impl HostDispatchState<'_> {
     /// projection tests can compare against expected vectors and
     /// the reconciler's journal lines stay grep-stable.
     ///
-    /// Lives on `HostDispatchState` (post-#81; was on
-    /// `RolloutState` against `pending_confirms`) because the
-    /// operational table is now the authoritative source of "what
-    /// each host is currently dispatched to do".
+    /// Lives on `HostDispatchState` because the operational table is
+    /// the authoritative source of "what each host is currently
+    /// dispatched to do" — `dispatch_history` is the audit log, not
+    /// the snapshot.
     pub fn active_rollouts_snapshot(&self) -> Result<Vec<RolloutDbSnapshot>> {
         use std::collections::BTreeMap;
 
@@ -380,7 +378,7 @@ impl HostDispatchState<'_> {
                     PendingConfirmState::Confirmed => HostRolloutState::Healthy,
                     PendingConfirmState::RolledBack | PendingConfirmState::Cancelled => {
                         unreachable!(
-                            "filtered by WHERE hds.state IN ('pending','confirmed') in V006",
+                            "filtered by WHERE hds.state IN ('pending','confirmed') in the SELECT",
                         )
                     }
                 }
@@ -388,12 +386,12 @@ impl HostDispatchState<'_> {
                 .to_string(),
             };
 
-            // V005 introduced an explicit `channel` column; V006
-            // carries it forward. Use it when populated; fall back
-            // to legacy parsing of the `<channel>@<short-ci-commit>`
-            // form for rows that pre-date the V005 backfill. If both
-            // fail, leave empty — the reconciler then emits
-            // ChannelUnknown legitimately (drift detector intent).
+            // Use the explicit `channel` column when populated; fall
+            // back to legacy parsing of the `<channel>@<short-ci-commit>`
+            // form for rows that came from a pre-content-addressed
+            // dispatch. If both fail, leave empty — the reconciler
+            // then emits ChannelUnknown legitimately (drift-detector
+            // intent).
             let channel = if !row_channel.is_empty() {
                 row_channel
             } else {
@@ -562,11 +560,10 @@ mod tests {
 
     #[test]
     fn confirm_no_op_when_deadline_passed() {
-        // Regression: pre-#81 `pending_confirms.confirm` filtered on
-        // `confirm_deadline > now`; the table split silently dropped
-        // the gate, letting late confirms flip pending → confirmed
-        // and skip the rollback contract. Caught only by
-        // fleet-harness-deadline-expiry.
+        // Regression-pin: late confirms whose deadline has already
+        // passed must NOT flip the row pending → confirmed. The
+        // rollback contract depends on this gate; absence here is the
+        // failure mode `fleet-harness-deadline-expiry` exercises.
         let db = fresh_db();
         let past_deadline = Utc::now() - chrono::Duration::seconds(30);
         db.host_dispatch_state()

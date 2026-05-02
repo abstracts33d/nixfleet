@@ -82,21 +82,11 @@ impl EvidenceSigner {
 
 /// Hex-lowercase SHA-256 of JCS-canonical bytes. Binds
 /// `evidence_snippet` to the signed envelope without inflating size.
+/// Thin re-export of [`nixfleet_canonicalize::sha256_jcs_hex`] —
+/// every signer + verifier across the fleet must produce identical
+/// digests, so the implementation lives in one crate.
 pub fn sha256_jcs<T: Serialize>(payload: &T) -> Result<String> {
-    use sha2::Digest;
-    let canonical = serde_jcs::to_vec(payload).context("JCS canonicalisation failed")?;
-    let digest = sha2::Sha256::digest(&canonical);
-    Ok(hex_lower(&digest))
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xf) as usize] as char);
-    }
-    out
+    nixfleet_canonicalize::sha256_jcs_hex(payload)
 }
 
 /// Default key path resolver — for use in main.rs CLI wiring.

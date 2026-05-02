@@ -40,12 +40,10 @@
 #      handler).
 #   6. Assert the host_dispatch_state operational row is parked at
 #      `state='rolled-back'` and the dispatch_history audit row's
-#      `terminal_state` is stamped `'rolled-back'`. Post-#81 the
-#      cleanup-via-DELETE that the v1 schema needed is replaced by
-#      terminal-state stamping; the operational row stays on disk
-#      until the next dispatch UPSERTs it. `active_rollouts_snapshot`
-#      filters terminal states out, which is what stops idempotent
-#      re-emission.
+#      `terminal_state` is stamped `'rolled-back'`. The operational
+#      row stays on disk until the next dispatch UPSERTs it;
+#      `active_rollouts_snapshot` filters terminal states out, which
+#      is what stops idempotent re-emission.
 #   7. Force one more poll cycle and assert the CP no longer emits a
 #      rollback_signal — the `Reverted` row stops compute_rollback_signal
 #      from firing (idempotency, #69 follow-up `3069ec7`).
@@ -142,19 +140,19 @@ in
       )
       print("step 1: baseline checkin observed for ${agentName}")
 
-      # Step 2: inject a synthetic Failed row. Post-#81 we need three
-      # rows: `host_dispatch_state` operational anchor (so dispatch
+      # Step 2: inject a synthetic Failed row. Three writes:
+      # `host_dispatch_state` operational anchor (so dispatch
       # resolves the row), `dispatch_history` audit (so the terminal
-      # stamp lands somewhere on report), and `host_rollout_state` in
-      # `Failed` (so compute_rollback_signal picks it up). The
+      # stamp lands somewhere on report), and `host_rollout_state`
+      # in `Failed` (so compute_rollback_signal picks it up). The
       # rolloutId encodes a sentinel suffix so the post-rollback
       # asserts match exactly.
       injected_rollout_id = "stable@injected-failure"
       print(f"step 2: injecting Failed state for ${agentName}@{injected_rollout_id}")
       # `host_dispatch_state.hostname` is PRIMARY KEY (one row per
-      # host post-#81). The agent's first checkin already triggered
-      # the orphan-confirm/Bug-B recovery path which UPSERT'd a row
-      # for ${agentName}; a plain INSERT here would trip the UNIQUE
+      # host). The agent's first checkin already triggered the
+      # orphan-confirm recovery path which UPSERT'd a row for
+      # ${agentName}; a plain INSERT here would trip the UNIQUE
       # constraint. INSERT OR REPLACE ensures the injected `pending`
       # row wins, which is the state shape `compute_rollback_signal`
       # needs to fire.
@@ -231,10 +229,10 @@ in
       # the terminal state on both the host_dispatch_state
       # operational row (state='rolled-back') and the matching
       # dispatch_history audit row (terminal_state='rolled-back') via
-      # `record_terminal`. Post-#81 the legacy DELETE cleanup is
-      # gone — the operational row stays parked on disk until the
-      # next dispatch UPSERTs it; `active_rollouts_snapshot` filters
-      # terminal states out so the row no longer surfaces as in-flight.
+      # `record_terminal`. The operational row stays parked on disk
+      # until the next dispatch UPSERTs it;
+      # `active_rollouts_snapshot` filters terminal states out so the
+      # row no longer surfaces as in-flight.
       print("step 5: waiting for Failed → Reverted transition…")
       wait_for_journal_match(
           host,
@@ -246,11 +244,11 @@ in
       )
       print("step 5: Failed → Reverted transition observed")
 
-      # Step 6: terminal stamps. Post-#81 the operational row's
-      # `state` flips to 'rolled-back' and the audit row's
-      # `terminal_state` is set the same. Both are best-effort writes
-      # in `apply_rollback_state_transition`, so allow a few seconds
-      # for the write to land after the journal log line.
+      # Step 6: terminal stamps. The operational row's `state` flips
+      # to 'rolled-back' and the audit row's `terminal_state` is set
+      # the same. Both are best-effort writes in
+      # `apply_rollback_state_transition`, so allow a few seconds for
+      # the write to land after the journal log line.
       print("step 6: asserting terminal stamps on host_dispatch_state + dispatch_history…")
       stamp_deadline = time.monotonic() + 15
       op_state = ""

@@ -8,8 +8,10 @@
 //! source of truth for "what is host X doing right now". Pruned by
 //! retention window (default 90d).
 //!
-//! Split out of `pending_confirms` in V006 (#81); see [`super::host_dispatch_state`]
-//! for the operational half.
+//! Paired with [`super::host_dispatch_state`] (the live operational
+//! half); both tables share the same row shape at insert time but
+//! diverge in lifecycle: history is append-only, the operational
+//! row is UPSERTed on every new dispatch.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -74,12 +76,11 @@ impl DispatchHistory<'_> {
     }
 
     /// Stamp every open history row of a converged rollout with
-    /// `terminal_state = 'converged'`. Replaces (post-#81) the
-    /// `delete_rollout_records` cleanup that the
+    /// `terminal_state = 'converged'`. Called from the
     /// [`Action::ConvergeRollout`](nixfleet_reconciler::Action) arm
-    /// used to call against `pending_confirms` — the operational
-    /// table no longer needs cleanup since converged hosts stay
-    /// parked on Confirmed rows that the next dispatch overwrites.
+    /// of the reconciler; the operational table doesn't need
+    /// cleanup because converged hosts stay parked on Confirmed
+    /// rows that the next dispatch overwrites.
     pub fn mark_rollout_converged(
         &self,
         rollout_id: &str,
@@ -228,8 +229,7 @@ mod tests {
     #[test]
     fn mark_rollout_converged_stamps_all_open_rows() {
         // Two hosts, same rollout → both audit rows flip to
-        // converged in one shot. Replaces the pre-#81
-        // delete_rollout_records cleanup.
+        // converged in one shot.
         let db = fresh_db();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
         for host in ["ohm", "krach"] {

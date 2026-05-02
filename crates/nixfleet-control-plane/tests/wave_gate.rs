@@ -226,17 +226,8 @@ fn build_signed_compliance_failure(
 ) -> ReportRequest {
     let articles: Vec<String> = vec!["nis2:21(b)".to_string()];
     let snippet = serde_json::json!({"compliant": false, "rule": "AL-03"});
-    // Reproduce the agent's snippet hash (sha256 of JCS bytes).
-    let snippet_canon = serde_jcs::to_vec(&snippet).unwrap();
-    let snippet_sha = {
-        use sha2::Digest;
-        let d = sha2::Sha256::digest(&snippet_canon);
-        let mut s = String::with_capacity(64);
-        for b in d.iter() {
-            s.push_str(&format!("{:02x}", b));
-        }
-        s
-    };
+    // Reproduce the agent's snippet hash via the shared helper.
+    let snippet_sha = nixfleet_canonicalize::sha256_jcs_hex(&snippet).unwrap();
     let evidence_collected_at = Utc::now();
     let payload = ComplianceFailureSignedPayload {
         hostname: HOSTNAME,

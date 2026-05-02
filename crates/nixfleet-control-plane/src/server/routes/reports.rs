@@ -270,22 +270,6 @@ async fn compute_signature_status(
     };
     use nixfleet_reconciler::evidence::verify_event;
 
-    fn sha256_jcs_str(s: &str) -> Result<String, serde_json::Error> {
-        // Returning Result (not silently producing the empty hex on
-        // canonicalization failure) keeps the audit-log entry honest:
-        // we never persist a hash that didn't actually hash the
-        // evidence. If JCS ever fails here, the report is rejected
-        // upstream rather than recorded with a known-wrong digest.
-        let bytes = serde_jcs::to_vec(s)?;
-        use sha2::Digest;
-        let d = sha2::Sha256::digest(&bytes);
-        let mut out = String::with_capacity(64);
-        for b in d.iter() {
-            out.push_str(&format!("{:02x}", b));
-        }
-        Ok(out)
-    }
-
     let pubkey: Option<String> = {
         let fleet_guard = state.verified_fleet.read().await;
         fleet_guard
@@ -306,19 +290,9 @@ async fn compute_signature_status(
             // Re-derive the snippet hash the agent included in its
             // signed payload (sha256 of JCS-canonical snippet bytes;
             // empty when snippet is None). On JCS failure we abort
-            // verification (None) rather than persist a wrong hash —
-            // same posture as the other helpers in this module.
+            // verification (None) rather than persist a wrong hash.
             let snippet_sha = match evidence_snippet {
-                Some(v) => {
-                    use sha2::Digest;
-                    let bytes = serde_jcs::to_vec(v).ok()?;
-                    let d = sha2::Sha256::digest(&bytes);
-                    let mut s = String::with_capacity(64);
-                    for b in d.iter() {
-                        s.push_str(&format!("{:02x}", b));
-                    }
-                    s
-                }
+                Some(v) => nixfleet_canonicalize::sha256_jcs_hex(v).ok()?,
                 None => String::new(),
             };
             let payload = ComplianceFailureSignedPayload {
@@ -363,7 +337,7 @@ async fn compute_signature_status(
             stderr_tail,
             signature,
         } => {
-            let stderr_tail_sha256 = sha256_jcs_str(stderr_tail.as_deref().unwrap_or("")).ok()?;
+            let stderr_tail_sha256 = nixfleet_canonicalize::sha256_jcs_hex(&stderr_tail.as_deref().unwrap_or("")).ok()?;
             let payload = ActivationFailedSignedPayload {
                 hostname: &req.hostname,
                 rollout: req.rollout.as_deref(),
@@ -428,7 +402,7 @@ async fn compute_signature_status(
             stderr_tail,
             signature,
         } => {
-            let stderr_tail_sha256 = sha256_jcs_str(stderr_tail).ok()?;
+            let stderr_tail_sha256 = nixfleet_canonicalize::sha256_jcs_hex(&stderr_tail).ok()?;
             let payload = ClosureSignatureMismatchSignedPayload {
                 hostname: &req.hostname,
                 rollout: req.rollout.as_deref(),
@@ -615,8 +589,8 @@ mod tests {
         let req = rollback_report("ohm", Some("stable@abc12345"));
         apply_rollback_state_transition(&db, &req);
 
-        // hrs row flipped Failed → Reverted (no longer cleaned up
-        // post-#81; that surface lives on dispatch_history now).
+        // hrs row flipped Failed → Reverted; cleanup of the audit
+        // surface lives on dispatch_history now.
         assert_eq!(
             db.rollout_state()
                 .host_state("ohm", "stable@abc12345")

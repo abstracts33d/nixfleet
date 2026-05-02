@@ -59,9 +59,10 @@ pub(super) async fn dispatch_target_for_checkin(
             rollout_id,
             wave_index,
         } => {
-            // Channel must be persisted explicitly (#80 / V005). The
-            // host's declared channel is the source of truth; rollout
-            // ids no longer encode it (post-#62 they're sha256 hex).
+            // Channel must be persisted explicitly. The host's
+            // declared channel is the source of truth; rollout ids
+            // no longer encode it (content-addressed manifests use
+            // sha256 hex).
             let channel = fleet
                 .hosts
                 .get(&req.hostname)

@@ -39,7 +39,7 @@ pub enum PendingConfirmState {
 
 impl PendingConfirmState {
     /// Canonical SQLite literal. Matches the CHECK constraint in
-    /// the V006 migration's `host_dispatch_state.state` column.
+    /// the schema's`host_dispatch_state.state` column.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             PendingConfirmState::Pending => "pending",
@@ -79,7 +79,7 @@ pub enum TerminalState {
 
 impl TerminalState {
     /// Canonical SQLite literal. Matches the CHECK constraint in
-    /// the V006 migration's `dispatch_history.terminal_state`.
+    /// the schema's`dispatch_history.terminal_state`.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             TerminalState::Converged => "converged",
@@ -92,8 +92,8 @@ impl TerminalState {
 /// Per-host rollout state machine. Re-exported from
 /// [`nixfleet_proto`] so the CP and the reconciler share a single
 /// source of truth for the variant set + literals; the SQL
-/// CHECK constraint in V003 is bridged to this enum by the
-/// `host_rollout_state_check_matches_enum` test in
+/// CHECK constraint on `host_rollout_state.host_state` is bridged to
+/// this enum by the `host_rollout_state_check_matches_enum` test in
 /// `observed_projection.rs`.
 pub use nixfleet_proto::HostRolloutState;
 
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn terminal_state_literals_match_check_constraint() {
-        // Bridge to the V006 migration's CHECK constraint on
+        // Bridge to the schema'sCHECK constraint on
         // dispatch_history.terminal_state. Hard-coded so a future
         // rename catches the drift.
         assert_eq!(TerminalState::Converged.as_db_str(), "converged");
@@ -147,5 +147,5 @@ mod tests {
     // HostRolloutState round-trip + unknown-string tests live with
     // the canonical enum in `nixfleet-proto`. The SQL/enum bridge
     // (`host_rollout_state_check_matches_enum`) stays here in CP
-    // since it parses the local `migrations/V003__*.sql` file.
+    // since it parses the local `migrations/V001__schema.sql` file.
 }

@@ -230,7 +230,7 @@ pub(super) fn spawn_reconcile_loop(
 /// - `Action::ConvergeRollout` — stamp every open `dispatch_history`
 ///   row for the rollout with `terminal_state = 'converged'`. The
 ///   operational `host_dispatch_state` row stays Confirmed and is
-///   replaced on the next dispatch (#81). The action is the
+///   replaced on the next dispatch. The action is the
 ///   reconciler's terminal signal — ConvergeRollout fires only when
 ///   every wave is fully Soaked, i.e. no host on that rollout still
 ///   has work to do.

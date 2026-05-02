@@ -51,8 +51,8 @@ pub enum HostRolloutState {
 
 impl HostRolloutState {
     /// Canonical literal. Matches the `host_rollout_state.host_state`
-    /// CHECK constraint in V003 and the wire string emitted in
-    /// `observed.json` fixtures.
+    /// CHECK constraint in the CP schema and the wire string emitted
+    /// in `observed.json` fixtures.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             HostRolloutState::Queued => "Queued",

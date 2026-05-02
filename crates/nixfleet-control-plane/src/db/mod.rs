@@ -145,10 +145,10 @@ mod tests {
     use super::*;
 
     /// V001 baseline: applying the consolidated schema produces every
-    /// expected table and none of the legacy ones the post-#81 cycle
-    /// retired (pending_confirms, schema_placeholder). Future schema
-    /// changes (V002 onward) add their own per-migration test next to
-    /// this one — the migration-equivalence tier from Audit B #14.
+    /// expected table and none of the retired legacy ones
+    /// (pending_confirms, schema_placeholder). Future schema changes
+    /// (V002 onward) add their own per-migration test next to this
+    /// one to form the migration-equivalence tier.
     #[test]
     fn v001_produces_consolidated_schema() {
         let db = Db::open_in_memory().unwrap();
@@ -184,10 +184,9 @@ mod tests {
 
 
     /// Helper: query the column names of `table` in declaration order.
-    /// Kept after the V006-V007 collapse for the next per-migration
-    /// test (Audit B #14 migration-equivalence tier) — first new
-    /// migration past V001 should add a test here that uses both
-    /// helpers.
+    /// Available for the next per-migration test (the
+    /// migration-equivalence tier) — first migration past V001 should
+    /// add a test here that uses both helpers.
     #[allow(dead_code)]
     fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
         conn.prepare(&format!("PRAGMA table_info({table})"))

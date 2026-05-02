@@ -123,7 +123,13 @@ fn read_signing_key(path: &PathBuf) -> Result<SigningKey> {
     );
 }
 
+// Test module sits between read_signing_key and main intentionally:
+// the helpers + tests live next to the function under test, then
+// random_nonce + main below. Clippy's items-after-test-module lint
+// prefers tests strictly last; the local layout aids readability
+// more than the lint helps.
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::io::Write;

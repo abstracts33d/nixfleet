@@ -29,6 +29,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tempfile = "3"
 sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }

@@ -6,10 +6,10 @@
 //! - `token_replay` — bootstrap nonces past the 24h validity window
 //!   (`Db::prune_token_replay`)
 //! - `dispatch_history` — terminal audit rows past 90 days
-//!   (`DispatchHistory::prune_history`, post-#81)
+//!   (`DispatchHistory::prune_history`)
 //! - `host_reports` — event log past 7 days (`Db::prune_host_reports`)
 //! - filesystem `state.db.pre-*` pre-migration backups past 14 days
-//!   (#51 — refinery / module activation creates these for safety;
+//!   (refinery / module activation creates these for safety;
 //!   they're vestigial after a couple of weeks)
 //!
 //! All helpers are idempotent — the task can be killed at any tick

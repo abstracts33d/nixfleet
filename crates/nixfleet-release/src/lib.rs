@@ -478,12 +478,7 @@ fn enumerate_hosts(config: &ReleaseConfig) -> Result<Vec<(String, HostKind)>> {
 /// revocations on file" — the artifact still gets produced so a
 /// CP-rebuild has something to verify + replay (even if empty).
 fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest.iter() {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn eval_revocations(config: &ReleaseConfig, attr: &str) -> Result<Vec<RevocationEntry>> {

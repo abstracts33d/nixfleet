@@ -7,9 +7,10 @@
 //! the CP repopulates `last_healthy_since` from the attestation,
 //! clamped to `min(now, attested)`.
 //!
-//! Post-#81: the joined `active_rollouts_snapshot` projection moved
-//! to [`super::host_dispatch_state`] alongside the operational table
-//! it now reads from.
+//! The joined `active_rollouts_snapshot` projection lives on
+//! [`super::host_dispatch_state`] alongside the operational table
+//! it reads from; this module owns just the per-(host, rollout) soak
+//! state.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};

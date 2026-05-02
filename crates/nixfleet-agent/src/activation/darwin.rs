@@ -278,6 +278,10 @@ mod tests {
         // Pin: DarwinBackend is a zero-sized unit struct — switching it to
         // a non-Default would break the cfg-aliased DefaultBackend.
         let _b: DarwinBackend = DarwinBackend;
+        // Default impl smoke: must compile (clippy flags this as
+        // "redundant" because the type's a unit struct, but exercising
+        // the trait is the test's whole point).
+        #[allow(clippy::default_constructed_unit_structs)]
         let _: DarwinBackend = DarwinBackend::default();
     }
 }

@@ -1355,6 +1355,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "libc",
+ "nixfleet-canonicalize",
  "nixfleet-proto",
  "nixfleet-reconciler",
  "rand 0.8.6",
@@ -1379,8 +1380,11 @@ name = "nixfleet-canonicalize"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "hex",
+ "serde",
  "serde_jcs",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1478,6 +1482,7 @@ dependencies = [
  "chrono",
  "clap",
  "ed25519-dalek",
+ "hex",
  "nixfleet-canonicalize",
  "nixfleet-proto",
  "nixfleet-reconciler",

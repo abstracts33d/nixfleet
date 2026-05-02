@@ -66,9 +66,8 @@ pub use backend::LinuxBackend;
 pub use backend::DarwinBackend;
 pub use outcome::{ActivationOutcome, RollbackOutcome, POLL_BUDGET, POLL_INTERVAL};
 pub use pipeline::activate_with;
-pub use realise::{looks_like_signature_error, RealiseError};
+pub use realise::RealiseError;
 pub use rollback_mod::rollback_with;
-pub use verify_poll::{PollOutcome, VerifyPoll};
 
 /// Activate via realise → set-profile → fire-and-forget switch →
 /// poll → self-correct. Single attempt per call; retry comes from

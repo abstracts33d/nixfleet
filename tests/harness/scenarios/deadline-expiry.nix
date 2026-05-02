@@ -113,9 +113,7 @@ in
       # Step 1: inject a host_dispatch_state row with deadline 30s in
       # the past. Bypasses dispatch (no real agent in the loop) but
       # produces exactly the DB state the rollback_timer + /confirm
-      # handler are designed to detect. Post-#81 the table is
-      # host_dispatch_state (operational) — `pending_confirms` was
-      # dropped by V006.
+      # handler are designed to detect.
       print("step 1: inject expired host_dispatch_state row…")
       # Quoting: open `\"` here, close `\"` after the SQL on the
       # last line. Adjacent Python string literals concatenate, so
