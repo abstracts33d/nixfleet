@@ -372,10 +372,17 @@ fn run_tick_with_projection(
         reject_before,
     ) {
         Ok(fleet) => {
-            let signed_at = fleet
-                .meta
-                .signed_at
-                .expect("verified artifact carries meta.signedAt");
+            let signed_at = match fleet.meta.signed_at {
+                Some(ts) => ts,
+                None => {
+                    return (
+                        Err(anyhow::anyhow!(
+                            "verified artifact lacks meta.signedAt despite §4 contract — verify layer bug",
+                        )),
+                        None,
+                    );
+                }
+            };
             let ci_commit = fleet.meta.ci_commit.clone();
             let observed = crate::observed_projection::project(
                 checkins,

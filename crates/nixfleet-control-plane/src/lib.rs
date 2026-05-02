@@ -85,10 +85,11 @@ pub fn tick(inputs: &TickInputs) -> anyhow::Result<TickOutput> {
         reject_before,
     ) {
         Ok(fleet) => {
-            let signed_at = fleet
-                .meta
-                .signed_at
-                .expect("verified artifact carries meta.signedAt by §4 contract");
+            let signed_at = fleet.meta.signed_at.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "verified artifact lacks meta.signedAt despite §4 contract — verify layer bug",
+                )
+            })?;
             let ci_commit = fleet.meta.ci_commit.clone();
 
             let observed_raw = fs::read_to_string(&inputs.observed_path).map_err(|e| {
