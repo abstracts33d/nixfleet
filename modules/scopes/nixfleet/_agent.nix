@@ -24,7 +24,7 @@
   ...
 }: let
   cfg = config.services.nixfleet-agent;
-  nixfleet-agent = inputs.self.packages.${pkgs.system}.nixfleet-agent;
+  nixfleet-agent = cfg.package;
 
   # Materialise config.nixfleet.trust into the proto::TrustConfig
   # JSON shape (crates/nixfleet-proto/src/trust.rs). schemaVersion = 1

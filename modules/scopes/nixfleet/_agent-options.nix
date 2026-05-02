@@ -10,11 +10,26 @@
 # selects per platform; no separate import needed at the call site.
 {
   config,
+  inputs,
   lib,
+  pkgs,
   ...
 }: {
   options.services.nixfleet-agent = {
     enable = lib.mkEnableOption "NixFleet fleet management agent";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = inputs.self.packages.${pkgs.system}.nixfleet-agent;
+      defaultText = lib.literalExpression "inputs.self.packages.\${pkgs.system}.nixfleet-agent";
+      description = ''
+        The agent package that provides `bin/nixfleet-agent`. Defaults
+        to the flake's crane-built package; tests and pinned-version
+        deploys override with their own derivation. Standard NixOS
+        `services.<x>.package` escape hatch — accepted as-is, no
+        further resolution.
+      '';
+    };
 
     controlPlaneUrl = lib.mkOption {
       type = lib.types.str;
