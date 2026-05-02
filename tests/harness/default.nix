@@ -404,6 +404,26 @@
           cliPkg = nixfleet-cli;
         });
 
+  # Concurrent-checkin scenario. cp-real + 5 host-side curl loops
+  # firing /v1/agent/checkin in tight loops for 30s; asserts the
+  # `dispatch: target issued` rollout_ids form a stable set
+  # (cardinality ≤ 1 under a single fixture) and no torn-snapshot
+  # indicators surface in the CP journal. Validates the atomic
+  # VerifiedFleetSnapshot fix.
+  concurrentCheckinScenario =
+    if nixfleet-control-plane == null
+    then
+      throw ''
+        tests/harness: fleet-harness-concurrent-checkin requires
+        `nixfleet-control-plane` to be passed in.
+      ''
+    else
+      import ./scenarios/concurrent-checkin.nix (scenarioArgs
+        // {
+          inherit signedFixture;
+          cpPkg = nixfleet-control-plane;
+        });
+
   # Manifest-tamper-rejection scenario. Pure runCommand — exercises
   # the rollout-manifest leg of the offline auditor chain (RFC-0002
   # §4.4). Asserts well-formed verify, byte-tampered manifest +
@@ -540,6 +560,8 @@ in {
   fleet-harness-future-dated-rejection = futureDatedRejectionScenario;
 
   fleet-harness-enroll-replay = enrollReplayScenario;
+
+  fleet-harness-concurrent-checkin = concurrentCheckinScenario;
 
   fleet-harness-manifest-tamper-rejection = manifestTamperRejectionScenario;
 

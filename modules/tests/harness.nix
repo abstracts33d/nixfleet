@@ -154,6 +154,14 @@
           # RollbackTriggered post → Reverted transition → idempotent
           # stop). Hardware-level proof of the #69 implementation.
           fleet-harness-rollback-policy = harness.fleet-harness-rollback-policy;
+
+          # Concurrent-checkin scenario. cp-real + 5 host-side
+          # curl loops firing /v1/agent/checkin under steady-state
+          # fleet for 30s; asserts the `dispatch: target issued`
+          # rollout_ids form a stable set (cardinality ≤ 1) and no
+          # torn-snapshot indicators surface in the journal.
+          # Validates the atomic VerifiedFleetSnapshot fix.
+          fleet-harness-concurrent-checkin = harness.fleet-harness-concurrent-checkin;
         }
         # Enroll-replay scenario gate: needs the cli too (for
         # nixfleet-mint-token at runtime).
