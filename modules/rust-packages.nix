@@ -81,54 +81,14 @@
       meta.description = "Producer for fleet.resolved.json — build → inject closureHash → canonicalize → sign → release (CONTRACTS §I #1)";
     };
 
-    # Doc pipeline using STANDARD tooling — `cargo doc` for the Rust
-    # API reference, `nixosOptionsDoc` for the NixOS option reference
-    # (see options-doc.nix), `mdbook build` for the curated narrative
-    # + RFCs. Each tool produces what it natively renders best.
-    apps.docs = {
-      type = "app";
-      program = let
-        script = pkgs.writeShellApplication {
-          name = "nixfleet-docs";
-          runtimeInputs = [pkgs.cargo pkgs.rustc pkgs.coreutils pkgs.mdbook pkgs.nix];
-          text = ''
-            set -euo pipefail
-            repo_root="''${1:-$PWD}"
-
-            echo "==> cargo doc --workspace --document-private-items --no-deps"
-            (cd "$repo_root" && \
-              RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" \
-              cargo doc --workspace --document-private-items --no-deps)
-
-            echo "==> nix build .#options-doc (nixosOptionsDoc → markdown)"
-            options_md=$(cd "$repo_root" && nix build --no-link --print-out-paths .#options-doc)
-            cp -f "$options_md" "$repo_root/docs/mdbook/src/options.md"
-            chmod u+w "$repo_root/docs/mdbook/src/options.md"
-
-            echo "==> copying RFCs into mdbook"
-            mkdir -p "$repo_root/docs/mdbook/src/rfcs"
-            for f in "$repo_root"/docs/rfcs/*.md; do
-              [ -f "$f" ] || continue
-              cp -f "$f" "$repo_root/docs/mdbook/src/rfcs/$(basename "$f")"
-            done
-            chmod -R u+w "$repo_root/docs/mdbook/src/rfcs/"
-
-            echo "==> mdbook build docs/mdbook"
-            (cd "$repo_root" && mdbook build docs/mdbook)
-
-            echo "==> copying cargo doc output into the published site"
-            mkdir -p "$repo_root/docs/mdbook/book/api"
-            cp -r "$repo_root/target/doc/." "$repo_root/docs/mdbook/book/api/"
-
-            echo
-            echo "Done. Outputs:"
-            echo "  - docs/mdbook/book/         (mdbook: curated guides + RFCs + options)"
-            echo "  - docs/mdbook/book/api/     (cargo doc: Rust API reference)"
-          '';
-        };
-      in "${script}/bin/nixfleet-docs";
-      meta.description = "Build docs: cargo doc + nixosOptionsDoc + mdbook";
-    };
+    # Single doc build path: `packages.docs-site` (pure derivation,
+    # above). Use `nix build .#packages.<system>.docs-site` to
+    # produce the static site at `<store>/`. The previous procedural
+    # `apps.docs` shell pipeline was redundant — it wrote the same
+    # mdbook + cargo doc output into the working tree, with the only
+    # operational difference being out-of-sandbox `cargo doc` reuse
+    # of the local `target/doc` cache. Use the derivation for CI /
+    # publishing; use `cargo doc` directly for dev-loop iteration.
 
     devShells.default = craneLib.devShell {
       checks = workspace.checks;
