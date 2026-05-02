@@ -314,6 +314,23 @@
         verifyArtifactPkg = nixfleet-verify-artifact;
       };
 
+  # Future-dated rejection scenario. Pure runCommand — drives
+  # verify-artifact's `--now` flag around the fixture's fixed
+  # signedAt to assert symmetric slack behaviour
+  # (reject Δ=+2d, accept ±30s, accept 0).
+  futureDatedRejectionScenario =
+    if nixfleet-verify-artifact == null
+    then
+      throw ''
+        tests/harness: fleet-harness-future-dated-rejection requires
+        `nixfleet-verify-artifact`. Wire via modules/tests/harness.nix.
+      ''
+    else
+      import ./scenarios/future-dated-rejection.nix {
+        inherit pkgs signedFixture;
+        verifyArtifactPkg = nixfleet-verify-artifact;
+      };
+
   # Manifest-tamper-rejection scenario. Pure runCommand — exercises
   # the rollout-manifest leg of the offline auditor chain (RFC-0002
   # §4.4). Asserts well-formed verify, byte-tampered manifest +
@@ -446,6 +463,8 @@ in {
   fleet-harness-auditor-chain = auditorChainScenario;
 
   fleet-harness-corruption-rejection = corruptionRejectionScenario;
+
+  fleet-harness-future-dated-rejection = futureDatedRejectionScenario;
 
   fleet-harness-manifest-tamper-rejection = manifestTamperRejectionScenario;
 

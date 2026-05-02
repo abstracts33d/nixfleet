@@ -71,6 +71,15 @@
           # verify-artifact rejects each.
           fleet-harness-corruption-rejection = harness.fleet-harness-corruption-rejection;
 
+          # Future-dated rejection scenario. Drives verify-artifact's
+          # `--now` flag around the fixture's fixed signedAt to
+          # assert symmetric slack behaviour (reject Δ=+2d, accept
+          # ±30s, accept 0). Validates today's
+          # freshness symmetric-bound fix in
+          # nixfleet-reconciler::verify::finish_sidecar_verification.
+          fleet-harness-future-dated-rejection =
+            harness.fleet-harness-future-dated-rejection;
+
           # Manifest-tamper-rejection scenario. Same shape as
           # corruption-rejection, but for `releases/rollouts/<id>.json`
           # signed manifests (RFC-0002 §4.4). Adds a content-address
