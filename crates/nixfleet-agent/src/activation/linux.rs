@@ -19,6 +19,8 @@
 //!   --property=ExecMainStatus`; returns `None` when the value is
 //!   empty / non-numeric / systemctl call fails.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use nixfleet_proto::agent_wire::EvaluatedTarget;
 use tokio::process::Command;
@@ -56,13 +58,17 @@ const SWITCH_LOCK_PATH: &str = "/run/nixos/switch-to-configuration.lock";
 /// `flock(1)` attempt fails. Absent file / missing binary → false
 /// (fail-open).
 async fn is_switch_in_progress() -> bool {
-    if !std::path::Path::new(SWITCH_LOCK_PATH).exists() {
+    is_switch_in_progress_at(Path::new(SWITCH_LOCK_PATH)).await
+}
+
+async fn is_switch_in_progress_at(lock_path: &Path) -> bool {
+    if !lock_path.exists() {
         return false;
     }
     let status = Command::new("flock")
         .arg("--nonblock")
         .arg("--shared")
-        .arg(SWITCH_LOCK_PATH)
+        .arg(lock_path)
         .arg("true")
         .status()
         .await;
@@ -181,4 +187,37 @@ async fn fire_rollback(_target_basename: &str) -> Result<Option<RollbackOutcome>
         }));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn is_switch_in_progress_returns_false_when_lock_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let absent = dir.path().join("does-not-exist.lock");
+        assert!(!is_switch_in_progress_at(&absent).await);
+    }
+
+    #[tokio::test]
+    async fn is_switch_in_progress_returns_false_for_uncontended_lock() {
+        // File exists but no process holds it — flock --nonblock --shared
+        // acquires + releases immediately, returning success → not in progress.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock = dir.path().join("test.lock");
+        std::fs::write(&lock, b"").expect("create lock file");
+        // flock binary may be absent on darwin/CI minimal images; in that
+        // case the spawn errors and we fail-open to false. Either way this
+        // should report `false` (no contender).
+        assert!(!is_switch_in_progress_at(&lock).await);
+    }
+
+    #[test]
+    fn linux_backend_default_is_unit_struct() {
+        // Pin: LinuxBackend is a zero-sized unit struct — switching it to
+        // a non-Default would break the cfg-aliased DefaultBackend.
+        let _b: LinuxBackend = LinuxBackend;
+        let _: LinuxBackend = LinuxBackend::default();
+    }
 }

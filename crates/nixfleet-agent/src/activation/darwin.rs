@@ -73,7 +73,7 @@ async fn fire_switch(
     if std::path::Path::new(&activate_user).exists() {
         let mut cmd = std::process::Command::new(&activate_user);
         cmd.stdin(Stdio::null());
-        attach_activate_log(&mut cmd);
+        attach_activate_log_to(&mut cmd, ACTIVATE_LOG);
         // SAFETY: setsid is async-signal-safe; closure does no
         // allocation or lock acquisition.
         unsafe {
@@ -113,7 +113,7 @@ async fn fire_switch(
     let activate = format!("{store_path}/activate");
     let mut cmd = std::process::Command::new(&activate);
     cmd.stdin(Stdio::null());
-    attach_activate_log(&mut cmd);
+    attach_activate_log_to(&mut cmd, ACTIVATE_LOG);
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -166,7 +166,7 @@ async fn fire_rollback(target_basename: &str) -> Result<Option<RollbackOutcome>>
     );
     let mut cmd = std::process::Command::new(&activate);
     cmd.stdin(Stdio::null());
-    attach_activate_log(&mut cmd);
+    attach_activate_log_to(&mut cmd, ACTIVATE_LOG);
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -191,14 +191,15 @@ async fn fire_rollback(target_basename: &str) -> Result<Option<RollbackOutcome>>
     }
 }
 
+const ACTIVATE_LOG: &str = "/var/log/nixfleet-activate.log";
+
 /// Falls back to inherit on permission/IO error; launchd's
 /// StandardOutPath/StandardErrorPath catches the inherited stream.
-fn attach_activate_log(cmd: &mut std::process::Command) {
-    const ACTIVATE_LOG: &str = "/var/log/nixfleet-activate.log";
+fn attach_activate_log_to(cmd: &mut std::process::Command, path: &str) {
     match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(ACTIVATE_LOG)
+        .open(path)
     {
         Ok(out) => {
             // stdout + stderr each consume one handle.
@@ -206,7 +207,7 @@ fn attach_activate_log(cmd: &mut std::process::Command) {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(
-                        path = ACTIVATE_LOG,
+                        path = path,
                         error = %e,
                         "could not clone activate log handle; using inherit",
                     );
@@ -218,11 +219,65 @@ fn attach_activate_log(cmd: &mut std::process::Command) {
         }
         Err(e) => {
             tracing::warn!(
-                path = ACTIVATE_LOG,
+                path = path,
                 error = %e,
                 "could not open activate log; using inherit",
             );
             cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn darwin_backend_is_switch_in_progress_returns_false() {
+        // Pin: darwin has no equivalent to NixOS's switch-to-configuration
+        // lock; the contract is "always false". Wiring a real lock primitive
+        // here would require updating both this test and the parent module's
+        // assumption (in activation/mod.rs) that darwin never reports
+        // contention.
+        assert!(!DarwinBackend.is_switch_in_progress().await);
+    }
+
+    #[tokio::test]
+    async fn darwin_backend_read_unit_exit_code_returns_none() {
+        // Pin: darwin has no systemd surface — the agent's poll loop is
+        // the authoritative success signal, so this MUST return None and
+        // the parent module's polling logic is structured around that.
+        assert_eq!(DarwinBackend.read_unit_exit_code("anything").await, None);
+    }
+
+    #[test]
+    fn attach_activate_log_falls_back_to_inherit_when_path_unwritable() {
+        // Path inside a non-existent parent directory — open(create) fails;
+        // attach_activate_log_to MUST fall back to Stdio::inherit() rather
+        // than panic or propagate the error.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let unwritable = dir.path().join("does-not-exist").join("nope.log");
+        let mut cmd = std::process::Command::new("true");
+        attach_activate_log_to(&mut cmd, unwritable.to_str().unwrap());
+        // No assertion on the Stdio variant (Command's getters are private),
+        // but we confirm the call returned without panicking — the entire
+        // contract of this function is "never panic, always set stdio".
+    }
+
+    #[test]
+    fn attach_activate_log_succeeds_when_path_writable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("activate.log");
+        let mut cmd = std::process::Command::new("true");
+        attach_activate_log_to(&mut cmd, path.to_str().unwrap());
+        assert!(path.exists(), "log file should be created");
+    }
+
+    #[test]
+    fn darwin_backend_default_is_unit_struct() {
+        // Pin: DarwinBackend is a zero-sized unit struct — switching it to
+        // a non-Default would break the cfg-aliased DefaultBackend.
+        let _b: DarwinBackend = DarwinBackend;
+        let _: DarwinBackend = DarwinBackend::default();
     }
 }

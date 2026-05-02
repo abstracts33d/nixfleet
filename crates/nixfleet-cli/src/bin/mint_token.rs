@@ -75,14 +75,18 @@ fn read_signing_key(path: &PathBuf) -> Result<SigningKey> {
     // - PEM PKCS#8 (BEGIN PRIVATE KEY ... END PRIVATE KEY)
     let trimmed: Vec<u8> = bytes.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect();
     if trimmed.len() == 32 {
-        let arr: [u8; 32] = trimmed[..32].try_into().unwrap();
+        let arr: [u8; 32] = trimmed[..32]
+            .try_into()
+            .expect("slice of length 32 fits [u8; 32] — len checked above");
         return Ok(SigningKey::from_bytes(&arr));
     }
     if let Ok(s) = std::str::from_utf8(&trimmed) {
         let s = s.trim_start_matches("0x").trim();
         if s.len() == 64 {
             let raw = hex::decode(s).context("hex decode org root key")?;
-            let arr: [u8; 32] = raw[..32].try_into().unwrap();
+            let arr: [u8; 32] = raw[..32]
+                .try_into()
+                .expect("hex decode of 64 chars yields 32 bytes — fits [u8; 32]");
             return Ok(SigningKey::from_bytes(&arr));
         }
         if s.starts_with("-----BEGIN") {
