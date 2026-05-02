@@ -196,38 +196,43 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
                 rollout = %rollout,
                 "RollbackTriggered: host_rollout_state Failed → Reverted",
             );
-            // Terminal cleanup for the rollback-and-halt path. The
-            // host has been rolled back; the (rollout_id, hostname)
-            // pair has reached a terminal state and should not
-            // re-surface in `active_rollouts_snapshot`. Sibling of
-            // the per-rollout `Action::ConvergeRollout` cleanup in
-            // `apply_actions`. Best-effort: a delete error is logged
-            // but doesn't fail the report POST. See the architectural
-            // note in the docstring above.
-            match db
-                .rollout_state()
-                .delete_rollout_host_records(rollout, &req.hostname)
-            {
-                Ok((pc, hrs)) if pc + hrs > 0 => {
-                    tracing::info!(
-                        target: "report",
-                        hostname = %req.hostname,
-                        rollout = %rollout,
-                        pending_confirms_deleted = pc,
-                        host_rollout_state_deleted = hrs,
-                        "RollbackTriggered: terminal cleanup of reverted host records",
-                    );
-                }
-                Ok(_) => {} // already cleaned, no-op
-                Err(err) => {
-                    tracing::warn!(
-                        target: "report",
-                        hostname = %req.hostname,
-                        rollout = %rollout,
-                        error = %err,
-                        "RollbackTriggered: terminal cleanup failed",
-                    );
-                }
+            // Terminal stamp for the rollback-and-halt path. The
+            // host has been rolled back; flip operational state to
+            // `rolled-back` (so it stops surfacing in
+            // `active_rollouts_snapshot`) and stamp the audit row's
+            // terminal_state. Both are best-effort: an error is
+            // logged but doesn't fail the report POST.
+            //
+            // record_terminal is race-resistant via WHERE rollout_id
+            // — a newer dispatch on a different rollout_id is left
+            // alone.
+            let now = Utc::now();
+            if let Err(err) = db.host_dispatch_state().record_terminal(
+                &req.hostname,
+                rollout,
+                crate::state::TerminalState::RolledBack,
+            ) {
+                tracing::warn!(
+                    target: "report",
+                    hostname = %req.hostname,
+                    rollout = %rollout,
+                    error = %err,
+                    "RollbackTriggered: operational terminal stamp failed",
+                );
+            }
+            if let Err(err) = db.dispatch_history().mark_terminal_for_rollout_host(
+                rollout,
+                &req.hostname,
+                crate::state::TerminalState::RolledBack,
+                now,
+            ) {
+                tracing::warn!(
+                    target: "report",
+                    hostname = %req.hostname,
+                    rollout = %rollout,
+                    error = %err,
+                    "RollbackTriggered: audit terminal stamp failed",
+                );
             }
         }
         Err(err) => {
@@ -575,9 +580,21 @@ mod tests {
     }
 
     #[test]
-    fn rollback_triggered_flips_failed_to_reverted_then_cleans_up() {
+    fn rollback_triggered_flips_failed_to_reverted_then_stamps_terminals() {
         let db = fresh_db();
-        // Seed a Failed row.
+        // Seed an operational dispatch row + a Failed hrs row.
+        let deadline = Utc::now() + chrono::Duration::seconds(120);
+        db.host_dispatch_state()
+            .record_dispatch(&crate::db::DispatchInsert {
+                hostname: "ohm",
+                rollout_id: "stable@abc12345",
+                channel: "stable",
+                wave: 0,
+                target_closure_hash: "system-r1",
+                target_channel_ref: "stable@abc12345",
+                confirm_deadline: deadline,
+            })
+            .unwrap();
         db.rollout_state()
             .transition_host_state(
                 "ohm",
@@ -587,7 +604,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        // Pre-call sanity: row is Failed.
+        // Pre-call sanity: hrs row is Failed.
         assert_eq!(
             db.rollout_state()
                 .host_state("ohm", "stable@abc12345")
@@ -599,15 +616,30 @@ mod tests {
         let req = rollback_report("ohm", Some("stable@abc12345"));
         apply_rollback_state_transition(&db, &req);
 
-        // Post-call: row is GONE. The handler flips Failed → Reverted
-        // (visible in tracing) and then immediately deletes the row
-        // via `delete_rollout_host_records` so it stops surfacing in
-        // `active_rollouts_snapshot`. Audit lives in host_reports.
+        // hrs row flipped Failed → Reverted (no longer cleaned up
+        // post-#81; that surface lives on dispatch_history now).
         assert_eq!(
-            db.rollout_state().host_state("ohm", "stable@abc12345").unwrap(),
-            None,
-            "row should be deleted post-Reverted cleanup",
+            db.rollout_state()
+                .host_state("ohm", "stable@abc12345")
+                .unwrap()
+                .as_deref(),
+            Some("Reverted"),
         );
+        // Operational state flipped to 'rolled-back'.
+        let op = db
+            .host_dispatch_state()
+            .host_state("ohm")
+            .unwrap()
+            .expect("operational row present");
+        assert_eq!(op.state, "rolled-back");
+        // Audit row stamped terminal=rolled-back.
+        let history = db
+            .dispatch_history()
+            .recent_for_host("ohm", 10)
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].terminal_state.as_deref(), Some("rolled-back"));
+        assert!(history[0].terminal_at.is_some());
     }
 
     #[test]

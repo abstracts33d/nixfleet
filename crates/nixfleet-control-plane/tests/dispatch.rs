@@ -4,9 +4,9 @@
 //! cannot reach: a real ed25519-signed `fleet.resolved.json` is
 //! verified at server boot (priming `AppState.verified_fleet`), an
 //! agent checks in via mTLS, and the CP both issues a target on the
-//! response AND writes a `pending_confirms` DB row. A second checkin
-//! while that row is in flight must NOT re-dispatch (idempotency
-//! gate `pending_confirm_exists`).
+//! response AND writes a `host_dispatch_state` DB row. A second
+//! checkin while that row is in flight must NOT re-dispatch
+//! (idempotency gate `pending_dispatch_exists`).
 //!
 //! Decision-table coverage (Unmanaged, NoDeclaration, Converged,
 //! InFlight, HoldAfterFailure, rollout-id derivation, wave-index
@@ -189,7 +189,7 @@ fn checkin_request(current: &str) -> CheckinRequest {
 /// standalone "dispatch issues target when diverged" test: the first
 /// checkin asserts both that the response carries a populated target
 /// (with the expected closure + rollout-id derived from the signed
-/// fleet's ciCommit) and that the CP wrote a `pending_confirms` row.
+/// fleet's ciCommit) and that the CP wrote a `host_dispatch_state` row.
 /// The second checkin asserts the in-flight gate suppresses re-
 /// dispatch and no second row is written.
 #[tokio::test]
@@ -219,7 +219,7 @@ async fn dispatch_end_to_end_signed_fleet_then_idempotent() {
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
     // First checkin: divergent generation → CP issues a target and
-    // inserts a pending_confirms row.
+    // UPSERTs a host_dispatch_state row.
     let resp = client
         .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&checkin_request("running-system-old"))
@@ -266,12 +266,12 @@ async fn dispatch_end_to_end_signed_fleet_then_idempotent() {
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let n: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM pending_confirms WHERE hostname = ?1",
+            "SELECT COUNT(*) FROM host_dispatch_state WHERE hostname = ?1",
             rusqlite::params!["test-host"],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(n, 1, "expected exactly one pending_confirms row");
+    assert_eq!(n, 1, "expected exactly one host_dispatch_state row");
 
     handle.abort();
 }

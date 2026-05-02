@@ -110,9 +110,9 @@ async fn validate_orphan_recovery(
     Some((target_closure.clone(), host_decl.channel.clone()))
 }
 
-/// Insert the synthetic `pending_confirms` (confirmed) + Healthy
-/// marker. Returns true iff the pending_confirms write succeeded;
-/// the host_healthy write is best-effort (worst case the soak timer
+/// Insert the synthetic operational+audit confirmed rows + Healthy
+/// marker. Returns true iff the operational write succeeded; the
+/// host_healthy write is best-effort (worst case the soak timer
 /// restarts on next confirm — same as pre-recovery behaviour).
 fn synthesise_orphan_confirm_rows(
     db: &crate::db::Db,
@@ -121,7 +121,7 @@ fn synthesise_orphan_confirm_rows(
     channel: &str,
 ) -> bool {
     let now = Utc::now();
-    if let Err(err) = db.confirms().record_confirmed_pending(
+    if let Err(err) = db.host_dispatch_state().record_confirmed_dispatch(
         &req.hostname,
         &req.rollout,
         channel,
@@ -134,7 +134,7 @@ fn synthesise_orphan_confirm_rows(
             hostname = %req.hostname,
             rollout = %req.rollout,
             error = %err,
-            "orphan-confirm recovery: record_confirmed_pending failed",
+            "orphan-confirm recovery: record_confirmed_dispatch failed",
         );
         return false;
     }
@@ -157,7 +157,7 @@ fn synthesise_orphan_confirm_rows(
         hostname = %req.hostname,
         rollout = %req.rollout,
         target_closure = %target_closure,
-        "orphan-confirm recovery: synthesised confirmed pending_confirms row + Healthy marker",
+        "orphan-confirm recovery: synthesised confirmed host_dispatch_state row + Healthy marker",
     );
     true
 }
@@ -186,7 +186,7 @@ fn synthesise_orphan_confirm_rows(
 ///    lifecycle (Healthy/Soaked/Reverted) and is more authoritative
 ///    than a re-attestation.
 ///
-/// On success: synthesise a confirmed `pending_confirms` row +
+/// On success: synthesise a confirmed `host_dispatch_state` row +
 /// a `host_rollout_state` Healthy marker stamped with
 /// `min(now, last_confirmed_at)`. The clamp prevents a clock-
 /// skewed agent from claiming future-dated state to short-circuit
@@ -258,7 +258,7 @@ pub(super) async fn recover_soak_state_from_attestation(
 
     let stamp = std::cmp::min(now, attested);
 
-    if let Err(err) = db.confirms().record_confirmed_pending(
+    if let Err(err) = db.host_dispatch_state().record_confirmed_dispatch(
         &req.hostname,
         &rollout_id,
         &host_decl.channel,
@@ -271,7 +271,7 @@ pub(super) async fn recover_soak_state_from_attestation(
             hostname = %req.hostname,
             rollout = %rollout_id,
             error = %err,
-            "soak-state recovery: record_confirmed_pending failed",
+            "soak-state recovery: record_confirmed_dispatch failed",
         );
         return;
     }
@@ -327,7 +327,7 @@ mod tests {
             "matching closure should recover",
         );
 
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
+        let snap = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].rollout_id, expected_id);
         assert_eq!(snap[0].target_closure_hash, "target-system-r1");
@@ -353,7 +353,7 @@ mod tests {
             "mismatched closure must not recover",
         );
         assert!(db
-            .rollout_state()
+            .host_dispatch_state()
             .active_rollouts_snapshot()
             .unwrap()
             .is_empty());
@@ -408,7 +408,7 @@ mod tests {
 
         recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
 
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
+        let snap = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
         assert_eq!(
             snap.len(),
             1,
@@ -438,7 +438,7 @@ mod tests {
 
         recover_soak_state_from_attestation(&state, &req, now).await;
 
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
+        let snap = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
         let stamped = snap[0].last_healthy_since.get("test-host").unwrap();
         assert_eq!(
             stamped.timestamp(),
@@ -459,7 +459,7 @@ mod tests {
 
         recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
         assert!(db
-            .rollout_state()
+            .host_dispatch_state()
             .active_rollouts_snapshot()
             .unwrap()
             .is_empty());
@@ -513,7 +513,7 @@ mod tests {
 
         recover_soak_state_from_attestation(&state, &req, Utc::now()).await;
         assert!(db
-            .rollout_state()
+            .host_dispatch_state()
             .active_rollouts_snapshot()
             .unwrap()
             .is_empty());

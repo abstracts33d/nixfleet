@@ -1,20 +1,18 @@
-//! End-to-end soak-loop integration test (closing the
-//! cycle).
+//! End-to-end soak-loop integration test (closing the cycle).
 //!
 //! Exercises every piece the cycle wired up in one scenario:
 //!
-//! 1. `record_pending_confirm` + `confirm_pending` simulate the
-//!    confirm handler's success path.
+//! 1. `record_dispatch` + `confirm` (host_dispatch_state) simulate
+//!    the confirm handler's success path.
 //! 2. `transition_host_state(Healthy, Set(now), None)` stamps
-//!    `last_healthy_since` (step 1).
+//!    `last_healthy_since`.
 //! 3. `active_rollouts_snapshot` projects the DB into the
-//!    reconciler's observed-state shape (step 2).
+//!    reconciler's observed-state shape.
 //! 4. `observed_projection::project` builds the Observed struct.
 //! 5. `nixfleet_reconciler::reconcile` decides + emits
-//!    `Action::SoakHost` because the soak window has elapsed
-//!    (step 3).
+//!    `Action::SoakHost` because the soak window has elapsed.
 //! 6. `transition_host_state(Soaked, Untouched, Some(Healthy))`
-//!    applies the SoakHost action (step 3 CP handler).
+//!    applies the SoakHost action.
 //! 7. The next snapshot reflects `host_state = 'Soaked'` and the
 //!    next reconcile tick fires `ConvergeRollout` (single-wave
 //!    fleet, so promotion = convergence).
@@ -27,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
-use nixfleet_control_plane::db::{Db, PendingConfirmInsert};
+use nixfleet_control_plane::db::{Db, DispatchInsert};
 use nixfleet_control_plane::observed_projection;
 use nixfleet_control_plane::state::{HealthyMarker, HostRolloutState};
 use nixfleet_proto::fleet_resolved::Meta;
@@ -93,7 +91,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
     db.migrate().unwrap();
 
     // Step A: simulate the confirm handler's success path.
-    // record_pending_confirm + confirm_pending mark the row
+    // record_dispatch + confirm flip the operational row to
     // confirmed; transition_host_state(Healthy) stamps the soak marker
     // 10 minutes in the past so the wave's 5-minute soak window
     // is elapsed at reconcile time.
@@ -104,8 +102,8 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
     let healthy_at = Utc::now() - chrono::Duration::minutes(10);
     let now = Utc::now();
 
-    db.confirms()
-        .record_pending_confirm(&PendingConfirmInsert {
+    db.host_dispatch_state()
+        .record_dispatch(&DispatchInsert {
             hostname: host,
             channel: "stable",
             rollout_id,
@@ -115,8 +113,8 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
             confirm_deadline,
         })
         .unwrap();
-    let n = db.confirms().confirm_pending(host, rollout_id).unwrap();
-    assert_eq!(n, 1, "confirm_pending must mark the row confirmed");
+    let n = db.host_dispatch_state().confirm(host, rollout_id).unwrap();
+    assert_eq!(n, 1, "confirm must flip the operational row");
     db.rollout_state()
         .transition_host_state(
             host,
@@ -129,7 +127,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
 
     // Step B: project the DB state into the reconciler's
     // observed-state struct.
-    let rollouts = db.rollout_state().active_rollouts_snapshot().unwrap();
+    let rollouts = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
     assert_eq!(rollouts.len(), 1, "snapshot must surface the rollout");
     assert_eq!(
         rollouts[0].host_states.get(host).map(String::as_str),
@@ -178,7 +176,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
     // Step E: re-project + re-reconcile. The host now appears as
     // Soaked, the wave's `wave_all_soaked` check fires, and the
     // single-wave fleet emits ConvergeRollout.
-    let rollouts2 = db.rollout_state().active_rollouts_snapshot().unwrap();
+    let rollouts2 = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
     assert_eq!(
         rollouts2[0].host_states.get(host).map(String::as_str),
         Some("Soaked"),
@@ -211,8 +209,8 @@ fn soak_loop_skips_when_window_not_elapsed() {
     let healthy_at = Utc::now() - chrono::Duration::minutes(1);
     let now = Utc::now();
 
-    db.confirms()
-        .record_pending_confirm(&PendingConfirmInsert {
+    db.host_dispatch_state()
+        .record_dispatch(&DispatchInsert {
             hostname: host,
             channel: "stable",
             rollout_id,
@@ -222,7 +220,7 @@ fn soak_loop_skips_when_window_not_elapsed() {
             confirm_deadline: Utc::now() + chrono::Duration::seconds(120),
         })
         .unwrap();
-    db.confirms().confirm_pending(host, rollout_id).unwrap();
+    db.host_dispatch_state().confirm(host, rollout_id).unwrap();
     db.rollout_state()
         .transition_host_state(
             host,
@@ -233,7 +231,7 @@ fn soak_loop_skips_when_window_not_elapsed() {
         )
         .unwrap();
 
-    let rollouts = db.rollout_state().active_rollouts_snapshot().unwrap();
+    let rollouts = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
     let observed =
         observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new());
     let fleet = fleet_with_single_wave_host(host, target_closure, 5);

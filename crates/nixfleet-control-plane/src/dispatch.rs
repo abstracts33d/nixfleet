@@ -2,9 +2,10 @@
 //! Pure (no I/O, clock injected); caller handles DB side effects.
 //!
 //! 3-way compare: host's current generation, host's declared target,
-//! and whether a `pending_confirms` row is in flight. The reconciler
-//! emits the richer `Action` stream (waves, soaking, halts) for
-//! observability; per-host dispatch is a direct comparison.
+//! and whether a `host_dispatch_state` row is in flight. The
+//! reconciler emits the richer `Action` stream (waves, soaking,
+//! halts) for observability; per-host dispatch is a direct
+//! comparison.
 
 use chrono::{DateTime, Utc};
 
@@ -25,7 +26,7 @@ pub enum Decision {
     Unmanaged,
     /// Listed but no `closureHash` (CI didn't produce one).
     NoDeclaration,
-    /// `pending_confirms` already in flight; don't re-dispatch.
+    /// Operational dispatch already in flight; don't re-dispatch.
     InFlight,
     /// Last fetch failed; hold rather than blast another target.
     HoldAfterFailure,

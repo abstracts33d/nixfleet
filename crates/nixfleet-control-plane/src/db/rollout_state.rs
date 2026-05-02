@@ -1,5 +1,4 @@
-//! `host_rollout_state` — per-host soak markers and the joined
-//! `active_rollouts` projection.
+//! `host_rollout_state` — per-host soak markers + state machine.
 //!
 //! Recovery class: **soft state** (ARCHITECTURE.md §6 Phase 10).
 //! Loss restarts soak windows from zero. Mitigated by agent-attested
@@ -7,6 +6,10 @@
 //! most recent successful confirm and echoes it on every checkin;
 //! the CP repopulates `last_healthy_since` from the attestation,
 //! clamped to `min(now, attested)`.
+//!
+//! Post-#81: the joined `active_rollouts_snapshot` projection moved
+//! to [`super::host_dispatch_state`] alongside the operational table
+//! it now reads from.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -15,24 +18,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::state::{HealthyMarker, HostRolloutState, PendingConfirmState};
-
-/// Joined snapshot of `pending_confirms` + `host_rollout_state` for
-/// the observed-state projection. Rollouts are derived (no dedicated
-/// table); `rolled-back`/`cancelled` rows are filtered out so dead
-/// rollouts don't surface as empty-host-states the reconciler would
-/// re-dispatch.
-#[derive(Debug, Clone)]
-pub struct RolloutDbSnapshot {
-    pub rollout_id: String,
-    pub channel: String,
-    pub target_closure_hash: String,
-    pub target_channel_ref: String,
-    /// `host_rollout_state` wins when present; otherwise derived
-    /// from the latest `pending_confirms.state`.
-    pub host_states: HashMap<String, String>,
-    /// Excludes hosts whose marker is NULL (not currently Healthy).
-    pub last_healthy_since: HashMap<String, DateTime<Utc>>,
-}
 
 pub struct RolloutState<'a> {
     pub(super) conn: &'a Mutex<Connection>,
@@ -181,70 +166,6 @@ impl RolloutState<'_> {
         Ok(row)
     }
 
-    /// Delete `pending_confirms` + `host_rollout_state` rows for a
-    /// fully-converged rollout. Called from `apply_actions` when the
-    /// reconciler emits `Action::ConvergeRollout`. Without this, every
-    /// confirmed `pending_confirms` row from a converged rollout
-    /// keeps surfacing in `active_rollouts_snapshot` (state
-    /// 'confirmed') forever — bloating the snapshot, double-counting
-    /// hosts in disruption-budget calculations, and emitting
-    /// ChannelUnknown noise (post-#80, with empty channel; pre-#80,
-    /// with the SHA itself).
-    ///
-    /// Returns `(pending_confirms_deleted, host_rollout_state_deleted)`.
-    ///
-    /// Lives on `RolloutState` (not `Confirms`) because the reconciler
-    /// reaches it through the same accessor that owns
-    /// `active_rollouts_snapshot` — the symmetric "create vs purge"
-    /// path for the rollout-state projection.
-    pub fn delete_rollout_records(&self, rollout_id: &str) -> Result<(usize, usize)> {
-        let guard = super::lock_conn(self.conn)?;
-        let pc_n = guard
-            .execute(
-                "DELETE FROM pending_confirms WHERE rollout_id = ?1",
-                params![rollout_id],
-            )
-            .context("delete pending_confirms for converged rollout")?;
-        let hrs_n = guard
-            .execute(
-                "DELETE FROM host_rollout_state WHERE rollout_id = ?1",
-                params![rollout_id],
-            )
-            .context("delete host_rollout_state for converged rollout")?;
-        Ok((pc_n, hrs_n))
-    }
-
-    /// Per-host counterpart of [`Self::delete_rollout_records`]. Called
-    /// from `apply_rollback_state_transition` when a host transitions
-    /// `Failed → Reverted` under rollback-and-halt. The rollout itself
-    /// may still be active for OTHER hosts (Halted but with siblings
-    /// in pre-terminal states), so cleaning the whole rollout would
-    /// be wrong; this scoped variant clears only the (rollout_id,
-    /// hostname) pair so the Reverted row stops contributing to
-    /// `active_rollouts_snapshot` going forward.
-    ///
-    /// Returns `(pending_confirms_deleted, host_rollout_state_deleted)`.
-    pub fn delete_rollout_host_records(
-        &self,
-        rollout_id: &str,
-        hostname: &str,
-    ) -> Result<(usize, usize)> {
-        let guard = super::lock_conn(self.conn)?;
-        let pc_n = guard
-            .execute(
-                "DELETE FROM pending_confirms WHERE rollout_id = ?1 AND hostname = ?2",
-                params![rollout_id, hostname],
-            )
-            .context("delete pending_confirms for reverted host")?;
-        let hrs_n = guard
-            .execute(
-                "DELETE FROM host_rollout_state WHERE rollout_id = ?1 AND hostname = ?2",
-                params![rollout_id, hostname],
-            )
-            .context("delete host_rollout_state for reverted host")?;
-        Ok((pc_n, hrs_n))
-    }
-
     /// True iff any `host_rollout_state` row exists for the given
     /// (rollout_id, hostname). Used by the soak-state recovery path
     /// to avoid overwriting existing host state when the agent's
@@ -298,30 +219,28 @@ impl RolloutState<'_> {
 
     /// Rollouts in which `hostname` is currently Healthy, paired
     /// with each rollout's `target_closure_hash` (joined from
-    /// `pending_confirms`). The checkin handler calls this on every
-    /// `/v1/agent/checkin` to detect the "left Healthy" case: if
-    /// the host's reported `current_generation.closure_hash` no
+    /// `host_dispatch_state`). The checkin handler calls this on
+    /// every `/v1/agent/checkin` to detect the "left Healthy" case:
+    /// if the host's reported `current_generation.closure_hash` no
     /// longer matches the rollout's target, the host has reverted
     /// away and the Healthy marker must be cleared.
     ///
-    /// Joining avoids denormalising the target closure — a
-    /// confirmed pending_confirms row always exists for any
-    /// (rollout, host) in host_rollout_state, since the confirm-
-    /// handler-success path's `transition_host_state` is the only
-    /// emitter of Healthy rows. `DISTINCT` collapses the rare case
-    /// of multiple confirmed rows for the same (host, rollout); the
-    /// target closure is rollout-deterministic so any one is fine.
+    /// Joining against the operational table avoids denormalising
+    /// the target closure. Operational state is `'confirmed'` for
+    /// any (rollout, host) where Healthy is the post-confirm machine
+    /// state — the confirm handler is the only emitter of Healthy
+    /// rows.
     pub fn healthy_rollouts_for_host(&self, hostname: &str) -> Result<Vec<(String, String)>> {
         let guard = super::lock_conn(self.conn)?;
         let mut stmt = guard.prepare(
-            "SELECT DISTINCT hrs.rollout_id, pc.target_closure_hash
+            "SELECT hrs.rollout_id, hds.target_closure_hash
              FROM host_rollout_state hrs
-             JOIN pending_confirms pc
-               ON pc.hostname = hrs.hostname
-              AND pc.rollout_id = hrs.rollout_id
+             JOIN host_dispatch_state hds
+               ON hds.hostname = hrs.hostname
+              AND hds.rollout_id = hrs.rollout_id
              WHERE hrs.hostname = ?1
                AND hrs.last_healthy_since IS NOT NULL
-               AND pc.state = ?2",
+               AND hds.state = ?2",
         )?;
         let rows = stmt
             .query_map(
@@ -335,17 +254,16 @@ impl RolloutState<'_> {
     /// Rollouts the host is currently `Failed` on. RFC-0002 §5.1
     /// `rollback-and-halt` policy needs (rollout_id, target_ref) at
     /// checkin time so the agent can be told what failed target to
-    /// step away from. Joined with `pending_confirms` for the
-    /// target_channel_ref; multiple rows per rollout are collapsed
-    /// via `DISTINCT` (the target_ref is rollout-deterministic).
+    /// step away from. Joined with `host_dispatch_state` for the
+    /// target_channel_ref.
     pub fn failed_rollouts_for_host(&self, hostname: &str) -> Result<Vec<(String, String)>> {
         let guard = super::lock_conn(self.conn)?;
         let mut stmt = guard.prepare(
-            "SELECT DISTINCT hrs.rollout_id, pc.target_channel_ref
+            "SELECT hrs.rollout_id, hds.target_channel_ref
              FROM host_rollout_state hrs
-             JOIN pending_confirms pc
-               ON pc.hostname = hrs.hostname
-              AND pc.rollout_id = hrs.rollout_id
+             JOIN host_dispatch_state hds
+               ON hds.hostname = hrs.hostname
+              AND hds.rollout_id = hrs.rollout_id
              WHERE hrs.hostname = ?1
                AND hrs.host_state = ?2",
         )?;
@@ -358,155 +276,11 @@ impl RolloutState<'_> {
         Ok(rows)
     }
 
-    /// Snapshot the active rollouts derived from the DB for the
-    /// observed-state projection. For each (rollout_id, hostname),
-    /// keep only the latest `pending_confirms` row by
-    /// `dispatched_at`, restricted to
-    /// `state IN ('pending', 'confirmed')`. LEFT JOIN
-    /// `host_rollout_state` for the per-host machine state +
-    /// soak-timer marker.
-    ///
-    /// Filtering out `rolled-back` / `cancelled` rows is load-
-    /// bearing: a rollout whose every row is dead would otherwise
-    /// surface as an empty `host_states` map, and the reconciler
-    /// defaults absent host-state lookups to "Queued" — which means
-    /// it would try to re-dispatch all those hosts. Skipping the
-    /// dead rollouts entirely avoids that trap.
-    ///
-    /// Output order: rollout_id ascending. Deterministic so
-    /// projection tests can compare against expected vectors and
-    /// the reconciler's journal lines stay grep-stable.
-    ///
-    /// Lives on `RolloutState` rather than `Confirms` because the
-    /// post-confirm machine (Healthy/Soaked/...) is what the
-    /// observed-state projection actually publishes; the join into
-    /// `pending_confirms` is bookkeeping for the target-closure
-    /// columns.
-    pub fn active_rollouts_snapshot(&self) -> Result<Vec<RolloutDbSnapshot>> {
-        use std::collections::BTreeMap;
-
-        let guard = super::lock_conn(self.conn)?;
-        let mut stmt = guard.prepare(
-            "WITH latest_per_host AS (
-                 SELECT pc.rollout_id, pc.channel, pc.hostname,
-                        pc.target_closure_hash, pc.target_channel_ref,
-                        pc.state AS pc_state
-                 FROM pending_confirms pc
-                 WHERE pc.state IN (?1, ?2)
-                   AND pc.dispatched_at = (
-                     SELECT MAX(p2.dispatched_at)
-                     FROM pending_confirms p2
-                     WHERE p2.rollout_id = pc.rollout_id
-                       AND p2.hostname = pc.hostname
-                   )
-             )
-             SELECT lph.rollout_id, lph.channel, lph.hostname,
-                    lph.target_closure_hash, lph.target_channel_ref,
-                    lph.pc_state,
-                    hrs.host_state, hrs.last_healthy_since
-             FROM latest_per_host lph
-             LEFT JOIN host_rollout_state hrs
-                    ON hrs.rollout_id = lph.rollout_id
-                   AND hrs.hostname = lph.hostname
-             ORDER BY lph.rollout_id, lph.hostname",
-        )?;
-        let rows = stmt
-            .query_map(
-                params![
-                    PendingConfirmState::Pending.as_db_str(),
-                    PendingConfirmState::Confirmed.as_db_str(),
-                ],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,         // rollout_id
-                        row.get::<_, String>(1)?,         // channel (V005)
-                        row.get::<_, String>(2)?,         // hostname
-                        row.get::<_, String>(3)?,         // target_closure_hash
-                        row.get::<_, String>(4)?,         // target_channel_ref
-                        row.get::<_, String>(5)?,         // pc_state
-                        row.get::<_, Option<String>>(6)?, // hrs.host_state
-                        row.get::<_, Option<String>>(7)?, // hrs.last_healthy_since
-                    ))
-                },
-            )?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-
-        // BTreeMap keeps rollout_ids ordered without an extra sort.
-        let mut by_rollout: BTreeMap<String, RolloutDbSnapshot> = BTreeMap::new();
-        for (
-            rollout_id,
-            row_channel,
-            hostname,
-            target_closure,
-            target_ref,
-            pc_state,
-            hrs_state,
-            hrs_ts,
-        ) in rows
-        {
-            // Derive the host's state literal. `host_rollout_state`
-            // wins when present (post-confirm machine: Healthy /
-            // Soaked / …); otherwise infer from `pending_confirms.state`.
-            // Both arms route through `HostRolloutState`'s typed
-            // accessors so any schema drift fails loudly here.
-            // The RolledBack/Cancelled match guard is unreachable —
-            // the CTE's WHERE pc.state IN ('pending','confirmed')
-            // filters those out (see V002 migration).
-            let host_state = match hrs_state {
-                Some(s) => HostRolloutState::from_db_str(&s)?.as_db_str().to_string(),
-                None => match PendingConfirmState::from_db_str(&pc_state)? {
-                    PendingConfirmState::Pending => HostRolloutState::ConfirmWindow,
-                    PendingConfirmState::Confirmed => HostRolloutState::Healthy,
-                    PendingConfirmState::RolledBack | PendingConfirmState::Cancelled => {
-                        unreachable!("filtered by CTE WHERE pc.state IN ('pending','confirmed')")
-                    }
-                }
-                .as_db_str()
-                .to_string(),
-            };
-
-            // V005 introduced an explicit `channel` column. Use it
-            // when populated; fall back to legacy parsing of the
-            // `<channel>@<short-ci-commit>` form for rows that
-            // pre-date the migration's backfill (the same forensic
-            // shape compute_rollout_id_for_channel emitted before #62).
-            // If both fail, leave empty — the reconciler then emits
-            // ChannelUnknown legitimately (drift detector intent).
-            // See #80.
-            let channel = if !row_channel.is_empty() {
-                row_channel
-            } else {
-                rollout_id
-                    .split_once('@')
-                    .map(|(c, _)| c.to_string())
-                    .unwrap_or_default()
-            };
-
-            let entry = by_rollout
-                .entry(rollout_id.clone())
-                .or_insert_with(|| RolloutDbSnapshot {
-                    rollout_id: rollout_id.clone(),
-                    channel,
-                    target_closure_hash: target_closure.clone(),
-                    target_channel_ref: target_ref.clone(),
-                    host_states: HashMap::new(),
-                    last_healthy_since: HashMap::new(),
-                });
-            entry.host_states.insert(hostname.clone(), host_state);
-            if let Some(ts) = hrs_ts {
-                let parsed = ts
-                    .parse::<DateTime<Utc>>()
-                    .with_context(|| format!("parse last_healthy_since for {hostname}"))?;
-                entry.last_healthy_since.insert(hostname, parsed);
-            }
-        }
-        Ok(by_rollout.into_values().collect())
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_helpers::{fresh_db, mark_healthy, pc_insert};
+    use super::super::test_helpers::{dispatch_insert, fresh_db, mark_healthy};
     use crate::state::{HealthyMarker, HostRolloutState};
     use chrono::Utc;
 
@@ -622,16 +396,16 @@ mod tests {
     }
 
     #[test]
-    fn healthy_rollouts_for_host_joins_pending_confirms() {
+    fn healthy_rollouts_for_host_joins_dispatch_state() {
         // The checkin handler calls this to compare reported
         // current_generation against each rollout's target. The
-        // join requires a confirmed pending_confirms row — an
-        // un-confirmed (still 'pending') row must NOT surface,
-        // since the host has not yet reached Healthy.
+        // join requires a confirmed host_dispatch_state row — a
+        // still-'pending' row must NOT surface, since the host has
+        // not yet reached Healthy.
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
-        db.confirms()
-            .record_pending_confirm(&pc_insert(
+        db.host_dispatch_state()
+            .record_dispatch(&dispatch_insert(
                 "test-host",
                 "stable@r1",
                 "target-system-r1",
@@ -639,8 +413,8 @@ mod tests {
             ))
             .unwrap();
         // Still pending — healthy_rollouts_for_host must be empty
-        // even after recording Healthy (the row exists but the
-        // join filter is pc.state = 'confirmed').
+        // even after recording Healthy (the join filter is
+        // hds.state = 'confirmed').
         mark_healthy(&db, "test-host", "stable@r1", Utc::now());
         let pre = db
             .rollout_state()
@@ -648,14 +422,11 @@ mod tests {
             .unwrap();
         assert!(
             pre.is_empty(),
-            "must not surface rollouts whose pending_confirms is still pending: {pre:?}"
+            "must not surface rollouts whose operational row is still pending: {pre:?}"
         );
 
         // Confirm it; now the join hits.
-        let n = db
-            .confirms()
-            .confirm_pending("test-host", "stable@r1")
-            .unwrap();
+        let n = db.host_dispatch_state().confirm("test-host", "stable@r1").unwrap();
         assert_eq!(n, 1);
         let post = db
             .rollout_state()
@@ -670,17 +441,15 @@ mod tests {
     fn healthy_rollouts_for_host_excludes_cleared_rows() {
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
-        db.confirms()
-            .record_pending_confirm(&pc_insert(
+        db.host_dispatch_state()
+            .record_dispatch(&dispatch_insert(
                 "test-host",
                 "stable@r1",
                 "target-system-r1",
                 future,
             ))
             .unwrap();
-        db.confirms()
-            .confirm_pending("test-host", "stable@r1")
-            .unwrap();
+        db.host_dispatch_state().confirm("test-host", "stable@r1").unwrap();
         mark_healthy(&db, "test-host", "stable@r1", Utc::now());
         assert_eq!(
             db.rollout_state()
@@ -729,283 +498,18 @@ mod tests {
         assert_eq!(to_soaked(&db, "ohm", "stable@r1"), 0);
 
         // Verify the active-rollout snapshot reflects the
-        // transition. Need a confirmed pending_confirms row to
-        // pass the snapshot's join filter.
+        // transition. Need a confirmed operational row to pass the
+        // snapshot's join filter.
         let future = Utc::now() + chrono::Duration::seconds(120);
-        db.confirms()
-            .record_pending_confirm(&pc_insert("ohm", "stable@r1", "target", future))
+        db.host_dispatch_state()
+            .record_dispatch(&dispatch_insert("ohm", "stable@r1", "target", future))
             .unwrap();
-        db.confirms().confirm_pending("ohm", "stable@r1").unwrap();
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
+        db.host_dispatch_state().confirm("ohm", "stable@r1").unwrap();
+        let snap = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
         assert_eq!(snap.len(), 1);
         assert_eq!(
             snap[0].host_states.get("ohm").map(String::as_str),
             Some("Soaked"),
         );
-    }
-
-    #[test]
-    fn active_rollouts_snapshot_empty_when_no_rows() {
-        let db = fresh_db();
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
-        assert!(snap.is_empty());
-    }
-
-    #[test]
-    fn active_rollouts_snapshot_pending_surfaces_as_confirmwindow() {
-        // Dispatch happened but agent has not confirmed yet. The
-        // host appears in the rollout with state "ConfirmWindow"
-        // (RFC §3.2) and no last_healthy_since marker.
-        let db = fresh_db();
-        let future = Utc::now() + chrono::Duration::seconds(120);
-        db.confirms()
-            .record_pending_confirm(&pc_insert("ohm", "stable@abc12345", "system-r1", future))
-            .unwrap();
-
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
-        assert_eq!(snap.len(), 1);
-        let r = &snap[0];
-        assert_eq!(r.rollout_id, "stable@abc12345");
-        assert_eq!(r.channel, "stable");
-        assert_eq!(r.target_closure_hash, "system-r1");
-        assert_eq!(r.target_channel_ref, "stable@abc12345");
-        assert_eq!(
-            r.host_states.get("ohm").map(String::as_str),
-            Some("ConfirmWindow")
-        );
-        assert!(r.last_healthy_since.is_empty());
-    }
-
-    #[test]
-    fn active_rollouts_snapshot_uses_explicit_channel_for_sha_rollout_id() {
-        // #80 regression guard. Post-#62 rolloutIds are sha256 hex
-        // strings with no `@` separator. Without the V005 channel
-        // column, the snapshot fell through to `rollout_id.clone()`
-        // and the reconciler then emitted ChannelUnknown with the
-        // SHA as the bogus channel name. Asserts that an explicit
-        // channel column wins for sha-shaped ids.
-        let db = fresh_db();
-        let future = Utc::now() + chrono::Duration::seconds(120);
-        let sha_rollout = "1111111111111111111111111111111111111111111111111111111111111111";
-        let mut row = pc_insert("ohm", sha_rollout, "system-r1", future);
-        row.channel = "edge-slow";
-        db.confirms().record_pending_confirm(&row).unwrap();
-
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
-        assert_eq!(snap.len(), 1);
-        assert_eq!(
-            snap[0].channel, "edge-slow",
-            "snapshot must read channel from V005 column, not the rolloutId fallback",
-        );
-    }
-
-    #[test]
-    fn active_rollouts_snapshot_falls_back_to_legacy_split_when_channel_empty() {
-        // V005 backfill covers legacy `<channel>@<ref>` rows, but a
-        // sha-shaped row without a backfilled channel must NOT
-        // surface a SHA-as-channel; it should leave the channel
-        // empty so the reconciler emits ChannelUnknown legitimately
-        // (drift detector intent preserved).
-        let db = fresh_db();
-        // Synthesize a row directly so we can exercise the empty-
-        // channel fallback. record_pending_confirm requires non-empty
-        // channel by API contract; the migration backfill covers the
-        // historical legacy gap.
-        let future = Utc::now() + chrono::Duration::seconds(120);
-        let mut row = pc_insert("ohm", "stable@abc12345", "system-r1", future);
-        row.channel = ""; // simulate a pre-V005 row that the backfill missed
-        db.confirms().record_pending_confirm(&row).unwrap();
-
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
-        assert_eq!(snap.len(), 1);
-        assert_eq!(
-            snap[0].channel, "stable",
-            "legacy <channel>@<ref> rolloutIds must still resolve via split fallback",
-        );
-    }
-
-    #[test]
-    fn active_rollouts_snapshot_confirmed_uses_host_rollout_state() {
-        // Once confirm lands, host_rollout_state.host_state takes
-        // precedence (matches the path the production handlers
-        // write). last_healthy_since surfaces in the side map for
-        // the soak gate.
-        let db = fresh_db();
-        let future = Utc::now() + chrono::Duration::seconds(120);
-        let now = Utc::now();
-        db.confirms()
-            .record_pending_confirm(&pc_insert("ohm", "stable@abc12345", "system-r1", future))
-            .unwrap();
-        db.confirms()
-            .confirm_pending("ohm", "stable@abc12345")
-            .unwrap();
-        mark_healthy(&db, "ohm", "stable@abc12345", now);
-
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
-        assert_eq!(snap.len(), 1);
-        let r = &snap[0];
-        assert_eq!(
-            r.host_states.get("ohm").map(String::as_str),
-            Some("Healthy")
-        );
-        let stored = r
-            .last_healthy_since
-            .get("ohm")
-            .expect("Healthy host has soak ts");
-        assert_eq!(stored.timestamp(), now.timestamp());
-    }
-
-    #[test]
-    fn active_rollouts_snapshot_filters_rolled_back_rollouts() {
-        // The rollback timer marked the row 'rolled-back'. The
-        // rollout has no other surviving rows, so it must NOT
-        // appear in active_rollouts — otherwise its empty
-        // host_states map would default to "Queued" in the
-        // reconciler and trigger spurious re-dispatches.
-        let db = fresh_db();
-        let past = Utc::now() - chrono::Duration::seconds(120);
-        db.confirms()
-            .record_pending_confirm(&pc_insert("ohm", "stable@dead", "system-x", past))
-            .unwrap();
-        let expired = db.confirms().pending_confirms_expired().unwrap();
-        let ids: Vec<i64> = expired.iter().map(|(id, _, _, _, _)| *id).collect();
-        db.confirms().mark_rolled_back(&ids).unwrap();
-
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
-        assert!(
-            snap.is_empty(),
-            "rolled-back rollouts must not surface in active_rollouts: {snap:?}",
-        );
-    }
-
-    #[test]
-    fn active_rollouts_snapshot_groups_hosts_per_rollout() {
-        // Two rollouts, two hosts each, mixed states. Each rollout
-        // appears once with its hosts grouped under host_states.
-        let db = fresh_db();
-        let future = Utc::now() + chrono::Duration::seconds(120);
-        for (host, rollout) in [
-            ("ohm", "stable@r1"),
-            ("krach", "stable@r1"),
-            ("pixel", "edge@r2"),
-            ("aether", "edge@r2"),
-        ] {
-            db.confirms()
-                .record_pending_confirm(&pc_insert(host, rollout, "target", future))
-                .unwrap();
-        }
-        // ohm + pixel confirm; krach + aether stay in ConfirmWindow.
-        db.confirms().confirm_pending("ohm", "stable@r1").unwrap();
-        db.confirms().confirm_pending("pixel", "edge@r2").unwrap();
-        mark_healthy(&db, "ohm", "stable@r1", Utc::now());
-        mark_healthy(&db, "pixel", "edge@r2", Utc::now());
-
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
-        assert_eq!(snap.len(), 2);
-        // BTreeMap-ordered: edge@r2 sorts before stable@r1.
-        assert_eq!(snap[0].rollout_id, "edge@r2");
-        assert_eq!(snap[0].host_states.len(), 2);
-        assert_eq!(
-            snap[0].host_states.get("pixel").map(String::as_str),
-            Some("Healthy"),
-        );
-        assert_eq!(
-            snap[0].host_states.get("aether").map(String::as_str),
-            Some("ConfirmWindow"),
-        );
-        assert_eq!(snap[0].last_healthy_since.len(), 1);
-        assert!(snap[0].last_healthy_since.contains_key("pixel"));
-
-        assert_eq!(snap[1].rollout_id, "stable@r1");
-        assert_eq!(
-            snap[1].host_states.get("ohm").map(String::as_str),
-            Some("Healthy"),
-        );
-        assert_eq!(
-            snap[1].host_states.get("krach").map(String::as_str),
-            Some("ConfirmWindow"),
-        );
-    }
-
-    #[test]
-    fn active_rollouts_snapshot_picks_latest_pending_confirm_per_host() {
-        // Re-dispatches accumulate pending_confirms rows for the
-        // same (host, rollout). The snapshot must reflect the most
-        // recent dispatch — older rolled-back rows must not shadow
-        // a fresh pending row.
-        let db = fresh_db();
-        // First dispatch: past deadline, expires + rolls back.
-        let past = Utc::now() - chrono::Duration::seconds(120);
-        db.confirms()
-            .record_pending_confirm(&pc_insert("ohm", "stable@r1", "old", past))
-            .unwrap();
-        let expired = db.confirms().pending_confirms_expired().unwrap();
-        let ids: Vec<i64> = expired.iter().map(|(id, _, _, _, _)| *id).collect();
-        db.confirms().mark_rolled_back(&ids).unwrap();
-
-        // Second dispatch with a fresh deadline.
-        let future = Utc::now() + chrono::Duration::seconds(120);
-        db.confirms()
-            .record_pending_confirm(&pc_insert("ohm", "stable@r1", "new", future))
-            .unwrap();
-
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
-        assert_eq!(snap.len(), 1);
-        // Filtered to state IN ('pending','confirmed'), so only
-        // the second row matters and its target is "new".
-        assert_eq!(snap[0].target_closure_hash, "new");
-        assert_eq!(
-            snap[0].host_states.get("ohm").map(String::as_str),
-            Some("ConfirmWindow"),
-        );
-    }
-
-    #[test]
-    fn delete_rollout_records_clears_both_tables() {
-        let db = fresh_db();
-        let future = Utc::now() + chrono::Duration::seconds(120);
-
-        // Two rollouts, two hosts each, all confirmed + Soaked.
-        for (rollout, host) in [
-            ("stable@conv1", "ohm"),
-            ("stable@conv1", "krach"),
-            ("stable@active", "pixel"),
-            ("stable@active", "aether"),
-        ] {
-            let mut row = pc_insert(host, rollout, "system-r", future);
-            row.channel = "stable";
-            db.confirms().record_pending_confirm(&row).unwrap();
-            db.rollout_state()
-                .transition_host_state(
-                    host,
-                    rollout,
-                    HostRolloutState::Soaked,
-                    HealthyMarker::Untouched,
-                    None,
-                )
-                .unwrap();
-        }
-        assert_eq!(db.rollout_state().active_rollouts_snapshot().unwrap().len(), 2);
-
-        // Cleanup the converged one.
-        let (pc_n, hrs_n) = db
-            .rollout_state()
-            .delete_rollout_records("stable@conv1")
-            .unwrap();
-        assert_eq!(pc_n, 2, "two pending_confirms rows for the converged rollout");
-        assert_eq!(hrs_n, 2, "two host_rollout_state rows for the converged rollout");
-
-        // Active rollout untouched.
-        let snap = db.rollout_state().active_rollouts_snapshot().unwrap();
-        assert_eq!(snap.len(), 1);
-        assert_eq!(snap[0].rollout_id, "stable@active");
-
-        // Re-running is a no-op.
-        let (pc_n, hrs_n) = db
-            .rollout_state()
-            .delete_rollout_records("stable@conv1")
-            .unwrap();
-        assert_eq!(pc_n, 0);
-        assert_eq!(hrs_n, 0);
     }
 }

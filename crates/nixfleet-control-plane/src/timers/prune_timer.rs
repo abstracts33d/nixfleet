@@ -5,10 +5,9 @@
 //!
 //! - `token_replay` — bootstrap nonces past the 24h validity window
 //!   (`Db::prune_token_replay`)
-//! - `pending_confirms` — terminal rows (`rolled-back` / `cancelled`)
-//!   past 7 days (`Db::prune_pending_confirms`, )
-//! - `host_reports` — event log past 7 days (`Db::prune_host_reports`,
-//!   )
+//! - `dispatch_history` — terminal audit rows past 90 days
+//!   (`DispatchHistory::prune_history`, post-#81)
+//! - `host_reports` — event log past 7 days (`Db::prune_host_reports`)
 //! - filesystem `state.db.pre-*` pre-migration backups past 14 days
 //!   (#51 — refinery / module activation creates these for safety;
 //!   they're vestigial after a couple of weeks)
@@ -26,7 +25,7 @@ use crate::db::Db;
 
 const TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const TOKEN_REPLAY_RETENTION_HOURS: i64 = 24;
-const PENDING_CONFIRMS_RETENTION_HOURS: i64 = 24 * 7;
+const DISPATCH_HISTORY_RETENTION_HOURS: i64 = 24 * 90;
 const HOST_REPORTS_RETENTION_HOURS: i64 = 24 * 7;
 const BACKUP_RETENTION_DAYS: u64 = 14;
 const BACKUP_FILENAME_PREFIX: &str = "state.db.pre-";
@@ -50,9 +49,9 @@ pub fn spawn(db: Arc<Db>, db_path: Option<PathBuf>) -> tokio::task::JoinHandle<(
             let token_pruned = try_prune("token_replay", || {
                 db.tokens().prune_token_replay(TOKEN_REPLAY_RETENTION_HOURS)
             });
-            let pending_pruned = try_prune("pending_confirms", || {
-                db.confirms()
-                    .prune_pending_confirms(PENDING_CONFIRMS_RETENTION_HOURS)
+            let history_pruned = try_prune("dispatch_history", || {
+                db.dispatch_history()
+                    .prune_history(DISPATCH_HISTORY_RETENTION_HOURS)
             });
             let reports_pruned = try_prune("host_reports", || {
                 db.reports()
@@ -70,7 +69,7 @@ pub fn spawn(db: Arc<Db>, db_path: Option<PathBuf>) -> tokio::task::JoinHandle<(
             tracing::info!(
                 target: "prune",
                 token_replay = token_pruned,
-                pending_confirms = pending_pruned,
+                dispatch_history = history_pruned,
                 host_reports = reports_pruned,
                 state_db_backups = backups_pruned,
                 "prune timer: hourly sweep complete",

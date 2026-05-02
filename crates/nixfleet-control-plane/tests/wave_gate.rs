@@ -557,7 +557,7 @@ async fn permissive_mode_does_not_block_dispatch_despite_failure() {
 
     // Under permissive, the next checkin's dispatch decision is
     // unaffected. The host is already mid-flight (pending_confirm
-    // exists from step 1's record_pending_confirm), so we expect
+    // exists from step 1's record_dispatch), so we expect
     // InFlight (target=None) — NOT a wave-gate block. To distinguish
     // the two outcomes, the journal would carry "dispatch: no target
     // (InFlight)" rather than "wave-staging gate blocked". That
