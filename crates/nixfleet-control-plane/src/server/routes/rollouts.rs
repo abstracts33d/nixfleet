@@ -34,7 +34,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 
-use super::state::AppState;
+use super::super::state::AppState;
 
 /// SHA-256 hex is exactly 64 lowercase chars. Reject anything else
 /// fast — saves a filesystem syscall on bogus paths and prevents
@@ -197,7 +197,7 @@ async fn load_pair(state: &AppState, rollout_id: &str) -> Result<ManifestPair, S
 
 /// `GET /v1/rollouts/{rolloutId}` — returns the canonical manifest
 /// bytes as `application/json`.
-pub(super) async fn manifest(
+pub(in crate::server) async fn manifest(
     State(state): State<Arc<AppState>>,
     Path(rollout_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -212,7 +212,7 @@ pub(super) async fn manifest(
 
 /// `GET /v1/rollouts/{rolloutId}/sig` — returns the raw signature
 /// bytes as `application/octet-stream`.
-pub(super) async fn signature(
+pub(in crate::server) async fn signature(
     State(state): State<Arc<AppState>>,
     Path(rollout_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {

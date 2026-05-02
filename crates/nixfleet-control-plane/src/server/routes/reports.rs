@@ -11,15 +11,15 @@ use nixfleet_proto::agent_wire::{ReportRequest, ReportResponse};
 
 use crate::auth::auth_cn::PeerCertificates;
 
-use super::middleware::require_cn;
-use super::state::{AppState, ReportRecord, REPORT_RING_CAP};
+use super::super::middleware::require_cn;
+use super::super::state::{AppState, ReportRecord, REPORT_RING_CAP};
 
 /// `POST /v1/agent/report` — record an out-of-band event report.
 ///
 /// In-memory ring buffer per host, capped at `REPORT_RING_CAP`.
 /// New reports push to the back; oldest is dropped on overflow.
 /// Future work: promote to SQLite + correlate with rollouts.
-pub(super) async fn report(
+pub(in crate::server) async fn report(
     State(state): State<Arc<AppState>>,
     Extension(peer_certs): Extension<PeerCertificates>,
     Json(req): Json<ReportRequest>,

@@ -9,7 +9,10 @@
 //!   constants
 //! - `middleware` — `require_cn` (mTLS gate) + protocol-version
 //!   middleware
-//! - `handlers` — `/healthz` + `/v1/*` route handlers
+//! - `routes` — noun-based route handlers (`enrollment`, `reports`,
+//!   `rollouts`, `status`, `health`)
+//! - `checkin_pipeline` — the multi-stage `/v1/agent/checkin` and
+//!   `/v1/agent/confirm` decision pipeline
 //! - `reconcile` — background reconcile loop (verifies the
 //!   build-time artifact every 30s, projects checkins → reconciler
 //!   actions, writes the fleet snapshot under a freshness gate)
@@ -18,14 +21,10 @@
 //! and to keep each piece focused.
 
 mod checkin_pipeline;
-mod enrollment_handlers;
-mod handlers;
 mod middleware;
 mod reconcile;
-mod report_handler;
-mod rollouts_handlers;
+mod routes;
 mod state;
-mod status_handlers;
 
 pub use state::{
     AppState, ClosureUpstream, HostCheckinRecord, IssuancePaths, ReportRecord, ServeArgs,
@@ -53,29 +52,29 @@ use crate::TickInputs;
 fn build_router(state: Arc<AppState>) -> Router {
     let strict = state.strict;
     let v1_routes = Router::new()
-        .route("/v1/whoami", get(handlers::whoami))
+        .route("/v1/whoami", get(routes::status::whoami))
         .route("/v1/agent/checkin", post(checkin_pipeline::checkin))
-        .route("/v1/agent/report", post(report_handler::report))
+        .route("/v1/agent/report", post(routes::reports::report))
         .route("/v1/agent/confirm", post(checkin_pipeline::confirm))
         .route(
             "/v1/agent/closure/{hash}",
-            get(status_handlers::closure_proxy),
+            get(routes::status::closure_proxy),
         )
-        .route("/v1/enroll", post(enrollment_handlers::enroll))
-        .route("/v1/agent/renew", post(enrollment_handlers::renew))
-        .route("/v1/channels/{name}", get(status_handlers::channel_status))
-        .route("/v1/hosts", get(status_handlers::hosts_status))
-        .route("/v1/rollouts/{rolloutId}", get(rollouts_handlers::manifest))
+        .route("/v1/enroll", post(routes::enrollment::enroll))
+        .route("/v1/agent/renew", post(routes::enrollment::renew))
+        .route("/v1/channels/{name}", get(routes::status::channel_status))
+        .route("/v1/hosts", get(routes::status::hosts_status))
+        .route("/v1/rollouts/{rolloutId}", get(routes::rollouts::manifest))
         .route(
             "/v1/rollouts/{rolloutId}/sig",
-            get(rollouts_handlers::signature),
+            get(routes::rollouts::signature),
         )
         .layer(axum::middleware::from_fn(move |req, next| {
             version_layer(strict, req, next)
         }));
 
     Router::new()
-        .route("/healthz", get(handlers::healthz))
+        .route("/healthz", get(routes::health::healthz))
         .merge(v1_routes)
         .with_state(state)
 }

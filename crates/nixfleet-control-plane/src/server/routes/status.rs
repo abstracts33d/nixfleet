@@ -1,5 +1,5 @@
-//! Read-only status endpoints: `/v1/channels/{name}`, `/v1/hosts`,
-//! and the `/v1/agent/closure/{hash}` proxy fallback.
+//! Read-only status endpoints: `/v1/whoami`, `/v1/channels/{name}`,
+//! `/v1/hosts`, and the `/v1/agent/closure/{hash}` proxy fallback.
 
 use std::sync::Arc;
 
@@ -8,15 +8,38 @@ use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
+use chrono::Utc;
 use serde::Serialize;
 
 use crate::auth::auth_cn::PeerCertificates;
 
-use super::middleware::require_cn;
-use super::state::AppState;
+use super::super::middleware::require_cn;
+use super::super::state::AppState;
 
 #[derive(Debug, Serialize)]
-pub(super) struct ChannelStatusResponse {
+pub(in crate::server) struct WhoamiResponse {
+    cn: String,
+    /// rfc3339-formatted timestamp the server received the request.
+    /// `issuedAt` semantically refers to "the moment we observed
+    /// this verified identity", not the cert's notBefore.
+    #[serde(rename = "issuedAt")]
+    issued_at: String,
+}
+
+/// `GET /v1/whoami` — returns the verified mTLS CN of the caller.
+pub(in crate::server) async fn whoami(
+    State(state): State<Arc<AppState>>,
+    Extension(peer_certs): Extension<PeerCertificates>,
+) -> Result<Json<WhoamiResponse>, StatusCode> {
+    let cn = require_cn(&state, &peer_certs).await?;
+    Ok(Json(WhoamiResponse {
+        cn,
+        issued_at: Utc::now().to_rfc3339(),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub(in crate::server) struct ChannelStatusResponse {
     /// Channel name as declared in `fleet.resolved.channels`.
     name: String,
     /// CI commit currently on the verified `fleet.resolved`
@@ -42,7 +65,7 @@ pub(super) struct ChannelStatusResponse {
 /// Returns 503 when no verified snapshot has been primed yet
 /// (CP just booted; agents will see 503 on this endpoint until
 /// the channel-refs poll succeeds).
-pub(super) async fn channel_status(
+pub(in crate::server) async fn channel_status(
     State(state): State<Arc<AppState>>,
     Extension(peer_certs): Extension<PeerCertificates>,
     Path(name): Path<String>,
@@ -63,13 +86,13 @@ pub(super) async fn channel_status(
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct HostsResponse {
+pub(in crate::server) struct HostsResponse {
     hosts: Vec<HostStatusEntry>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct HostStatusEntry {
+pub(in crate::server) struct HostStatusEntry {
     /// Hostname per `fleet.resolved.hosts`.
     hostname: String,
     /// Channel the host is on (declarative).
@@ -123,7 +146,7 @@ pub(super) struct HostStatusEntry {
 /// previously used (the JSON tracing subscriber emits structured
 /// fields that don't match the bash awk parser's `key=value`
 /// expectation).
-pub(super) async fn hosts_status(
+pub(in crate::server) async fn hosts_status(
     State(state): State<Arc<AppState>>,
     Extension(peer_certs): Extension<PeerCertificates>,
 ) -> Result<Json<HostsResponse>, StatusCode> {
@@ -236,7 +259,7 @@ pub(super) async fn hosts_status(
 /// PR; this lands the wire shape + the upstream config path.
 ///
 /// When `closure_upstream` is unset, returns 501 Not Implemented.
-pub(super) async fn closure_proxy(
+pub(in crate::server) async fn closure_proxy(
     State(state): State<Arc<AppState>>,
     Extension(peer_certs): Extension<PeerCertificates>,
     Path(closure_hash): Path<String>,

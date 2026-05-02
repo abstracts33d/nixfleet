@@ -11,8 +11,8 @@ use rcgen::PublicKeyData;
 
 use crate::auth::auth_cn::PeerCertificates;
 
-use super::middleware::require_cn;
-use super::state::AppState;
+use super::super::middleware::require_cn;
+use super::super::state::AppState;
 
 /// `POST /v1/enroll` — bootstrap a new fleet host.
 ///
@@ -24,7 +24,7 @@ use super::state::AppState;
 /// 3. Signature against `orgRootKey.{current,previous}`
 /// 4. Hostname binding (claim ↔ CSR CN)
 /// 5. Pubkey-fingerprint binding (SHA-256 of CSR pubkey DER)
-pub(super) async fn enroll(
+pub(in crate::server) async fn enroll(
     State(state): State<Arc<AppState>>,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, StatusCode> {
@@ -236,7 +236,7 @@ pub(super) async fn enroll(
 /// `POST /v1/agent/renew` — issue a fresh cert for an authenticated
 /// agent. mTLS-required; the verified CN is stamped onto the new
 /// cert via `issuance::issue_cert`.
-pub(super) async fn renew(
+pub(in crate::server) async fn renew(
     State(state): State<Arc<AppState>>,
     Extension(peer_certs): Extension<PeerCertificates>,
     Json(req): Json<RenewRequest>,
