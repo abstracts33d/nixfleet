@@ -24,7 +24,8 @@
 #   1. Boot cp-real (with `onHealthFailure = "rollback-and-halt"`
 #      fixture variant) + 1 agent microVM. Wait for steady-state
 #      checkins so we know the agent is in the loop.
-#   2. host-side sqlite3: insert a `pending_confirms` row + flip
+#   2. host-side sqlite3: insert a `host_dispatch_state` operational
+#      row + matching `dispatch_history` audit row + flip
 #      `host_rollout_state.host_state` to `Failed` for agent-01 on a
 #      synthetic rolloutId.
 #   3. Wait for the agent's next CheckinResponse to carry the
@@ -37,7 +38,15 @@
 #   5. Wait for `host_rollout_state.host_state = 'Reverted'` (the
 #      `apply_rollback_state_transition` writeback in the report
 #      handler).
-#   6. Force one more poll cycle and assert the CP no longer emits a
+#   6. Assert the host_dispatch_state operational row is parked at
+#      `state='rolled-back'` and the dispatch_history audit row's
+#      `terminal_state` is stamped `'rolled-back'`. Post-#81 the
+#      cleanup-via-DELETE that the v1 schema needed is replaced by
+#      terminal-state stamping; the operational row stays on disk
+#      until the next dispatch UPSERTs it. `active_rollouts_snapshot`
+#      filters terminal states out, which is what stops idempotent
+#      re-emission.
+#   7. Force one more poll cycle and assert the CP no longer emits a
 #      rollback_signal — the `Reverted` row stops compute_rollback_signal
 #      from firing (idempotency, #69 follow-up `3069ec7`).
 #
@@ -133,24 +142,35 @@ in
       )
       print("step 1: baseline checkin observed for ${agentName}")
 
-      # Step 2: inject a synthetic Failed row. We need both a
-      # pending_confirms anchor (so dispatch resolves the row) and a
-      # host_rollout_state row in `Failed` (so compute_rollback_signal
-      # picks it up). The rolloutId encodes a sentinel suffix so the
-      # cleanup-side asserts match exactly.
+      # Step 2: inject a synthetic Failed row. Post-#81 we need three
+      # rows: `host_dispatch_state` operational anchor (so dispatch
+      # resolves the row), `dispatch_history` audit (so the terminal
+      # stamp lands somewhere on report), and `host_rollout_state` in
+      # `Failed` (so compute_rollback_signal picks it up). The
+      # rolloutId encodes a sentinel suffix so the post-rollback
+      # asserts match exactly.
       injected_rollout_id = "stable@injected-failure"
       print(f"step 2: injecting Failed state for ${agentName}@{injected_rollout_id}")
       host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-      INSERT INTO pending_confirms (
+      INSERT INTO host_dispatch_state (
         hostname, rollout_id, channel, wave, target_closure_hash,
-        target_channel_ref, dispatched_at, confirm_deadline,
-        state
+        target_channel_ref, state, dispatched_at, confirm_deadline
       ) VALUES (
         '${agentName}', '{injected_rollout_id}', 'stable', 0,
         '${closureHash}', '{injected_rollout_id}',
+        'pending',
         datetime('now', '-30 seconds'),
-        datetime('now', '+300 seconds'),
-        'pending'
+        datetime('now', '+300 seconds')
+      );
+      SQL""")
+      host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
+      INSERT INTO dispatch_history (
+        hostname, rollout_id, channel, wave, target_closure_hash,
+        target_channel_ref, dispatched_at
+      ) VALUES (
+        '${agentName}', '{injected_rollout_id}', 'stable', 0,
+        '${closureHash}', '{injected_rollout_id}',
+        datetime('now', '-30 seconds')
       );
       SQL""")
       host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
@@ -200,20 +220,14 @@ in
 
       # Step 5: agent posts RollbackTriggered → CP routes::reports
       # transitions the host_rollout_state row from Failed to
-      # Reverted, then immediately deletes the row via
-      # `delete_rollout_host_records` (terminal cleanup). The DB row
-      # is gone before the test can poll for it, so wait for the
-      # log line that fires inside `apply_rollback_state_transition`
-      # right before the cleanup.
-      #
-      # FIXME(#81): SQL queries below reference `pending_confirms`,
-      # which V006 dropped. After the table split, operational state
-      # lives in `host_dispatch_state`; the cleanup-via-DELETE was
-      # replaced by terminal-state stamping. This scenario needs a
-      # compat pass against the post-#81 schema (separate followup
-      # — the failure mode is "no such table: pending_confirms" on
-      # the host.succeed sqlite3 call below). Out of scope for this
-      # cleanup batch.
+      # Reverted via `apply_rollback_state_transition`, then stamps
+      # the terminal state on both the host_dispatch_state
+      # operational row (state='rolled-back') and the matching
+      # dispatch_history audit row (terminal_state='rolled-back') via
+      # `record_terminal`. Post-#81 the legacy DELETE cleanup is
+      # gone — the operational row stays parked on disk until the
+      # next dispatch UPSERTs it; `active_rollouts_snapshot` filters
+      # terminal states out so the row no longer surfaces as in-flight.
       print("step 5: waiting for Failed → Reverted transition…")
       wait_for_journal_match(
           host,
@@ -225,18 +239,38 @@ in
       )
       print("step 5: Failed → Reverted transition observed")
 
-      # Sanity: the cleanup actually deleted the rows. Active
-      # rollout count should drop by one (the synthetic injection
-      # was the only entry).
-      remaining = host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-      SELECT count(*) FROM pending_confirms WHERE rollout_id='{injected_rollout_id}';
-      SQL""").strip()
-      assert remaining == "0", (
-          f"cleanup did not delete pending_confirms for {injected_rollout_id}; "
-          f"remaining={remaining!r}"
+      # Step 6: terminal stamps. Post-#81 the operational row's
+      # `state` flips to 'rolled-back' and the audit row's
+      # `terminal_state` is set the same. Both are best-effort writes
+      # in `apply_rollback_state_transition`, so allow a few seconds
+      # for the write to land after the journal log line.
+      print("step 6: asserting terminal stamps on host_dispatch_state + dispatch_history…")
+      stamp_deadline = time.monotonic() + 15
+      op_state = ""
+      audit_terminal = ""
+      while time.monotonic() < stamp_deadline:
+          op_state = host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
+          SELECT state FROM host_dispatch_state
+          WHERE hostname='${agentName}' AND rollout_id='{injected_rollout_id}';
+          SQL""").strip()
+          audit_terminal = host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
+          SELECT IFNULL(terminal_state, 'NULL') FROM dispatch_history
+          WHERE hostname='${agentName}' AND rollout_id='{injected_rollout_id}';
+          SQL""").strip()
+          if op_state == "rolled-back" and audit_terminal == "rolled-back":
+              break
+          time.sleep(2)
+      assert op_state == "rolled-back", (
+          f"host_dispatch_state.state did not flip to 'rolled-back' "
+          f"for {injected_rollout_id}; got {op_state!r}"
       )
+      assert audit_terminal == "rolled-back", (
+          f"dispatch_history.terminal_state did not stamp 'rolled-back' "
+          f"for {injected_rollout_id}; got {audit_terminal!r}"
+      )
+      print("step 6: terminal stamps observed on both tables")
 
-      # Step 6: idempotency. Once the row is Reverted,
+      # Step 7: idempotency. Once the row is Reverted,
       # compute_rollback_signal returns None — subsequent checkins
       # carry no rollback field. Sample two more poll cycles and
       # assert no fresh emission lines.
@@ -245,7 +279,7 @@ in
       # rounds DOWN to the second) doesn't include the original
       # pre-Reverted rollback-signal emission. Same race teardown.nix
       # mitigates the same way.
-      print("step 6: waiting for two more polls + asserting no re-emission…")
+      print("step 7: waiting for two more polls + asserting no re-emission…")
       host.succeed("sleep 2")
       post_revert_cursor = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
       time.sleep(15)  # ~3 agent polls at 5s cadence

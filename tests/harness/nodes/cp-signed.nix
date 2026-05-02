@@ -1,10 +1,19 @@
 # tests/harness/nodes/cp-signed.nix
 #
-# Signed-roundtrip CP node. Serves two files from the Phase 2 signed
+# Signed-roundtrip CP stub. Serves two files from the Phase 2 signed
 # fixture over mTLS on :8443, routed by request path:
 #
 #   GET /canonical.json      -> application/json
 #   GET /canonical.json.sig  -> application/octet-stream (raw 64 bytes)
+#
+# Why this stub stays after `services.nixfleet-control-plane` landed:
+# the real CP serves `/v1/agent/*` and `/v1/rollouts/*`, not the bare
+# `/canonical.json{,.sig}` paths the verify-artifact CLI fetches in
+# the signed-roundtrip scenario. The CLI is the operator-facing
+# auditor tool — it's intentionally decoupled from the agent/CP
+# binary's protocol surface so an offline auditor can verify a fleet
+# release by fetching the canonical bytes from any HTTP source
+# (forge, mirror, archive). That's exactly what this stub provides.
 #
 # Implementation: Python stdlib `http.server` wrapped in `ssl`. An
 # earlier shell-over-socat implementation truncated binary responses:
@@ -13,10 +22,6 @@
 # though socat's own `-v` log confirmed the full 64 bytes had been
 # forwarded. The exact mangling point was never identified; the fix
 # was to stop debugging shell and ship a binary-safe server.
-#
-# TODO: retire this module when `services.nixfleet-control-plane`
-# gains the artifact-serve endpoint. The wire shape (two paths, mTLS,
-# path-routed) is the real CP's contract.
 {
   pkgs,
   lib,

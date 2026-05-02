@@ -54,7 +54,7 @@
   ...
 }: let
   cfg = config.services.nixfleet-agent;
-  nixfleet-agent = inputs.self.packages.${pkgs.system}.nixfleet-agent;
+  nixfleet-agent = cfg.package;
 
   # Materialise config.nixfleet.trust into proto::TrustConfig JSON
   # shape — same shape as the NixOS module so the wire is identical.

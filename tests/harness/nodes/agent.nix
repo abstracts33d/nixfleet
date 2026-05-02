@@ -1,22 +1,23 @@
 # tests/harness/nodes/agent.nix
 #
-# Agent microVM node for the harness.
+# Smoke / fleet-N stub agent. At boot, curl the CP's static-fixture
+# JSON over mTLS and log meta.signedAt via systemd. A successful fetch
+# is recorded as a `harness-agent-ok` journal line that the scenario
+# testScript greps for.
 #
-# Stub behavior: at boot, curl the CP's /fleet.resolved.json over mTLS and
-# log meta.signedAt via systemd. A successful fetch is recorded as a
-# `harness-agent-ok` journal line that the scenario testScript greps for.
-#
-# Note: the v0.2 agent skeleton has landed in `crates/nixfleet-agent`,
-# but no `services.nixfleet-agent` NixOS module exists yet, so the
-# harness keeps its curl+jq scaffolding here. When a service module
-# lands, the mTLS wiring, controlPlaneHost/Port args, and the
-# "successful fetch" signal stay the same — only the binary changes.
+# Why this stub stays after `services.nixfleet-agent` landed: pairs
+# with cp.nix's `GET /` static-fixture serving, which the real CP
+# does not expose. Real-binary smoke is already covered end-to-end
+# by the boot-recovery / teardown / secret-hygiene scenarios; this
+# node + cp.nix exist to keep the fleet-N (2 / 5 / 10) substrate
+# scaling tests cheap (no full agent binary per VM, no reqwest /
+# rustls per VM), and to assert the harness's mTLS plumbing in
+# isolation from the real protocol surface.
 #
 # This is the *smoke* path — it deliberately does not exercise signature
 # verification. The signed-roundtrip scenario (nodes/agent-verify.nix)
 # covers the p256/ed25519 verify path via the `nixfleet-verify-artifact`
-# CLI, which has landed in `crates/nixfleet-verify-artifact` and wraps
-# `nixfleet_reconciler::verify_artifact`.
+# CLI.
 {
   lib,
   pkgs,

@@ -16,7 +16,7 @@
   ...
 }: let
   cfg = config.services.nixfleet-control-plane;
-  nixfleet-control-plane = inputs.self.packages.${pkgs.system}.nixfleet-control-plane;
+  nixfleet-control-plane = cfg.package;
 
   # Shared trust.json payload — see ./_trust-json.nix for shape rationale
   # and the orgRootKey ed25519 promotion that matches proto::TrustConfig.
@@ -41,6 +41,19 @@
 in {
   options.services.nixfleet-control-plane = {
     enable = lib.mkEnableOption "NixFleet control plane (long-running TLS server)";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = inputs.self.packages.${pkgs.system}.nixfleet-control-plane;
+      defaultText = lib.literalExpression "inputs.self.packages.\${pkgs.system}.nixfleet-control-plane";
+      description = ''
+        The control-plane package that provides
+        `bin/nixfleet-control-plane`. Defaults to the flake's
+        crane-built package; tests and pinned-version deploys override
+        with their own derivation. Standard NixOS `services.<x>.package`
+        escape hatch — accepted as-is, no further resolution.
+      '';
+    };
 
     listen = lib.mkOption {
       type = lib.types.str;
