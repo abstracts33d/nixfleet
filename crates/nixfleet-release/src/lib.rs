@@ -39,14 +39,21 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::{FleetResolved, RevocationEntry, Revocations};
 use nixfleet_reconciler::project_manifest;
 use sha2::{Digest, Sha256};
-use tempfile::NamedTempFile;
+
+mod git;
+mod sign;
+
+pub use git::render_commit_message;
+
+use git::{git_commit_release, git_head_sha, git_push_release};
+use sign::{sign, smoke_verify, write_release};
 
 /// Hosts to release. Resolved against the consumer's flake at
 /// runtime — `Auto` queries both `nixosConfigurations` and
@@ -732,199 +739,6 @@ fn load_existing_signed_at_if_unchanged(
     } else {
         Ok(None)
     }
-}
-
-// ─────────────────────────── sign hook ────────────────────────────
-
-fn sign(cmd: &str, canonical: &[u8]) -> Result<Vec<u8>> {
-    let input = NamedTempFile::new().context("create tempfile for canonical bytes")?;
-    let output = NamedTempFile::new().context("create tempfile for signature")?;
-
-    std::fs::write(input.path(), canonical).context("write canonical bytes to tempfile")?;
-    // Pre-create output as empty so the hook only needs to overwrite it.
-    std::fs::write(output.path(), b"").ok();
-
-    tracing::info!("sign hook");
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .env("NIXFLEET_INPUT", input.path())
-        .env("NIXFLEET_OUTPUT", output.path())
-        .stdin(Stdio::null())
-        .status()
-        .with_context(|| format!("invoke sign hook ({cmd:?})"))?;
-    if !status.success() {
-        bail!(
-            "sign hook exited {} ({:?})",
-            status.code().unwrap_or(-1),
-            cmd,
-        );
-    }
-
-    let sig = std::fs::read(output.path()).context("read signature output")?;
-    if sig.is_empty() {
-        bail!("sign hook produced 0-byte signature — refusing to publish");
-    }
-    Ok(sig)
-}
-
-// ─────────────────────────── smoke verify ─────────────────────────
-
-/// Structural smoke verify: confirm the produced (canonical, sig)
-/// pair are at least *shape-correct* before publishing — parse the
-/// canonical bytes back into `FleetResolved`, canonicalize again, and
-/// require byte-stable round-trip. Catches schema drift, JCS bugs,
-/// and zero-byte signatures.
-///
-/// Cryptographic verification with a real pubkey was a flag here
-/// (`--smoke-verify-pubkey`); dropped during the no-untested-code
-/// pass. The underlying `verify_artifact` in `nixfleet_reconciler`
-/// is heavily tested already; if an operator wants to spot-check
-/// signatures they invoke `nixfleet-verify-artifact` directly
-/// post-release.
-fn smoke_verify(canonical: &[u8], signature: &[u8]) -> Result<()> {
-    let parsed: FleetResolved = serde_json::from_slice(canonical)
-        .context("smoke verify: canonical bytes don't parse as FleetResolved")?;
-    let recanonical = canonicalize_resolved(&parsed)
-        .context("smoke verify: re-canonicalize failed")?;
-    if recanonical.as_bytes() != canonical {
-        bail!("smoke verify: canonicalization is not byte-stable round-trip");
-    }
-    if signature.is_empty() {
-        bail!("smoke verify: empty signature");
-    }
-
-    tracing::info!(
-        sig_len = signature.len(),
-        "smoke verify ok"
-    );
-    Ok(())
-}
-
-// ─────────────────────────── write release ───────────────────────
-
-fn write_release(
-    release_dir: &Path,
-    artifact_name: &str,
-    canonical: &[u8],
-    signature: &[u8],
-) -> Result<()> {
-    std::fs::create_dir_all(release_dir).with_context(|| {
-        format!("create release dir {}", release_dir.display())
-    })?;
-    let artifact_path = release_dir.join(artifact_name);
-    let signature_path = release_dir.join(format!("{artifact_name}.sig"));
-    atomic_write(&artifact_path, canonical)?;
-    atomic_write(&signature_path, signature)?;
-    Ok(())
-}
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("tempfile in {}", dir.display()))?;
-    use std::io::Write;
-    tmp.write_all(bytes).context("write release tempfile")?;
-    tmp.persist(path)
-        .with_context(|| format!("rename tempfile to {}", path.display()))?;
-    Ok(())
-}
-
-// ─────────────────────────── git ──────────────────────────────────
-
-fn git_head_sha(repo: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(repo)
-        .output()
-        .context("invoke `git rev-parse HEAD`")?;
-    if !output.status.success() {
-        bail!(
-            "git rev-parse HEAD: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn git_commit_release(
-    config: &ReleaseConfig,
-    files: &[PathBuf],
-    ci_commit: Option<&str>,
-    signed_at: DateTime<Utc>,
-) -> Result<bool> {
-    if let Some(name) = &config.git_user_name {
-        run_git(&config.flake_dir, &["config", "user.name", name])?;
-    }
-    if let Some(email) = &config.git_user_email {
-        run_git(&config.flake_dir, &["config", "user.email", email])?;
-    }
-    let mut add_args = vec!["add", "--"];
-    let file_strs: Vec<String> = files
-        .iter()
-        .map(|p| {
-            p.strip_prefix(&config.flake_dir)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    for f in &file_strs {
-        add_args.push(f);
-    }
-    run_git(&config.flake_dir, &add_args)?;
-
-    // Quick: any staged change in the release files?
-    let cached_diff = Command::new("git")
-        .args(["diff", "--cached", "--quiet", "--"])
-        .args(&file_strs)
-        .current_dir(&config.flake_dir)
-        .status()
-        .context("invoke `git diff --cached --quiet`")?;
-    if cached_diff.success() {
-        tracing::info!("git: no release change");
-        return Ok(false);
-    }
-
-    let message = render_commit_message(
-        &config.commit_template,
-        ci_commit.unwrap_or("HEAD"),
-        signed_at,
-    );
-    run_git(&config.flake_dir, &["commit", "-m", &message])?;
-    tracing::info!(message = %message, "git commit");
-    Ok(true)
-}
-
-pub fn render_commit_message(template: &str, sha: &str, ts: DateTime<Utc>) -> String {
-    let short = if sha.len() >= 8 { &sha[..8] } else { sha };
-    template
-        .replace("{sha:0:8}", short)
-        .replace("{sha}", sha)
-        .replace("{ts}", &ts.to_rfc3339())
-}
-
-fn git_push_release(repo: &Path, target: &GitPushTarget) -> Result<()> {
-    let refspec = format!("HEAD:{}", target.branch);
-    run_git(repo, &["push", &target.remote, &refspec])?;
-    tracing::info!(
-        remote = %target.remote,
-        branch = %target.branch,
-        "git push",
-    );
-    Ok(())
-}
-
-fn run_git(repo: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .status()
-        .with_context(|| format!("invoke git {args:?}"))?;
-    if !status.success() {
-        bail!("git {:?} exited {}", args, status.code().unwrap_or(-1));
-    }
-    Ok(())
 }
 
 // ─────────────────────────── tests ────────────────────────────────
