@@ -35,7 +35,7 @@ use base64::Engine as _;
 use chrono::Utc;
 use common::{
     build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port,
-    write_bytes, write_pem,
+    wait_for_listener_ready, write_bytes, write_pem,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use nixfleet_control_plane::server;
@@ -47,7 +47,6 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::Serialize;
 use tempfile::TempDir;
-use tokio::time::sleep;
 
 const HOSTNAME: &str = "test-host";
 const DECLARED_CLOSURE: &str = "decl0001-nixos-system-test-host-26.05";
@@ -178,8 +177,7 @@ async fn spawn_with_signed_fleet(
         ..Default::default()
     };
     let handle = tokio::spawn(server::serve(args));
-    sleep(Duration::from_millis(400)).await;
-    assert!(!handle.is_finished(), "server task exited prematurely");
+    wait_for_listener_ready(port, &handle).await;
     handle
 }
 
@@ -463,13 +461,14 @@ async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
         resp_pre_restart.target
     );
 
-    // 4. Kill the CP. Wait for the port to be released. The DB
-    //    file persists in `dir`.
+    // 4. Kill the CP. Wait for the abort to actually drop the task —
+    //    awaiting the JoinHandle after abort() resolves once the task
+    //    has finished, which means its Db connection (and the SQLite
+    //    file lock) is released, and its listener slot is freed. This
+    //    replaces a fixed-duration sleep that was racing the kernel
+    //    TIME_WAIT under heavy parallel test load.
     handle1.abort();
-    // Yield enough cycles for the listener to drop. tokio::task
-    // abort is non-blocking; without a brief wait, port-rebind
-    // races the kernel TIME_WAIT.
-    sleep(Duration::from_millis(300)).await;
+    let _ = handle1.await;
 
     // ── Second CP process, same DB ────────────────────────────
     // Use a fresh port — `pick_free_port()` may hand back the

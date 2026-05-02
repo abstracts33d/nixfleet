@@ -8,15 +8,13 @@
 mod common;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
-use common::{install_crypto_provider_once, pick_free_port, write_pem};
+use common::{install_crypto_provider_once, pick_free_port, wait_for_listener_ready, write_pem};
 use nixfleet_control_plane::server;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use reqwest::Certificate;
 use serde::Deserialize;
 use tempfile::TempDir;
-use tokio::time::sleep;
 
 #[derive(Debug, Deserialize)]
 struct HealthzBody {
@@ -84,13 +82,10 @@ async fn healthz_returns_ok_over_tls() {
     };
     let server_handle = tokio::spawn(server::serve(server_args));
 
-    // Give the listener time to bind. Polling a TCP connect would be
-    // tighter, but a small fixed sleep is fine for a test.
-    sleep(Duration::from_millis(200)).await;
-    assert!(
-        !server_handle.is_finished(),
-        "server task exited before /healthz could be hit (likely TLS config error — check stderr)"
-    );
+    // Wait for the listener to bind by polling a TCP connect; replaces
+    // the previous fixed-duration sleep so heavy parallel test load
+    // can't race the deadline.
+    wait_for_listener_ready(port, &server_handle).await;
 
     // CA-pinned reqwest client. The server's self-signed cert IS the
     // trust anchor in this test.

@@ -23,10 +23,9 @@
 mod common;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use chrono::Utc;
-use common::{install_crypto_provider_once, pick_free_port};
+use common::{install_crypto_provider_once, pick_free_port, wait_for_listener_ready};
 use nixfleet_control_plane::{db::Db, server};
 use nixfleet_proto::enroll_wire::{RenewRequest, RenewResponse};
 use rcgen::{
@@ -35,7 +34,6 @@ use rcgen::{
 };
 use reqwest::Identity;
 use tempfile::TempDir;
-use tokio::time::sleep;
 
 fn write_pem(path: &std::path::Path, contents: &str) {
     std::fs::write(path, contents).unwrap();
@@ -154,8 +152,7 @@ async fn spawn_server(
         ..Default::default()
     };
     let handle = tokio::spawn(server::serve(args));
-    sleep(Duration::from_millis(300)).await;
-    assert!(!handle.is_finished(), "server task exited prematurely");
+    wait_for_listener_ready(port, &handle).await;
     handle
 }
 

@@ -13,16 +13,15 @@ mod common;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use common::{
-    build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port, write_pem,
+    build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port,
+    wait_for_listener_ready, write_pem,
 };
 use nixfleet_control_plane::server;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::time::sleep;
 
 fn write_phase2_input_stubs(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let artifact = write_pem(dir, "fleet.resolved.json", "{}");
@@ -63,8 +62,7 @@ async fn spawn_cp(
         ..Default::default()
     };
     let handle = tokio::spawn(server::serve(args));
-    sleep(Duration::from_millis(300)).await;
-    assert!(!handle.is_finished(), "server task exited prematurely");
+    wait_for_listener_ready(cp_port, &handle).await;
     handle
 }
 

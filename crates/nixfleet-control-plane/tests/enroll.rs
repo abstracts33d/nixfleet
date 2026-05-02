@@ -12,11 +12,10 @@
 mod common;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use base64::Engine;
 use chrono::{Duration as ChronoDuration, Utc};
-use common::{install_crypto_provider_once, pick_free_port};
+use common::{install_crypto_provider_once, pick_free_port, wait_for_listener_ready};
 use ed25519_dalek::{Signer, SigningKey};
 use nixfleet_control_plane::server;
 use nixfleet_proto::enroll_wire::{
@@ -27,7 +26,6 @@ use rcgen::{
     ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PublicKeyData,
 };
 use tempfile::TempDir;
-use tokio::time::sleep;
 
 fn write(path: &std::path::Path, contents: &str) {
     std::fs::write(path, contents).unwrap();
@@ -188,9 +186,9 @@ async fn spawn_server(
         db_path: Some(db_path),
         ..Default::default()
     };
+    let port = listen.port();
     let handle = tokio::spawn(server::serve(args));
-    sleep(Duration::from_millis(200)).await;
-    assert!(!handle.is_finished(), "server task exited prematurely");
+    wait_for_listener_ready(port, &handle).await;
     handle
 }
 

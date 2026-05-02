@@ -7,11 +7,11 @@
 mod common;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use chrono::Utc;
 use common::{
-    build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port, write_pem,
+    build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port,
+    wait_for_listener_ready, write_pem,
 };
 use nixfleet_control_plane::server;
 use nixfleet_proto::agent_wire::{
@@ -19,7 +19,6 @@ use nixfleet_proto::agent_wire::{
     ReportEvent, ReportRequest, ReportResponse,
 };
 use tempfile::TempDir;
-use tokio::time::sleep;
 
 fn write_phase2_input_stubs(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let artifact = write_pem(dir, "fleet.resolved.json", "{}");
@@ -38,9 +37,9 @@ fn write_phase2_input_stubs(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBu
 }
 
 async fn spawn_server(args: server::ServeArgs) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+    let port = args.listen.port();
     let handle = tokio::spawn(server::serve(args));
-    sleep(Duration::from_millis(200)).await;
-    assert!(!handle.is_finished(), "server task exited prematurely");
+    wait_for_listener_ready(port, &handle).await;
     handle
 }
 

@@ -11,14 +11,15 @@
 mod common;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
-use common::{install_crypto_provider_once, mint_ca_and_certs, pick_free_port, write_pem};
+use common::{
+    install_crypto_provider_once, mint_ca_and_certs, pick_free_port, wait_for_listener_ready,
+    write_pem,
+};
 use nixfleet_control_plane::server;
 use reqwest::{Certificate as ReqwestCert, Identity};
 use serde::Deserialize;
 use tempfile::TempDir;
-use tokio::time::sleep;
 
 #[derive(Debug, Deserialize)]
 struct WhoamiBody {
@@ -48,12 +49,9 @@ fn write_phase2_input_stubs(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBu
 }
 
 async fn spawn_server(args: server::ServeArgs) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+    let port = args.listen.port();
     let handle = tokio::spawn(server::serve(args));
-    sleep(Duration::from_millis(200)).await;
-    assert!(
-        !handle.is_finished(),
-        "server task exited before tests could run (TLS config error?)"
-    );
+    wait_for_listener_ready(port, &handle).await;
     handle
 }
 

@@ -283,6 +283,16 @@ async fn poll_retains_snapshot_on_verify_failure() {
 
     let _poll = spawn(cache.clone(), verified_fleet.clone(), cfg);
 
+    // Negative-observation test: we're asserting that a verify failure
+    // does NOT swap the sentinel snapshot. The polling task's first
+    // tick fires immediately (tokio::time::interval semantics); we
+    // need to give it long enough to fire that tick, attempt the
+    // verify, fail, and (correctly) leave the sentinel alone. A
+    // deadline-bounded poll loop is the wrong shape here — there is
+    // no positive condition to converge on; the assertion is about
+    // the absence of state change. Keep the fixed sleep; the 2s
+    // budget is comfortably over per-tick verify latency on heavily-
+    // loaded CI runners.
     tokio::time::sleep(Duration::from_secs(2)).await;
     let snapshot = verified_fleet.read().await.clone();
     let fleet = snapshot.expect("sentinel must be retained on verify failure").fleet;

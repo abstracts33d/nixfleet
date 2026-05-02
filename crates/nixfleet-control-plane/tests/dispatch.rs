@@ -24,7 +24,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use common::{
     build_mtls_client, install_crypto_provider_once, mint_ca_and_certs, pick_free_port,
-    write_bytes, write_pem,
+    wait_for_listener_ready, write_bytes, write_pem,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use nixfleet_control_plane::server;
@@ -33,7 +33,6 @@ use nixfleet_proto::agent_wire::{
 };
 use rand::rngs::OsRng;
 use tempfile::TempDir;
-use tokio::time::sleep;
 
 /// Build a minimal valid `fleet.resolved.json` declaring `test-host`'s
 /// channel + target closure. Returns the canonical bytes (sign these)
@@ -155,10 +154,10 @@ async fn spawn_with_signed_fleet(
         ..Default::default()
     };
     let handle = tokio::spawn(server::serve(args));
-    // Give the prime path time to verify the artifact + write the
-    // snapshot before any checkin lands.
-    sleep(Duration::from_millis(400)).await;
-    assert!(!handle.is_finished(), "server task exited prematurely");
+    // Wait for the listener to bind. The prime-path verify-artifact +
+    // verified_fleet write happens before serve() returns from its
+    // bind, so once the listener is up the snapshot is also up.
+    wait_for_listener_ready(port, &handle).await;
     handle
 }
 

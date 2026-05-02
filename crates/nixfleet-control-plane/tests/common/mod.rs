@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 use std::sync::Once;
+use std::time::{Duration, Instant};
 
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
@@ -18,7 +19,7 @@ use rcgen::{
 };
 use reqwest::{Certificate as ReqwestCert, Identity};
 use tempfile::TempDir;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 /// Install the rustls aws-lc-rs crypto provider exactly once per
 /// test process, and wire `tracing_subscriber` so `RUST_LOG=info`
@@ -46,6 +47,32 @@ pub async fn pick_free_port() -> u16 {
         .local_addr()
         .unwrap()
         .port()
+}
+
+/// Poll until a TCP connect to `127.0.0.1:port` succeeds, or the
+/// deadline elapses. Replaces the fixed `sleep(N)` immediately after
+/// `tokio::spawn(server::serve(...))`; the listener-up signal is the
+/// real precondition every test was waiting for. `handle` is the
+/// server task — if it exits before the listener binds we surface
+/// that as a panic with the same message the old sleep+is_finished
+/// pair did.
+pub async fn wait_for_listener_ready(
+    port: u16,
+    handle: &tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if handle.is_finished() {
+            panic!(
+                "server task exited before listener bound (likely TLS config error — check stderr)"
+            );
+        }
+        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("server listener on 127.0.0.1:{port} did not bind within 15s");
 }
 
 /// Write `contents` to `dir/name` and return the absolute path.
