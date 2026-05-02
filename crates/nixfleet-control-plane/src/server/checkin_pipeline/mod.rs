@@ -27,9 +27,7 @@ use axum::Json;
 use chrono::Utc;
 use nixfleet_proto::agent_wire::{CheckinRequest, CheckinResponse, ConfirmRequest};
 
-use crate::auth::auth_cn::PeerCertificates;
-
-use super::middleware::require_cn;
+use super::middleware::AuthenticatedCn;
 use super::state::{AppState, HostCheckinRecord, NEXT_CHECKIN_SECS};
 
 /// `POST /v1/agent/checkin` — record an agent checkin.
@@ -43,10 +41,10 @@ use super::state::{AppState, HostCheckinRecord, NEXT_CHECKIN_SECS};
 /// `journalctl -u nixfleet-control-plane | grep checkin`.
 pub(super) async fn checkin(
     State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
+    Extension(cn): Extension<AuthenticatedCn>,
     Json(req): Json<CheckinRequest>,
 ) -> Result<Json<CheckinResponse>, StatusCode> {
-    let cn = require_cn(&state, &peer_certs).await?;
+    let cn = cn.into_string();
     if cn != req.hostname {
         tracing::warn!(
             cert_cn = %cn,
@@ -119,10 +117,10 @@ pub(super) async fn checkin(
 /// - DB unset → 503 (endpoint requires persistence).
 pub(super) async fn confirm(
     State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
+    Extension(cn): Extension<AuthenticatedCn>,
     Json(req): Json<ConfirmRequest>,
 ) -> Result<Response, StatusCode> {
-    let cn = require_cn(&state, &peer_certs).await?;
+    let cn = cn.into_string();
     if cn != req.hostname {
         tracing::warn!(
             cert_cn = %cn,

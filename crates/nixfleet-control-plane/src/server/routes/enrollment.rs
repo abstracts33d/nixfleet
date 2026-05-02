@@ -9,9 +9,7 @@ use axum::Json;
 use nixfleet_proto::enroll_wire::{EnrollRequest, EnrollResponse, RenewRequest, RenewResponse};
 use rcgen::PublicKeyData;
 
-use crate::auth::auth_cn::PeerCertificates;
-
-use super::super::middleware::require_cn;
+use super::super::middleware::AuthenticatedCn;
 use super::super::state::AppState;
 
 /// `POST /v1/enroll` — bootstrap a new fleet host.
@@ -238,10 +236,10 @@ pub(in crate::server) async fn enroll(
 /// cert via `issuance::issue_cert`.
 pub(in crate::server) async fn renew(
     State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
+    Extension(cn): Extension<AuthenticatedCn>,
     Json(req): Json<RenewRequest>,
 ) -> Result<Json<RenewResponse>, StatusCode> {
-    let cn = require_cn(&state, &peer_certs).await?;
+    let cn = cn.into_string();
     let now = chrono::Utc::now();
 
     let paths = state.issuance_paths.read().await.clone();

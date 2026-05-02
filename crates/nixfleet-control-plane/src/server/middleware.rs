@@ -67,24 +67,41 @@ pub(super) async fn require_cn(
     Ok(cn)
 }
 
+/// Authenticated common-name extracted by [`require_cn_layer`] and
+/// inserted into request extensions. Handlers on the authenticated
+/// sub-router consume this via `Extension<AuthenticatedCn>` instead
+/// of re-deriving the CN themselves — the middleware is the boundary,
+/// the type carries the proof.
+///
+/// Constructed only inside [`require_cn_layer`]; cannot be forged by
+/// handler code (the field is private) so its presence is a
+/// type-system witness that auth ran and passed.
+#[derive(Clone, Debug)]
+pub(crate) struct AuthenticatedCn(String);
+
+impl AuthenticatedCn {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
+}
+
 /// Middleware-shaped wrapper around [`require_cn`]. Applied to every
 /// `/v1/*` route that requires authentication; rejects anonymous
-/// connections with 401 before the handler runs.
+/// connections with 401 before the handler runs and inserts the
+/// verified CN as an [`AuthenticatedCn`] extension for handler use.
 ///
 /// The `/v1/enroll` route is the only intentional exception — it
 /// bootstraps a host's first cert and lives on a separate anonymous
 /// sub-router that this layer is NOT applied to. New auth-required
 /// routes added to the authenticated sub-router get auth for free
-/// (deny-by-default); a future dev cannot accidentally ship an
-/// unauthenticated /v1/* endpoint by forgetting a handler-level call.
-///
-/// Handlers that need the CN value (path-binding, logging) still call
-/// [`require_cn`] directly. The double-check is cheap (one extension
-/// lookup + DER parse) and gives defence-in-depth: if the layer is
-/// ever removed by mistake, the handler-level checks still hold.
+/// (deny-by-default).
 pub(super) async fn require_cn_layer(
     state: Arc<AppState>,
-    req: HttpRequest<Body>,
+    mut req: HttpRequest<Body>,
     next: Next,
 ) -> Result<axum::response::Response, StatusCode> {
     let peer_certs = req
@@ -92,7 +109,8 @@ pub(super) async fn require_cn_layer(
         .get::<PeerCertificates>()
         .cloned()
         .unwrap_or_default();
-    require_cn(&state, &peer_certs).await?;
+    let cn = require_cn(&state, &peer_certs).await?;
+    req.extensions_mut().insert(AuthenticatedCn(cn));
     Ok(next.run(req).await)
 }
 

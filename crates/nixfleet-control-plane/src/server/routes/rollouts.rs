@@ -30,13 +30,11 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 
-use super::super::middleware::require_cn;
 use super::super::state::AppState;
-use crate::auth::auth_cn::PeerCertificates;
 
 /// SHA-256 hex is exactly 64 lowercase chars. Reject anything else
 /// fast — saves a filesystem syscall on bogus paths and prevents
@@ -198,15 +196,13 @@ async fn load_pair(state: &AppState, rollout_id: &str) -> Result<ManifestPair, S
 }
 
 /// `GET /v1/rollouts/{rolloutId}` — returns the canonical manifest
-/// bytes as `application/json`. Requires a verified mTLS client cert
-/// (manifests carry fleet topology + per-host target closures —
-/// information-disclosure surface even though they're signed).
+/// bytes as `application/json`. mTLS auth is enforced by the
+/// router-level `require_cn_layer`; the handler itself is just a
+/// disk lookup + content-type stamp.
 pub(in crate::server) async fn manifest(
     State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
     Path(rollout_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let _cn = require_cn(&state, &peer_certs).await?;
     let (manifest_bytes, _sig) = load_pair(&state, &rollout_id).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -217,14 +213,12 @@ pub(in crate::server) async fn manifest(
 }
 
 /// `GET /v1/rollouts/{rolloutId}/sig` — returns the raw signature
-/// bytes as `application/octet-stream`. mTLS-gated; pairs with the
-/// manifest endpoint above.
+/// bytes as `application/octet-stream`. Pairs with the manifest
+/// endpoint; same router-level mTLS auth.
 pub(in crate::server) async fn signature(
     State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
     Path(rollout_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let _cn = require_cn(&state, &peer_certs).await?;
     let (_manifest, sig_bytes) = load_pair(&state, &rollout_id).await?;
     let mut headers = HeaderMap::new();
     headers.insert(

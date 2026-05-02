@@ -9,9 +9,7 @@ use axum::Json;
 use chrono::Utc;
 use nixfleet_proto::agent_wire::{ReportRequest, ReportResponse};
 
-use crate::auth::auth_cn::PeerCertificates;
-
-use super::super::middleware::require_cn;
+use super::super::middleware::AuthenticatedCn;
 use super::super::state::{AppState, ReportRecord, REPORT_RING_CAP};
 
 /// `POST /v1/agent/report` — record an out-of-band event report.
@@ -21,10 +19,10 @@ use super::super::state::{AppState, ReportRecord, REPORT_RING_CAP};
 /// Future work: promote to SQLite + correlate with rollouts.
 pub(in crate::server) async fn report(
     State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
+    Extension(cn): Extension<AuthenticatedCn>,
     Json(req): Json<ReportRequest>,
 ) -> Result<Json<ReportResponse>, StatusCode> {
-    let cn = require_cn(&state, &peer_certs).await?;
+    let cn = cn.into_string();
     if cn != req.hostname {
         tracing::warn!(
             cert_cn = %cn,

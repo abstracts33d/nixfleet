@@ -11,9 +11,7 @@ use axum::Json;
 use chrono::Utc;
 use serde::Serialize;
 
-use crate::auth::auth_cn::PeerCertificates;
-
-use super::super::middleware::require_cn;
+use super::super::middleware::AuthenticatedCn;
 use super::super::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -28,14 +26,12 @@ pub(in crate::server) struct WhoamiResponse {
 
 /// `GET /v1/whoami` — returns the verified mTLS CN of the caller.
 pub(in crate::server) async fn whoami(
-    State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
-) -> Result<Json<WhoamiResponse>, StatusCode> {
-    let cn = require_cn(&state, &peer_certs).await?;
-    Ok(Json(WhoamiResponse {
-        cn,
+    Extension(cn): Extension<AuthenticatedCn>,
+) -> Json<WhoamiResponse> {
+    Json(WhoamiResponse {
+        cn: cn.into_string(),
         issued_at: Utc::now().to_rfc3339(),
-    }))
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -67,11 +63,8 @@ pub(in crate::server) struct ChannelStatusResponse {
 /// the channel-refs poll succeeds).
 pub(in crate::server) async fn channel_status(
     State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
     Path(name): Path<String>,
 ) -> Result<Json<ChannelStatusResponse>, StatusCode> {
-    let _cn = require_cn(&state, &peer_certs).await?;
-
     let snapshot = state.verified_fleet.read().await.clone();
     let snap = snapshot.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let fleet = snap.fleet;
@@ -148,10 +141,7 @@ pub(in crate::server) struct HostStatusEntry {
 /// expectation).
 pub(in crate::server) async fn hosts_status(
     State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
 ) -> Result<Json<HostsResponse>, StatusCode> {
-    let _cn = require_cn(&state, &peer_certs).await?;
-
     let fleet = state
         .verified_fleet
         .read()
@@ -261,10 +251,10 @@ pub(in crate::server) async fn hosts_status(
 /// When `closure_upstream` is unset, returns 501 Not Implemented.
 pub(in crate::server) async fn closure_proxy(
     State(state): State<Arc<AppState>>,
-    Extension(peer_certs): Extension<PeerCertificates>,
+    Extension(cn): Extension<AuthenticatedCn>,
     Path(closure_hash): Path<String>,
 ) -> Result<Response, StatusCode> {
-    let cn = require_cn(&state, &peer_certs).await?;
+    let cn = cn.as_str();
 
     let upstream = match &state.closure_upstream {
         Some(u) => u,
