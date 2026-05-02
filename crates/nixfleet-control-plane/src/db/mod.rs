@@ -308,4 +308,275 @@ mod tests {
             .unwrap();
         assert_eq!(pc_exists, 0, "V006 must drop pending_confirms");
     }
+
+    /// Helper: query the column names of `table` in declaration order.
+    fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
+        conn.prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    /// Helper: assert that a table exists in the connected schema.
+    fn assert_table_exists(conn: &Connection, table: &str) {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = ?1",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "table {table} must exist after migration");
+    }
+
+    /// V002 upgrades the V1 placeholder schema to the Phase-4 base:
+    /// token_replay + cert_revocations + pending_confirms. The V1
+    /// pre-state is just `schema_placeholder` (one column). After V002
+    /// the three new tables exist with the documented columns.
+    #[test]
+    fn v002_creates_phase4_base_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Pre-state: V1 placeholder.
+        let v1 = include_str!("../../migrations/V1__initial.sql");
+        conn.execute_batch(v1).unwrap();
+        assert_table_exists(&conn, "schema_placeholder");
+
+        // Apply V002.
+        let v002 = include_str!("../../migrations/V002__phase4_init.sql");
+        conn.execute_batch(v002).unwrap();
+
+        assert_table_exists(&conn, "token_replay");
+        assert_table_exists(&conn, "cert_revocations");
+        assert_table_exists(&conn, "pending_confirms");
+
+        // Column-shape checks (a few structural asserts; the SQL is
+        // exercised verbatim through include_str! so we don't need to
+        // re-validate every column).
+        let tr_cols = columns_of(&conn, "token_replay");
+        assert_eq!(tr_cols, vec!["nonce", "hostname", "first_seen"]);
+
+        let cr_cols = columns_of(&conn, "cert_revocations");
+        assert_eq!(
+            cr_cols,
+            vec!["hostname", "not_before", "reason", "revoked_at", "revoked_by"]
+        );
+
+        let pc_cols = columns_of(&conn, "pending_confirms");
+        assert!(pc_cols.contains(&"hostname".to_string()));
+        assert!(pc_cols.contains(&"rollout_id".to_string()));
+        assert!(pc_cols.contains(&"state".to_string()));
+        // V005 adds `channel`; not present yet at V002.
+        assert!(!pc_cols.contains(&"channel".to_string()));
+
+        // V1 placeholder is left intact (V002 doesn't drop it; refinery
+        // tracks applied migrations externally).
+        assert_table_exists(&conn, "schema_placeholder");
+    }
+
+    /// V003 adds host_rollout_state. Sample data in token_replay +
+    /// pending_confirms (from V002) must survive untouched.
+    #[test]
+    fn v003_adds_host_rollout_state_without_disturbing_v002() {
+        use rusqlite::params;
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Build V1 + V2 pre-state.
+        let v1 = include_str!("../../migrations/V1__initial.sql");
+        let v002 = include_str!("../../migrations/V002__phase4_init.sql");
+        conn.execute_batch(v1).unwrap();
+        conn.execute_batch(v002).unwrap();
+
+        // Seed sample data in V002 tables.
+        conn.execute(
+            "INSERT INTO token_replay (nonce, hostname) VALUES (?1, ?2)",
+            params!["nonce-a", "ohm"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pending_confirms (
+                hostname, rollout_id, wave,
+                target_closure_hash, target_channel_ref,
+                confirm_deadline
+             )
+             VALUES ('ohm', 'stable@r1', 0, 'sys', 'ref',
+                     datetime('now', '+120 seconds'))",
+            [],
+        )
+        .unwrap();
+
+        // Apply V003.
+        let v003 = include_str!("../../migrations/V003__host_rollout_state.sql");
+        conn.execute_batch(v003).unwrap();
+
+        // host_rollout_state created.
+        assert_table_exists(&conn, "host_rollout_state");
+        let hrs_cols = columns_of(&conn, "host_rollout_state");
+        assert_eq!(
+            hrs_cols,
+            vec![
+                "rollout_id",
+                "hostname",
+                "host_state",
+                "last_healthy_since",
+                "updated_at"
+            ]
+        );
+
+        // V002 tables are unchanged.
+        let tr_n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM token_replay", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tr_n, 1);
+        let pc_n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_confirms", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pc_n, 1);
+    }
+
+    /// V004 adds host_reports. Same shape: V002/V003 tables intact.
+    #[test]
+    fn v004_adds_host_reports_without_disturbing_prior_tables() {
+        use rusqlite::params;
+        let conn = Connection::open_in_memory().unwrap();
+
+        // V1 + V002 + V003 pre-state.
+        for sql in [
+            include_str!("../../migrations/V1__initial.sql"),
+            include_str!("../../migrations/V002__phase4_init.sql"),
+            include_str!("../../migrations/V003__host_rollout_state.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+
+        // Seed data in V003 + V002 tables.
+        conn.execute(
+            "INSERT INTO host_rollout_state (rollout_id, hostname, host_state)
+             VALUES ('stable@r1', 'ohm', 'Healthy')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO token_replay (nonce, hostname) VALUES (?1, ?2)",
+            params!["nonce-b", "krach"],
+        )
+        .unwrap();
+
+        // Apply V004.
+        let v004 = include_str!("../../migrations/V004__host_reports.sql");
+        conn.execute_batch(v004).unwrap();
+
+        assert_table_exists(&conn, "host_reports");
+        let hr_cols = columns_of(&conn, "host_reports");
+        assert_eq!(
+            hr_cols,
+            vec![
+                "id",
+                "hostname",
+                "event_id",
+                "received_at",
+                "event_kind",
+                "rollout",
+                "signature_status",
+                "report_json",
+            ]
+        );
+
+        // Prior-table data preserved.
+        let hrs_n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM host_rollout_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hrs_n, 1);
+        let tr_n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM token_replay", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tr_n, 1);
+    }
+
+    /// V005 adds `channel` to pending_confirms and backfills it from
+    /// rollout_id when in the legacy `<channel>@<short-ci-commit>`
+    /// shape. Seed pending_confirms with a mix of legacy + sha256 rows;
+    /// assert post-migration channel is populated for the legacy form
+    /// and empty for the sha256 form.
+    #[test]
+    fn v005_adds_channel_and_backfills_legacy_rollout_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // V1 → V004 pre-state. (V005 only touches pending_confirms but
+        // the pre-state must include every prior migration to mirror
+        // the production upgrade path.)
+        for sql in [
+            include_str!("../../migrations/V1__initial.sql"),
+            include_str!("../../migrations/V002__phase4_init.sql"),
+            include_str!("../../migrations/V003__host_rollout_state.sql"),
+            include_str!("../../migrations/V004__host_reports.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+
+        // pending_confirms must NOT yet have the channel column.
+        let pc_cols_before = columns_of(&conn, "pending_confirms");
+        assert!(!pc_cols_before.contains(&"channel".to_string()));
+
+        // Seed a legacy + a sha256 row.
+        conn.execute(
+            "INSERT INTO pending_confirms (
+                hostname, rollout_id, wave,
+                target_closure_hash, target_channel_ref,
+                confirm_deadline
+             )
+             VALUES ('ohm', 'stable@abcdef0', 0, 'sys', 'ref',
+                     datetime('now', '+120 seconds'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pending_confirms (
+                hostname, rollout_id, wave,
+                target_closure_hash, target_channel_ref,
+                confirm_deadline
+             )
+             VALUES ('krach',
+                     '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                     0, 'sys', 'ref',
+                     datetime('now', '+120 seconds'))",
+            [],
+        )
+        .unwrap();
+
+        // Apply V005.
+        let v005 = include_str!("../../migrations/V005__pending_confirms_channel.sql");
+        conn.execute_batch(v005).unwrap();
+
+        // Channel column now present.
+        let pc_cols_after = columns_of(&conn, "pending_confirms");
+        assert!(pc_cols_after.contains(&"channel".to_string()));
+
+        // Legacy rollout_id backfilled to "stable".
+        let ohm_chan: String = conn
+            .query_row(
+                "SELECT channel FROM pending_confirms WHERE hostname = 'ohm'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ohm_chan, "stable", "legacy rollout_id backfilled to channel");
+
+        // sha256-shaped rollout_id leaves channel as the column default
+        // (empty string) — no `@` to split on.
+        let krach_chan: String = conn
+            .query_row(
+                "SELECT channel FROM pending_confirms WHERE hostname = 'krach'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            krach_chan, "",
+            "sha256-shaped rollout_id leaves channel empty (default)"
+        );
+    }
 }
