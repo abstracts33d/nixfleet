@@ -124,6 +124,7 @@ fn classify_verify_error(err: &VerifyError) -> String {
         VerifyError::BadSignature => "bad-signature".into(),
         VerifyError::NotSigned => "unsigned".into(),
         VerifyError::Stale { .. } => "stale".into(),
+        VerifyError::FutureDated { .. } => "future-dated".into(),
         VerifyError::RejectedBeforeTimestamp { .. } => "reject-before".into(),
         VerifyError::SchemaVersionUnsupported(_) => "schema-version".into(),
         VerifyError::Canonicalize(_) => "canonicalize".into(),

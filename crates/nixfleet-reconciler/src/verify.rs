@@ -69,6 +69,17 @@ pub enum VerifyError {
     },
 
     #[error(
+        "future-dated artifact: signedAt={signed_at} is more than {slack_secs}s ahead of now={now} \
+         (clock skew tolerance is {slack_secs}s; an artifact further in the future suggests \
+         pre-signing — possible CI key compromise. Rotate via reject_before)"
+    )]
+    FutureDated {
+        signed_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+        slack_secs: i64,
+    },
+
+    #[error(
         "artifact signed at {signed_at} is older than reject_before {reject_before} (compromise switch, CONTRACTS.md §II #1)"
     )]
     RejectedBeforeTimestamp {
@@ -382,16 +393,29 @@ fn verify_signature_against_trust_roots(
 }
 
 /// Generic schema-gate + reject-before + freshness check.
-/// Slack added to window (not timestamp) tolerates "signed_at > now"
-/// symmetrically — negative diff passes the comparison. `reject_before`
-/// is checked before freshness so alerts distinguish "key compromised,
-/// rotate" from "CI is behind".
+/// Two freshness checks, applied in order:
+///
+/// 1. **Past bound** (existing): reject if `now - signed_at > window
+///    + CLOCK_SKEW_SLACK_SECS`. Catches a stale fleet.resolved being
+///    served past its declared validity.
+///
+/// 2. **Future bound** (added 2026-05-02): reject if `signed_at - now
+///    > CLOCK_SKEW_SLACK_SECS`. Catches a future-dated artifact —
+///    benign clock skew is bounded by the slack constant; anything
+///    beyond suggests the signer is producing artifacts targeted at
+///    a future window. With a CI key compromise, future-dating is
+///    the natural way to mint long-lived rogue artifacts that
+///    survive short reject_before rotations. Pre-fix, the past-only
+///    check accepted any future-dated artifact indefinitely
+///    (verified live 2026-05-02 with `--now=signed_at - 2 days` →
+///    exit 0).
+///
+/// `reject_before` is checked before either freshness bound so alerts
+/// can distinguish "key compromised, rotate via reject_before" from
+/// "CI is behind" / "operator's clock is wrong".
 ///
 /// Applies `CLOCK_SKEW_SLACK_SECS` uniformly to every sidecar — same
 /// trust root, same fetch path, same clock-drift surface, same slack.
-/// (Pre-consolidation, the slack only applied to `FleetResolved`; the
-/// asymmetry was a vestigial oversight from when revocations.json was
-/// added separately.)
 fn finish_sidecar_verification<T: SignedSidecar + DeserializeOwned>(
     canonical: &str,
     now: DateTime<Utc>,
@@ -419,11 +443,19 @@ fn finish_sidecar_verification<T: SignedSidecar + DeserializeOwned>(
     let window = ChronoDuration::from_std(freshness_window)
         .expect("freshness_window fits in i64 nanoseconds — multi-century windows are a bug");
     let effective_window = window + ChronoDuration::seconds(CLOCK_SKEW_SLACK_SECS);
-    if now - signed_at > effective_window {
+    let elapsed = now - signed_at;
+    if elapsed > effective_window {
         return Err(VerifyError::Stale {
             signed_at,
             now,
             window: freshness_window,
+        });
+    }
+    if -elapsed > ChronoDuration::seconds(CLOCK_SKEW_SLACK_SECS) {
+        return Err(VerifyError::FutureDated {
+            signed_at,
+            now,
+            slack_secs: CLOCK_SKEW_SLACK_SECS,
         });
     }
 

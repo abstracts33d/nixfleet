@@ -114,6 +114,59 @@ fn verify_stale() {
 }
 
 #[test]
+fn verify_future_dated_beyond_slack_is_rejected() {
+    // Pre-2026-05-02: future-dated signed_at was accepted indefinitely
+    // because the freshness check only had a past-bound. A compromised
+    // CI key could pre-sign an artifact with `signed_at` in the
+    // future, and consumers would accept it as long as `now` was
+    // within `signed_at - past_window` ≤ now ≤ ∞. Patched: also
+    // reject when `signed_at - now > CLOCK_SKEW_SLACK_SECS`.
+    let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_SIGNED);
+    let now = signed_at - ChronoDuration::days(2);
+    let window = Duration::from_secs(86400);
+
+    let err = verify_artifact(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, VerifyError::FutureDated { .. }),
+        "future-dated signed_at must be rejected, got {err:?}",
+    );
+}
+
+#[test]
+fn verify_future_dated_within_slack_is_accepted() {
+    // Symmetric clock-skew tolerance: the slack constant
+    // (CLOCK_SKEW_SLACK_SECS = 60) accommodates real-world clock
+    // drift between signer and verifier. An artifact signed up to
+    // 60s ahead of the verifier's `now` must verify cleanly so
+    // benign skew doesn't cause spurious rejections.
+    let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_SIGNED);
+    let now = signed_at - ChronoDuration::seconds(30); // 30s skew, < 60s slack
+    let window = Duration::from_secs(86400);
+
+    let result = verify_artifact(
+        &bytes,
+        &sig,
+        std::slice::from_ref(&trust),
+        now,
+        window,
+        None,
+    );
+    assert!(
+        result.is_ok(),
+        "30s-future signed_at within 60s slack must verify, got {:?}",
+        result.err(),
+    );
+}
+
+#[test]
 fn verify_at_exact_window_boundary_is_fresh() {
     let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_SIGNED);
     let window_secs: u64 = 3 * 3600;
