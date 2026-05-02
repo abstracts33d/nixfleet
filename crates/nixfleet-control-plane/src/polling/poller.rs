@@ -15,6 +15,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use tokio_util::sync::CancellationToken;
 
 use super::signed_fetch;
 
@@ -41,7 +42,11 @@ impl SignedArtifactPoller {
     ///   to the next tick. The closure is responsible for not
     ///   mutating any shared state on the error path — that's what
     ///   "retain previous state" means in practice.
-    pub fn spawn<F, Fut>(self, mut tick: F) -> tokio::task::JoinHandle<()>
+    ///
+    /// `cancel` fires the graceful-shutdown signal: the loop selects
+    /// against it on every iteration and exits cleanly when cancelled,
+    /// emitting an INFO log so operators see the shutdown traversal.
+    pub fn spawn<F, Fut>(self, cancel: CancellationToken, mut tick: F) -> tokio::task::JoinHandle<()>
     where
         F: FnMut(reqwest::Client) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<()>> + Send,
@@ -53,14 +58,25 @@ impl SignedArtifactPoller {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {
-                ticker.tick().await;
-                if let Err(err) = tick(client.clone()).await {
-                    tracing::warn!(
-                        target: "polling",
-                        label = self.label,
-                        error = %err,
-                        "poll failed; retaining previous state",
-                    );
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!(
+                            target: "shutdown",
+                            label = self.label,
+                            "poll task shut down",
+                        );
+                        return;
+                    }
+                    _ = ticker.tick() => {
+                        if let Err(err) = tick(client.clone()).await {
+                            tracing::warn!(
+                                target: "polling",
+                                label = self.label,
+                                error = %err,
+                                "poll failed; retaining previous state",
+                            );
+                        }
+                    }
                 }
             }
         })

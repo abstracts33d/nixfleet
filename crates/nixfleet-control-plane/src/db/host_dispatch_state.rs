@@ -90,6 +90,7 @@ impl HostDispatchState<'_> {
     /// "this host activated this closure" without forcing a spurious
     /// rollback. `confirm_deadline` is set to `confirmed_at` since
     /// the deadline is moot for an already-confirmed row.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_confirmed_dispatch(
         &self,
         hostname: &str,

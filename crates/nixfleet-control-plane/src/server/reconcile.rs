@@ -16,6 +16,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use nixfleet_proto::FleetResolved;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::{render_plan, tick, TickInputs};
 
@@ -32,7 +33,11 @@ use super::state::{AppState, HostCheckinRecord, RECONCILE_INTERVAL};
 ///
 /// Errors at any step are logged and fall through; the loop never
 /// crashes on transient failures.
-pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
+pub(super) fn spawn_reconcile_loop(
+    cancel: CancellationToken,
+    state: Arc<AppState>,
+    inputs: TickInputs,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Prime the verified-fleet snapshot from the build-time
         // artifact, IF it isn't already populated. The Forgejo
@@ -87,7 +92,13 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    tracing::info!(target: "shutdown", task = "reconcile_loop", "task shut down");
+                    return;
+                }
+                _ = ticker.tick() => {}
+            }
             let now = Utc::now();
 
             // Snapshot the cache + checkins under read locks. Drop
@@ -185,7 +196,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
                     }
                 };
                 if should_overwrite {
-                    if let Some(h) = nixfleet_reconciler::compute_canonical_hash(&fleet).ok() {
+                    if let Ok(h) = nixfleet_reconciler::compute_canonical_hash(&fleet) {
                         // Atomic write of (fleet, hash) pair under a
                         // single lock: dispatch readers can never see
                         // a torn snapshot.
@@ -209,7 +220,7 @@ pub(super) fn spawn_reconcile_loop(state: Arc<AppState>, inputs: TickInputs) {
             }
             *state.last_tick_at.write().await = Some(now);
         }
-    });
+    })
 }
 
 /// Apply the side-effects of the reconciler's action stream that

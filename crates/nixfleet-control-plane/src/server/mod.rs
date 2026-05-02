@@ -40,9 +40,22 @@ use axum::middleware::Next;
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::Utc;
+use tokio_util::sync::CancellationToken;
 
 use crate::auth::auth_cn::MtlsAcceptor;
 use crate::TickInputs;
+
+/// Total budget for the post-listener-drain task gather phase.
+/// 30s is the SystemD default for `TimeoutStopSec=`; staying under it
+/// means systemd's `kill --kill -TERM` doesn't escalate to SIGKILL
+/// before `serve()` finishes draining.
+const TASK_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Within `TASK_SHUTDOWN_DEADLINE`, give axum-server `n - 5s` to drain
+/// in-flight HTTP requests. The remaining 5s is for the post-listener
+/// background-task gather. Both are heuristic; the listener drain
+/// dominates real shutdowns.
+const HTTP_DRAIN_DEADLINE: Duration = Duration::from_secs(25);
 
 /// Build the axum router. `/healthz` lives outside the `/v1` namespace
 /// so it doesn't go through the protocol-version middleware
@@ -147,10 +160,24 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     let state = Arc::new(app_state);
 
+    // Root cancellation token. Every background loop selects against
+    // this; SIGTERM cancels it after the HTTP drain completes. The
+    // tasks log a "task X shut down" line on cancel, retained in the
+    // Vec<JoinHandle> below so the shutdown phase can `join` them.
+    let cancel = CancellationToken::new();
+    let mut bg_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     // Magic-rollback timer + hourly prune sweep .
     if let Some(db_arc) = db.clone() {
-        crate::timers::rollback_timer::spawn(db_arc.clone());
-        crate::timers::prune_timer::spawn(db_arc, args.db_path.clone());
+        bg_handles.push(crate::timers::rollback_timer::spawn(
+            cancel.clone(),
+            db_arc.clone(),
+        ));
+        bg_handles.push(crate::timers::prune_timer::spawn(
+            cancel.clone(),
+            db_arc,
+            args.db_path.clone(),
+        ));
     }
 
     // — hydrate the in-memory `host_reports` ring from
@@ -296,25 +323,34 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         now: Utc::now(),
         freshness_window: args.freshness_window,
     };
-    reconcile::spawn_reconcile_loop(state.clone(), tick_inputs);
+    bg_handles.push(reconcile::spawn_reconcile_loop(
+        cancel.clone(),
+        state.clone(),
+        tick_inputs,
+    ));
 
     // Channel-refs poll: refresh `verified_fleet` + `channel_refs_cache`
     // from the configured upstream URLs (closes the GitOps loop). Both
     // shared locks live on `AppState` as `Arc<RwLock<...>>`; the poll
     // task writes through them directly without a mirror task.
     if let Some(channel_refs_source) = args.channel_refs.clone() {
-        crate::polling::channel_refs_poll::spawn(
+        bg_handles.push(crate::polling::channel_refs_poll::spawn(
+            cancel.clone(),
             state.channel_refs_cache.clone(),
             state.verified_fleet.clone(),
             channel_refs_source,
-        );
+        ));
     }
 
     // Revocations poll : refresh `cert_revocations` from a
     // signed sidecar artifact every 60s. Requires a configured DB
     // (the replay target); a None DB silently disables the poll.
     if let (Some(revocations_source), Some(db)) = (args.revocations.clone(), state.db.clone()) {
-        crate::polling::revocations_poll::spawn(db, revocations_source);
+        bg_handles.push(crate::polling::revocations_poll::spawn(
+            cancel.clone(),
+            db,
+            revocations_source,
+        ));
     }
 
     let app = build_router(state);
@@ -339,12 +375,70 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         "TLS-only"
     };
     tracing::info!(listen = %args.listen, %mode, "control plane listening");
+
+    // axum-server Handle drives the listener-drain phase. ctrl_c
+    // (SIGTERM under nix) signals graceful_shutdown, which stops
+    // accepting new connections and lets in-flight requests complete
+    // before returning from .serve().await.
+    let server_handle = axum_server::Handle::new();
+    let signal_handle = server_handle.clone();
+    let signal_cancel = cancel.clone();
+    tokio::spawn(async move {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::warn!(error = %err, "ctrl_c handler install failed; relying on hard shutdown");
+            return;
+        }
+        tracing::info!(target: "shutdown", "graceful shutdown initiated");
+        // Drain in-flight HTTP first; once the listener is closed we
+        // cancel the background loops so they finish their current
+        // tick (DB writes complete) and exit.
+        signal_handle.graceful_shutdown(Some(HTTP_DRAIN_DEADLINE));
+        signal_cancel.cancel();
+    });
+
     axum_server::bind(args.listen)
         .acceptor(mtls_acceptor)
+        .handle(server_handle)
         .serve(app.into_make_service())
         .await?;
 
+    // Listener has drained. Cancel background tasks (idempotent — the
+    // ctrl_c handler may have fired already) and gather them under a
+    // bounded budget so a stuck task can't wedge the shutdown.
+    cancel.cancel();
+    if let Err(err) = drain_background_tasks(bg_handles).await {
+        tracing::warn!(error = %err, "background task drain incomplete");
+    }
     Ok(())
+}
+
+/// Wait for every spawned background task to complete after cancel
+/// has fired. Any task that doesn't return within [`TASK_SHUTDOWN_DEADLINE`]
+/// is logged + abandoned (the JoinHandle is dropped, forcing abort).
+async fn drain_background_tasks(
+    handles: Vec<tokio::task::JoinHandle<()>>,
+) -> anyhow::Result<()> {
+    let total = handles.len();
+    let drain_fut = async move {
+        for handle in handles {
+            if let Err(err) = handle.await {
+                if !err.is_cancelled() {
+                    tracing::warn!(error = %err, "background task panicked during shutdown");
+                }
+            }
+        }
+    };
+    match tokio::time::timeout(TASK_SHUTDOWN_DEADLINE, drain_fut).await {
+        Ok(()) => {
+            tracing::info!(target: "shutdown", tasks = total, "all background tasks shut down");
+            Ok(())
+        }
+        Err(_) => {
+            anyhow::bail!(
+                "background task drain exceeded {TASK_SHUTDOWN_DEADLINE:?}; forcing exit"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -405,5 +499,92 @@ mod strict_mode_tests {
             !msg.contains("--strict refuses to start"),
             "non-strict mode should not emit the strict-mode error; got: {msg}",
         );
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    //! Unit tests for the graceful-shutdown plumbing in serve().
+    //! Full serve() integration is covered by the existing
+    //! tests/healthz.rs etc. (each spawns serve() then aborts the
+    //! handle — the abort path is unchanged by these changes); these
+    //! tests exercise the building blocks directly.
+
+    use super::*;
+    use std::time::Duration;
+
+    /// drain_background_tasks returns Ok when every task completes
+    /// before the deadline. Tasks that exit on cancel.cancelled() are
+    /// the standard shape for our background loops.
+    #[tokio::test]
+    async fn drain_returns_ok_when_tasks_exit_promptly() {
+        let cancel = CancellationToken::new();
+        let handles: Vec<_> = (0..3)
+            .map(|_| {
+                let c = cancel.clone();
+                tokio::spawn(async move {
+                    c.cancelled().await;
+                })
+            })
+            .collect();
+
+        cancel.cancel();
+        drain_background_tasks(handles)
+            .await
+            .expect("tasks should drain cleanly");
+    }
+
+    /// drain_background_tasks bails when at least one task ignores the
+    /// cancel signal and runs past the deadline. The deadline constant
+    /// is 30s in production; the test uses tokio's pause/advance to
+    /// fast-forward without real wall-clock waiting.
+    #[tokio::test(start_paused = true)]
+    async fn drain_bails_when_task_ignores_cancel() {
+        let cancel = CancellationToken::new();
+        // Task that ignores cancel and just sleeps past the deadline.
+        let stuck = tokio::spawn(async {
+            tokio::time::sleep(TASK_SHUTDOWN_DEADLINE + Duration::from_secs(60)).await;
+        });
+        let handles = vec![stuck];
+
+        cancel.cancel();
+        // Advance past TASK_SHUTDOWN_DEADLINE so the timeout fires.
+        let drain = tokio::spawn(async move { drain_background_tasks(handles).await });
+        tokio::time::advance(TASK_SHUTDOWN_DEADLINE + Duration::from_secs(1)).await;
+        let err = drain.await.unwrap().unwrap_err();
+        assert!(
+            err.to_string().contains("forcing exit"),
+            "expected force-exit message; got: {err}",
+        );
+    }
+
+    /// Minimal sanity check that the cancel-token + select-arm pattern
+    /// in our spawn_* helpers actually exits when cancel fires. Spawns
+    /// a tokio::select loop with a long ticker and a cancel arm; the
+    /// task must exit on cancel even though the ticker hasn't fired.
+    #[tokio::test(start_paused = true)]
+    async fn cancel_token_unblocks_select_loop() {
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(3600));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = task_cancel.cancelled() => return,
+                    _ = ticker.tick() => {}
+                }
+            }
+        });
+
+        // Give the spawned task one tick to enter its select loop.
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        // Bound the wait — if the cancel-arm doesn't unblock, the
+        // task will sit on the 1h ticker and the test will hang.
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("task should exit on cancel within 5s")
+            .expect("task should not panic");
     }
 }

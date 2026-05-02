@@ -50,12 +50,19 @@ pub struct RevocationsSource {
 /// success. The DB upsert is idempotent (`revoke_cert` already
 /// handles `ON CONFLICT DO UPDATE`), so re-replaying the same
 /// signed artifact every minute is a quiet no-op.
-pub fn spawn(db: Arc<Db>, config: RevocationsSource) -> tokio::task::JoinHandle<()> {
+///
+/// `cancel` fires the graceful-shutdown signal; the loop exits on
+/// the next tick boundary or immediately, whichever comes first.
+pub fn spawn(
+    cancel: tokio_util::sync::CancellationToken,
+    db: Arc<Db>,
+    config: RevocationsSource,
+) -> tokio::task::JoinHandle<()> {
     SignedArtifactPoller {
         interval: POLL_INTERVAL,
         label: "revocations",
     }
-    .spawn(move |client| {
+    .spawn(cancel, move |client| {
         let db = Arc::clone(&db);
         let config = config.clone();
         async move {

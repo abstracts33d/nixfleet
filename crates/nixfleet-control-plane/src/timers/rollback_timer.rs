@@ -8,19 +8,26 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use tokio_util::sync::CancellationToken;
 
 use crate::db::Db;
 use crate::state::TerminalState;
 
 pub const ROLLBACK_TIMER_INTERVAL: Duration = Duration::from_secs(30);
 
-pub fn spawn(db: Arc<Db>) -> tokio::task::JoinHandle<()> {
+pub fn spawn(cancel: CancellationToken, db: Arc<Db>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(ROLLBACK_TIMER_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    tracing::info!(target: "shutdown", task = "rollback_timer", "task shut down");
+                    return;
+                }
+                _ = ticker.tick() => {}
+            }
             let expired = match db.host_dispatch_state().pending_deadlines() {
                 Ok(rows) => rows,
                 Err(err) => {

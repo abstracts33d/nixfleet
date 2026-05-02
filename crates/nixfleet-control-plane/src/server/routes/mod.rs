@@ -5,7 +5,7 @@
 //! - `reports`    — `/v1/agent/report`
 //! - `rollouts`   — `/v1/rollouts/*`
 //! - `status`     — `/v1/whoami`, `/v1/channels/*`, `/v1/hosts`,
-//!                  `/v1/agent/closure/*`
+//!   `/v1/agent/closure/*`
 //! - `health`     — `/healthz`
 //!
 //! The check-in pipeline lives in the sibling `checkin_pipeline/`

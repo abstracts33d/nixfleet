@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use tokio_util::sync::CancellationToken;
+
 use crate::db::Db;
 
 const TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -39,13 +41,23 @@ const BACKUP_FILENAME_PREFIX: &str = "state.db.pre-";
 /// [`BACKUP_RETENTION_DAYS`] from the DB's parent directory. Pass
 /// `None` for in-memory deployments / tests that don't have a backing
 /// file.
-pub fn spawn(db: Arc<Db>, db_path: Option<PathBuf>) -> tokio::task::JoinHandle<()> {
+pub fn spawn(
+    cancel: CancellationToken,
+    db: Arc<Db>,
+    db_path: Option<PathBuf>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(TICK_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    tracing::info!(target: "shutdown", task = "prune_timer", "task shut down");
+                    return;
+                }
+                _ = ticker.tick() => {}
+            }
             let token_pruned = try_prune("token_replay", || {
                 db.tokens().prune_token_replay(TOKEN_REPLAY_RETENTION_HOURS)
             });

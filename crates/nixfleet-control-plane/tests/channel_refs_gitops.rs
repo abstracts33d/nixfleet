@@ -23,6 +23,7 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String, Vec<u8>) {
     let signed_at = "2026-04-26T00:00:00Z";
@@ -188,7 +189,12 @@ async fn poll_refreshes_verified_fleet_snapshot() {
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
-    let _poll = spawn(cache.clone(), verified_fleet.clone(), cfg);
+    let _poll = spawn(
+        CancellationToken::new(),
+        cache.clone(),
+        verified_fleet.clone(),
+        cfg,
+    );
 
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let mut last_snapshot: Option<Arc<FleetResolved>> = None;
@@ -281,7 +287,12 @@ async fn poll_retains_snapshot_on_verify_failure() {
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
-    let _poll = spawn(cache.clone(), verified_fleet.clone(), cfg);
+    let _poll = spawn(
+        CancellationToken::new(),
+        cache.clone(),
+        verified_fleet.clone(),
+        cfg,
+    );
 
     // Negative-observation test: we're asserting that a verify failure
     // does NOT swap the sentinel snapshot. The polling task's first

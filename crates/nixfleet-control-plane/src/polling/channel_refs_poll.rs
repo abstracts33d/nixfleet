@@ -36,7 +36,11 @@ pub struct ChannelRefsCache {
 
 /// Spawn the poll task. Failure logs warn + retains previous state
 /// (transient outage / bad sig must not blank out a good snapshot).
+///
+/// `cancel` propagates SIGTERM / shutdown into the loop's select arm;
+/// the task exits cleanly when fired (see `serve()` orchestration).
 pub fn spawn(
+    cancel: tokio_util::sync::CancellationToken,
     cache: Arc<RwLock<ChannelRefsCache>>,
     verified_fleet: Arc<RwLock<Option<crate::server::VerifiedFleetSnapshot>>>,
     config: ChannelRefsSource,
@@ -45,7 +49,7 @@ pub fn spawn(
         interval: POLL_INTERVAL,
         label: "channel-refs",
     }
-    .spawn(move |client| {
+    .spawn(cancel, move |client| {
         let cache = Arc::clone(&cache);
         let verified_fleet = Arc::clone(&verified_fleet);
         let config = config.clone();

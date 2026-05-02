@@ -33,6 +33,10 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tokio = { version = "1", features = ["full"] }
+# Graceful-shutdown plumbing — CancellationToken hands a single
+# cancel-fanout to every spawned background loop (reconcile, polls,
+# timers) so SIGTERM drains in-flight work instead of dropping it.
+tokio-util = "0.7"
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls = "0.23"
@@ -90,6 +94,10 @@ rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+# `tokio::time::pause` + `start_paused` are gated on test-util; the
+# graceful-shutdown unit tests use them to fast-forward past the 30s
+# task-drain deadline without real wall-clock waiting.
+tokio = { version = "1", features = ["full", "test-util"] }
 # /healthz integration test: rcgen mints a self-signed server cert,
 # reqwest hits the listener over TLS, asserts 200 + JSON. Same testing
 # stack v0.1's CP used (crates/control-plane/Cargo.toml on v0.1.1).
