@@ -67,6 +67,12 @@ in
     stateVersion ? "24.11",
     hostSpec ? {},
     modules ? [],
+    # Forward-compatible flag callers may pass to signal "this host is
+    # a VM". Preserved as a passthrough for consumer code that already
+    # threads it through; the framework no longer reads it. Qemu /
+    # mesa / spice test-rig opinions moved to
+    # `tests/lib/mk-test-host.nix`, which wraps mkHost. Consumer fleets
+    # that want VM-specific config compose it via `modules`.
     isVm ? false,
     # Override the `inputs` attrset injected into NixOS/Darwin
     # specialArgs. Defaults to the framework's own flake inputs
