@@ -131,8 +131,12 @@ async fn whoami_rejects_request_without_client_cert() {
     .await;
 
     // Same client config but NO identity — no client cert presented.
-    // Server's WebPkiClientVerifier rejects the handshake; reqwest
-    // surfaces that as a connect error.
+    // The TLS layer accepts unauthenticated connections (load-bearing
+    // for `/v1/enroll`, which is the bootstrap endpoint and cannot
+    // present a cert yet), so the handshake succeeds. Defence happens
+    // at the route level: `require_cn` returns 401 for any
+    // `/v1/agent/*` or `/v1/whoami` request without a verified peer
+    // cert.
     let ca_pem = std::fs::read(&ca).unwrap();
     let ca_cert = ReqwestCert::from_pem(&ca_pem).unwrap();
     let client = reqwest::Client::builder()
@@ -143,9 +147,11 @@ async fn whoami_rejects_request_without_client_cert() {
 
     let url = format!("https://localhost:{port}/v1/whoami");
     let result = client.get(&url).send().await;
-    assert!(
-        result.is_err(),
-        "expected TLS handshake failure when client presents no cert, got: {result:?}"
+    let response = result.expect("TLS handshake should succeed without client cert");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "/v1/whoami without client cert must be rejected by require_cn middleware (401)",
     );
 
     server_handle.abort();
