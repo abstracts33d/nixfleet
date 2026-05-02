@@ -71,10 +71,16 @@ in
       # mTLS fetch of the fixture. The deadline scales with agent count
       # because mass-booting microVMs on a single host VM serialises on
       # qemu start, guest kernel cold-boot, and the curl that depends on
-      # network-online. Empirically: at N=5 the agents are still running
-      # "Permit User Sessions" past t=77s, so a flat 60s deadline times
-      # out before any of them finish booting let alone fetch.
-      deadline = time.monotonic() + max(60, 30 + 20 * len(${builtins.toJSON agentNames}))
+      # network-online.
+      #
+      # Bumped 2026-05-02 from `max(60, 30 + 20*N)` to
+      # `max(180, 90 + 30*N)` — the former was tuned against a faster
+      # baseline; on commodity Linux lab hardware microvm guests can
+      # reach the multi-user.target login banner past t=85s before the
+      # harness-agent oneshot has even fired its curl. Generous over-
+      # provisioning is fine here: the deadline is the *upper bound*,
+      # the loop short-circuits as soon as both agents post the marker.
+      deadline = time.monotonic() + max(180, 90 + 30 * len(${builtins.toJSON agentNames}))
       pending = set(${builtins.toJSON agentNames})
       while pending and time.monotonic() < deadline:
           done = set()
@@ -93,7 +99,7 @@ in
               time.sleep(2)
 
       if pending:
-          budget = max(60, 30 + 20 * len(${builtins.toJSON agentNames}))
+          budget = max(180, 90 + 30 * len(${builtins.toJSON agentNames}))
           raise Exception(f"agents did not report harness-agent-ok within {budget}s: {pending}")
 
       print("fleet-harness-smoke: all agents fetched fleet.resolved.json over mTLS")
