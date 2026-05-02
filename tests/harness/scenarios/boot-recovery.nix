@@ -99,8 +99,6 @@ in
     };
     timeout = 600;
     testScript = ''
-      import time
-
       start_all()
 
       host.wait_for_unit("multi-user.target")

@@ -47,7 +47,6 @@ in
       host.wait_for_unit("microvms.target", timeout=300)
       host.wait_for_unit("microvm@agent-01.service", timeout=300)
 
-      import time
       deadline = time.monotonic() + 120
       while time.monotonic() < deadline:
           rc, _ = host.execute(

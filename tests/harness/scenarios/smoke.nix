@@ -74,7 +74,6 @@ in
       # network-online. Empirically: at N=5 the agents are still running
       # "Permit User Sessions" past t=77s, so a flat 60s deadline times
       # out before any of them finish booting let alone fetch.
-      import time
       deadline = time.monotonic() + max(60, 30 + 20 * len(${builtins.toJSON agentNames}))
       pending = set(${builtins.toJSON agentNames})
       while pending and time.monotonic() < deadline:

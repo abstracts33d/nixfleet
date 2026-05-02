@@ -84,7 +84,6 @@ in
     timeout = 600;
     testScript = ''
       import re
-      import time
 
       start_all()
 

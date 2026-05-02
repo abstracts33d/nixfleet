@@ -150,8 +150,6 @@ in
               f"for {len(recovered)} agents")
       '';
     in ''
-      import time
-
       start_all()
 
       host.wait_for_unit("multi-user.target")
