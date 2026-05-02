@@ -3,11 +3,227 @@
 //! Given a wave's host list, the reconciler's per-rollout state, and
 //! supporting context, emit the set of actions for each host and track
 //! whether the wave as a whole is soaked (all hosts in terminal ok states).
+//!
+//! Inner modules `budgets` and `edges` carry the disruption-budget +
+//! edge-predecessor predicates the wave loop consults before
+//! dispatching a host. Each had a single caller in this file and was
+//! folded back here when the abstraction wasn't earning the file
+//! split.
 
 use crate::observed::{Observed, Rollout};
-use crate::{budgets, edges, Action};
+use crate::Action;
 use chrono::{DateTime, Utc};
 use nixfleet_proto::{FleetResolved, Wave};
+
+/// Disruption-budget evaluation for the dispatch gate.
+mod budgets {
+    use super::HostRolloutState;
+    use crate::observed::Observed;
+    use nixfleet_proto::FleetResolved;
+
+    /// Count hosts currently in-flight across all active rollouts.
+    pub(super) fn in_flight_count(observed: &Observed, budget_hosts: &[String]) -> u32 {
+        observed
+            .active_rollouts
+            .iter()
+            .map(|r| {
+                r.host_states
+                    .iter()
+                    .filter(|(h, st)| {
+                        if !budget_hosts.iter().any(|b| b == *h) {
+                            return false;
+                        }
+                        matches!(
+                            st,
+                            HostRolloutState::Dispatched
+                                | HostRolloutState::Activating
+                                | HostRolloutState::ConfirmWindow
+                                | HostRolloutState::Healthy
+                        )
+                    })
+                    .count() as u32
+            })
+            .sum()
+    }
+
+    /// For a given host, return the tightest (in_flight, max_in_flight)
+    /// across all budgets that include the host.
+    pub(super) fn budget_max(
+        fleet: &FleetResolved,
+        observed: &Observed,
+        host: &str,
+    ) -> Option<(u32, u32)> {
+        fleet
+            .disruption_budgets
+            .iter()
+            .filter(|b| b.hosts.iter().any(|bh| bh == host))
+            .filter_map(|b| {
+                b.max_in_flight
+                    .map(|max| (in_flight_count(observed, &b.hosts), max))
+            })
+            .min_by_key(|(_, max)| *max)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::observed::Rollout;
+        use crate::rollout_state::RolloutState;
+        use std::collections::HashMap;
+
+        fn observed_with(rollout_hosts: Vec<(String, HostRolloutState)>) -> Observed {
+            let mut host_states = HashMap::new();
+            for (h, s) in rollout_hosts {
+                host_states.insert(h, s);
+            }
+            Observed {
+                channel_refs: HashMap::new(),
+                last_rolled_refs: HashMap::new(),
+                host_state: HashMap::new(),
+                active_rollouts: vec![Rollout {
+                    id: "r".into(),
+                    channel: "c".into(),
+                    target_ref: "ref".into(),
+                    state: RolloutState::Executing,
+                    current_wave: 0,
+                    host_states,
+                    last_healthy_since: HashMap::new(),
+                }],
+                compliance_failures_by_rollout: HashMap::new(),
+            }
+        }
+
+        #[test]
+        fn in_flight_count_empty() {
+            let obs = observed_with(vec![]);
+            assert_eq!(in_flight_count(&obs, &["a".into(), "b".into()]), 0);
+        }
+
+        #[test]
+        fn in_flight_count_counts_only_in_flight_states() {
+            let obs = observed_with(vec![
+                ("a".into(), HostRolloutState::Queued),
+                ("b".into(), HostRolloutState::Dispatched),
+                ("c".into(), HostRolloutState::Activating),
+                ("d".into(), HostRolloutState::Soaked),
+                ("e".into(), HostRolloutState::Healthy),
+            ]);
+            let budget = vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()];
+            assert_eq!(in_flight_count(&obs, &budget), 3);
+        }
+
+        #[test]
+        fn in_flight_count_filters_by_budget_hosts() {
+            let obs = observed_with(vec![
+                ("a".into(), HostRolloutState::Dispatched),
+                ("b".into(), HostRolloutState::Dispatched),
+            ]);
+            assert_eq!(in_flight_count(&obs, &["a".into()]), 1);
+        }
+    }
+}
+
+/// Edge predecessor ordering check for the dispatch gate.
+mod edges {
+    use super::{lookup_host_state, HostRolloutState};
+    use crate::observed::Rollout;
+    use nixfleet_proto::FleetResolved;
+
+    /// If `host`'s in-wave predecessors are NOT all Soaked/Converged,
+    /// return the name of the first incomplete predecessor.
+    /// Otherwise `None`.
+    pub(super) fn predecessor_blocking(
+        fleet: &FleetResolved,
+        rollout: &Rollout,
+        host: &str,
+    ) -> Option<String> {
+        fleet
+            .edges
+            .iter()
+            .filter(|e| e.before == host)
+            .find_map(|e| {
+                let s = lookup_host_state(rollout, &e.after);
+                if matches!(s, HostRolloutState::Soaked | HostRolloutState::Converged) {
+                    None
+                } else {
+                    Some(e.after.clone())
+                }
+            })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::observed::Rollout;
+        use nixfleet_proto::{Edge, FleetResolved, Meta};
+        use std::collections::HashMap;
+
+        fn fleet_with_edges(edges: Vec<Edge>) -> FleetResolved {
+            FleetResolved {
+                schema_version: 1,
+                hosts: HashMap::new(),
+                channels: HashMap::new(),
+                rollout_policies: HashMap::new(),
+                waves: HashMap::new(),
+                edges,
+                disruption_budgets: Vec::new(),
+                meta: Meta {
+                    schema_version: 1,
+                    signed_at: None,
+                    ci_commit: None,
+                    signature_algorithm: None,
+                },
+            }
+        }
+
+        fn rollout_with_states(states: Vec<(&str, HostRolloutState)>) -> Rollout {
+            use crate::rollout_state::RolloutState;
+            let mut host_states = HashMap::new();
+            for (h, s) in states {
+                host_states.insert(h.to_string(), s);
+            }
+            Rollout {
+                id: "r".into(),
+                channel: "c".into(),
+                target_ref: "ref".into(),
+                state: RolloutState::Executing,
+                current_wave: 0,
+                host_states,
+                last_healthy_since: HashMap::new(),
+            }
+        }
+
+        #[test]
+        fn no_edges_means_no_block() {
+            let fleet = fleet_with_edges(vec![]);
+            let rollout = rollout_with_states(vec![]);
+            assert!(predecessor_blocking(&fleet, &rollout, "h1").is_none());
+        }
+
+        #[test]
+        fn predecessor_done_is_not_blocking() {
+            let fleet = fleet_with_edges(vec![Edge {
+                before: "h1".into(),
+                after: "h2".into(),
+                reason: None,
+            }]);
+            let rollout = rollout_with_states(vec![("h2", HostRolloutState::Soaked)]);
+            assert!(predecessor_blocking(&fleet, &rollout, "h1").is_none());
+        }
+
+        #[test]
+        fn predecessor_queued_is_blocking() {
+            let fleet = fleet_with_edges(vec![Edge {
+                before: "h1".into(),
+                after: "h2".into(),
+                reason: None,
+            }]);
+            let rollout = rollout_with_states(vec![("h2", HostRolloutState::Queued)]);
+            let blocker = predecessor_blocking(&fleet, &rollout, "h1");
+            assert_eq!(blocker.as_deref(), Some("h2"));
+        }
+    }
+}
 
 /// Per-host rollout state. Canonical enum lives in `nixfleet_proto`
 /// so the CP (SQL CHECK round-trip) and the reconciler share one

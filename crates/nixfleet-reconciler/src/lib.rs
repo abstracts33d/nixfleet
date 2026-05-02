@@ -19,11 +19,6 @@ pub mod reconcile;
 pub mod rollout_state;
 pub mod verify;
 
-// Internal modules — logic lives here, extracted from reconcile::reconcile
-// after the initial TDD pass (see plan Phase E).
-pub(crate) mod budgets;
-pub(crate) mod edges;
-
 pub use action::Action;
 pub use host_state::HostRolloutState;
 pub use nixfleet_proto::FleetResolved;
