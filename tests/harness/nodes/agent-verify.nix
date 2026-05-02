@@ -5,8 +5,14 @@
 # schemaVersion=<n> hosts=<n>` — the scenario testScript greps for the
 # marker.
 #
-# TODO: retire this module when the agent inlines the verify call
-# site directly (the CLI is harness scaffolding).
+# Why this stub stays after `services.nixfleet-agent` landed: the real
+# agent binary verifies signatures internally as part of its activation
+# flow, not as an exposed CLI. The `nixfleet-verify-artifact` CLI is
+# the operator-facing offline auditor tool whose contract this scenario
+# exercises end-to-end (fetch from arbitrary HTTP source, run verify,
+# OK / VerifyError); pairing this stub with cp-signed.nix is the only
+# way to test that contract under harness mTLS. Sibling tamper /
+# freshness-refusal scenarios fork from here, not agent-real.
 {
   lib,
   pkgs,

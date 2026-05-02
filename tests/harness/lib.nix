@@ -11,13 +11,13 @@
 #   mkFleetScenario- wrap CP-on-host + N agent microVMs into a runNixOSTest
 #   mkHarnessCerts - builds a fleet CA + CP server cert + one client cert per hostname
 #
-# Note: v0.2 agent/CP skeletons (`crates/nixfleet-agent`, `crates/nixfleet-
-# control-plane`) have landed, but no NixOS service modules
-# (`services.nixfleet-{agent,control-plane}`) wrap them yet. Until those
-# modules exist, the harness keeps its curl+jq+socat scaffolding in
-# nodes/{cp,agent}.nix. Swapping in real services is a follow-up project,
-# not a comment cleanup — when those service modules land, the node
-# builders should keep the same signature.
+# Node mix: `cp-real.nix` / `agent-real.nix` use the framework's
+# `services.nixfleet-control-plane` / `services.nixfleet-agent`
+# modules and are the path for any scenario that needs real binary
+# semantics. `cp.nix` / `agent.nix` / `cp-signed.nix` /
+# `agent-verify.nix` stay as stubs because the real CP doesn't expose
+# `GET /` or `GET /canonical.json{,.sig}` (see those files' headers
+# for the per-stub rationale).
 {
   lib,
   pkgs,
@@ -149,19 +149,16 @@
     ];
   };
 
-  # CP stub runs on the host VM, not inside a microVM.
+  # CP runs on the host VM, not inside a microVM.
   #
   # Rationale: qemu user-mode networking isolates every microVM's
   # gateway (10.0.2.2) to the host VM itself — two user-net microVMs
-  # cannot reach each other directly. Running the CP stub on the host
-  # VM lets every agent microVM reach it via the shared user-net
-  # gateway without bridge/NAT plumbing.
-  #
-  # The v0.2 CP skeleton has landed in `crates/nixfleet-control-plane`,
-  # but the harness still uses socat for TLS termination because no
-  # `services.nixfleet-control-plane` NixOS module exists yet. The same
-  # host-VM placement applies once that module lands; only the systemd
-  # unit body inside nodes/cp.nix needs to change.
+  # cannot reach each other directly. Running the CP on the host VM
+  # lets every agent microVM reach it via the shared user-net gateway
+  # without bridge/NAT plumbing. The same placement applies whether
+  # the CP is the smoke stub (cp.nix), the verify-artifact stub
+  # (cp-signed.nix), or the real binary via the framework module
+  # (cp-real.nix).
   mkCpHostModule = {
     testCerts,
     resolvedJsonPath,
