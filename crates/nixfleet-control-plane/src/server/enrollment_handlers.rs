@@ -159,12 +159,32 @@ pub(super) async fn enroll(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // All checks passed — commit the nonce as seen.
-    if let Err(err) = db
+    // All checks passed — atomically commit the nonce. The plain
+    // `INSERT` (no `OR IGNORE`) returns `AlreadyRecorded` on PK
+    // conflict, which closes the TOCTOU race between the early
+    // `token_seen()` check above and this point. Two concurrent
+    // /v1/enroll requests for the same nonce will both pass
+    // `token_seen()`; only one will reach `Recorded` here. The
+    // other gets 409 CONFLICT and never mints a cert. Genuine
+    // DB failures (disk full, schema drift) return 500 instead of
+    // silently proceeding (the old behaviour) so an unrecorded
+    // nonce can never reach the cert-issuance path.
+    match db
         .tokens()
         .record_token_nonce(&req.token.claims.nonce, &req.token.claims.hostname)
     {
-        tracing::warn!(error = %err, "enroll: db record_token_nonce failed; proceeding");
+        Ok(crate::db::RecordTokenOutcome::Recorded) => {}
+        Ok(crate::db::RecordTokenOutcome::AlreadyRecorded) => {
+            tracing::warn!(
+                nonce = %req.token.claims.nonce,
+                "enroll: token replay detected at record (concurrent enroll race or retry)",
+            );
+            return Err(StatusCode::CONFLICT);
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "enroll: db record_token_nonce failed; refusing enrollment");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     // Issue the cert.

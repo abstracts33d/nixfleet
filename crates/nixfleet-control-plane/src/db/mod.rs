@@ -29,6 +29,7 @@ pub use host_dispatch_state::{
     DispatchInsert, ExpiredDispatch, HostDispatchStateRow, RolloutDbSnapshot,
 };
 pub use reports::{HostReportInsert, HostReportRow};
+pub use tokens::RecordTokenOutcome;
 
 mod embedded {
     use refinery::embed_migrations;
