@@ -109,8 +109,11 @@ in
       # host_dispatch_state (operational) — `pending_confirms` was
       # dropped by V006.
       print("step 1: inject expired host_dispatch_state row…")
+      # Quoting: open `\"` here, close `\"` after the SQL on the
+      # last line. Adjacent Python string literals concatenate, so
+      # the shell sees one big `sqlite3 path "<SQL>"` invocation.
       host.succeed(
-          "sqlite3 /var/lib/nixfleet-cp/state.db \"\""
+          "sqlite3 /var/lib/nixfleet-cp/state.db \""
           "INSERT INTO host_dispatch_state ("
           "  hostname, rollout_id, channel, wave,"
           "  target_closure_hash, target_channel_ref,"
