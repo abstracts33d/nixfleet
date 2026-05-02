@@ -219,6 +219,22 @@ async fn run_poll_loop(
         }
         ticker.tick().await;
 
+        // Retry pending boot-recovery confirm if a `last_dispatched`
+        // record still exists. The fire-and-forget activation path
+        // (ADR-011) restarts the agent alongside the system; the new
+        // agent's startup boot-recovery confirm POST commonly races
+        // the CP service restart and fails. `run_boot_recovery` is
+        // idempotent: NoRecord on cleared state, no-op; otherwise
+        // retries the retroactive confirm. Without this retry, the
+        // CP runs out the confirm deadline and rolls back a
+        // successful host (lab/2026-05-02 split-brain class).
+        if let Err(err) = check_boot_recovery(&client_handle, args).await {
+            tracing::warn!(
+                error = %err,
+                "boot-recovery retry (poll loop): non-fatal error; main loop continues",
+            );
+        }
+
         if let Some(new_client) = maybe_renew_cert(&client_handle, &reporter, args).await {
             client_handle = new_client;
             reporter.replace_client(client_handle.clone());
