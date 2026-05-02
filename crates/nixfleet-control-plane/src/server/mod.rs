@@ -57,14 +57,28 @@ const TASK_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
 /// dominates real shutdowns.
 const HTTP_DRAIN_DEADLINE: Duration = Duration::from_secs(25);
 
-/// Build the axum router. `/healthz` lives outside the `/v1` namespace
-/// so it doesn't go through the protocol-version middleware
-/// (operator status probe should always reply, regardless of header
-/// version drift). `/v1/*` is the agent-facing surface and gates on
-/// the protocol version header.
+/// Build the axum router.
+///
+/// Layout:
+/// - `/healthz` lives outside the `/v1` namespace so the operator's
+///   status probe always replies regardless of protocol-version
+///   drift.
+/// - `/v1/enroll` lives on an **anonymous** sub-router — fresh hosts
+///   bootstrap here without a client cert (it's how they get one).
+///   Body-level token signature is the only auth.
+/// - Every other `/v1/*` route lives on an **authenticated**
+///   sub-router. The `require_cn_layer` middleware rejects anonymous
+///   connections with 401 before any handler runs. Adding a new
+///   `/v1/foo` route to this sub-router automatically inherits auth.
+///
+/// Both sub-routers go through the protocol-version middleware.
 fn build_router(state: Arc<AppState>) -> Router {
     let strict = state.strict;
-    let v1_routes = Router::new()
+    let auth_state = state.clone();
+
+    let anonymous_v1 = Router::new().route("/v1/enroll", post(routes::enrollment::enroll));
+
+    let authenticated_v1 = Router::new()
         .route("/v1/whoami", get(routes::status::whoami))
         .route("/v1/agent/checkin", post(checkin_pipeline::checkin))
         .route("/v1/agent/report", post(routes::reports::report))
@@ -73,7 +87,6 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/v1/agent/closure/{hash}",
             get(routes::status::closure_proxy),
         )
-        .route("/v1/enroll", post(routes::enrollment::enroll))
         .route("/v1/agent/renew", post(routes::enrollment::renew))
         .route("/v1/channels/{name}", get(routes::status::channel_status))
         .route("/v1/hosts", get(routes::status::hosts_status))
@@ -82,6 +95,13 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/v1/rollouts/{rolloutId}/sig",
             get(routes::rollouts::signature),
         )
+        .layer(axum::middleware::from_fn(move |req, next| {
+            let s = auth_state.clone();
+            async move { middleware::require_cn_layer(s, req, next).await }
+        }));
+
+    let v1_routes = anonymous_v1
+        .merge(authenticated_v1)
         .layer(axum::middleware::from_fn(move |req, next| {
             version_layer(strict, req, next)
         }));

@@ -1,13 +1,20 @@
 //! Cross-cutting auth + protocol middleware for the v1 router.
 //!
-//! Two functions, both consumed by `serve.rs`'s router builder:
+//! Three functions, all consumed by `serve.rs`'s router builder:
 //!
-//! - [`require_cn`] — extract the verified mTLS CN from the request
-//!   extensions, enforce cert revocation when the DB is configured.
-//!   Every `/v1/*` handler that gates on identity calls this first.
-//! - [`protocol_version_middleware`] — protocol-version
-//!   header enforcement on `/v1/*`. Forward-compat: missing header
-//!   accepted with debug log; present+mismatched returns 426.
+//! - [`require_cn`] — helper that extracts the verified mTLS CN
+//!   from `PeerCertificates` and enforces cert revocation. Handlers
+//!   that need the CN value (e.g. for logging or path-binding)
+//!   call this directly.
+//! - [`require_cn_layer`] — the same auth check expressed as a tower
+//!   middleware. Applied router-wide to the authenticated `/v1/*`
+//!   subset so any future route added there is auth-by-default. The
+//!   `/v1/enroll` endpoint is on a separate anonymous sub-router.
+//! - [`protocol_version_middleware`] — protocol-version header
+//!   enforcement on `/v1/*`. Forward-compat: missing header accepted
+//!   with debug log; present+mismatched returns 426.
+
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request as HttpRequest, StatusCode};
@@ -58,6 +65,35 @@ pub(super) async fn require_cn(
     }
 
     Ok(cn)
+}
+
+/// Middleware-shaped wrapper around [`require_cn`]. Applied to every
+/// `/v1/*` route that requires authentication; rejects anonymous
+/// connections with 401 before the handler runs.
+///
+/// The `/v1/enroll` route is the only intentional exception — it
+/// bootstraps a host's first cert and lives on a separate anonymous
+/// sub-router that this layer is NOT applied to. New auth-required
+/// routes added to the authenticated sub-router get auth for free
+/// (deny-by-default); a future dev cannot accidentally ship an
+/// unauthenticated /v1/* endpoint by forgetting a handler-level call.
+///
+/// Handlers that need the CN value (path-binding, logging) still call
+/// [`require_cn`] directly. The double-check is cheap (one extension
+/// lookup + DER parse) and gives defence-in-depth: if the layer is
+/// ever removed by mistake, the handler-level checks still hold.
+pub(super) async fn require_cn_layer(
+    state: Arc<AppState>,
+    req: HttpRequest<Body>,
+    next: Next,
+) -> Result<axum::response::Response, StatusCode> {
+    let peer_certs = req
+        .extensions()
+        .get::<PeerCertificates>()
+        .cloned()
+        .unwrap_or_default();
+    require_cn(&state, &peer_certs).await?;
+    Ok(next.run(req).await)
 }
 
 /// Middleware: enforce `X-Nixfleet-Protocol: <PROTOCOL_MAJOR_VERSION>`
