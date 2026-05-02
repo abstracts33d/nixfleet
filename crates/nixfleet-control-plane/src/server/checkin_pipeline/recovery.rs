@@ -381,11 +381,22 @@ pub(super) async fn recover_soak_state_from_attestation(
 
     let stamp = std::cmp::min(now, attested);
 
+    // Use the wave the agent is attesting against, not 0. Pre-fix
+    // this hardcoded wave=0 corrupted the dispatch_history audit row
+    // for any host in wave ≥1 going through CP-rebuild recovery.
+    // wave_index is on the wire as part of EvaluatedTarget; falls
+    // back to 0 only for legacy targets that pre-date the field.
+    let recovered_wave = req
+        .last_evaluated_target
+        .as_ref()
+        .and_then(|t| t.wave_index)
+        .unwrap_or(0);
+
     if let Err(err) = db.host_dispatch_state().record_confirmed_dispatch(
         &req.hostname,
         &rollout_id,
         &host_decl.channel,
-        0,
+        recovered_wave,
         target_closure,
         &rollout_id,
         now,

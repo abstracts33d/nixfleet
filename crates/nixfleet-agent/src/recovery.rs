@@ -170,8 +170,19 @@ async fn decide_and_run(
                     let _ = checkin_state::clear_last_dispatched(state_dir);
                 }
                 comms::ConfirmOutcome::Cancelled => {
-                    let _ = activation::rollback().await;
-                    let _ = checkin_state::clear_last_dispatched(state_dir);
+                    // If rollback fails we MUST keep last_dispatched
+                    // so the next-boot recovery loop retries. Clearing
+                    // it on failure would create invisible split-brain
+                    // (CP rolled back, host still on the new closure,
+                    // agent forgot a target ever existed).
+                    if let Err(err) = activation::rollback().await {
+                        tracing::error!(
+                            error = %err,
+                            "boot-recovery: rollback FAILED — leaving last_dispatched in place for next-boot retry",
+                        );
+                    } else {
+                        let _ = checkin_state::clear_last_dispatched(state_dir);
+                    }
                 }
                 comms::ConfirmOutcome::Other => {
                     // Leave record in place.

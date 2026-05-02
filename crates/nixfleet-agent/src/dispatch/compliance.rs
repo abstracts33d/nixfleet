@@ -180,8 +180,24 @@ async fn post_runtime_gate_error<R: Reporter>(
         )
         .await;
     if enforcing {
-        let _ = nixfleet_agent::activation::rollback().await;
-        let rollback_reason = format!("compliance gate error: {reason}");
+        // §8 #2 (auditor offline chain) requires this event to reflect
+        // what actually happened on the host. Posting RollbackTriggered
+        // unconditionally — even when activation::rollback() failed —
+        // tells the auditor a falsehood. Capture the result, log the
+        // failure at error level, and qualify the reason string so the
+        // chain entry is unambiguous about the host's state.
+        let rollback_result = nixfleet_agent::activation::rollback().await;
+        let rollback_reason = match &rollback_result {
+            Ok(_) => format!("compliance gate error: {reason}"),
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    reason = %reason,
+                    "compliance gate: rollback FAILED — host left in inconsistent state",
+                );
+                format!("compliance gate error: {reason}; rollback FAILED: {err}")
+            }
+        };
         let rollback_payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
             hostname: &ctx.args.machine_id,
             rollout: Some(&ctx.target.channel_ref),

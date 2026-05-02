@@ -64,7 +64,10 @@ pub(super) async fn checkin(
         .as_ref()
         .map(|p| p.closure_hash.as_str())
         .unwrap_or("null");
-    tracing::info!(
+    // debug-level: at 50 hosts × 60s poll cadence this fires ~3000
+    // lines/hour of zero-signal traffic at info. Operators that want
+    // per-checkin visibility can RUST_LOG=nixfleet_control_plane=debug.
+    tracing::debug!(
         target: "checkin",
         hostname = %req.hostname,
         closure_hash = %req.current_generation.closure_hash,

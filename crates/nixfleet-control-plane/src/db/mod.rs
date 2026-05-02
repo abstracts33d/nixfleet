@@ -579,4 +579,44 @@ mod tests {
             "sha256-shaped rollout_id leaves channel empty (default)"
         );
     }
+
+    /// V007 drops the V1 `schema_placeholder` table. It carried no
+    /// application data and was never read; this test pins that the
+    /// drop happens cleanly without disturbing other tables.
+    #[test]
+    fn v007_drops_schema_placeholder() {
+        let conn = Connection::open_in_memory().unwrap();
+        let migrations = [
+            include_str!("../../migrations/V1__initial.sql"),
+            include_str!("../../migrations/V002__phase4_init.sql"),
+            include_str!("../../migrations/V003__host_rollout_state.sql"),
+            include_str!("../../migrations/V004__host_reports.sql"),
+            include_str!("../../migrations/V005__pending_confirms_channel.sql"),
+            include_str!("../../migrations/V006__split_pending_confirms.sql"),
+        ];
+        for m in &migrations {
+            conn.execute_batch(m).unwrap();
+        }
+        assert_table_exists(&conn, "schema_placeholder");
+
+        let v007 = include_str!("../../migrations/V007__drop_schema_placeholder.sql");
+        conn.execute_batch(v007).unwrap();
+
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='schema_placeholder'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "schema_placeholder must not exist after V007");
+
+        // Other tables untouched.
+        assert_table_exists(&conn, "token_replay");
+        assert_table_exists(&conn, "cert_revocations");
+        assert_table_exists(&conn, "host_dispatch_state");
+        assert_table_exists(&conn, "dispatch_history");
+        assert_table_exists(&conn, "host_rollout_state");
+        assert_table_exists(&conn, "host_reports");
+    }
 }
