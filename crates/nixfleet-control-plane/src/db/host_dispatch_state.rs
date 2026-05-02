@@ -145,6 +145,16 @@ impl HostDispatchState<'_> {
     /// cancelled, deadline already expired, agent confirming twice,
     /// or — post-#81 — the host has been overwritten by a newer
     /// dispatch).
+    ///
+    /// The `confirm_deadline > datetime('now')` clause is load-bearing:
+    /// without it, late confirms whose deadline has already passed
+    /// would still flip pending → confirmed, sneaking past the
+    /// rollback contract. The pre-#81 `pending_confirms.confirm`
+    /// carried the same gate; the table split dropped it (silent
+    /// regression caught by `fleet-harness-deadline-expiry`). The
+    /// orphan-confirm-recovery path is the legitimate "late confirm
+    /// from a CP-rebuild" escape hatch — it re-checks the closure
+    /// hash against the verified target before synthesizing a row.
     pub fn confirm(&self, hostname: &str, rollout_id: &str) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let n = guard
@@ -154,7 +164,8 @@ impl HostDispatchState<'_> {
                      state = ?3
                  WHERE hostname = ?1
                    AND rollout_id = ?2
-                   AND state = ?4",
+                   AND state = ?4
+                   AND datetime(confirm_deadline) > datetime('now')",
                 params![
                     hostname,
                     rollout_id,
@@ -547,6 +558,38 @@ mod tests {
         let row = db.host_dispatch_state().host_state("ohm").unwrap().unwrap();
         assert_eq!(row.state, "confirmed");
         assert!(row.confirmed_at.is_some());
+    }
+
+    #[test]
+    fn confirm_no_op_when_deadline_passed() {
+        // Regression: pre-#81 `pending_confirms.confirm` filtered on
+        // `confirm_deadline > now`; the table split silently dropped
+        // the gate, letting late confirms flip pending → confirmed
+        // and skip the rollback contract. Caught only by
+        // fleet-harness-deadline-expiry.
+        let db = fresh_db();
+        let past_deadline = Utc::now() - chrono::Duration::seconds(30);
+        db.host_dispatch_state()
+            .record_dispatch(&dispatch_insert(
+                "ohm",
+                "stable@expired",
+                "system-r1",
+                past_deadline,
+            ))
+            .unwrap();
+        let n = db
+            .host_dispatch_state()
+            .confirm("ohm", "stable@expired")
+            .unwrap();
+        assert_eq!(
+            n, 0,
+            "confirm must not flip a pending row whose deadline has passed",
+        );
+        let row = db.host_dispatch_state().host_state("ohm").unwrap().unwrap();
+        assert_eq!(
+            row.state, "pending",
+            "row stays pending until rollback_timer or 410-handler transitions it",
+        );
     }
 
     #[test]

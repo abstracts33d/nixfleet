@@ -154,6 +154,26 @@ pub(super) async fn confirm(
         if recovery::try_recover_orphan_confirm(&state, &req).await {
             // Fall through to the success log + 204 path.
         } else {
+            // Stamp the operational row terminal-rolled-back inline
+            // before returning 410. The rollback_timer (30s tick)
+            // would do the same on its next pass, but doing it here
+            // means the agent's local-rollback decision (driven by
+            // the 410) and the CP's view of the host converge in a
+            // single round-trip rather than racing the timer.
+            //
+            // Best-effort: a write failure logs and falls through to
+            // 410 anyway — the timer will catch up.
+            if let Err(err) = db.host_dispatch_state().mark_rolled_back(&[(
+                req.hostname.clone(),
+                req.rollout.clone(),
+            )]) {
+                tracing::warn!(
+                    hostname = %req.hostname,
+                    rollout = %req.rollout,
+                    error = %err,
+                    "confirm-410: inline mark_rolled_back failed; rollback_timer will retry",
+                );
+            }
             tracing::info!(
                 hostname = %req.hostname,
                 rollout = %req.rollout,
