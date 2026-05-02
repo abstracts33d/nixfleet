@@ -95,7 +95,6 @@ in
     timeout = 300;
     testScript = ''
       import json
-      import subprocess
 
       start_all()
 
