@@ -23,6 +23,42 @@
   trustConfig = import ./_trust-json.nix {trust = config.nixfleet.trust;};
   trustJson = pkgs.writers.writeJSON "trust.json" trustConfig;
 
+  # Build the CLI flags for one signed-sidecar polling source. The
+  # three sidecars (channel-refs / revocations / rollouts) share an
+  # identical "artifact + signature + optional token, with optional
+  # fallback to channel-refs's token" shape; this helper is the
+  # single source of truth for that wiring. Adding a fourth signed
+  # sidecar (audit-log or probe-signature, per the rule-of-three
+  # threshold) is now a 4-line addition rather than a 28-line copy-
+  # paste.
+  mkPollingSource = {
+    artifactFlag,
+    signatureFlag,
+    tokenFlag,
+    artifact,
+    signature,
+    tokenFile,
+    tokenFallback ? null,
+  }: let
+    enabled = artifact != null && signature != null;
+    effectiveToken =
+      if tokenFile != null
+      then tokenFile
+      else tokenFallback;
+  in
+    lib.optionals enabled (
+      [
+        artifactFlag
+        (lib.escapeShellArg artifact)
+        signatureFlag
+        (lib.escapeShellArg signature)
+      ]
+      ++ lib.optionals (effectiveToken != null) [
+        tokenFlag
+        (lib.escapeShellArg effectiveToken)
+      ]
+    );
+
   # First-deploy bootstrap for observed.json — laid down via
   # systemd-tmpfiles `C` (copy only if path does not exist) so the
   # reconciler's first tick has a parseable file even before the
@@ -553,77 +589,32 @@ in {
               "--rollouts-dir"
               (lib.escapeShellArg cfg.rolloutsDir)
             ]
-            ++ lib.optionals
-            (
-              cfg.channelRefsSource.artifactUrl
-              != null
-              && cfg.channelRefsSource.signatureUrl != null
-            ) (
-              [
-                "--channel-refs-artifact-url"
-                (lib.escapeShellArg cfg.channelRefsSource.artifactUrl)
-                "--channel-refs-signature-url"
-                (lib.escapeShellArg cfg.channelRefsSource.signatureUrl)
-              ]
-              ++ lib.optionals (cfg.channelRefsSource.tokenFile != null) [
-                "--channel-refs-token-file"
-                (lib.escapeShellArg cfg.channelRefsSource.tokenFile)
-              ]
-            )
-            ++ lib.optionals
-            (
-              cfg.revocationsSource.artifactUrl
-              != null
-              && cfg.revocationsSource.signatureUrl != null
-            ) (
-              [
-                "--revocations-artifact-url"
-                (lib.escapeShellArg cfg.revocationsSource.artifactUrl)
-                "--revocations-signature-url"
-                (lib.escapeShellArg cfg.revocationsSource.signatureUrl)
-              ]
-              ++ lib.optionals
-              (
-                cfg.revocationsSource.tokenFile
-                != null
-                || cfg.channelRefsSource.tokenFile != null
-              ) [
-                "--revocations-token-file"
-                (lib.escapeShellArg
-                  (
-                    if cfg.revocationsSource.tokenFile != null
-                    then cfg.revocationsSource.tokenFile
-                    else cfg.channelRefsSource.tokenFile
-                  ))
-              ]
-            )
-            ++ lib.optionals
-            (
-              cfg.rolloutsSource.artifactUrlTemplate
-              != null
-              && cfg.rolloutsSource.signatureUrlTemplate != null
-            ) (
-              [
-                "--rollouts-source-artifact-url-template"
-                (lib.escapeShellArg cfg.rolloutsSource.artifactUrlTemplate)
-                "--rollouts-source-signature-url-template"
-                (lib.escapeShellArg cfg.rolloutsSource.signatureUrlTemplate)
-              ]
-              ++ lib.optionals
-              (
-                cfg.rolloutsSource.tokenFile
-                != null
-                || cfg.channelRefsSource.tokenFile != null
-              ) [
-                "--rollouts-source-token-file"
-                (lib.escapeShellArg
-                  (
-                    if cfg.rolloutsSource.tokenFile != null
-                    then cfg.rolloutsSource.tokenFile
-                    else cfg.channelRefsSource.tokenFile
-                  ))
-              ]
-            )
+            ++ mkPollingSource {
+              artifactFlag = "--channel-refs-artifact-url";
+              signatureFlag = "--channel-refs-signature-url";
+              tokenFlag = "--channel-refs-token-file";
+              artifact = cfg.channelRefsSource.artifactUrl;
+              signature = cfg.channelRefsSource.signatureUrl;
+              tokenFile = cfg.channelRefsSource.tokenFile;
+            }
+            ++ mkPollingSource {
+              artifactFlag = "--revocations-artifact-url";
+              signatureFlag = "--revocations-signature-url";
+              tokenFlag = "--revocations-token-file";
+              artifact = cfg.revocationsSource.artifactUrl;
+              signature = cfg.revocationsSource.signatureUrl;
+              tokenFile = cfg.revocationsSource.tokenFile;
+              tokenFallback = cfg.channelRefsSource.tokenFile;
+            }
+            ++ mkPollingSource {
+              artifactFlag = "--rollouts-source-artifact-url-template";
+              signatureFlag = "--rollouts-source-signature-url-template";
+              tokenFlag = "--rollouts-source-token-file";
+              artifact = cfg.rolloutsSource.artifactUrlTemplate;
+              signature = cfg.rolloutsSource.signatureUrlTemplate;
+              tokenFile = cfg.rolloutsSource.tokenFile;
+              tokenFallback = cfg.channelRefsSource.tokenFile;
+            }
           );
           Restart = "always";
           RestartSec = 10;
