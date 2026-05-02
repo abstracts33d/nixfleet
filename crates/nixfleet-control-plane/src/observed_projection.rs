@@ -132,29 +132,29 @@ mod tests {
 
     #[test]
     fn host_rollout_state_check_matches_enum() {
-        // Drift detector: every value in the V003 CHECK list must
-        // be parseable by `HostRolloutState::from_db_str`. If the SQL
-        // gets a new value without the enum being extended (or
-        // vice versa), the projection's `Failed` fallback fires
-        // for live rows and silently halts rollouts. Catch it at
-        // test time instead.
-        let migration = include_str!("../migrations/V003__host_rollout_state.sql");
+        // Drift detector: every value in the V001 `host_rollout_state`
+        // CHECK list must be parseable by
+        // `HostRolloutState::from_db_str`. If the SQL gets a new value
+        // without the enum being extended (or vice versa), the
+        // projection's `Failed` fallback fires for live rows and
+        // silently halts rollouts. Catch it at test time instead.
+        let schema = include_str!("../migrations/V001__schema.sql");
         // Extract the parenthesised list after `host_state IN (`.
         let needle = "host_state IN (";
-        let start = migration.find(needle).expect("CHECK clause present");
-        let after = &migration[start + needle.len()..];
+        let start = schema.find(needle).expect("CHECK clause present");
+        let after = &schema[start + needle.len()..];
         let end = after.find(')').expect("CHECK clause closes");
         let list = &after[..end];
         let values: Vec<&str> = list
             .split(',')
-            .map(|s| s.trim().trim_matches('\'').trim())
-            .filter(|s| !s.is_empty())
+            .map(|s: &str| s.trim().trim_matches('\'').trim())
+            .filter(|s: &&str| !s.is_empty())
             .collect();
         assert!(!values.is_empty(), "expected ≥1 value in CHECK clause");
         for v in &values {
             HostRolloutState::from_db_str(v).unwrap_or_else(|_| {
                 panic!(
-                    "V003 CHECK list value {v:?} is not in HostRolloutState. \
+                    "V001 CHECK list value {v:?} is not in HostRolloutState. \
                      Either extend the enum or remove the value from the CHECK."
                 )
             });
