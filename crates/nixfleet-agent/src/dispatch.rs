@@ -32,6 +32,34 @@ use nixfleet_agent::evidence_signer::EvidenceSigner;
 
 use super::Args;
 
+/// Sign `payload` and surface signing failures at `error!` so the
+/// silent-fail mode is observable in operator dashboards.
+///
+/// Returns `None` if the signer wasn't configured (operator opted out
+/// of signed evidence) OR if signing failed at runtime. The two cases
+/// are distinguished by the log: a configured-but-failed sign emits an
+/// `error!` line with the cause; a not-configured signer emits
+/// nothing. Without this helper the call sites used `.sign(...).ok()`
+/// which collapsed the two cases into "just no signature" — auditors
+/// reading the resulting unsigned event couldn't tell whether the
+/// agent was meant to be signing and silently broke.
+fn try_sign<T: serde::Serialize>(
+    signer: &EvidenceSigner,
+    payload: &T,
+) -> Option<String> {
+    match signer.sign(payload) {
+        Ok(sig) => Some(sig),
+        Err(err) => {
+            tracing::error!(
+                error = ?err,
+                "evidence_signer.sign failed; posting unsigned event \
+                 (signing was configured, runtime failure)",
+            );
+            None
+        }
+    }
+}
+
 /// Shared context for every `DispatchHandler` impl: the target being
 /// acted on, the wire reporter, the agent CLI args (hostname,
 /// state-dir, …) and the optional evidence signer.
@@ -96,7 +124,7 @@ pub(crate) async fn process_dispatch_target(
             let signature = evidence_signer
                 .as_ref()
                 .as_ref()
-                .and_then(|s| s.sign(&stale_payload).ok());
+                .and_then(|s| try_sign(s, &stale_payload));
             reporter
                 .post_report(
                     Some(&target.channel_ref),
@@ -351,7 +379,7 @@ async fn post_compliance_failures<R: Reporter>(
             .evidence_signer
             .as_ref()
             .as_ref()
-            .and_then(|s| s.sign(&signed_payload).ok());
+            .and_then(|s| try_sign(s, &signed_payload));
         ctx.reporter
             .post_report(
                 Some(&ctx.target.channel_ref),
@@ -406,7 +434,7 @@ async fn post_runtime_gate_error<R: Reporter>(
         .evidence_signer
         .as_ref()
         .as_ref()
-        .and_then(|s| s.sign(&signed_payload).ok());
+        .and_then(|s| try_sign(s, &signed_payload));
     ctx.reporter
         .post_report(
             Some(&ctx.target.channel_ref),
@@ -431,7 +459,7 @@ async fn post_runtime_gate_error<R: Reporter>(
             .evidence_signer
             .as_ref()
             .as_ref()
-            .and_then(|s| s.sign(&rollback_payload).ok());
+            .and_then(|s| try_sign(s, &rollback_payload));
         ctx.reporter
             .post_report(
                 Some(&ctx.target.channel_ref),
@@ -509,7 +537,7 @@ pub(crate) async fn handle_cp_rollback_signal(
     let signature = evidence_signer
         .as_ref()
         .as_ref()
-        .and_then(|s| s.sign(&rollback_payload).ok());
+        .and_then(|s| try_sign(s, &rollback_payload));
     reporter
         .post_report(
             Some(&rb.rollout),
@@ -542,7 +570,7 @@ async fn handle_cp_cancellation<R: Reporter>(rollout: &str, ctx: &DispatchCtx<'_
         .evidence_signer
         .as_ref()
         .as_ref()
-        .and_then(|s| s.sign(&rollback_payload).ok());
+        .and_then(|s| try_sign(s, &rollback_payload));
     ctx.reporter
         .post_report(
             Some(rollout),
@@ -607,7 +635,7 @@ impl DispatchHandler for RealiseFailedHandler {
             .evidence_signer
             .as_ref()
             .as_ref()
-            .and_then(|s| s.sign(&payload).ok());
+            .and_then(|s| try_sign(s, &payload));
         ctx.reporter
             .post_report(
                 Some(&ctx.target.channel_ref),
@@ -644,7 +672,7 @@ impl DispatchHandler for ClosureSignatureMismatchHandler {
             .evidence_signer
             .as_ref()
             .as_ref()
-            .and_then(|s| s.sign(&payload).ok());
+            .and_then(|s| try_sign(s, &payload));
         ctx.reporter
             .post_report(
                 Some(&ctx.target.channel_ref),
@@ -684,7 +712,7 @@ fn compose_rollback_followup_event<R: Reporter>(
                 .evidence_signer
                 .as_ref()
                 .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
+                .and_then(|s| try_sign(s, &payload));
             ReportEvent::RollbackTriggered {
                 reason: success_reason,
                 signature,
@@ -709,7 +737,7 @@ fn compose_rollback_followup_event<R: Reporter>(
                 .evidence_signer
                 .as_ref()
                 .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
+                .and_then(|s| try_sign(s, &payload));
             ReportEvent::ActivationFailed {
                 phase: phase_str,
                 exit_code: exit,
@@ -733,7 +761,7 @@ fn compose_rollback_followup_event<R: Reporter>(
                 .evidence_signer
                 .as_ref()
                 .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
+                .and_then(|s| try_sign(s, &payload));
             ReportEvent::ActivationFailed {
                 phase: phase_str,
                 exit_code: None,
@@ -769,7 +797,7 @@ impl DispatchHandler for SwitchFailedHandler {
                 .evidence_signer
                 .as_ref()
                 .as_ref()
-                .and_then(|s| s.sign(&payload).ok());
+                .and_then(|s| try_sign(s, &payload));
             ctx.reporter
                 .post_report(
                     Some(&ctx.target.channel_ref),
@@ -826,7 +854,7 @@ impl DispatchHandler for VerifyMismatchHandler {
             .evidence_signer
             .as_ref()
             .as_ref()
-            .and_then(|s| s.sign(&payload).ok());
+            .and_then(|s| try_sign(s, &payload));
         ctx.reporter
             .post_report(
                 Some(&ctx.target.channel_ref),
@@ -899,7 +927,7 @@ impl DispatchHandler for ManifestErrorHandler {
                     .evidence_signer
                     .as_ref()
                     .as_ref()
-                    .and_then(|s| s.sign(&payload).ok());
+                    .and_then(|s| try_sign(s, &payload));
                 ReportEvent::ManifestMissing {
                     rollout_id: rollout_id.to_string(),
                     reason,
@@ -917,7 +945,7 @@ impl DispatchHandler for ManifestErrorHandler {
                     .evidence_signer
                     .as_ref()
                     .as_ref()
-                    .and_then(|s| s.sign(&payload).ok());
+                    .and_then(|s| try_sign(s, &payload));
                 ReportEvent::ManifestVerifyFailed {
                     rollout_id: rollout_id.to_string(),
                     reason,
@@ -935,7 +963,7 @@ impl DispatchHandler for ManifestErrorHandler {
                     .evidence_signer
                     .as_ref()
                     .as_ref()
-                    .and_then(|s| s.sign(&payload).ok());
+                    .and_then(|s| try_sign(s, &payload));
                 ReportEvent::ManifestMismatch {
                     rollout_id: rollout_id.to_string(),
                     reason,
