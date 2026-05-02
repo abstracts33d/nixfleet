@@ -255,15 +255,31 @@ in
       stamp_deadline = time.monotonic() + 15
       op_state = ""
       audit_terminal = ""
+      # Inline single-line SQL rather than heredoc here — nixosTest
+      # dedents the testScript by the outermost indentation level
+      # (6 spaces). Heredocs at function-body depth (e.g. the step-2
+      # INSERTs above) land at column 0 after dedent, which bash
+      # accepts as the closing delimiter; heredocs nested inside this
+      # while loop sit at 10-space depth → column 4 after dedent →
+      # bash ignores the indented `SQL` and treats the entire heredoc
+      # body as content, then sqlite3 fails parsing the literal `SQL`.
+      op_q = (
+          f"SELECT state FROM host_dispatch_state "
+          f"WHERE hostname='${agentName}' "
+          f"AND rollout_id='{injected_rollout_id}';"
+      )
+      audit_q = (
+          f"SELECT IFNULL(terminal_state, 'NULL') FROM dispatch_history "
+          f"WHERE hostname='${agentName}' "
+          f"AND rollout_id='{injected_rollout_id}';"
+      )
       while time.monotonic() < stamp_deadline:
-          op_state = host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-          SELECT state FROM host_dispatch_state
-          WHERE hostname='${agentName}' AND rollout_id='{injected_rollout_id}';
-          SQL""").strip()
-          audit_terminal = host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-          SELECT IFNULL(terminal_state, 'NULL') FROM dispatch_history
-          WHERE hostname='${agentName}' AND rollout_id='{injected_rollout_id}';
-          SQL""").strip()
+          op_state = host.succeed(
+              f'sqlite3 /var/lib/nixfleet-cp/state.db "{op_q}"'
+          ).strip()
+          audit_terminal = host.succeed(
+              f'sqlite3 /var/lib/nixfleet-cp/state.db "{audit_q}"'
+          ).strip()
           if op_state == "rolled-back" and audit_terminal == "rolled-back":
               break
           time.sleep(2)
