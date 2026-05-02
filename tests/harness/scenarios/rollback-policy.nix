@@ -151,8 +151,15 @@ in
       # asserts match exactly.
       injected_rollout_id = "stable@injected-failure"
       print(f"step 2: injecting Failed state for ${agentName}@{injected_rollout_id}")
+      # `host_dispatch_state.hostname` is PRIMARY KEY (one row per
+      # host post-#81). The agent's first checkin already triggered
+      # the orphan-confirm/Bug-B recovery path which UPSERT'd a row
+      # for ${agentName}; a plain INSERT here would trip the UNIQUE
+      # constraint. INSERT OR REPLACE ensures the injected `pending`
+      # row wins, which is the state shape `compute_rollback_signal`
+      # needs to fire.
       host.succeed(f"""sqlite3 /var/lib/nixfleet-cp/state.db <<'SQL'
-      INSERT INTO host_dispatch_state (
+      INSERT OR REPLACE INTO host_dispatch_state (
         hostname, rollout_id, channel, wave, target_closure_hash,
         target_channel_ref, state, dispatched_at, confirm_deadline
       ) VALUES (
