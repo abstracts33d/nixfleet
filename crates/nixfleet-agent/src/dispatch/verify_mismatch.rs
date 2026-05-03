@@ -5,7 +5,8 @@ use nixfleet_proto::agent_wire::ReportEvent;
 
 use nixfleet_agent::comms::Reporter;
 
-use super::handler::{try_sign, DispatchCtx, DispatchHandler};
+use nixfleet_agent::evidence_signer::try_sign;
+use super::handler::{DispatchCtx, DispatchHandler};
 
 /// Shared by `SwitchFailedHandler` + `VerifyMismatchHandler`; arms map:
 /// success → `RollbackTriggered`, partial-fail → `ActivationFailed{prefix/poll}`,

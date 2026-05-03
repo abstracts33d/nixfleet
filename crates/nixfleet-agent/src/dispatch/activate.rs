@@ -10,7 +10,8 @@ use nixfleet_agent::evidence_signer::EvidenceSigner;
 use crate::Args;
 
 use super::confirm::handle_fired_and_polled;
-use super::handler::{try_sign, DispatchCtx, DispatchHandler};
+use nixfleet_agent::evidence_signer::try_sign;
+use super::handler::{DispatchCtx, DispatchHandler};
 use super::manifest_error::ManifestErrorHandler;
 use super::realise_failed::{ClosureSignatureMismatchHandler, RealiseFailedHandler};
 use super::verify_mismatch::{SwitchFailedHandler, VerifyMismatchHandler};
@@ -120,6 +121,7 @@ pub(crate) async fn process_dispatch_target(
         closure_hash: target.closure_hash.clone(),
         channel_ref: target.channel_ref.clone(),
         rollout_id: target.rollout_id.clone(),
+        compliance_mode: target.compliance_mode.clone(),
         dispatched_at: chrono::Utc::now(),
     };
     if let Err(err) =

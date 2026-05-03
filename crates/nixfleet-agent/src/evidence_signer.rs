@@ -79,6 +79,22 @@ pub fn default_ssh_host_key_path() -> PathBuf {
     PathBuf::from(DEFAULT_SSH_HOST_KEY_PATH)
 }
 
+/// Returns `None` for both "not configured" and "configured but failed";
+/// the runtime-failure path emits an `error!` so auditors can distinguish them.
+pub fn try_sign<T: Serialize>(signer: &EvidenceSigner, payload: &T) -> Option<String> {
+    match signer.sign(payload) {
+        Ok(sig) => Some(sig),
+        Err(err) => {
+            tracing::error!(
+                error = ?err,
+                "evidence_signer.sign failed; posting unsigned event \
+                 (signing was configured, runtime failure)",
+            );
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

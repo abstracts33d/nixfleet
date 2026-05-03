@@ -4,8 +4,12 @@ use chrono::Utc;
 use nixfleet_agent::checkin_state::{
     self, read_last_confirmed, read_last_dispatched, write_last_dispatched, LastDispatchRecord,
 };
-use nixfleet_agent::recovery::run_boot_recovery;
+use nixfleet_agent::comms::Reporter;
+use nixfleet_agent::evidence_signer::EvidenceSigner;
+use nixfleet_agent::recovery::{run_boot_recovery, GateInputs};
+use nixfleet_proto::agent_wire::ReportEvent;
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
@@ -23,7 +27,30 @@ fn record(closure: &str) -> LastDispatchRecord {
         closure_hash: closure.to_string(),
         channel_ref: "stable@deadbeef".to_string(),
         rollout_id: Some("stable@deadbeef".to_string()),
+        compliance_mode: None,
         dispatched_at: Utc::now(),
+    }
+}
+
+#[derive(Default)]
+struct NoopReporter {
+    _calls: Mutex<Vec<(Option<String>, ReportEvent)>>,
+}
+impl Reporter for NoopReporter {
+    async fn post_report(&self, rollout: Option<&str>, event: ReportEvent) {
+        self._calls.lock().unwrap().push((rollout.map(String::from), event));
+    }
+}
+
+/// Suppress the runtime gate so these tests focus on the confirm-path behaviour.
+fn disabled_gate<'a>(
+    reporter: &'a NoopReporter,
+    signer: &'a Arc<Option<EvidenceSigner>>,
+) -> GateInputs<'a, NoopReporter> {
+    GateInputs {
+        reporter,
+        evidence_signer: signer,
+        cli_default_mode: Some("disabled"),
     }
 }
 
@@ -41,12 +68,15 @@ async fn posted_confirm_acknowledged_clears_dispatch_writes_confirmed() {
         .mount(&server)
         .await;
 
+    let reporter = NoopReporter::default();
+    let signer: Arc<Option<EvidenceSigner>> = Arc::new(None);
     run_boot_recovery(
         &plain_client(),
         dir.path(),
         &server.uri(),
         "test-host",
         Some(closure.to_string()),
+        disabled_gate(&reporter, &signer),
     )
     .await
     .expect("recovery returned Ok");
@@ -80,12 +110,15 @@ async fn posted_confirm_410_with_failing_rollback_preserves_dispatch() {
         .await;
 
     // LOADBEARING: failed rollback must KEEP last_dispatched — clearing on failure splits brain.
+    let reporter = NoopReporter::default();
+    let signer: Arc<Option<EvidenceSigner>> = Arc::new(None);
     run_boot_recovery(
         &plain_client(),
         dir.path(),
         &server.uri(),
         "test-host",
         Some(closure.to_string()),
+        disabled_gate(&reporter, &signer),
     )
     .await
     .expect("recovery returned Ok despite synthetic rollback failure");
@@ -127,12 +160,15 @@ async fn confirm_request_body_carries_dispatched_record_fields() {
         .mount(&server)
         .await;
 
+    let reporter = NoopReporter::default();
+    let signer: Arc<Option<EvidenceSigner>> = Arc::new(None);
     run_boot_recovery(
         &plain_client(),
         dir.path(),
         &server.uri(),
         "shape-host",
         Some(closure.to_string()),
+        disabled_gate(&reporter, &signer),
     )
     .await
     .expect("recovery Ok");
@@ -150,12 +186,15 @@ async fn no_record_skips_post_entirely() {
         .mount(&server)
         .await;
 
+    let reporter = NoopReporter::default();
+    let signer: Arc<Option<EvidenceSigner>> = Arc::new(None);
     run_boot_recovery(
         &plain_client(),
         dir.path(),
         &server.uri(),
         "test-host",
         Some("any-closure".to_string()),
+        disabled_gate(&reporter, &signer),
     )
     .await
     .expect("recovery Ok");

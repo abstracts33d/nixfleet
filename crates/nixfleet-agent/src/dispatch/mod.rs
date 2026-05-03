@@ -2,7 +2,7 @@
 //! Side-effects route through `&impl Reporter` for unit-testability.
 
 mod activate;
-mod compliance;
+pub(crate) mod compliance;
 mod confirm;
 mod handler;
 mod manifest_error;

@@ -83,7 +83,13 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     // Best-effort: next checkin re-converges via dispatch.
-    if let Err(err) = check_boot_recovery(&client, &args).await {
+    let recovery_reporter = comms::ReqwestReporter::new(
+        client.clone(),
+        args.control_plane_url.clone(),
+        args.machine_id.clone(),
+        AGENT_VERSION,
+    );
+    if let Err(err) = check_boot_recovery(&client, &args, &recovery_reporter, &evidence_signer).await {
         tracing::warn!(
             error = %err,
             "boot-recovery path errored (non-fatal); main loop will re-converge",
@@ -194,7 +200,7 @@ async fn run_poll_loop(
         ticker.tick().await;
 
         // LOADBEARING: retry boot-recovery every tick — startup POST races CP restart; missed confirm rolls back healthy host.
-        if let Err(err) = check_boot_recovery(&client_handle, args).await {
+        if let Err(err) = check_boot_recovery(&client_handle, args, &reporter, &evidence_signer).await {
             tracing::warn!(
                 error = %err,
                 "boot-recovery retry (poll loop): non-fatal error; main loop continues",
@@ -346,7 +352,12 @@ async fn send_checkin(
 
 /// Closes the timing window where fire-and-forget activation self-kills
 /// the agent mid-poll: matching dispatch record + live closure → retroactive confirm.
-async fn check_boot_recovery(client: &reqwest::Client, args: &Args) -> anyhow::Result<()> {
+async fn check_boot_recovery(
+    client: &reqwest::Client,
+    args: &Args,
+    reporter: &comms::ReqwestReporter,
+    evidence_signer: &std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>>,
+) -> anyhow::Result<()> {
     let current = match checkin_state::current_closure_hash() {
         Ok(c) => Some(c),
         Err(err) => {
@@ -363,6 +374,11 @@ async fn check_boot_recovery(client: &reqwest::Client, args: &Args) -> anyhow::R
         &args.control_plane_url,
         &args.machine_id,
         current,
+        nixfleet_agent::recovery::GateInputs {
+            reporter,
+            evidence_signer,
+            cli_default_mode: args.compliance_gate_mode.as_deref(),
+        },
     )
     .await
 }

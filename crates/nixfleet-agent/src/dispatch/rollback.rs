@@ -7,7 +7,7 @@ use nixfleet_agent::comms::Reporter;
 
 use crate::Args;
 
-use super::handler::try_sign;
+use nixfleet_agent::evidence_signer::try_sign;
 
 pub(crate) async fn handle_cp_rollback_signal(
     rb: &nixfleet_proto::agent_wire::RollbackSignal,

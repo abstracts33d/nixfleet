@@ -267,6 +267,253 @@ pub fn default_evidence_path() -> PathBuf {
     PathBuf::from(DEFAULT_EVIDENCE_PATH)
 }
 
+/// CP channel policy beats CLI default; falls back to auto-detect.
+pub async fn resolve_runtime_gate_mode(
+    persisted_mode: Option<&str>,
+    cli_default: Option<&str>,
+) -> GateMode {
+    let cli_default_mode = cli_default
+        .filter(|s| !s.is_empty() && *s != "auto")
+        .map(GateMode::from_wire_str);
+    let input_mode = persisted_mode
+        .filter(|s| !s.is_empty() && *s != "auto")
+        .map(GateMode::from_wire_str)
+        .or(cli_default_mode);
+    resolve_mode(input_mode).await
+}
+
+/// Returns `true` iff confirm must be skipped (host stays rolled back).
+pub async fn apply_gate_outcome<R: crate::comms::Reporter>(
+    gate_outcome: &GateOutcome,
+    resolved_mode: GateMode,
+    machine_id: &str,
+    channel_ref: &str,
+    reporter: &R,
+    evidence_signer: &std::sync::Arc<Option<crate::evidence_signer::EvidenceSigner>>,
+    activation_completed_at: DateTime<Utc>,
+) -> bool {
+    match gate_outcome {
+        GateOutcome::Pass { .. } => {
+            tracing::info!("compliance gate: PASS (all controls compliant)");
+            false
+        }
+        GateOutcome::Skipped { reason } => {
+            tracing::debug!(%reason, ?resolved_mode, "compliance gate: skipped");
+            false
+        }
+        GateOutcome::Failures { evidence, failures } => {
+            post_compliance_failures(
+                failures,
+                evidence,
+                machine_id,
+                channel_ref,
+                reporter,
+                evidence_signer,
+            )
+            .await;
+            // LOADBEARING: enforce mode must actually enforce — per-control
+            // events alone leave the host on a non-compliant closure.
+            if resolved_mode == GateMode::Enforce {
+                let reason = compliance_failure_reason(failures);
+                tracing::error!(
+                    %reason,
+                    failure_count = failures.len(),
+                    "compliance gate: failures — refusing confirm + rolling back (enforce mode)",
+                );
+                trigger_rollback_with_reason(
+                    machine_id,
+                    channel_ref,
+                    reporter,
+                    evidence_signer,
+                    &reason,
+                )
+                .await;
+                true
+            } else {
+                false
+            }
+        }
+        GateOutcome::GateError {
+            reason,
+            collector_exit_code,
+            evidence_collected_at,
+        } => {
+            post_runtime_gate_error(
+                reason,
+                *collector_exit_code,
+                *evidence_collected_at,
+                resolved_mode,
+                machine_id,
+                channel_ref,
+                reporter,
+                evidence_signer,
+                activation_completed_at,
+            )
+            .await
+        }
+    }
+}
+
+fn compliance_failure_reason(failures: &[ControlEvidence]) -> String {
+    let ids: Vec<&str> = failures.iter().map(|c| c.control.as_str()).collect();
+    format!("compliance failures: {}", ids.join(", "))
+}
+
+async fn post_compliance_failures<R: crate::comms::Reporter>(
+    failures: &[ControlEvidence],
+    evidence: &ComplianceEvidence,
+    machine_id: &str,
+    channel_ref: &str,
+    reporter: &R,
+    evidence_signer: &std::sync::Arc<Option<crate::evidence_signer::EvidenceSigner>>,
+) {
+    use crate::evidence_signer::{try_sign, ComplianceFailureSignedPayload, sha256_jcs};
+    use nixfleet_proto::agent_wire::ReportEvent;
+    tracing::warn!(
+        count = failures.len(),
+        "compliance gate: failures — posting per-control events",
+    );
+    for ctrl in failures {
+        let articles = flatten_framework_articles(&ctrl.framework_articles);
+        let snippet = truncate_evidence_snippet(&ctrl.checks);
+        let snippet_sha = sha256_jcs(&snippet).unwrap_or_default();
+        let signed_payload = ComplianceFailureSignedPayload {
+            hostname: machine_id,
+            rollout: Some(channel_ref),
+            control_id: &ctrl.control,
+            status: &ctrl.status,
+            framework_articles: &articles,
+            evidence_collected_at: evidence.timestamp,
+            evidence_snippet_sha256: snippet_sha,
+        };
+        let signature = evidence_signer
+            .as_ref()
+            .as_ref()
+            .and_then(|s| try_sign(s, &signed_payload));
+        reporter
+            .post_report(
+                Some(channel_ref),
+                ReportEvent::ComplianceFailure {
+                    control_id: ctrl.control.clone(),
+                    status: ctrl.status.clone(),
+                    framework_articles: articles,
+                    evidence_snippet: Some(snippet),
+                    evidence_collected_at: evidence.timestamp,
+                    signature,
+                },
+            )
+            .await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn post_runtime_gate_error<R: crate::comms::Reporter>(
+    reason: &str,
+    collector_exit_code: Option<i32>,
+    evidence_collected_at: Option<DateTime<Utc>>,
+    resolved_mode: GateMode,
+    machine_id: &str,
+    channel_ref: &str,
+    reporter: &R,
+    evidence_signer: &std::sync::Arc<Option<crate::evidence_signer::EvidenceSigner>>,
+    activation_completed_at: DateTime<Utc>,
+) -> bool {
+    use crate::evidence_signer::{try_sign, RuntimeGateErrorSignedPayload};
+    use nixfleet_proto::agent_wire::ReportEvent;
+    let enforcing = resolved_mode == GateMode::Enforce;
+    if enforcing {
+        tracing::error!(
+            %reason,
+            ?collector_exit_code,
+            "compliance gate: ERROR — refusing confirm + rolling back (enforce mode)",
+        );
+    } else {
+        tracing::warn!(
+            %reason,
+            ?collector_exit_code,
+            "compliance gate: ERROR — posting event, allowing confirm (permissive mode)",
+        );
+    }
+    let signed_payload = RuntimeGateErrorSignedPayload {
+        hostname: machine_id,
+        rollout: Some(channel_ref),
+        reason,
+        collector_exit_code,
+        evidence_collected_at,
+        activation_completed_at,
+    };
+    let signature = evidence_signer
+        .as_ref()
+        .as_ref()
+        .and_then(|s| try_sign(s, &signed_payload));
+    reporter
+        .post_report(
+            Some(channel_ref),
+            ReportEvent::RuntimeGateError {
+                reason: reason.to_string(),
+                collector_exit_code,
+                evidence_collected_at,
+                activation_completed_at,
+                signature,
+            },
+        )
+        .await;
+    if enforcing {
+        trigger_rollback_with_reason(
+            machine_id,
+            channel_ref,
+            reporter,
+            evidence_signer,
+            &format!("compliance gate error: {reason}"),
+        )
+        .await;
+    }
+    enforcing
+}
+
+/// Roll back to the prior generation, then report `RollbackTriggered`. The
+/// reason qualifies on rollback failure so the audit chain reflects reality.
+async fn trigger_rollback_with_reason<R: crate::comms::Reporter>(
+    machine_id: &str,
+    channel_ref: &str,
+    reporter: &R,
+    evidence_signer: &std::sync::Arc<Option<crate::evidence_signer::EvidenceSigner>>,
+    base_reason: &str,
+) {
+    use crate::evidence_signer::{try_sign, RollbackTriggeredSignedPayload};
+    use nixfleet_proto::agent_wire::ReportEvent;
+    let rollback_result = crate::activation::rollback().await;
+    let rollback_reason = match &rollback_result {
+        Ok(_) => base_reason.to_string(),
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                reason = %base_reason,
+                "compliance gate: rollback FAILED — host left in inconsistent state",
+            );
+            format!("{base_reason}; rollback FAILED: {err}")
+        }
+    };
+    let rollback_payload = RollbackTriggeredSignedPayload {
+        hostname: machine_id,
+        rollout: Some(channel_ref),
+        reason: &rollback_reason,
+    };
+    let rollback_signature = evidence_signer
+        .as_ref()
+        .as_ref()
+        .and_then(|s| try_sign(s, &rollback_payload));
+    reporter
+        .post_report(
+            Some(channel_ref),
+            ReportEvent::RollbackTriggered {
+                reason: rollback_reason,
+                signature: rollback_signature,
+            },
+        )
+        .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,7 +7,8 @@ use nixfleet_agent::comms::Reporter;
 use crate::Args;
 
 use super::compliance::{process_gate_outcome, run_runtime_gate};
-use super::handler::{try_sign, DispatchCtx};
+use nixfleet_agent::evidence_signer::try_sign;
+use super::handler::DispatchCtx;
 
 pub(super) async fn handle_fired_and_polled<R: Reporter>(
     ctx: &DispatchCtx<'_, R>,

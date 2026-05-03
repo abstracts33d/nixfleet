@@ -5,7 +5,8 @@ use nixfleet_proto::agent_wire::ReportEvent;
 
 use nixfleet_agent::comms::Reporter;
 
-use super::handler::{try_sign, DispatchCtx, DispatchHandler};
+use nixfleet_agent::evidence_signer::try_sign;
+use super::handler::{DispatchCtx, DispatchHandler};
 
 pub(crate) struct ManifestErrorHandler {
     pub err: nixfleet_agent::manifest_cache::ManifestError,

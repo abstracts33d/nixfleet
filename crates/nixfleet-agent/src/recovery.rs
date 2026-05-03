@@ -2,9 +2,12 @@
 //! retroactively confirm the in-flight target before its deadline expires.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use nixfleet_proto::agent_wire::EvaluatedTarget;
 
+use crate::comms::Reporter;
+use crate::evidence_signer::EvidenceSigner;
 use crate::{activation, checkin_state, comms};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,21 +15,31 @@ pub enum RecoveryAction {
     NoRecord,
     NoCurrent,
     StaleClearedMismatch,
+    /// Enforce-mode runtime gate fired rollback; confirm intentionally skipped.
+    GateBlockedConfirm,
     PostedConfirm {
         confirm_outcome: comms::ConfirmOutcome,
     },
     PostedConfirmFailed { error: String },
 }
 
+/// Inputs the gate needs that the bare confirm path doesn't.
+pub struct GateInputs<'a, R: Reporter> {
+    pub reporter: &'a R,
+    pub evidence_signer: &'a Arc<Option<EvidenceSigner>>,
+    pub cli_default_mode: Option<&'a str>,
+}
+
 /// Best-effort: failures are logged, never propagated; main poll re-converges.
-pub async fn run_boot_recovery(
+pub async fn run_boot_recovery<R: Reporter>(
     client: &reqwest::Client,
     state_dir: &Path,
     cp_url: &str,
     hostname: &str,
     current_closure: Option<String>,
+    gate: GateInputs<'_, R>,
 ) -> anyhow::Result<()> {
-    let action = decide_and_run(client, state_dir, cp_url, hostname, current_closure).await;
+    let action = decide_and_run(client, state_dir, cp_url, hostname, current_closure, gate).await;
     match &action {
         RecoveryAction::NoRecord => {
             tracing::debug!("boot-recovery: no last_dispatched record (steady-state)");
@@ -36,6 +49,9 @@ pub async fn run_boot_recovery(
         }
         RecoveryAction::StaleClearedMismatch => {
             tracing::info!("boot-recovery: cleared stale dispatch record (current/dispatched mismatch)");
+        }
+        RecoveryAction::GateBlockedConfirm => {
+            tracing::error!("boot-recovery: enforce-mode gate fired rollback; confirm skipped");
         }
         RecoveryAction::PostedConfirm { confirm_outcome } => {
             tracing::info!(
@@ -53,12 +69,13 @@ pub async fn run_boot_recovery(
     Ok(())
 }
 
-async fn decide_and_run(
+async fn decide_and_run<R: Reporter>(
     client: &reqwest::Client,
     state_dir: &Path,
     cp_url: &str,
     hostname: &str,
     current_closure: Option<String>,
+    gate: GateInputs<'_, R>,
 ) -> RecoveryAction {
     let dispatched = match checkin_state::read_last_dispatched(state_dir) {
         Ok(Some(rec)) => rec,
@@ -81,6 +98,37 @@ async fn decide_and_run(
     if current != dispatched.closure_hash {
         let _ = checkin_state::clear_last_dispatched(state_dir);
         return RecoveryAction::StaleClearedMismatch;
+    }
+
+    // Gate runs against the now-active closure with `now` as activation_completed_at;
+    // the collector trigger inside `run_runtime_gate` writes fresh evidence so the
+    // freshness slack is satisfied. Enforce-mode failures roll back + skip confirm.
+    let activation_completed_at = chrono::Utc::now();
+    let resolved_mode = crate::compliance::resolve_runtime_gate_mode(
+        dispatched.compliance_mode.as_deref(),
+        gate.cli_default_mode,
+    )
+    .await;
+    let gate_outcome = crate::compliance::run_runtime_gate(
+        activation_completed_at,
+        &crate::compliance::default_evidence_path(),
+        resolved_mode,
+    )
+    .await;
+    let gate_blocks = crate::compliance::apply_gate_outcome(
+        &gate_outcome,
+        resolved_mode,
+        hostname,
+        &dispatched.channel_ref,
+        gate.reporter,
+        gate.evidence_signer,
+        activation_completed_at,
+    )
+    .await;
+    if gate_blocks {
+        // LOADBEARING: clearing the record on rollback would mask the failure
+        // from a subsequent reboot's recovery; keep it for next-boot retry.
+        return RecoveryAction::GateBlockedConfirm;
     }
 
     let boot_id = crate::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
@@ -161,7 +209,10 @@ async fn decide_and_run(
 mod tests {
     use super::*;
     use crate::checkin_state::LastDispatchRecord;
+    use crate::evidence_signer::EvidenceSigner;
     use chrono::Utc;
+    use nixfleet_proto::agent_wire::ReportEvent;
+    use std::sync::Mutex;
     use tempfile::TempDir;
 
     fn dummy_client() -> reqwest::Client {
@@ -176,19 +227,48 @@ mod tests {
             closure_hash: closure.to_string(),
             channel_ref: "stable@deadbeef".to_string(),
             rollout_id: Some("stable@deadbeef".to_string()),
+            compliance_mode: None,
             dispatched_at: Utc::now(),
+        }
+    }
+
+    #[derive(Default)]
+    struct NoopReporter {
+        calls: Mutex<Vec<(Option<String>, ReportEvent)>>,
+    }
+    impl Reporter for NoopReporter {
+        async fn post_report(&self, rollout: Option<&str>, event: ReportEvent) {
+            self.calls.lock().unwrap().push((rollout.map(String::from), event));
+        }
+    }
+
+    fn no_signer() -> Arc<Option<EvidenceSigner>> {
+        Arc::new(None)
+    }
+
+    fn gate_inputs<'a>(
+        reporter: &'a NoopReporter,
+        signer: &'a Arc<Option<EvidenceSigner>>,
+    ) -> GateInputs<'a, NoopReporter> {
+        GateInputs {
+            reporter,
+            evidence_signer: signer,
+            cli_default_mode: Some("disabled"),
         }
     }
 
     #[tokio::test]
     async fn no_record_when_state_dir_empty() {
         let dir = TempDir::new().unwrap();
+        let reporter = NoopReporter::default();
+        let signer = no_signer();
         let action = decide_and_run(
             &dummy_client(),
             dir.path(),
             "https://cp:0",
             "test-host",
             Some("any-closure".to_string()),
+            gate_inputs(&reporter, &signer),
         )
         .await;
         assert_eq!(action, RecoveryAction::NoRecord);
@@ -198,12 +278,15 @@ mod tests {
     async fn no_current_when_current_closure_missing() {
         let dir = TempDir::new().unwrap();
         checkin_state::write_last_dispatched(dir.path(), &sample_record("some-closure")).unwrap();
+        let reporter = NoopReporter::default();
+        let signer = no_signer();
         let action = decide_and_run(
             &dummy_client(),
             dir.path(),
             "https://cp:0",
             "test-host",
             None,
+            gate_inputs(&reporter, &signer),
         )
         .await;
         assert_eq!(action, RecoveryAction::NoCurrent);
@@ -217,12 +300,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         checkin_state::write_last_dispatched(dir.path(), &sample_record("dispatched-closure"))
             .unwrap();
+        let reporter = NoopReporter::default();
+        let signer = no_signer();
         let action = decide_and_run(
             &dummy_client(),
             dir.path(),
             "https://cp:0",
             "test-host",
             Some("different-closure".to_string()),
+            gate_inputs(&reporter, &signer),
         )
         .await;
         assert_eq!(action, RecoveryAction::StaleClearedMismatch);
@@ -238,12 +324,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         checkin_state::write_last_dispatched(dir.path(), &sample_record("matching-closure"))
             .unwrap();
+        let reporter = NoopReporter::default();
+        let signer = no_signer();
         let action = decide_and_run(
             &dummy_client(),
             dir.path(),
             "https://127.0.0.1:1/",
             "test-host",
             Some("matching-closure".to_string()),
+            gate_inputs(&reporter, &signer),
         )
         .await;
         match action {
