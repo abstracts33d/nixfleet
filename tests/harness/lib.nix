@@ -119,10 +119,17 @@
   mkHarnessCerts = {hostnames ? ["cp" "agent-01" "agent-02"]}:
     mkTlsCerts {inherit hostnames;};
 
-  # Common microvm guest settings. Cloud-hypervisor is the default because
-  # it has the lowest cold-start cost and supports virtiofs /nix/store sharing.
+  # Common microvm guest settings.
   # mem defaults to 256 MB per guest to fit the 16GB-dev-machine budget
   # (≤512MB per VM allows fleet-20 on a 16GB host).
+  #
+  # Hypervisor: qemu. Cloud-hypervisor would cold-boot ~5x faster but
+  # only supports tap networking; this harness depends on qemu
+  # user-net (`type = "user"`) for bridge-less guest-to-host NAT, so
+  # CH is incompatible without a substantial network-model rewrite.
+  # Fleet-N scaling instead relies on staggered start (see
+  # smoke.nix's isFleetN branch) to spread cold-boot I/O contention
+  # over time rather than packing it into a single thundering herd.
   microvmGuestDefaults = {
     hypervisor = "qemu";
     mem = 256;
@@ -423,6 +430,13 @@
     # 4GB; fleet-10 lands at ~7GB; fleet-50 (if attempted) would
     # land at ~17GB which hits the 16GB-dev-machine cap.
     hostMemoryMB ? null,
+    # When false, agent VMs are NOT pulled in by `microvms.target` —
+    # the testScript is responsible for starting each
+    # `microvm@<name>.service` (allowing staggered boot to avoid
+    # cold-start I/O contention at high N). Default true preserves
+    # the parallel-start behavior single-agent and 2-agent scenarios
+    # rely on.
+    agentVmAutostart ? true,
   }: let
     agentCount = builtins.length (builtins.attrNames agents);
     autoHostMemoryMB = lib.max 4096 (1024 + agentCount * guestMemMB + 2048);
@@ -453,7 +467,12 @@
           ];
         };
 
-        microvm.vms = lib.mapAttrs (_: mod: {config = mod;}) agents;
+        microvm.vms =
+          lib.mapAttrs (_: mod: {
+            config = mod;
+            autostart = agentVmAutostart;
+          })
+          agents;
 
         environment.systemPackages = [pkgs.jq pkgs.curl];
       };

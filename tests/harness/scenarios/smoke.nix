@@ -47,10 +47,20 @@
       value = mkAgent n;
     })
     agentNames);
+
+  # For N > 2 (fleet-5 / fleet-10), parallel cold-boot of every
+  # microvm guest saturates I/O on commodity lab hardware — DHCP under
+  # qemu user-net stops converging and `harness-agent.service` hangs
+  # in ExecStartPre's route-wait. Stagger starts to spread the load.
+  isFleetN = builtins.length agentNames > 2;
+  staggerSecs = 8;
 in
   harnessLib.mkFleetScenario {
     name = scenarioName;
     inherit cpHostModule agents;
+    # When staggering, disable autostart so the testScript drives
+    # microvm@<name>.service start order with sleeps between.
+    agentVmAutostart = !isFleetN;
     # Scales with N: fleet-10's marker-wait deadline alone is 570s
     # (max(240, 120 + 45*N)), and there's host-VM + microvms.target +
     # individual microvm@<n>.service waits ahead of that. 1200s
@@ -66,11 +76,33 @@ in
       host.wait_for_unit("harness-cp.service")
       host.wait_for_open_port(8443)
 
-      # microvm.nix launches each agent as `microvm@<name>.service` on
-      # the host once microvms.target converges.
-      host.wait_for_unit("microvms.target", timeout=300)
-      for vm in ${builtins.toJSON agentNames}:
-          host.wait_for_unit(f"microvm@{vm}.service", timeout=300)
+      ${
+        if isFleetN
+        then ''
+          # Staggered manual start: at fleet-5+ on commodity lab
+          # hardware, parallel microvm cold-boot saturates virtiofsd
+          # + qemu user-net DHCP and guests never get a default
+          # route. Start each microvm@<n>.service with a
+          # ${toString staggerSecs}s gap so each guest's network
+          # comes up before the next contends. autostart=false on
+          # the host config disables the default
+          # microvms.target-driven parallel start.
+          print("staggered start: launching ${toString (builtins.length agentNames)} microvms with ${toString staggerSecs}s gap")
+          for idx, vm in enumerate(${builtins.toJSON agentNames}):
+              host.execute(f"systemctl start --no-block microvm@{vm}.service")
+              if idx < len(${builtins.toJSON agentNames}) - 1:
+                  time.sleep(${toString staggerSecs})
+          for vm in ${builtins.toJSON agentNames}:
+              host.wait_for_unit(f"microvm@{vm}.service", timeout=300)
+        ''
+        else ''
+          # microvm.nix launches each agent as `microvm@<name>.service` on
+          # the host once microvms.target converges.
+          host.wait_for_unit("microvms.target", timeout=300)
+          for vm in ${builtins.toJSON agentNames}:
+              host.wait_for_unit(f"microvm@{vm}.service", timeout=300)
+        ''
+      }
 
       # Budget covers BOTH cold boot and activity. The agent units are
       # oneshot+RemainAfterExit; success == one successful mTLS fetch
@@ -79,14 +111,15 @@ in
       # kernel cold-boot, and the curl that depends on a working
       # default route.
       #
-      # `max(240, 120 + 45*N)` is empirical: covers commodity Linux
-      # lab hardware where microvm guests can take 80-100s to reach
-      # the login banner, plus headroom for fleet-10 where 10
-      # concurrent qemu cold-boots saturate I/O. Generous
+      # `max(300, 150 + 60*N)` is empirical: covers commodity Linux
+      # lab hardware where cloud-hypervisor guests take ~30-60s to
+      # reach the login banner, with extra headroom for fleet-10
+      # where staggered start (8s × (N-1) gaps) further extends the
+      # window before the last agent's deadline. Generous
       # over-provisioning is fine — the deadline is the *upper
       # bound*, the loop short-circuits as soon as every agent
       # posts the marker.
-      deadline = time.monotonic() + max(240, 120 + 45 * len(${builtins.toJSON agentNames}))
+      deadline = time.monotonic() + max(300, 150 + 60 * len(${builtins.toJSON agentNames}))
       pending = set(${builtins.toJSON agentNames})
       while pending and time.monotonic() < deadline:
           done = set()
@@ -105,7 +138,7 @@ in
               time.sleep(2)
 
       if pending:
-          budget = max(240, 120 + 45 * len(${builtins.toJSON agentNames}))
+          budget = max(300, 150 + 60 * len(${builtins.toJSON agentNames}))
           raise Exception(f"agents did not report harness-agent-ok within {budget}s: {pending}")
 
       print("fleet-harness-smoke: all agents fetched fleet.resolved.json over mTLS")
