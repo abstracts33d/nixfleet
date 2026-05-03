@@ -2,10 +2,12 @@
 
 use std::sync::Arc;
 
-use nixfleet_proto::agent_wire::{EvaluatedTarget, ReportEvent};
+use nixfleet_proto::agent_wire::{EvaluatedTarget, FetchOutcome, FetchResult, ReportEvent};
+use nixfleet_proto::RolloutManifest;
 
 use nixfleet_agent::comms::Reporter;
 use nixfleet_agent::evidence_signer::EvidenceSigner;
+use nixfleet_agent::manifest_cache::ManifestError;
 
 use crate::Args;
 
@@ -15,6 +17,26 @@ use super::handler::{DispatchCtx, DispatchHandler};
 use super::manifest_error::ManifestErrorHandler;
 use super::realise_failed::{ClosureSignatureMismatchHandler, RealiseFailedHandler};
 use super::verify_mismatch::{SwitchFailedHandler, VerifyMismatchHandler};
+
+/// Map a manifest-cache result onto the wire enum the CP circuit-breaker
+/// understands. `Missing` is HTTP-shaped (404 / 5xx / network) → FetchFailed;
+/// `VerifyFailed` and `Mismatch` are content-shaped → VerifyFailed.
+fn fetch_outcome_for(result: &Result<RolloutManifest, ManifestError>) -> FetchOutcome {
+    match result {
+        Ok(_) => FetchOutcome {
+            result: FetchResult::Ok,
+            error: None,
+        },
+        Err(ManifestError::Missing(s)) => FetchOutcome {
+            result: FetchResult::FetchFailed,
+            error: Some(s.clone()),
+        },
+        Err(ManifestError::VerifyFailed(s)) | Err(ManifestError::Mismatch(s)) => FetchOutcome {
+            result: FetchResult::VerifyFailed,
+            error: Some(s.clone()),
+        },
+    }
+}
 
 pub(crate) async fn process_dispatch_target(
     target: &EvaluatedTarget,
@@ -88,10 +110,16 @@ pub(crate) async fn process_dispatch_target(
             &args.trust_file,
         );
         let wave_index = target.wave_index.unwrap_or(0);
-        match cache
+        let fetch_result = cache
             .ensure(client, &args.control_plane_url, rollout_id, &args.machine_id, wave_index)
-            .await
-        {
+            .await;
+        // Persist outcome BEFORE any branch returns — CP's circuit breaker
+        // (Decision::HoldAfterFailure) reads this on the next checkin.
+        let _ = nixfleet_agent::checkin_state::write_last_fetch_outcome(
+            &args.state_dir,
+            &fetch_outcome_for(&fetch_result),
+        );
+        match fetch_result {
             Ok(_manifest) => {
                 tracing::debug!(
                     rollout_id = %rollout_id,

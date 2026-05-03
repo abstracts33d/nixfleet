@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::agent_wire::EvaluatedTarget;
+use nixfleet_proto::agent_wire::{EvaluatedTarget, FetchOutcome};
 
 /// `<closure_hash>\n<rfc3339-timestamp>\n`; closure_hash binds the timestamp to
 /// its generation so rollback suppresses it on the next checkin.
@@ -23,6 +23,11 @@ pub const LAST_DISPATCH_FILENAME: &str = "last_dispatched";
 /// resolution-by-replacement logic in the wave-promotion gate and
 /// `outstandingComplianceFailures` filter have something to compare against.
 pub const LAST_TARGET_FILENAME: &str = "last_target";
+
+/// Written after every manifest fetch attempt. CP reads it as a circuit
+/// breaker (`Decision::HoldAfterFailure`) so a host stuck on bad bytes
+/// stops getting re-dispatched until a clean fetch shows up.
+pub const LAST_FETCH_OUTCOME_FILENAME: &str = "last_fetch_outcome";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct LastDispatchRecord {
@@ -108,6 +113,35 @@ pub fn read_last_target(state_dir: &Path) -> Result<Option<EvaluatedTarget>> {
     };
     match serde_json::from_str::<EvaluatedTarget>(&raw) {
         Ok(t) => Ok(Some(t)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Atomic tempfile + rename. Failure is non-fatal — next-fetch will retry.
+pub fn write_last_fetch_outcome(state_dir: &Path, outcome: &FetchOutcome) -> Result<()> {
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("create state dir {}", state_dir.display()))?;
+    let final_path = state_dir.join(LAST_FETCH_OUTCOME_FILENAME);
+    let tmp_path = state_dir.join(format!("{LAST_FETCH_OUTCOME_FILENAME}.tmp"));
+    let body = serde_json::to_string(outcome).context("serialize FetchOutcome")?;
+    std::fs::write(&tmp_path, body)
+        .with_context(|| format!("write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &final_path).with_context(|| {
+        format!("rename {} -> {}", tmp_path.display(), final_path.display())
+    })?;
+    Ok(())
+}
+
+/// `Ok(None)` for both absent and malformed; `Err` only on FS I/O failures.
+pub fn read_last_fetch_outcome(state_dir: &Path) -> Result<Option<FetchOutcome>> {
+    let path = state_dir.join(LAST_FETCH_OUTCOME_FILENAME);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    match serde_json::from_str::<FetchOutcome>(&raw) {
+        Ok(o) => Ok(Some(o)),
         Err(_) => Ok(None),
     }
 }
@@ -291,6 +325,28 @@ mod write_read_tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join(LAST_TARGET_FILENAME), "{not-json").unwrap();
         assert!(read_last_target(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn last_fetch_outcome_round_trips() {
+        use nixfleet_proto::agent_wire::FetchResult;
+        let dir = TempDir::new().unwrap();
+        let outcome = FetchOutcome {
+            result: FetchResult::VerifyFailed,
+            error: Some("synthetic test".into()),
+        };
+        write_last_fetch_outcome(dir.path(), &outcome).unwrap();
+        let got = read_last_fetch_outcome(dir.path())
+            .unwrap()
+            .expect("present");
+        assert_eq!(got.result, FetchResult::VerifyFailed);
+        assert_eq!(got.error.as_deref(), Some("synthetic test"));
+    }
+
+    #[test]
+    fn last_fetch_outcome_absent_returns_none() {
+        let dir = TempDir::new().unwrap();
+        assert!(read_last_fetch_outcome(dir.path()).unwrap().is_none());
     }
 
     #[test]

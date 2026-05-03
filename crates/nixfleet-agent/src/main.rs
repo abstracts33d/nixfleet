@@ -348,13 +348,25 @@ async fn send_checkin(
         }
     };
 
+    let last_fetch_outcome = match checkin_state::read_last_fetch_outcome(&args.state_dir) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                state_dir = %args.state_dir.display(),
+                "read_last_fetch_outcome failed; checkin proceeds without it",
+            );
+            None
+        }
+    };
+
     let req = CheckinRequest {
         hostname: args.machine_id.clone(),
         agent_version: AGENT_VERSION.to_string(),
         current_generation,
         pending_generation,
         last_evaluated_target,
-        last_fetch_outcome: None,
+        last_fetch_outcome,
         uptime_secs: Some(uptime_secs),
         last_confirmed_at,
     };
