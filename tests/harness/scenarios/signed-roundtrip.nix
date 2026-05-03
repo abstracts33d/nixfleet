@@ -46,8 +46,11 @@ in
 
       host.wait_for_unit("microvms.target", timeout=300)
       host.wait_for_unit("microvm@agent-01.service", timeout=300)
+      wait_for_microvm_ready(host, "agent-01")
 
-      deadline = time.monotonic() + 120
+      # Post-readiness: harness-roundtrip oneshot is fast; 30s budget
+      # is comfortable headroom for verify-artifact + journal flush.
+      deadline = time.monotonic() + 30
       while time.monotonic() < deadline:
           rc, _ = host.execute(
               "journalctl -u microvm@agent-01.service --no-pager "
@@ -57,7 +60,7 @@ in
               break
           time.sleep(2)
       else:
-          raise Exception("agent did not emit harness-roundtrip-ok within 120s")
+          raise Exception("agent did not emit harness-roundtrip-ok within 30s of readiness")
 
       rc, _ = host.execute(
           "journalctl -u microvm@agent-01.service --no-pager "

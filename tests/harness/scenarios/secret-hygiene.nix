@@ -93,15 +93,13 @@ in
 
       host.wait_for_unit("microvms.target", timeout=300)
       host.wait_for_unit("microvm@agent-01.service", timeout=300)
+      wait_for_microvm_ready(host, "agent-01")
 
-      # Wait for the decrypt unit's success marker to surface in the
-      # microvm's console-forwarded journal. Proves the agent VM
-      # actually ran the decrypt — not just that the unit was
-      # configured. 180s budget covers the full guest-side boot from
-      # qemu-launch to systemd reaching multi-user.target +
-      # decrypt-test-secret oneshot completion.
+      # Post-readiness: the decrypt-test-secret oneshot fires from
+      # multi-user.target and is single-digit-seconds. 30s is
+      # comfortable for journal flush.
       decrypt_re = re.compile(r"harness-decrypt-ok: bytes=(\d+)")
-      deadline = time.monotonic() + 180
+      deadline = time.monotonic() + 30
       match = None
       while time.monotonic() < deadline:
           rc, out = host.execute(
@@ -114,7 +112,7 @@ in
                   break
           time.sleep(2)
       if match is None:
-          raise Exception("agent did not emit harness-decrypt-ok marker within 60s")
+          raise Exception("agent did not emit harness-decrypt-ok marker within 30s of readiness")
 
       decrypted_bytes = int(match.group(1))
       expected_bytes = int(host.succeed(

@@ -107,13 +107,16 @@ in
 
       host.wait_for_unit("microvms.target", timeout=300)
       host.wait_for_unit("microvm@agent-01.service", timeout=300)
+      wait_for_microvm_ready(host, "agent-01")
 
       # Wait for the agent's first checkin to land — that's the latest
       # point at which boot-recovery would have fired (it runs before
       # the poll loop). Once we see a checkin, we know main has reached
-      # the loop and recovery has either ran or skipped.
+      # the loop and recovery has either ran or skipped. Post-readiness
+      # the agent typically takes one poll-cycle (~5-10s) to land its
+      # first checkin against the CP.
       print("step 1: waiting for agent first checkin (post-recovery)…")
-      deadline = time.monotonic() + 90
+      deadline = time.monotonic() + 30
       checked_in = False
       while time.monotonic() < deadline:
           rc, _ = host.execute(

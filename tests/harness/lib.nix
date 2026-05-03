@@ -353,20 +353,24 @@
   };
 
   # Python helpers prepended to every scenario's `testScript` by
-  # `mkFleetScenario`. Scenarios that need to wait for a journal line
-  # call `wait_for_journal_match(host, …)` instead of reimplementing
-  # the deadline-grep-sleep loop. Two-arg shape is intentional: the
-  # caller supplies a host (the host VM, since CP runs there + agent
-  # microvms surface through `microvm@<name>.service`) and a
-  # `since_cursor` so callers can scope the search to a specific
-  # phase. Behaviour:
+  # `mkFleetScenario`. Scenarios call these instead of reimplementing
+  # deadline-grep-sleep loops.
   #
-  # - Polls `journalctl -u {unit} --since='{since}' --no-pager | grep -E {pattern}`
-  #   every `sleep_secs` until rc == 0 or the timeout expires.
-  # - On timeout, raises with a labelled error AND dumps the unit's
-  #   journal since the cursor for postmortem.
-  # - `label` is a free-form scenario-readable name for the wait
-  #   ("CP rollback-signal emission", "agent rollback-fired log").
+  # The two-stage timing model these helpers enforce:
+  #   1. Boot phase — `host.wait_for_unit("microvm@<name>.service")`
+  #      returns when qemu launches the guest, NOT when the guest's
+  #      systemd has reached multi-user.target. On slow hardware
+  #      (cold cache, memory pressure, CPU-shared CI) the gap can be
+  #      multi-minute. Wait for `wait_for_microvm_ready` to gate on
+  #      the actual readiness signal, not the launcher.
+  #   2. Activity phase — once the guest is ready, the agent's
+  #      checkin / harness-agent loop is fast (single-digit seconds).
+  #      Scenarios then set short, predictable budgets for the
+  #      activity they care about.
+  #
+  # Without the gate, every scenario's wallclock budget had to absorb
+  # both phases under whatever the slowest historical lab observed,
+  # which produces "bump deadline" feedback loops on every new host.
   testScriptPrelude = ''
     import time
 
@@ -400,6 +404,56 @@
             + str(timeout) + "s\n=== " + unit + " journal ===\n"
             + dump + "\n=== end ==="
         )
+
+    def wait_for_microvm_ready(host, vm, timeout=600, sleep_secs=3):
+        """Block until guest `vm` reaches multi-user.target.
+
+        microvm@<vm>.service surfaces the guest's serial console in
+        the host journal; the systemd `Started Multi-User System`
+        line fires once per boot when multi-user.target activates.
+        We grep for that against the launcher unit's output.
+
+        `timeout` is generous (default 600s) because cold-cache or
+        memory-pressured hosts can spend several minutes per guest
+        in NixOS activation. The point of this helper is to absorb
+        that variability HERE, in one place, so individual scenario
+        budgets can stay short and predictable.
+
+        On timeout, dumps the launcher unit's journal so the
+        operator can see what stage the guest got stuck in (most
+        commonly: `A start job is running for NixOS Activation
+        (Xs / no limit)`).
+        """
+        unit = "microvm@" + vm + ".service"
+        deadline = time.monotonic() + timeout
+        # Match either the upstream string or the spelled-out variant
+        # ("Reached target multi-user.target") that some systemd
+        # versions emit.
+        pattern = "Reached target (Multi-User System|multi-user)"
+        while time.monotonic() < deadline:
+            rc, _ = host.execute(
+                "journalctl -u " + unit + " --no-pager "
+                + "| grep -E " + repr(pattern)
+            )
+            if rc == 0:
+                return
+            time.sleep(sleep_secs)
+        dump = host.succeed("journalctl -u " + unit + " --no-pager | tail -40")
+        raise Exception(
+            "microvm guest " + vm + " did not reach multi-user.target within "
+            + str(timeout) + "s\n=== " + unit + " (last 40 lines) ===\n"
+            + dump + "\n=== end ==="
+        )
+
+    def wait_for_microvms_ready(host, vms, timeout=600, sleep_secs=3):
+        """Sequentially gate on guest-readiness for every vm in `vms`.
+
+        Sequential rather than parallel because the typical bottleneck
+        is host-side memory + CPU sharing across N qemu instances —
+        polling N journals in parallel doesn't help, and the per-vm
+        timeout already absorbs the variability."""
+        for vm in vms:
+            wait_for_microvm_ready(host, vm, timeout=timeout, sleep_secs=sleep_secs)
   '';
 
   # Wrap a CP host-module + a list of agent microVM modules into a
