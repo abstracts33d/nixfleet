@@ -264,8 +264,14 @@ async fn run_poll_loop(
             }
             Err(err) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
+                // `{:#}` walks the anyhow chain so the underlying
+                // reqwest/rustls cause surfaces in the journal —
+                // `%err` alone shows only the topmost context (e.g.
+                // "POST https://cp:8443/v1/agent/checkin") and hides
+                // the actual TLS / connect / status-code reason that
+                // operators need to triage outages.
                 tracing::warn!(
-                    error = %err,
+                    error = %format!("{err:#}"),
                     consecutive_failures,
                     "checkin failed; will retry with backoff"
                 );
