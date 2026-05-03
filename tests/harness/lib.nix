@@ -406,12 +406,20 @@
         )
 
     def wait_for_microvm_ready(host, vm, timeout=600, sleep_secs=3):
-        """Block until guest `vm` reaches multi-user.target.
+        """Block until guest `vm` has both multi-user AND network-online.
 
         microvm@<vm>.service surfaces the guest's serial console in
-        the host journal; the systemd `Started Multi-User System`
-        line fires once per boot when multi-user.target activates.
-        We grep for that against the launcher unit's output.
+        the host journal. We require BOTH targets to be reached:
+
+        - `Multi-User System` proves systemd reached the
+          login-banner stage (so any wantedBy=multi-user.target
+          service has had a chance to start).
+        - `Network is Online` proves DHCP/networkd installed a
+          default route. Without this, real-binary agents that
+          depend on network-online.target have started but get
+          ENETUNREACH on their first connect because DHCP hasn't
+          completed yet — produces "Network is unreachable" errors
+          that look like config bugs but are pure boot-ordering.
 
         `timeout` is generous (default 600s) because cold-cache or
         memory-pressured hosts can spend several minutes per guest
@@ -426,22 +434,40 @@
         """
         unit = "microvm@" + vm + ".service"
         deadline = time.monotonic() + timeout
-        # Match either the upstream string or the spelled-out variant
-        # ("Reached target multi-user.target") that some systemd
-        # versions emit.
-        pattern = "Reached target (Multi-User System|multi-user)"
+        # Both targets must show in the journal. Patterns match both
+        # the upstream string ("Multi-User System") and the spelled-
+        # out variant ("multi-user.target") that some systemd versions
+        # emit.
+        multi_user_re = "Reached target (Multi-User System|multi-user)"
+        network_online_re = "Reached target (Network is Online|network-online)"
+        seen_multi_user = False
+        seen_network_online = False
         while time.monotonic() < deadline:
-            rc, _ = host.execute(
+            rc_mu, _ = host.execute(
                 "journalctl -u " + unit + " --no-pager "
-                + "| grep -E " + repr(pattern)
+                + "| grep -E " + repr(multi_user_re)
             )
-            if rc == 0:
+            if rc_mu == 0:
+                seen_multi_user = True
+            rc_no, _ = host.execute(
+                "journalctl -u " + unit + " --no-pager "
+                + "| grep -E " + repr(network_online_re)
+            )
+            if rc_no == 0:
+                seen_network_online = True
+            if seen_multi_user and seen_network_online:
                 return
             time.sleep(sleep_secs)
-        dump = host.succeed("journalctl -u " + unit + " --no-pager | tail -40")
+        dump = host.succeed("journalctl -u " + unit + " --no-pager | tail -60")
+        missing = []
+        if not seen_multi_user:
+            missing.append("multi-user")
+        if not seen_network_online:
+            missing.append("network-online")
         raise Exception(
-            "microvm guest " + vm + " did not reach multi-user.target within "
-            + str(timeout) + "s\n=== " + unit + " (last 40 lines) ===\n"
+            "microvm guest " + vm + " did not reach "
+            + " + ".join(missing) + " within "
+            + str(timeout) + "s\n=== " + unit + " (last 60 lines) ===\n"
             + dump + "\n=== end ==="
         )
 

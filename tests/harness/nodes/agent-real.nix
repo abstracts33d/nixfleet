@@ -44,6 +44,14 @@
 
   microvm = harnessMicrovmDefaults;
 
+  # Without explicit DHCP, qemu user-net's DHCP server is ignored by
+  # the guest's stack; the guest comes up with no IP, agent's first
+  # checkin returns ENETUNREACH ("Network is unreachable"). The
+  # framework module's `after = network-online.target` doesn't help
+  # — network-online without a DHCP client times out and fires
+  # anyway, so the agent runs against an unconfigured stack.
+  networking.useDHCP = lib.mkDefault true;
+
   environment.etc = {
     "nixfleet-agent/ca.pem".source = "${testCerts}/ca.pem";
     "nixfleet-agent/${agentHostName}-cert.pem".source = "${testCerts}/${agentHostName}-cert.pem";
