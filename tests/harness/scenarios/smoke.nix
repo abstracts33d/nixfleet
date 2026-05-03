@@ -51,7 +51,12 @@ in
   harnessLib.mkFleetScenario {
     name = scenarioName;
     inherit cpHostModule agents;
-    timeout = 600;
+    # Scales with N: fleet-10's marker-wait deadline alone is 570s
+    # (max(240, 120 + 45*N)), and there's host-VM + microvms.target +
+    # individual microvm@<n>.service waits ahead of that. 1200s
+    # ceiling gives headroom on slow lab hardware while still
+    # aborting on a real hang.
+    timeout = 1200;
     testScript = ''
       start_all()
 
@@ -74,12 +79,14 @@ in
       # kernel cold-boot, and the curl that depends on a working
       # default route.
       #
-      # `max(180, 90 + 30*N)` is empirical: covers commodity Linux
+      # `max(240, 120 + 45*N)` is empirical: covers commodity Linux
       # lab hardware where microvm guests can take 80-100s to reach
-      # the login banner. Generous over-provisioning is fine — the
-      # deadline is the *upper bound*, the loop short-circuits as
-      # soon as every agent posts the marker.
-      deadline = time.monotonic() + max(180, 90 + 30 * len(${builtins.toJSON agentNames}))
+      # the login banner, plus headroom for fleet-10 where 10
+      # concurrent qemu cold-boots saturate I/O. Generous
+      # over-provisioning is fine — the deadline is the *upper
+      # bound*, the loop short-circuits as soon as every agent
+      # posts the marker.
+      deadline = time.monotonic() + max(240, 120 + 45 * len(${builtins.toJSON agentNames}))
       pending = set(${builtins.toJSON agentNames})
       while pending and time.monotonic() < deadline:
           done = set()
@@ -98,7 +105,7 @@ in
               time.sleep(2)
 
       if pending:
-          budget = max(180, 90 + 30 * len(${builtins.toJSON agentNames}))
+          budget = max(240, 120 + 45 * len(${builtins.toJSON agentNames}))
           raise Exception(f"agents did not report harness-agent-ok within {budget}s: {pending}")
 
       print("fleet-harness-smoke: all agents fetched fleet.resolved.json over mTLS")

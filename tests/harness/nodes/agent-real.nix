@@ -45,6 +45,15 @@
 
   microvm = harnessMicrovmDefaults;
 
+  # Harness microvms run behind qemu user-net (NAT-isolated, no
+  # external inbound) and the agent is an outbound-only client. The
+  # default NixOS firewall can spend 3+ minutes starting under
+  # heavy concurrent fleet-N boot, blocking multi-user.target.
+  # Disabling it eliminates the cold-boot bottleneck without changing
+  # production hosts (which still get the firewall via non-harness
+  # modules).
+  networking.firewall.enable = false;
+
   # microvm.nix uses systemd-networkd by default but doesn't
   # auto-configure DHCP on the user-net interface; without explicit
   # config the guest's stack ignores qemu's DHCP offers and the

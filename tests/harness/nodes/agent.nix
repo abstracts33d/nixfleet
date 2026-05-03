@@ -30,6 +30,15 @@
 }: {
   microvm = harnessMicrovmDefaults;
 
+  # Harness microvms run behind qemu user-net (isolated NAT, no inbound
+  # routable from outside), and harness-agent is an outbound-only
+  # oneshot client. The default NixOS firewall service can spend 3+
+  # minutes starting under heavy concurrent fleet-N boot, blocking
+  # multi-user.target and the agent oneshot. Disabling it removes the
+  # bottleneck without losing real defense-in-depth — production hosts
+  # still get the firewall via the non-harness modules.
+  networking.firewall.enable = false;
+
   # See ./agent-real.nix for the rationale; same systemd-networkd
   # config so curl gets a default route + IP rather than ENETUNREACH.
   networking.useNetworkd = lib.mkDefault true;

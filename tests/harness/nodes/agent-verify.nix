@@ -35,6 +35,12 @@
 }: {
   microvm = harnessMicrovmDefaults;
 
+  # See agent.nix for rationale: harness microvms run behind qemu
+  # user-net and the harness-agent is an outbound-only oneshot client.
+  # The default firewall service can spend 3+ minutes starting under
+  # heavy concurrent boot; disabling it removes the bottleneck.
+  networking.firewall.enable = false;
+
   # See ./agent-real.nix for the rationale; same systemd-networkd
   # config so HTTP fetches get a default route + IP rather than
   # ENETUNREACH.
