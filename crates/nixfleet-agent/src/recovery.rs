@@ -132,6 +132,23 @@ async fn decide_and_run<R: Reporter>(
     }
 
     let boot_id = crate::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
+    // Reconstruct the activate block from the persisted dispatch record.
+    // Pre-confirm-endpoint records (legacy) lack the field; refuse to
+    // confirm — there's no source of truth for the URL to post to, and
+    // hardcoding would violate the wire contract.
+    let confirm_endpoint = match dispatched.confirm_endpoint.clone() {
+        Some(ep) => ep,
+        None => {
+            tracing::warn!(
+                "boot-recovery: last_dispatched record predates confirm_endpoint persistence; \
+                 cannot reconstruct activate block. Clearing record so next dispatch can re-issue.",
+            );
+            let _ = checkin_state::clear_last_dispatched(state_dir);
+            return RecoveryAction::PostedConfirmFailed {
+                error: "legacy last_dispatched record without confirm_endpoint".to_string(),
+            };
+        }
+    };
     // LOADBEARING: signed_at/freshness_window_secs None — freshness already passed at dispatch.
     let synthetic_target = EvaluatedTarget {
         closure_hash: dispatched.closure_hash.clone(),
@@ -139,7 +156,13 @@ async fn decide_and_run<R: Reporter>(
         evaluated_at: dispatched.dispatched_at,
         rollout_id: dispatched.rollout_id.clone(),
         wave_index: None,
-        activate: None,
+        activate: Some(nixfleet_proto::agent_wire::ActivateBlock {
+            // confirm_window_secs is informational on the agent side and
+            // unused post-activation; the CP-issued deadline lives in CP
+            // state. 0 here is a valid placeholder.
+            confirm_window_secs: 0,
+            confirm_endpoint,
+        }),
         signed_at: None,
         freshness_window_secs: None,
         compliance_mode: None,
@@ -228,6 +251,7 @@ mod tests {
             channel_ref: "stable@deadbeef".to_string(),
             rollout_id: Some("stable@deadbeef".to_string()),
             compliance_mode: None,
+            confirm_endpoint: Some("/v1/agent/confirm".to_string()),
             dispatched_at: Utc::now(),
         }
     }

@@ -39,6 +39,11 @@ pub struct LastDispatchRecord {
     /// to run the runtime gate on the activated closure before retroactive confirm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compliance_mode: Option<String>,
+    /// Wire-carried confirm endpoint from `target.activate.confirm_endpoint`.
+    /// Required for boot-recovery to retroactively confirm — the agent has
+    /// no fresh dispatch reply to read it from at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_endpoint: Option<String>,
     pub dispatched_at: DateTime<Utc>,
 }
 
@@ -284,6 +289,7 @@ mod write_read_tests {
             channel_ref: "stable@deadbeef".into(),
             rollout_id: Some("stable@deadbeef".into()),
             compliance_mode: Some("enforce".into()),
+            confirm_endpoint: Some("/v1/agent/confirm".into()),
             dispatched_at: Utc::now(),
         }
     }

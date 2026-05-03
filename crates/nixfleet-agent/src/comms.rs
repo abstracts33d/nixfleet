@@ -74,17 +74,16 @@ pub enum ConfirmOutcome {
     Other,
 }
 
-/// `endpoint_override` is the wire-carried `target.activate.confirm_endpoint`
-/// from the dispatch reply (`None` when no `activate` block was present, e.g.
-/// older CPs). Lets the CP move the endpoint without a coordinated agent
-/// rebuild; falls back to the historical default.
+/// `endpoint` is the wire-carried `target.activate.confirm_endpoint` from
+/// the dispatch reply. Required, not optional — the CP must always set it
+/// for any target the agent will confirm; agents refuse to confirm against
+/// a target with no activate block.
 pub async fn confirm(
     client: &Client,
     cp_url: &str,
-    endpoint_override: Option<&str>,
+    endpoint: &str,
     req: &ConfirmRequest,
 ) -> Result<ConfirmOutcome> {
-    let endpoint = endpoint_override.unwrap_or("/v1/agent/confirm");
     let url = format!(
         "{}{}",
         cp_url.trim_end_matches('/'),

@@ -150,6 +150,10 @@ pub(crate) async fn process_dispatch_target(
         channel_ref: target.channel_ref.clone(),
         rollout_id: target.rollout_id.clone(),
         compliance_mode: target.compliance_mode.clone(),
+        confirm_endpoint: target
+            .activate
+            .as_ref()
+            .map(|a| a.confirm_endpoint.clone()),
         dispatched_at: chrono::Utc::now(),
     };
     if let Err(err) =

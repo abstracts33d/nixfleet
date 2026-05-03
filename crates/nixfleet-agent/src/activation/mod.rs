@@ -62,11 +62,23 @@ pub async fn confirm_target(
         },
     };
 
-    let endpoint_override = target
+    // LOADBEARING: refuse to confirm a target the CP didn't tell us how to
+    // confirm. Per the wire contract, every confirmable target carries an
+    // activate block with a populated confirm_endpoint; absence is treated
+    // as "this target is not for confirmation" (e.g. agent-egress exemption
+    // dispatches that activate but don't soak through the CP's deadline gate).
+    let endpoint = target
         .activate
         .as_ref()
-        .map(|a| a.confirm_endpoint.as_str());
-    let outcome = crate::comms::confirm(client, cp_url, endpoint_override, &req).await?;
+        .map(|a| a.confirm_endpoint.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "target {} has no activate block; refusing to confirm — \
+                 wire contract requires CP to set activate.confirm_endpoint",
+                target.closure_hash,
+            )
+        })?;
+    let outcome = crate::comms::confirm(client, cp_url, endpoint, &req).await?;
     match outcome {
         crate::comms::ConfirmOutcome::Acknowledged => {
             tracing::info!(
@@ -128,6 +140,42 @@ mod tests {
     fn basename_extracts_from_typical_store_path() {
         let p = PathBuf::from("/nix/store/abc123-nixos-system-test-host-26.05");
         assert_eq!(basename_of(&p).unwrap(), "abc123-nixos-system-test-host-26.05");
+    }
+
+    #[tokio::test]
+    async fn confirm_target_refuses_without_activate_block() {
+        // Wire contract: CP must always set activate.confirm_endpoint for
+        // any target the agent should confirm. Absence is treated as "not
+        // for confirmation" — the helper errors out before any HTTP call.
+        let target = EvaluatedTarget {
+            closure_hash: "abc-test".to_string(),
+            channel_ref: "stable@deadbeef".to_string(),
+            evaluated_at: chrono::Utc::now(),
+            rollout_id: Some("stable@deadbeef".to_string()),
+            wave_index: Some(0),
+            activate: None,
+            signed_at: None,
+            freshness_window_secs: None,
+            compliance_mode: None,
+        };
+        let client = reqwest::Client::new();
+        let err = super::confirm_target(
+            &client,
+            "https://cp.invalid:0",
+            "test-host",
+            &target,
+            "stable@deadbeef",
+            0,
+            "boot-id-test",
+        )
+        .await
+        .expect_err("must error when activate block is absent");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("activate")
+                && msg.contains("refusing to confirm"),
+            "error message must explain the wire-contract violation; got: {msg}",
+        );
     }
 
     #[test]

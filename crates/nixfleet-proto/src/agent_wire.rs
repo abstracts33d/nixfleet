@@ -88,7 +88,11 @@ pub struct EvaluatedTarget {
 pub struct ActivateBlock {
     /// Seconds before CP triggers magic rollback.
     pub confirm_window_secs: u32,
-    /// Wire-carried so future endpoint moves don't need an agent rebuild.
+    /// Required for any target the agent will confirm. The agent refuses to
+    /// confirm when no `activate` block is present (treats absence as "not a
+    /// confirmable target") and otherwise POSTs strictly to this path. CP
+    /// must always set it for confirm-bearing targets — the agent has no
+    /// hardcoded fallback. Wire-carried so endpoint moves are CP-driven.
     pub confirm_endpoint: String,
 }
 
