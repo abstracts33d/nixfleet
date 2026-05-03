@@ -74,12 +74,26 @@ pub enum ConfirmOutcome {
     Other,
 }
 
+/// `endpoint_override` is the wire-carried `target.activate.confirm_endpoint`
+/// from the dispatch reply (`None` when no `activate` block was present, e.g.
+/// older CPs). Lets the CP move the endpoint without a coordinated agent
+/// rebuild; falls back to the historical default.
 pub async fn confirm(
     client: &Client,
     cp_url: &str,
+    endpoint_override: Option<&str>,
     req: &ConfirmRequest,
 ) -> Result<ConfirmOutcome> {
-    let url = format!("{}/v1/agent/confirm", cp_url.trim_end_matches('/'));
+    let endpoint = endpoint_override.unwrap_or("/v1/agent/confirm");
+    let url = format!(
+        "{}{}",
+        cp_url.trim_end_matches('/'),
+        if endpoint.starts_with('/') {
+            endpoint.to_string()
+        } else {
+            format!("/{endpoint}")
+        }
+    );
     let resp = client
         .post(&url)
         .header(PROTOCOL_VERSION_HEADER, PROTOCOL_MAJOR_VERSION.to_string())

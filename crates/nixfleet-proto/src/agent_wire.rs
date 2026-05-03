@@ -55,8 +55,6 @@ pub struct GenerationRef {
 #[serde(rename_all = "camelCase")]
 pub struct PendingGeneration {
     pub closure_hash: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scheduled_for: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

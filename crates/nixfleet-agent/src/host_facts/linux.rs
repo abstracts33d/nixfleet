@@ -24,7 +24,6 @@ pub fn pending_generation() -> Result<Option<PendingGeneration>> {
     }
     Ok(Some(PendingGeneration {
         closure_hash: current,
-        scheduled_for: None,
     }))
 }
 

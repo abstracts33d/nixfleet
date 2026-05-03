@@ -77,6 +77,10 @@ pub(in crate::server) struct HostStatusEntry {
     outstanding_compliance_failures: usize,
     outstanding_runtime_gate_errors: usize,
     verified_event_count: usize,
+    /// Reported by the agent at every checkin. Surfaces crash-loops that
+    /// don't show up as offline (rapid restart, low value despite recent
+    /// `last_checkin_at`).
+    last_uptime_secs: Option<u64>,
 }
 
 /// `GET /v1/hosts` — joins verified fleet declarations with per-host checkins and report buffers.
@@ -156,6 +160,8 @@ pub(in crate::server) async fn hosts_status(
                 }
             }
 
+            let last_uptime_secs = checkin.and_then(|c| c.checkin.uptime_secs);
+
             HostStatusEntry {
                 hostname: hostname.clone(),
                 channel: host_decl.channel.clone(),
@@ -168,6 +174,7 @@ pub(in crate::server) async fn hosts_status(
                 outstanding_compliance_failures: compliance_failures,
                 outstanding_runtime_gate_errors: runtime_gate_errors,
                 verified_event_count: verified_count,
+                last_uptime_secs,
             }
         })
         .collect();

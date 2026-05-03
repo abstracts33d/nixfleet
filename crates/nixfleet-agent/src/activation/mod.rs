@@ -62,7 +62,11 @@ pub async fn confirm_target(
         },
     };
 
-    let outcome = crate::comms::confirm(client, cp_url, &req).await?;
+    let endpoint_override = target
+        .activate
+        .as_ref()
+        .map(|a| a.confirm_endpoint.as_str());
+    let outcome = crate::comms::confirm(client, cp_url, endpoint_override, &req).await?;
     match outcome {
         crate::comms::ConfirmOutcome::Acknowledged => {
             tracing::info!(
