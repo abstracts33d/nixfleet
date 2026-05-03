@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use nixfleet_proto::agent_wire::EvaluatedTarget;
 
 /// `<closure_hash>\n<rfc3339-timestamp>\n`; closure_hash binds the timestamp to
 /// its generation so rollback suppresses it on the next checkin.
@@ -15,6 +16,13 @@ pub const LAST_CONFIRM_FILENAME: &str = "last_confirmed_at";
 /// Written after dispatch, BEFORE activate; read at startup to retroactively
 /// confirm a self-killed mid-switch.
 pub const LAST_DISPATCH_FILENAME: &str = "last_dispatched";
+
+/// Written after a successful confirm — the breadcrumb the agent replays on
+/// every checkin so the CP knows which rollout the host belongs to. Distinct
+/// from `last_dispatched` (cleared on confirm); this one persists so the
+/// resolution-by-replacement logic in the wave-promotion gate and
+/// `outstandingComplianceFailures` filter have something to compare against.
+pub const LAST_TARGET_FILENAME: &str = "last_target";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct LastDispatchRecord {
@@ -69,6 +77,38 @@ pub fn clear_last_dispatched(state_dir: &Path) -> Result<()> {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err).with_context(|| format!("remove {}", path.display())),
+    }
+}
+
+/// Atomic tempfile + rename. Persists the most recently confirmed
+/// `EvaluatedTarget` so the agent can carry its `last_evaluated_target`
+/// breadcrumb on every subsequent checkin. Failure is non-fatal —
+/// next-confirm will retry.
+pub fn write_last_target(state_dir: &Path, target: &EvaluatedTarget) -> Result<()> {
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("create state dir {}", state_dir.display()))?;
+    let final_path = state_dir.join(LAST_TARGET_FILENAME);
+    let tmp_path = state_dir.join(format!("{LAST_TARGET_FILENAME}.tmp"));
+    let body = serde_json::to_string(target).context("serialize EvaluatedTarget")?;
+    std::fs::write(&tmp_path, body)
+        .with_context(|| format!("write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &final_path).with_context(|| {
+        format!("rename {} -> {}", tmp_path.display(), final_path.display())
+    })?;
+    Ok(())
+}
+
+/// `Ok(None)` for both absent and malformed; `Err` only on FS I/O failures.
+pub fn read_last_target(state_dir: &Path) -> Result<Option<EvaluatedTarget>> {
+    let path = state_dir.join(LAST_TARGET_FILENAME);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    match serde_json::from_str::<EvaluatedTarget>(&raw) {
+        Ok(t) => Ok(Some(t)),
+        Err(_) => Ok(None),
     }
 }
 
@@ -212,6 +252,45 @@ mod write_read_tests {
             compliance_mode: Some("enforce".into()),
             dispatched_at: Utc::now(),
         }
+    }
+
+    fn sample_target() -> EvaluatedTarget {
+        EvaluatedTarget {
+            closure_hash: "abc-nixos-system-test".into(),
+            channel_ref: "stable@deadbeef".into(),
+            evaluated_at: Utc::now(),
+            rollout_id: Some("stable@deadbeef".into()),
+            wave_index: Some(0),
+            activate: None,
+            signed_at: None,
+            freshness_window_secs: None,
+            compliance_mode: Some("enforce".into()),
+        }
+    }
+
+    #[test]
+    fn last_target_round_trips() {
+        let dir = TempDir::new().unwrap();
+        let t = sample_target();
+        write_last_target(dir.path(), &t).unwrap();
+        let got = read_last_target(dir.path()).unwrap().expect("present");
+        assert_eq!(got.closure_hash, t.closure_hash);
+        assert_eq!(got.channel_ref, t.channel_ref);
+        assert_eq!(got.rollout_id, t.rollout_id);
+        assert_eq!(got.compliance_mode, t.compliance_mode);
+    }
+
+    #[test]
+    fn last_target_absent_returns_none() {
+        let dir = TempDir::new().unwrap();
+        assert!(read_last_target(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn last_target_malformed_returns_none() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(LAST_TARGET_FILENAME), "{not-json").unwrap();
+        assert!(read_last_target(dir.path()).unwrap().is_none());
     }
 
     #[test]

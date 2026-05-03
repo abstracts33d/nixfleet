@@ -336,12 +336,24 @@ async fn send_checkin(
         }
     };
 
+    let last_evaluated_target = match checkin_state::read_last_target(&args.state_dir) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                state_dir = %args.state_dir.display(),
+                "read_last_target failed; checkin proceeds without last_evaluated_target",
+            );
+            None
+        }
+    };
+
     let req = CheckinRequest {
         hostname: args.machine_id.clone(),
         agent_version: AGENT_VERSION.to_string(),
         current_generation,
         pending_generation,
-        last_evaluated_target: None,
+        last_evaluated_target,
         last_fetch_outcome: None,
         uptime_secs: Some(uptime_secs),
         last_confirmed_at,
