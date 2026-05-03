@@ -144,7 +144,24 @@ pub(super) fn spawn_reconcile_loop(
             }
 
             match result {
-                Ok(out) => {
+                Ok(mut out) => {
+                    // The verify result above came from re-reading the static
+                    // boot artifact at `inputs.artifact_path`. Dispatch decisions
+                    // already operate on the live `verified_fleet` cache (kept
+                    // fresh by the channel-refs poll), so the log line should
+                    // reflect the same freshness — otherwise `ci_commit` and
+                    // `signed_at` lag behind reality until the CP itself is
+                    // restarted onto a closure containing the new artifact.
+                    if let crate::VerifyOutcome::Ok(ok) = &mut out.verify {
+                        if let Some(snapshot) = state.verified_fleet.read().await.as_ref() {
+                            if let Some(snap_signed_at) = snapshot.fleet.meta.signed_at {
+                                if snap_signed_at >= ok.signed_at {
+                                    ok.signed_at = snap_signed_at;
+                                    ok.ci_commit = snapshot.fleet.meta.ci_commit.clone();
+                                }
+                            }
+                        }
+                    }
                     apply_actions(&state, &out).await;
                     let plan = render_plan(&out);
                     tracing::info!(target: "reconcile", "{}", plan.trim_end());
