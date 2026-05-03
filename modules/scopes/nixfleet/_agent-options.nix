@@ -129,6 +129,35 @@
       '';
     };
 
+    # SSH host key used to sign ComplianceFailure / RuntimeGateError
+    # event payloads. The pubkey is published by the host to
+    # `nixfleet.trust.hosts.<n>.pubkey`; auditors verify event
+    # signatures against this pubkey offline. Default matches OpenSSH's
+    # stock path on both NixOS and macOS; override only if the host
+    # uses a non-default sshd config.
+    sshHostKeyFile = lib.mkOption {
+      type = lib.types.str;
+      default = "/etc/ssh/ssh_host_ed25519_key";
+      description = ''
+        Host SSH ed25519 private key, used to sign ComplianceFailure
+        / RuntimeGateError event payloads. Default matches OpenSSH's
+        stock path; override only if the host runs sshd with a
+        non-default `HostKey` config.
+      '';
+    };
+
+    tags = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      description = ''
+        Free-form tags reported with each checkin via the
+        `NIXFLEET_TAGS` environment variable. Joined with commas
+        before being passed to the agent. Used for operator
+        observability (e.g. distinguishing build hosts from
+        runners) and ignored by the dispatch decision.
+      '';
+    };
+
     # Runtime compliance gate policy.
     # `auto` (default) auto-detects from collector unit presence:
     # Permissive when present, Disabled when absent. Operators

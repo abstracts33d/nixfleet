@@ -70,13 +70,17 @@ in {
         # across NixOS releases.
         path = [config.nix.package pkgs.systemd];
 
-        environment = {
-          # Nix writes its metadata cache (narinfo lookups, eval cache, etc.)
-          # to $XDG_CACHE_HOME (default: ~/.cache). Point it at the agent's
-          # StateDirectory so the cache persists on impermanent hosts instead
-          # of being wiped on every reboot.
-          XDG_CACHE_HOME = "/var/lib/nixfleet/.cache";
-        };
+        environment =
+          {
+            # Nix writes its metadata cache (narinfo lookups, eval cache, etc.)
+            # to $XDG_CACHE_HOME (default: ~/.cache). Point it at the agent's
+            # StateDirectory so the cache persists on impermanent hosts instead
+            # of being wiped on every reboot.
+            XDG_CACHE_HOME = "/var/lib/nixfleet/.cache";
+          }
+          // lib.optionalAttrs (cfg.tags != []) {
+            NIXFLEET_TAGS = lib.concatStringsSep "," cfg.tags;
+          };
 
         serviceConfig = {
           Type = "simple";

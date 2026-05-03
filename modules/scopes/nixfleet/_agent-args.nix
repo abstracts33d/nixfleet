@@ -48,4 +48,6 @@
     (lib.escapeShellArg cfg.stateDir)
     "--compliance-gate-mode"
     (lib.escapeShellArg cfg.complianceGate.mode)
+    "--ssh-host-key-file"
+    (lib.escapeShellArg cfg.sshHostKeyFile)
   ]

@@ -63,26 +63,8 @@
 in {
   imports = [./_agent-options.nix];
 
-  # Darwin-only options. Shared options live in `./_agent-options.nix`.
-  options.services.nixfleet-agent = {
-    sshHostKeyFile = lib.mkOption {
-      type = lib.types.str;
-      default = "/etc/ssh/ssh_host_ed25519_key";
-      description = ''
-        Host SSH ed25519 private key, used to sign ComplianceFailure
-        / RuntimeGateError event payloads (root-3).
-        Default matches OpenSSH's stock path on darwin (sshd is
-        managed by `services.openssh` in nix-darwin or pre-existing
-        on macOS hosts).
-      '';
-    };
-
-    tags = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [];
-      description = "Tags reported with each checkin.";
-    };
-  };
+  # All options now live in `./_agent-options.nix`; this module is
+  # the launchd-flavoured supervisor only.
 
   config = lib.mkIf cfg.enable {
     # Materialise the trust JSON. Same shape as NixOS — agent reads
@@ -132,16 +114,10 @@ in {
         # launchd tracks the agent PID directly (KeepAlive sees the
         # right PID).
         ProgramArguments = let
-          args = lib.concatStringsSep " " (
-            (import ./_agent-args.nix {
-              inherit lib cfg;
-              package = nixfleet-agent;
-            })
-            ++ [
-              "--ssh-host-key-file"
-              (lib.escapeShellArg cfg.sshHostKeyFile)
-            ]
-          );
+          args = lib.concatStringsSep " " (import ./_agent-args.nix {
+            inherit lib cfg;
+            package = nixfleet-agent;
+          });
         in ["/bin/sh" "-c" "sleep 15 && exec ${args}"];
 
         # KeepAlive: restart on exit (matches systemd Restart=always).
