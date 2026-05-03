@@ -22,6 +22,7 @@
 # that gateway IP.
 {
   lib,
+  pkgs,
   testCerts,
   controlPlaneHost,
   controlPlanePort,
@@ -95,9 +96,19 @@
   # journal mounts. The framework module's serviceConfig doesn't set
   # this (production deploys go through journald → vector → rsyslog),
   # so override here for the harness.
+  #
+  # `ExecStartPre` waits for an actual default route. systemd's
+  # `network-online.target` and `RequiredForOnline=routable` both
+  # fire prematurely in the qemu user-net + microvm.nix combo —
+  # the agent otherwise hits ENETUNREACH on its first checkin and
+  # spends its retry budget waiting for DHCP that already fired. The
+  # explicit gate makes networking-up the precondition for the
+  # agent's main process actually starting, so the test budget
+  # measures agent activity rather than DHCP timing.
   systemd.services.nixfleet-agent.serviceConfig = {
     StandardOutput = "journal+console";
     StandardError = "journal+console";
+    ExecStartPre = "${pkgs.bash}/bin/bash -c 'for i in $(seq 1 60); do ${pkgs.iproute2}/bin/ip route show default | grep -q . && exit 0; sleep 1; done; echo \"agent: no default route after 60s\" >&2; exit 1'";
   };
 
   system.stateVersion = lib.mkDefault "24.11";
