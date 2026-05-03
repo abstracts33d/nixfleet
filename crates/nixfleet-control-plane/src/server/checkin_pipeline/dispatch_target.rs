@@ -103,7 +103,7 @@ pub(super) async fn stage_channel_hosts(
             let cur_rollout = checkins_guard
                 .get(n)
                 .and_then(|c| c.checkin.last_evaluated_target.as_ref())
-                .and_then(|t| t.rollout_id.clone());
+                .map(|t| t.rollout_id.clone());
             let wave_idx = wave_index_for(fleet, channel_name, n);
             (n.clone(), buf, cur_rollout, wave_idx)
         })

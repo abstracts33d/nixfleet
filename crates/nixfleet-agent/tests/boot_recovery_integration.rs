@@ -26,7 +26,7 @@ fn record(closure: &str) -> LastDispatchRecord {
     LastDispatchRecord {
         closure_hash: closure.to_string(),
         channel_ref: "stable@deadbeef".to_string(),
-        rollout_id: Some("stable@deadbeef".to_string()),
+        rollout_id: "stable@deadbeef".to_string(),
         compliance_mode: None,
         confirm_endpoint: "/v1/agent/confirm".to_string(),
         dispatched_at: Utc::now(),

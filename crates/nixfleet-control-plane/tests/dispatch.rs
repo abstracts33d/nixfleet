@@ -56,6 +56,7 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
             "schemaVersion": 1,
             "signedAt": signed_at,
             "ciCommit": ci_commit,
+            "signatureAlgorithm": "ed25519",
         },
     });
     let raw = serde_json::to_string(&json).unwrap();
@@ -199,7 +200,7 @@ async fn dispatch_end_to_end_signed_fleet_then_idempotent() {
         "channel_ref must be hex lowercase: {}",
         target.channel_ref,
     );
-    assert_eq!(target.rollout_id.as_deref(), Some(target.channel_ref.as_str()));
+    assert_eq!(target.rollout_id, target.channel_ref);
 
     let resp = client
         .post(format!("https://localhost:{port}/v1/agent/checkin"))

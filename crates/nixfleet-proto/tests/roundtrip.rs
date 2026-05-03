@@ -65,18 +65,11 @@ fn stream_b_empty_selector_parses_and_canonicalizes() {
 
 #[test]
 fn meta_signature_algorithm_none_round_trips_as_absent() {
-    // Default-on-consumer-side: encode None as ABSENT, not null.
     let input = load("every-nullable.json");
     let parsed: FleetResolved = serde_json::from_str(&input).expect("parse");
-    assert!(
-        parsed.meta.signature_algorithm.is_none(),
-        "every-nullable fixture has no signatureAlgorithm, parses as None"
-    );
-
-    let reserialized = serde_json::to_string(&parsed).expect("serialize");
-    assert!(
-        !reserialized.contains("signatureAlgorithm"),
-        "None must not emit the field: {reserialized}"
+    assert_eq!(
+        parsed.meta.signature_algorithm, "ed25519",
+        "fixture meta.signatureAlgorithm parses as required string",
     );
 }
 
@@ -88,10 +81,7 @@ fn meta_signature_algorithm_some_round_trips_as_explicit_string() {
 
     let parsed: FleetResolved =
         serde_json::from_str(&value.to_string()).expect("parse with signatureAlgorithm");
-    assert_eq!(
-        parsed.meta.signature_algorithm.as_deref(),
-        Some("ecdsa-p256")
-    );
+    assert_eq!(parsed.meta.signature_algorithm.as_str(), "ecdsa-p256");
 
     let reserialized = serde_json::to_string(&parsed).expect("serialize");
     assert!(

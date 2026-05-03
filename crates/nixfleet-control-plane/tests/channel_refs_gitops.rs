@@ -44,6 +44,7 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
             "schemaVersion": 1,
             "signedAt": signed_at,
             "ciCommit": ci_commit,
+            "signatureAlgorithm": "ed25519",
         },
     });
     let raw = serde_json::to_string(&json).unwrap();
@@ -248,7 +249,7 @@ async fn poll_retains_snapshot_on_verify_failure() {
         "waves": {},
         "edges": [],
         "disruptionBudgets": [],
-        "meta": { "schemaVersion": 1, "signedAt": "2025-01-01T00:00:00Z", "ciCommit": "old-rev" },
+        "meta": { "schemaVersion": 1, "signedAt": "2025-01-01T00:00:00Z", "ciCommit": "old-rev", "signatureAlgorithm": "ed25519" },
     }).to_string()).unwrap();
 
     let cache = Arc::new(RwLock::new(ChannelRefsCache::default()));

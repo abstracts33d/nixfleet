@@ -18,23 +18,16 @@ pub enum FreshnessCheck {
         freshness_window_secs: u32,
         age_secs: i64,
     },
-    /// Older CP didn't relay enough info — fail open.
-    Unknown,
 }
 
 pub fn check(target: &EvaluatedTarget, now: DateTime<Utc>) -> FreshnessCheck {
-    let (signed_at, window_secs) = match (target.signed_at, target.freshness_window_secs) {
-        (Some(s), Some(w)) => (s, w),
-        _ => return FreshnessCheck::Unknown,
-    };
-
-    let age_secs = (now - signed_at).num_seconds();
-    let limit = window_secs as i64 + CLOCK_SKEW_SLACK_SECS;
+    let age_secs = (now - target.signed_at).num_seconds();
+    let limit = target.freshness_window_secs as i64 + CLOCK_SKEW_SLACK_SECS;
 
     if age_secs > limit {
         FreshnessCheck::Stale {
-            signed_at,
-            freshness_window_secs: window_secs,
+            signed_at: target.signed_at,
+            freshness_window_secs: target.freshness_window_secs,
             age_secs,
         }
     } else {
@@ -47,12 +40,12 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn target_with(signed_at: Option<DateTime<Utc>>, window: Option<u32>) -> EvaluatedTarget {
+    fn target_with(signed_at: DateTime<Utc>, window: u32) -> EvaluatedTarget {
         EvaluatedTarget {
             closure_hash: "h".into(),
             channel_ref: "stable@abc".into(),
             evaluated_at: Utc::now(),
-            rollout_id: None,
+            rollout_id: "stable@abc".into(),
             wave_index: None,
             activate: None,
             signed_at,
@@ -62,22 +55,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_when_signed_at_missing() {
-        let t = target_with(None, Some(3600));
-        assert_eq!(check(&t, Utc::now()), FreshnessCheck::Unknown);
-    }
-
-    #[test]
-    fn unknown_when_window_missing() {
-        let t = target_with(Some(Utc::now()), None);
-        assert_eq!(check(&t, Utc::now()), FreshnessCheck::Unknown);
-    }
-
-    #[test]
     fn fresh_when_age_well_under_window() {
         let signed = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let now = signed + chrono::Duration::seconds(100);
-        let t = target_with(Some(signed), Some(3600));
+        let t = target_with(signed, 3600);
         assert_eq!(check(&t, now), FreshnessCheck::Fresh);
     }
 
@@ -85,7 +66,7 @@ mod tests {
     fn fresh_at_exact_window_boundary() {
         let signed = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let now = signed + chrono::Duration::seconds(3600);
-        let t = target_with(Some(signed), Some(3600));
+        let t = target_with(signed, 3600);
         assert_eq!(check(&t, now), FreshnessCheck::Fresh);
     }
 
@@ -93,7 +74,7 @@ mod tests {
     fn fresh_within_slack_past_window() {
         let signed = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let now = signed + chrono::Duration::seconds(3660);
-        let t = target_with(Some(signed), Some(3600));
+        let t = target_with(signed, 3600);
         assert_eq!(check(&t, now), FreshnessCheck::Fresh);
     }
 
@@ -101,7 +82,7 @@ mod tests {
     fn stale_just_past_slack() {
         let signed = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let now = signed + chrono::Duration::seconds(3661);
-        let t = target_with(Some(signed), Some(3600));
+        let t = target_with(signed, 3600);
         assert!(matches!(
             check(&t, now),
             FreshnessCheck::Stale { age_secs: 3661, .. }
@@ -112,7 +93,7 @@ mod tests {
     fn stale_far_past_window() {
         let signed = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let now = signed + chrono::Duration::seconds(86_400 * 3);
-        let t = target_with(Some(signed), Some(3600));
+        let t = target_with(signed, 3600);
         let result = check(&t, now);
         match result {
             FreshnessCheck::Stale {
@@ -131,7 +112,7 @@ mod tests {
     fn fresh_when_clock_skew_slightly_negative() {
         let signed = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let now = signed - chrono::Duration::seconds(30);
-        let t = target_with(Some(signed), Some(3600));
+        let t = target_with(signed, 3600);
         assert_eq!(check(&t, now), FreshnessCheck::Fresh);
     }
 }

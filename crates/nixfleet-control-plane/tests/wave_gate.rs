@@ -89,6 +89,7 @@ fn write_signed_fleet(
             "schemaVersion": 1,
             "signedAt": signed_at,
             "ciCommit": CI_COMMIT,
+            "signatureAlgorithm": "ed25519",
         },
     });
     let raw = serde_json::to_string(&json).unwrap();
@@ -271,7 +272,7 @@ async fn enforce_mode_blocks_dispatch_after_signed_compliance_failure() {
     let dispatched_rollout = resp1
         .target
         .as_ref()
-        .and_then(|t| t.rollout_id.clone())
+        .map(|t| t.rollout_id.clone())
         .expect("dispatch carries rollout_id");
 
     let report = build_signed_compliance_failure(&host_sk, &dispatched_rollout, "auditLogging");
@@ -297,11 +298,11 @@ async fn enforce_mode_blocks_dispatch_after_signed_compliance_failure() {
             closure_hash: DECLARED_CLOSURE.to_string(),
             channel_ref: dispatched_rollout.clone(),
             evaluated_at: Utc::now(),
-            rollout_id: Some(dispatched_rollout.clone()),
+            rollout_id: dispatched_rollout.clone(),
             wave_index: None,
             activate: None,
-            signed_at: None,
-            freshness_window_secs: None,
+            signed_at: Utc::now(),
+            freshness_window_secs: 3600,
             compliance_mode: Some("enforce".to_string()),
         });
     let resp2 = post_checkin(&client, port, &checkin_after_failure).await;
@@ -348,7 +349,7 @@ async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
     let dispatched_rollout = resp1
         .target
         .as_ref()
-        .and_then(|t| t.rollout_id.clone())
+        .map(|t| t.rollout_id.clone())
         .expect("first checkin dispatches");
 
     // LOADBEARING: must persist to SQLite host_reports so the second CP can rehydrate it.
@@ -370,11 +371,11 @@ async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
             closure_hash: DECLARED_CLOSURE.to_string(),
             channel_ref: dispatched_rollout.clone(),
             evaluated_at: Utc::now(),
-            rollout_id: Some(dispatched_rollout.clone()),
+            rollout_id: dispatched_rollout.clone(),
             wave_index: None,
             activate: None,
-            signed_at: None,
-            freshness_window_secs: None,
+            signed_at: Utc::now(),
+            freshness_window_secs: 3600,
             compliance_mode: Some("enforce".to_string()),
         });
     let resp_pre_restart = post_checkin(&client, port, &checkin_after_failure).await;
@@ -445,7 +446,7 @@ async fn permissive_mode_does_not_block_dispatch_despite_failure() {
     let dispatched_rollout = resp1
         .target
         .as_ref()
-        .and_then(|t| t.rollout_id.clone())
+        .map(|t| t.rollout_id.clone())
         .expect("first checkin dispatches");
 
     let report = build_signed_compliance_failure(&host_sk, &dispatched_rollout, "auditLogging");

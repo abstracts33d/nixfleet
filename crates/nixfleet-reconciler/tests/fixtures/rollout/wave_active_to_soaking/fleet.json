@@ -32,7 +32,8 @@
   "meta": {
     "ciCommit": "abc",
     "schemaVersion": 1,
-    "signedAt": "2026-04-24T09:55:00Z"
+    "signedAt": "2026-04-24T09:55:00Z",
+    "signatureAlgorithm": "ed25519"
   },
   "rolloutPolicies": {
     "p1": {

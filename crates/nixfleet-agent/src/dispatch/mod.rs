@@ -52,11 +52,11 @@ mod tests {
             closure_hash: "abc123-test".to_string(),
             channel_ref: "stable@feedface".to_string(),
             evaluated_at: chrono::Utc::now(),
-            rollout_id: None,
+            rollout_id: "stable@feedface".to_string(),
             wave_index: None,
             activate: None,
-            signed_at: None,
-            freshness_window_secs: None,
+            signed_at: chrono::Utc::now(),
+            freshness_window_secs: 3600,
             compliance_mode: None,
         }
     }

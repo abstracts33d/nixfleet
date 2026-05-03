@@ -169,12 +169,5 @@ pub struct Meta {
     pub signed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub ci_commit: Option<String>,
-
-    // GOTCHA: absent ≡ ed25519 (back-compat); legacy artifacts never emitted this field, so absent-vs-null distinction matters — `skip_serializing_if` required.
-    #[serde(
-        default,
-        rename = "signatureAlgorithm",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub signature_algorithm: Option<String>,
+    pub signature_algorithm: String,
 }

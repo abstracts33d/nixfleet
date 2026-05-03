@@ -114,7 +114,7 @@ pub(in crate::server) async fn hosts_status(
                 c.checkin
                     .last_evaluated_target
                     .as_ref()
-                    .and_then(|t| t.rollout_id.clone())
+                    .map(|t| t.rollout_id.clone())
             });
             let converged = match (&host_decl.closure_hash, &current) {
                 (Some(declared), Some(running)) => declared == running,

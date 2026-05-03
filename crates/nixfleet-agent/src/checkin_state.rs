@@ -33,8 +33,7 @@ pub const LAST_FETCH_OUTCOME_FILENAME: &str = "last_fetch_outcome";
 pub struct LastDispatchRecord {
     pub closure_hash: String,
     pub channel_ref: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rollout_id: Option<String>,
+    pub rollout_id: String,
     /// Channel's compliance mode at dispatch time; consumed by boot-recovery
     /// to run the runtime gate on the activated closure before retroactive confirm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,7 +285,7 @@ mod write_read_tests {
         LastDispatchRecord {
             closure_hash: "abc-nixos-system".into(),
             channel_ref: "stable@deadbeef".into(),
-            rollout_id: Some("stable@deadbeef".into()),
+            rollout_id: "stable@deadbeef".into(),
             compliance_mode: Some("enforce".into()),
             confirm_endpoint: "/v1/agent/confirm".into(),
             dispatched_at: Utc::now(),
@@ -298,11 +297,11 @@ mod write_read_tests {
             closure_hash: "abc-nixos-system-test".into(),
             channel_ref: "stable@deadbeef".into(),
             evaluated_at: Utc::now(),
-            rollout_id: Some("stable@deadbeef".into()),
+            rollout_id: "stable@deadbeef".into(),
             wave_index: Some(0),
             activate: None,
-            signed_at: None,
-            freshness_window_secs: None,
+            signed_at: Utc::now(),
+            freshness_window_secs: 3600,
             compliance_mode: Some("enforce".into()),
         }
     }

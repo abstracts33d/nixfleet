@@ -23,7 +23,7 @@ fn record_is_compliance_failure(record: &ReportRecord) -> bool {
     }
 }
 
-/// GOTCHA: `None` current_rollout (legacy / first checkin) → all events count.
+/// GOTCHA: `None` current_rollout (host hasn't completed a confirm yet) → all events count.
 pub fn outstanding_failures<'a>(
     records: &'a [ReportRecord],
     current_rollout: Option<&str>,

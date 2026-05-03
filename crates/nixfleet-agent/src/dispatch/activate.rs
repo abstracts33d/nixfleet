@@ -52,96 +52,82 @@ pub(crate) async fn process_dispatch_target(
         evidence_signer,
     };
     use nixfleet_agent::freshness::{check as freshness_check, FreshnessCheck};
-    match freshness_check(target, chrono::Utc::now()) {
-        FreshnessCheck::Stale {
+    if let FreshnessCheck::Stale {
+        signed_at,
+        freshness_window_secs,
+        age_secs,
+    } = freshness_check(target, chrono::Utc::now())
+    {
+        tracing::warn!(
+            closure_hash = %target.closure_hash,
+            channel_ref = %target.channel_ref,
+            signed_at = %signed_at,
+            freshness_window_secs,
+            age_secs,
+            "agent: refusing stale target — fleet.resolved older than freshness_window + 60s slack",
+        );
+        let stale_payload = nixfleet_agent::evidence_signer::StaleTargetSignedPayload {
+            hostname: &args.machine_id,
+            rollout: Some(&target.channel_ref),
+            closure_hash: &target.closure_hash,
+            channel_ref: &target.channel_ref,
             signed_at,
             freshness_window_secs,
             age_secs,
-        } => {
-            tracing::warn!(
-                closure_hash = %target.closure_hash,
-                channel_ref = %target.channel_ref,
-                signed_at = %signed_at,
-                freshness_window_secs,
-                age_secs,
-                "agent: refusing stale target — fleet.resolved older than freshness_window + 60s slack",
-            );
-            let stale_payload = nixfleet_agent::evidence_signer::StaleTargetSignedPayload {
-                hostname: &args.machine_id,
-                rollout: Some(&target.channel_ref),
-                closure_hash: &target.closure_hash,
-                channel_ref: &target.channel_ref,
-                signed_at,
-                freshness_window_secs,
-                age_secs,
-            };
-            let signature = evidence_signer
-                .as_ref()
-                .as_ref()
-                .and_then(|s| try_sign(s, &stale_payload));
-            reporter
-                .post_report(
-                    Some(&target.channel_ref),
-                    ReportEvent::StaleTarget {
-                        closure_hash: target.closure_hash.clone(),
-                        channel_ref: target.channel_ref.clone(),
-                        signed_at,
-                        freshness_window_secs,
-                        age_secs,
-                        signature,
-                    },
-                )
-                .await;
-            return;
-        }
-        FreshnessCheck::Unknown => {
-            tracing::debug!(
-                closure_hash = %target.closure_hash,
-                "agent: target lacks signed_at/freshness_window_secs — older CP, skipping freshness gate",
-            );
-        }
-        FreshnessCheck::Fresh => {}
+        };
+        let signature = evidence_signer
+            .as_ref()
+            .as_ref()
+            .and_then(|s| try_sign(s, &stale_payload));
+        reporter
+            .post_report(
+                Some(&target.channel_ref),
+                ReportEvent::StaleTarget {
+                    closure_hash: target.closure_hash.clone(),
+                    channel_ref: target.channel_ref.clone(),
+                    signed_at,
+                    freshness_window_secs,
+                    age_secs,
+                    signature,
+                },
+            )
+            .await;
+        return;
     }
 
     // LOADBEARING: verify manifest + membership BEFORE consuming any target field — refuse-to-act.
-    if let Some(rollout_id) = target.rollout_id.as_deref() {
-        let cache = nixfleet_agent::manifest_cache::ManifestCache::new(
-            &args.state_dir,
-            &args.trust_file,
-        );
-        let wave_index = target.wave_index.unwrap_or(0);
-        let fetch_result = cache
-            .ensure(client, &args.control_plane_url, rollout_id, &args.machine_id, wave_index)
-            .await;
-        // Persist outcome BEFORE any branch returns — CP's circuit breaker
-        // (Decision::HoldAfterFailure) reads this on the next checkin.
-        let _ = nixfleet_agent::checkin_state::write_last_fetch_outcome(
-            &args.state_dir,
-            &fetch_outcome_for(&fetch_result),
-        );
-        match fetch_result {
-            Ok(_manifest) => {
-                tracing::debug!(
-                    rollout_id = %rollout_id,
-                    wave_index = wave_index,
-                    "agent: rollout manifest verified",
-                );
-            }
-            Err(err) => {
-                ManifestErrorHandler {
-                    err,
-                    rollout_id: rollout_id.to_string(),
-                }
-                .handle(&ctx)
-                .await;
-                return;
-            }
+    let rollout_id = target.rollout_id.as_str();
+    let cache = nixfleet_agent::manifest_cache::ManifestCache::new(
+        &args.state_dir,
+        &args.trust_file,
+    );
+    let wave_index = target.wave_index.unwrap_or(0);
+    let fetch_result = cache
+        .ensure(client, &args.control_plane_url, rollout_id, &args.machine_id, wave_index)
+        .await;
+    // Persist outcome BEFORE any branch returns — CP's circuit breaker
+    // (Decision::HoldAfterFailure) reads this on the next checkin.
+    let _ = nixfleet_agent::checkin_state::write_last_fetch_outcome(
+        &args.state_dir,
+        &fetch_outcome_for(&fetch_result),
+    );
+    match fetch_result {
+        Ok(_manifest) => {
+            tracing::debug!(
+                rollout_id = %rollout_id,
+                wave_index = wave_index,
+                "agent: rollout manifest verified",
+            );
         }
-    } else {
-        tracing::debug!(
-            closure_hash = %target.closure_hash,
-            "agent: target lacks rollout_id — older CP, skipping manifest gate",
-        );
+        Err(err) => {
+            ManifestErrorHandler {
+                err,
+                rollout_id: rollout_id.to_string(),
+            }
+            .handle(&ctx)
+            .await;
+            return;
+        }
     }
 
     // Boot-recovery is the retroactive-confirm path; for non-confirmable

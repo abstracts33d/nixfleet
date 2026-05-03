@@ -58,7 +58,7 @@ fn fleet_with_single_wave_host(hostname: &str, closure: &str, soak_minutes: u32)
             schema_version: 1,
             signed_at: Some(Utc::now()),
             ci_commit: Some("abc12345".to_string()),
-            signature_algorithm: None,
+            signature_algorithm: "ed25519".into(),
         },
     }
 }

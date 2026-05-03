@@ -17,18 +17,13 @@ pub fn compute_rollout_id_for_channel(
         .signed_at
         .ok_or_else(|| anyhow!("fleet.meta.signedAt is None — cannot project manifest"))?;
     let ci_commit = fleet.meta.ci_commit.as_deref();
-    let signature_algorithm = fleet
-        .meta
-        .signature_algorithm
-        .as_deref()
-        .unwrap_or("ed25519");
     let manifest = match project_manifest(
         fleet,
         channel,
         fleet_resolved_hash,
         signed_at,
         ci_commit,
-        signature_algorithm,
+        &fleet.meta.signature_algorithm,
     )? {
         Some(m) => m,
         None => return Ok(None),
@@ -118,7 +113,7 @@ pub fn project_manifest(
             schema_version: 1,
             signed_at: Some(signed_at),
             ci_commit: ci_commit.map(|c| c.to_string()),
-            signature_algorithm: Some(signature_algorithm.to_string()),
+            signature_algorithm: signature_algorithm.to_string(),
         },
     }))
 }

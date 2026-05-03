@@ -643,7 +643,8 @@ const FIXTURE_REVOCATIONS: &str = r#"{
   "meta": {
     "schemaVersion": 1,
     "signedAt": "2026-04-28T10:00:00Z",
-    "ciCommit": "abc12345"
+    "ciCommit": "abc12345",
+    "signatureAlgorithm": "ed25519"
   },
   "revocations": [
     {
@@ -722,7 +723,7 @@ fn verify_revocations_rejects_unsigned() {
     let signing_key = fresh_signing_key();
     let trust = trust_root_for(&signing_key);
     let json = r#"{
-      "meta": { "schemaVersion": 1, "signedAt": null, "ciCommit": "abc12345" },
+      "meta": { "schemaVersion": 1, "signedAt": null, "ciCommit": "abc12345", "signatureAlgorithm": "ed25519" },
       "revocations": [],
       "schemaVersion": 1
     }"#;
@@ -747,7 +748,8 @@ fn verify_revocations_empty_list_is_valid() {
       "meta": {
         "schemaVersion": 1,
         "signedAt": "2026-04-28T10:00:00Z",
-        "ciCommit": "abc12345"
+        "ciCommit": "abc12345",
+        "signatureAlgorithm": "ed25519"
       },
       "revocations": [],
       "schemaVersion": 1

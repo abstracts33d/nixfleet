@@ -60,7 +60,7 @@ mod tests {
             schema_version: 1,
             signed_at: Some("2026-04-30T12:00:00Z".parse().unwrap()),
             ci_commit: Some("def45678".into()),
-            signature_algorithm: Some("ed25519".into()),
+            signature_algorithm: "ed25519".into(),
         }
     }
 

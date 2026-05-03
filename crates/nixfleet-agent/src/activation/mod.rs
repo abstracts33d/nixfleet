@@ -151,11 +151,11 @@ mod tests {
             closure_hash: "abc-test".to_string(),
             channel_ref: "stable@deadbeef".to_string(),
             evaluated_at: chrono::Utc::now(),
-            rollout_id: Some("stable@deadbeef".to_string()),
+            rollout_id: "stable@deadbeef".to_string(),
             wave_index: Some(0),
             activate: None,
-            signed_at: None,
-            freshness_window_secs: None,
+            signed_at: chrono::Utc::now(),
+            freshness_window_secs: 3600,
             compliance_mode: None,
         };
         let client = reqwest::Client::new();

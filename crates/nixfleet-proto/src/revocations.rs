@@ -37,7 +37,7 @@ mod tests {
             schema_version: 1,
             signed_at: Some("2026-04-28T10:00:00Z".parse().unwrap()),
             ci_commit: Some("abc12345".into()),
-            signature_algorithm: None,
+            signature_algorithm: "ed25519".into(),
         }
     }
 

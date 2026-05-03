@@ -177,7 +177,7 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
                 schema_version: 1,
                 signed_at: Some(signed_at),
                 ci_commit: ci_commit.clone(),
-                signature_algorithm: Some(config.signature_algorithm.clone()),
+                signature_algorithm: config.signature_algorithm.clone(),
             },
         };
         let revs_json = serde_json::to_string(&revs)
@@ -552,7 +552,7 @@ pub fn stamp_meta(
 ) {
     resolved.meta.signed_at = Some(signed_at);
     resolved.meta.ci_commit = ci_commit;
-    resolved.meta.signature_algorithm = Some(signature_algorithm.to_string());
+    resolved.meta.signature_algorithm = signature_algorithm.to_string();
 }
 
 pub fn canonicalize_resolved(resolved: &FleetResolved) -> Result<String> {
@@ -645,7 +645,7 @@ mod tests {
                 schema_version: 1,
                 signed_at: None,
                 ci_commit: None,
-                signature_algorithm: None,
+                signature_algorithm: "ed25519".into(),
             },
         }
     }
@@ -674,7 +674,7 @@ mod tests {
         stamp_meta(&mut r, ts, Some("deadbeef".into()), "ed25519");
         assert_eq!(r.meta.signed_at, Some(ts));
         assert_eq!(r.meta.ci_commit.as_deref(), Some("deadbeef"));
-        assert_eq!(r.meta.signature_algorithm.as_deref(), Some("ed25519"));
+        assert_eq!(r.meta.signature_algorithm.as_str(), "ed25519");
     }
 
     #[test]
@@ -798,7 +798,7 @@ mod tests {
                 schema_version: 1,
                 signed_at: None,
                 ci_commit: None,
-                signature_algorithm: None,
+                signature_algorithm: "ed25519".into(),
             },
         }
     }

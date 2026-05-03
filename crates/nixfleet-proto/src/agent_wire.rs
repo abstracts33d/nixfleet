@@ -64,19 +64,17 @@ pub struct EvaluatedTarget {
     pub channel_ref: String,
     pub evaluated_at: DateTime<Utc>,
     /// Format: `<channel>@<short-ci-commit-or-closure>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rollout_id: Option<String>,
-    /// 0-based index in `fleet.waves[host.channel]`.
+    pub rollout_id: String,
+    /// 0-based index in `fleet.waves[host.channel]`. None for channels
+    /// without a wave plan (single-host channels).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wave_index: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activate: Option<ActivateBlock>,
     /// `meta.signedAt` of the producing fleet.resolved — relayed so
     /// the agent runs a defense-in-depth freshness check.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signed_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub freshness_window_secs: Option<u32>,
+    pub signed_at: DateTime<Utc>,
+    pub freshness_window_secs: u32,
     /// `disabled` | `permissive` | `enforce` | `auto`. None → agent
     /// auto-detects via collector-unit presence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,7 +117,8 @@ pub enum FetchResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RollbackSignal {
-    /// `<channel>@<short>` (legacy) or content-addressed rolloutId.
+    /// Content-addressed rolloutId of the failed rollout the CP is asking
+    /// the agent to revert from.
     pub rollout: String,
     /// Provenance only; the agent rolls to its own boot-loader prior entry.
     pub target_ref: String,

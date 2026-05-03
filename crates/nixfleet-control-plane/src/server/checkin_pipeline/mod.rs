@@ -231,7 +231,7 @@ pub(super) mod tests {
                         .with_timezone(&Utc),
                 ),
                 ci_commit: Some("abc12345".to_string()),
-                signature_algorithm: Some("ed25519".to_string()),
+                signature_algorithm: "ed25519".to_string(),
             },
         }
     }

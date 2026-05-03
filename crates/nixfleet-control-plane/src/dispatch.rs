@@ -94,19 +94,25 @@ pub fn decide_target(
             .map(|i| i as u32)
     });
 
-    // Optional fields fail open on agents that pre-date them.
-    let signed_at = fleet.meta.signed_at;
+    // Both invariants per the verified-artifact contract: §4 requires
+    // `meta.signedAt`, and the host's channel exists by construction
+    // (we already resolved `host.channel` above).
+    let signed_at = fleet
+        .meta
+        .signed_at
+        .expect("verified artifact carries meta.signedAt per §4 contract");
     let freshness_window_secs = fleet
         .channels
         .get(&host.channel)
-        .map(|ch| ch.freshness_window.saturating_mul(60));
+        .map(|ch| ch.freshness_window.saturating_mul(60))
+        .expect("host's declared channel resolves in verified fleet");
 
     Decision::Dispatch {
         target: EvaluatedTarget {
             closure_hash: target_closure.clone(),
             channel_ref: rollout_id.clone(),
             evaluated_at: now,
-            rollout_id: Some(rollout_id.clone()),
+            rollout_id: rollout_id.clone(),
             wave_index,
             activate: Some(ActivateBlock {
                 confirm_window_secs,
@@ -180,7 +186,7 @@ mod tests {
                         .with_timezone(&Utc),
                 ),
                 ci_commit: Some("abc12345deadbeef".to_string()),
-                signature_algorithm: None,
+                signature_algorithm: "ed25519".into(),
             },
         }
     }
@@ -357,7 +363,7 @@ mod tests {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         assert_eq!(target.channel_ref, rollout_id);
         assert_eq!(target.evaluated_at, now());
-        assert_eq!(target.rollout_id.as_deref(), Some(rollout_id.as_str()));
+        assert_eq!(target.rollout_id, rollout_id);
         assert_eq!(wave_index, None);
         assert_eq!(target.wave_index, None);
         let activate = target.activate.expect("activate block populated");

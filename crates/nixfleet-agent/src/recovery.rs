@@ -132,7 +132,10 @@ async fn decide_and_run<R: Reporter>(
     }
 
     let boot_id = crate::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
-    // LOADBEARING: signed_at/freshness_window_secs None — freshness already passed at dispatch.
+    // confirm_target does not re-run the freshness gate; signed_at /
+    // freshness_window_secs are present only to satisfy the schema. The
+    // ActivateBlock.confirm_endpoint is the only field this path actually
+    // reads downstream.
     let synthetic_target = EvaluatedTarget {
         closure_hash: dispatched.closure_hash.clone(),
         channel_ref: dispatched.channel_ref.clone(),
@@ -145,8 +148,8 @@ async fn decide_and_run<R: Reporter>(
             confirm_window_secs: 0,
             confirm_endpoint: dispatched.confirm_endpoint.clone(),
         }),
-        signed_at: None,
-        freshness_window_secs: None,
+        signed_at: dispatched.dispatched_at,
+        freshness_window_secs: 0,
         compliance_mode: None,
     };
 
@@ -231,7 +234,7 @@ mod tests {
         LastDispatchRecord {
             closure_hash: closure.to_string(),
             channel_ref: "stable@deadbeef".to_string(),
-            rollout_id: Some("stable@deadbeef".to_string()),
+            rollout_id: "stable@deadbeef".to_string(),
             compliance_mode: None,
             confirm_endpoint: "/v1/agent/confirm".to_string(),
             dispatched_at: Utc::now(),

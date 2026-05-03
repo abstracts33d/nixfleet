@@ -270,7 +270,7 @@ mod tests {
                 schema_version: 1,
                 signed_at: Some(Utc::now()),
                 ci_commit: Some("abc12345".into()),
-                signature_algorithm: None,
+                signature_algorithm: "ed25519".into(),
             },
         }
     }

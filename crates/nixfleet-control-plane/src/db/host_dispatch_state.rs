@@ -286,15 +286,7 @@ impl HostDispatchState<'_> {
                 .to_string(),
             };
 
-            // Legacy fallback: parse `<channel>@<ref>` for pre-content-addressed rows.
-            let channel = if !row_channel.is_empty() {
-                row_channel
-            } else {
-                rollout_id
-                    .split_once('@')
-                    .map(|(c, _)| c.to_string())
-                    .unwrap_or_default()
-            };
+            let channel = row_channel;
 
             let entry = by_rollout
                 .entry(rollout_id.clone())
@@ -642,21 +634,6 @@ mod tests {
         );
         let stored = r.last_healthy_since.get("ohm").expect("Healthy host has soak ts");
         assert_eq!(stored.timestamp(), now.timestamp());
-    }
-
-    #[test]
-    fn active_rollouts_snapshot_legacy_channel_fallback() {
-        let db = fresh_db();
-        let future = Utc::now() + chrono::Duration::seconds(120);
-        let mut row = dispatch_insert("ohm", "stable@abc12345", "system-r1", future);
-        row.channel = "";
-        db.host_dispatch_state().record_dispatch(&row).unwrap();
-        let snap = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
-        assert_eq!(snap.len(), 1);
-        assert_eq!(
-            snap[0].channel, "stable",
-            "legacy <channel>@<ref> rolloutIds must still resolve via split fallback",
-        );
     }
 
     #[test]
