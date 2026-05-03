@@ -9,6 +9,11 @@ use nixfleet_proto::FleetResolved;
 use std::str::FromStr;
 
 /// Rollout-level state. Wire form is a string via serde shim.
+///
+/// LOADBEARING: `Halted` is operator-action-required — reconciler stops
+/// advancing the rollout and emits no further actions until the operator
+/// transitions back to `Executing`. Don't auto-resume.
+///
 /// `Planning` is reserved; current CP transitions Planning → Executing
 /// inline so callers rarely observe it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

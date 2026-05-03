@@ -1,4 +1,8 @@
-//! Pure wave-staging compliance gate; resolution-by-replacement, per-wave, signature-aware.
+//! Pure wave-staging compliance gate; resolution-by-replacement, per-wave.
+//!
+//! LOADBEARING: `Mismatch`/`Malformed` signature-status events are excluded
+//! via `counts_for_gate()` so an attacker with a forged signature can't
+//! grief deploys; mTLS-authenticated unsigned events still count.
 
 use nixfleet_proto::agent_wire::ReportEvent;
 use nixfleet_proto::compliance::GateMode;
@@ -19,7 +23,7 @@ fn record_is_compliance_failure(record: &ReportRecord) -> bool {
     }
 }
 
-/// `None` current_rollout is conservative — all failure events count.
+/// GOTCHA: `None` current_rollout (legacy / first checkin) → all events count.
 pub fn outstanding_failures<'a>(
     records: &'a [ReportRecord],
     current_rollout: Option<&str>,

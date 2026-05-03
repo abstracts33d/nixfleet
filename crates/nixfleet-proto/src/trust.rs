@@ -1,5 +1,9 @@
-//! Trust root declarations. Algorithm is a property of the key, not the
-//! artifact — verifier matches `(artifact, sig) → trust root → algorithm`.
+//! Trust root declarations.
+//!
+//! LOADBEARING: algorithm is a property of the key, not the artifact.
+//! Verifier matches `(artifact, sig) → trust root → algorithm` — artifacts
+//! MUST NOT carry their own algorithm claim (an attacker could otherwise
+//! downgrade by lying about which algo signed the bytes).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -34,8 +38,8 @@ impl TrustConfig {
     pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 }
 
-/// `reject_before` is the compromise switch — artifacts older than this
-/// are refused regardless of signing key.
+/// LOADBEARING: `reject_before` is the compromise kill-switch — artifacts
+/// signed before this timestamp are refused regardless of which key signed.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeySlot {
@@ -50,7 +54,8 @@ pub struct KeySlot {
 }
 
 impl KeySlot {
-    /// `[current, previous]` (newer first) — first-match wins on rotation.
+    /// LOADBEARING: returns `[current, previous]` (newer first). Verifiers
+    /// iterate first-match-wins; reordering breaks the rotation grace window.
     pub fn active_keys(&self) -> Vec<TrustedPubkey> {
         let mut keys = Vec::with_capacity(2);
         if let Some(k) = &self.current {

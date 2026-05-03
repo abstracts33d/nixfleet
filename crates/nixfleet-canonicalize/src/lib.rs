@@ -1,5 +1,9 @@
 #![allow(clippy::doc_lazy_continuation)]
-//! JCS canonicalization. Single source of truth for every signer/verifier.
+//! JCS canonicalization (RFC 8785).
+//!
+//! LOADBEARING: every signer and verifier in the fleet routes through this
+//! module. Do not reimplement in Nix, shell, or ad-hoc Rust — drift here
+//! invalidates signatures fleet-wide.
 
 use anyhow::{Context, Result};
 use serde::Serialize;

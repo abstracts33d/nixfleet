@@ -8,7 +8,10 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::path::Path;
 use std::sync::Arc;
 
-/// `allow_unauthenticated()` is required: `/v1/enroll` cannot present a cert; route middleware enforces auth.
+/// LOADBEARING: `allow_unauthenticated()` is required because `/v1/enroll`
+/// cannot present a client cert (it bootstraps the agent's identity). Per-
+/// route middleware enforces auth — don't tighten the TLS layer to require
+/// client certs without first carving out enroll.
 pub fn build_server_config(
     cert_path: &Path,
     key_path: &Path,

@@ -4,11 +4,15 @@
 use chrono::{DateTime, Utc};
 use nixfleet_proto::agent_wire::EvaluatedTarget;
 
+/// LOADBEARING: clock-skew slack added to the freshness window — without it,
+/// a target signed `window` seconds ago is rejected the instant the agent's
+/// clock is ahead by 1s.
 pub const CLOCK_SKEW_SLACK_SECS: i64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FreshnessCheck {
     Fresh,
+    /// Caller must refuse activation and post `StaleTarget`.
     Stale {
         signed_at: DateTime<Utc>,
         freshness_window_secs: u32,

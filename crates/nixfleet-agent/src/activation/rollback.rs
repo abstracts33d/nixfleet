@@ -1,6 +1,8 @@
 //! Rollback pipeline: nix-env --rollback → discover target → fire → poll.
-//! Bypasses `nixos-rebuild --rollback` which evaluates `<nixpkgs/nixos>`
-//! even on rollback and fails in the agent's NIX_PATH-less sandbox.
+//!
+//! FOOTGUN: bypasses `nixos-rebuild --rollback` because `nixos-rebuild-ng`
+//! evaluates `<nixpkgs/nixos>` even on rollback, which fails in the agent's
+//! NIX_PATH-less sandbox.
 
 use anyhow::{Context, Result};
 use tokio::process::Command;

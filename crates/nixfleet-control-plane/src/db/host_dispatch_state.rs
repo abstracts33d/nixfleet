@@ -1,4 +1,8 @@
 //! Operational dispatch row, one per host (soft state); orphan-confirm recovers from loss.
+//!
+//! LOADBEARING: paired with `dispatch_history` (append-only audit). This module
+//! UPSERTs one row per host (replaced on every new dispatch); audit trail must
+//! survive in `dispatch_history` even after the operational row is overwritten.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -41,7 +45,8 @@ pub struct HostDispatchState<'a> {
 }
 
 impl HostDispatchState<'_> {
-    /// Upserts operational row + appends audit row in one transaction.
+    /// LOADBEARING: operational UPSERT + history append in one txn — partial
+    /// failure leaves audit trail aligned with operational state.
     pub fn record_dispatch(&self, row: &DispatchInsert<'_>) -> Result<()> {
         let mut guard = super::lock_conn(self.conn)?;
         let txn = guard.transaction().context("begin dispatch txn")?;

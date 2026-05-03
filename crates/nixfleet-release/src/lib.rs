@@ -164,8 +164,9 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
 
     write_release(&config.release_dir, &config.artifact_name, canonical.as_bytes(), &sig_bytes)?;
 
-    // Revocations artifact: empty list still produces the file so
-    // CP-rebuild recovery has something to prime cert_revocations from.
+    // LOADBEARING: empty list still emits the file — CP-rebuild recovery
+    // primes `cert_revocations` from this and a missing file would unlock
+    // every revoked cert on rebuild.
     let mut revocations_paths: Vec<PathBuf> = Vec::new();
     if let Some(attr) = &config.revocations_attr {
         let entries = eval_revocations(config, attr)?;

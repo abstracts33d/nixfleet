@@ -1,4 +1,9 @@
-//! Orphan-confirm + soak-state recovery; only synthesises state when agent claims match verified fleet.
+//! Orphan-confirm + soak-state recovery for CP rebuild mid-flight.
+//!
+//! LOADBEARING: only synthesises state when the agent's claim matches the
+//! verified fleet (closure AND rollout id). Closure mismatch / missing
+//! snapshot / missing host declaration → fall through (caller decides 410).
+//! Failures here are non-fatal — agent's local rollback still fires on 410.
 
 use std::sync::Arc;
 
@@ -60,7 +65,9 @@ async fn validate_orphan_recovery(
         return None;
     }
 
-    // Closure match alone doesn't prove `req.rollout` is THIS snapshot's id; CI re-sign produces a new id.
+    // FOOTGUN: closure match alone doesn't prove `req.rollout` is THIS
+    // snapshot's id — content-addressed manifests mean a CI re-sign with the
+    // same closure but different host_set/wave_layout produces a new rolloutId.
     let expected_rollout_id = match nixfleet_reconciler::compute_rollout_id_for_channel(
         &fleet,
         &fleet_resolved_hash,

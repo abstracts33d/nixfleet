@@ -1,4 +1,8 @@
 //! Agent ↔ control-plane wire types.
+//!
+//! LOADBEARING: additions within a major version MUST be backwards-compatible
+//! (older consumers serde-ignore unknown fields). Bump `PROTOCOL_MAJOR_VERSION`
+//! for any breaking change — the CP rejects mismatched majors with 426.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

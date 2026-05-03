@@ -9,6 +9,9 @@ use nixfleet_proto::{
 
 const CONFIRM_ENDPOINT: &str = "/v1/agent/confirm";
 
+// FOOTGUN: PartialEq is intentionally NOT derived. EvaluatedTarget doesn't
+// implement it and `evaluated_at` equality wouldn't be meaningful anyway.
+// Tests pattern-match on variants; don't add a derive to "fix" assertion sites.
 #[derive(Debug, Clone)]
 pub enum Decision {
     Converged,
@@ -27,7 +30,10 @@ pub enum Decision {
     },
 }
 
-/// `fleet_resolved_hash` anchors rolloutId derivation to the verified snapshot's canonical bytes.
+/// LOADBEARING: `fleet_resolved_hash` anchors rolloutId to the verified
+/// snapshot's canonical bytes — different snapshot at the same channel ref
+/// produces a different rolloutId, by design. Drift breaks the wire promise
+/// that every advertised rolloutId resolves to a CI-signed manifest.
 pub fn decide_target(
     hostname: &str,
     request: &CheckinRequest,
@@ -64,7 +70,6 @@ pub fn decide_target(
         }
     }
 
-    // Drift breaks the wire promise that every advertised rolloutId resolves to a CI-signed manifest.
     let rollout_id = match nixfleet_reconciler::compute_rollout_id_for_channel(
         fleet,
         fleet_resolved_hash,

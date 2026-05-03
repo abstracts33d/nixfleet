@@ -139,9 +139,9 @@ in
       stamp_deadline = time.monotonic() + 15
       op_state = ""
       audit_terminal = ""
-      # Inline SQL not heredoc: nixosTest dedents to column 0; heredocs
-      # nested inside this while loop sit at column 4 after dedent and
-      # bash treats `SQL` as content rather than a delimiter.
+      # FOOTGUN: nixosTest dedents testScript to column 0; heredocs nested
+      # in this while loop sit at column 4 after dedent and bash treats
+      # the EOF marker as content. Use inline SQL strings, not heredocs.
       op_q = (
           f"SELECT state FROM host_dispatch_state "
           f"WHERE hostname='${agentName}' "

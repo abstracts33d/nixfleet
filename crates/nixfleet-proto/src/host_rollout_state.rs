@@ -1,5 +1,8 @@
-//! Per-host rollout state machine. Single source of truth for both CP
-//! (SQL CHECK round-trip) and reconciler decision-procedure.
+//! Per-host rollout state machine.
+//!
+//! LOADBEARING: single source of truth for both CP (SQL CHECK round-trip)
+//! and reconciler decision-procedure. Don't fork the variant set — adding
+//! a state requires updating the SQL CHECK constraint in the CP migration.
 
 use serde::{Deserialize, Serialize};
 

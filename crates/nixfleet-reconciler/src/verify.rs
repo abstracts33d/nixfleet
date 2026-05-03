@@ -135,7 +135,8 @@ pub fn verify_artifact(
     )
 }
 
-/// Uses `verify_strict` to reject malleable signatures.
+/// LOADBEARING: `verify_strict` (not `verify`) — rejects malleable signatures
+/// for root-of-trust keys.
 fn verify_ed25519(
     canonical_bytes: &[u8],
     signature: &[u8],
@@ -171,8 +172,9 @@ fn verify_ed25519(
         .map_err(|_| VerifyError::BadSignature)
 }
 
-/// Pubkey: 64-byte X||Y base64. Sig: 64-byte R||S. Normalises high-s
-/// to low-s before verifying (TPM2_Sign emits ~50% high-s).
+/// FOOTGUN: TPM2_Sign emits ~50% high-s ECDSA signatures; we MUST normalise
+/// to low-s before verifying or every other lab signature fails as BadSignature.
+/// Pubkey: 64-byte X||Y base64. Sig: 64-byte R||S.
 fn verify_ecdsa_p256(
     canonical_bytes: &[u8],
     signature: &[u8],
