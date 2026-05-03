@@ -195,6 +195,24 @@ in
               if pending:
                   time.sleep(2)
           if pending:
+              # Dump every relevant journal so the operator doesn't
+              # have to re-run with --keep-failed to diagnose. CP
+              # journal since the cursor reveals whether any agent
+              # tried to connect at all (TLS handshake errors land
+              # here too); each agent's microvm@<vm>.service journal
+              # reveals what the guest's nixfleet-agent.service did
+              # after the readiness gate (typical: the agent crashed
+              # loading certs, or hit a TLS error on first checkin).
+              cp_dump = host.succeed(
+                  "journalctl -u nixfleet-control-plane.service "
+                  f"--since='{cursor}' --no-pager"
+              )
+              print(f"=== CP journal since {cursor} ===\n{cp_dump}\n=== end ===")
+              for hostname in pending:
+                  agent_dump = host.succeed(
+                      f"journalctl -u microvm@{hostname}.service --no-pager | tail -120"
+                  )
+                  print(f"=== microvm@{hostname}.service (last 120 lines) ===\n{agent_dump}\n=== end ===")
               raise Exception(
                   f"agents did not check in within {timeout_s}s after {cursor}: {pending}"
               )
