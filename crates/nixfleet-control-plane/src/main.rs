@@ -112,11 +112,12 @@ struct ServeFlags {
     #[arg(long, env = "NIXFLEET_CP_ROLLOUTS_DIR")]
     rollouts_dir: Option<PathBuf>,
 
-    /// URL template containing literal `{rolloutId}` token for HTTP-fetched manifests.
+    /// FOOTGUN: must contain literal `{rolloutId}` token for substitution;
+    /// both this and the signature template must be set together (or both omitted).
     #[arg(long, env = "NIXFLEET_CP_ROLLOUTS_SOURCE_ARTIFACT_URL_TEMPLATE")]
     rollouts_source_artifact_url_template: Option<String>,
 
-    /// Signature URL template; both artifact + signature required to enable HTTP fetch.
+    /// Paired with artifact template — both required to enable HTTP fetch.
     #[arg(long, env = "NIXFLEET_CP_ROLLOUTS_SOURCE_SIGNATURE_URL_TEMPLATE")]
     rollouts_source_signature_url_template: Option<String>,
 

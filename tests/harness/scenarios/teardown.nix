@@ -1,3 +1,7 @@
+# LOADBEARING: post-wipe recovery proof — verifies cert_revocations
+# replays from disk and `last_confirmed_at` echoes on the first post-wipe
+# checkin. Without this an operator wiping CP state would silently
+# unlock revoked certs and orphan in-flight rollouts.
 {
   lib,
   harnessLib,

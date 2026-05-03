@@ -307,6 +307,9 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let server_handle = axum_server::Handle::new();
     let signal_handle = server_handle.clone();
     let signal_cancel = cancel.clone();
+    // LOADBEARING: graceful_shutdown FIRST (drains in-flight HTTP), THEN
+    // cancel the token (signals background tasks). Reversing causes timers
+    // to abort mid-write while requests are still completing.
     tokio::spawn(async move {
         if let Err(err) = tokio::signal::ctrl_c().await {
             tracing::warn!(error = %err, "ctrl_c handler install failed; relying on hard shutdown");

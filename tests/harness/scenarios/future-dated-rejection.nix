@@ -1,3 +1,6 @@
+# LOADBEARING: validates `meta.signedAt > now + CLOCK_SKEW_SLACK_SECS` is
+# rejected as `FutureDated` — a CI key compromise (pre-signed manifest with
+# future signedAt) shouldn't pass freshness; rotate via `reject_before`.
 {
   pkgs,
   signedFixture,

@@ -1,5 +1,9 @@
 //! Runtime compliance gate: trigger collector + verify fresh evidence
-//! before confirm, so rollouts don't promote on stale PASS data.
+//! before confirm.
+//!
+//! LOADBEARING: evidence freshness is gated against `activation_completed_at`,
+//! NOT wall-clock — without this, a rollout could promote on stale PASS
+//! evidence collected before the closure switched.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

@@ -119,7 +119,9 @@ pub(super) fn spawn_reconcile_loop(
                 )
             };
 
-            // Overwrite only if new snapshot's signed_at >= existing; preserves upstream-fresh state.
+            // LOADBEARING: single write-lock atomic swap — dispatch readers
+            // can never see a half-built snapshot. Compare signed_at (not
+            // wall clock) so an out-of-order tick doesn't downgrade fresh state.
             if let Some(fleet) = verified_fleet {
                 let mut guard = state.verified_fleet.write().await;
                 let should_overwrite = match guard.as_ref() {

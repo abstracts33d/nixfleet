@@ -1,3 +1,6 @@
+# LOADBEARING: regression for the atomic VerifiedFleetSnapshot pair —
+# `(fleet, fleet_resolved_hash)` are held under one RwLock so a concurrent
+# checkin reader never sees a half-swapped snapshot from a torn write.
 {
   lib,
   pkgs,

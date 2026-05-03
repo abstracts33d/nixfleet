@@ -13,7 +13,9 @@ pub struct RolloutState<'a> {
 }
 
 impl RolloutState<'_> {
-    /// `expected_from = None` upserts; `Some(prev)` is a state-machine-guarded UPDATE.
+    /// LOADBEARING: `expected_from = Some(prev)` is the state-machine guard —
+    /// concurrent reconcilers can't both flip `Failed → Reverted`; the second
+    /// UPDATE is a no-op (returns 0). `None` upserts unconditionally.
     pub fn transition_host_state(
         &self,
         hostname: &str,
@@ -72,7 +74,8 @@ impl RolloutState<'_> {
         Ok(n)
     }
 
-    /// Nulls `last_healthy_since`; leaves `host_state` for the reconciler to transition.
+    /// GOTCHA: nulls only `last_healthy_since` — `host_state` is left for the
+    /// reconciler. The soak timer must restart on next Healthy attestation.
     pub fn clear_healthy_marker(&self, hostname: &str, rollout_id: &str) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let n = guard

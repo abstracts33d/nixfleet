@@ -1,5 +1,9 @@
-//! `releases/rollouts/<rolloutId>.json` — signed per-channel rollout
-//! manifest. Identity = SHA-256 of canonical bytes; signed by `ciReleaseKey`.
+//! `releases/rollouts/<rolloutId>.json` — signed per-channel rollout manifest.
+//!
+//! LOADBEARING: rolloutId is the SHA-256 of canonical bytes (not a label).
+//! Verifiers MUST canonicalize, recompute the hash, and assert it matches
+//! before consuming any other field — `display_name` is decorative and any
+//! edit changes the hash, so tampered manifests fail this check.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,13 +21,13 @@ pub struct RolloutManifest {
 
     pub channel_ref: String,
 
-    /// SHA-256 hex of the `fleet.resolved` this manifest projects from.
-    /// Anchors the manifest to one signed snapshot to prevent
-    /// mix-and-match.
+    /// LOADBEARING: anchors the manifest to one signed `fleet.resolved`
+    /// snapshot — different snapshot produces a different rolloutId,
+    /// preventing cross-snapshot mix-and-match.
     pub fleet_resolved_hash: String,
 
-    /// MUST be sorted by `hostname` ascending — JCS sorts object keys
-    /// but not array elements, so producer's order is canonical order.
+    /// FOOTGUN: MUST be sorted by `hostname` ascending — JCS sorts object
+    /// keys but not array elements; producer's order IS the canonical order.
     pub host_set: Vec<HostWave>,
 
     pub health_gate: HealthGate,

@@ -1,3 +1,6 @@
+# LOADBEARING: validates the SQL-layer fix for the token-nonce TOCTOU race
+# between `token_seen()` and `record_token_nonce()`; pre-fix two concurrent
+# enrolls with the same nonce could both mint a cert.
 {
   pkgs,
   harnessLib,
