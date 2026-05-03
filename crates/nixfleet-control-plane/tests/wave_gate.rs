@@ -384,19 +384,10 @@ async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
         resp_pre_restart.target
     );
 
-    // 4. Kill the CP. Wait for the abort to actually drop the task —
-    //    awaiting the JoinHandle after abort() resolves once the task
-    //    has finished, which means its Db connection (and the SQLite
-    //    file lock) is released, and its listener slot is freed. This
-    //    replaces a fixed-duration sleep that was racing the kernel
-    //    TIME_WAIT under heavy parallel test load.
+    // LOADBEARING: await the JoinHandle so SQLite file lock + listener slot are released.
     handle1.abort();
     let _ = handle1.await;
 
-    // ── Second CP process, same DB ────────────────────────────
-    // Use a fresh port — `pick_free_port()` may hand back the
-    // same one if the kernel has released it, but we don't
-    // depend on that.
     let port2 = pick_free_port().await;
     let handle2 = spawn_with_signed_fleet(
         &dir,
@@ -411,13 +402,6 @@ async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
     )
     .await;
 
-    // 5. Re-issue the same checkin. The new CP has no in-memory
-    //    state from the prior process — only the SQLite DB. If
-    //    hydration is correct, the host_reports row from step 2
-    //    is loaded into the ring buffer, the projection sees it
-    //    under the same rollout id, and the gate blocks again.
-    //    If hydration is broken (silent), the ring is empty and
-    //    the host gets a fresh dispatch.
     let resp_post_restart = post_checkin(&client, port2, &checkin_after_failure).await;
     assert!(
         resp_post_restart.target.is_none(),
@@ -457,7 +441,6 @@ async fn permissive_mode_does_not_block_dispatch_despite_failure() {
     .await;
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
-    // Initial checkin gets a target.
     let resp1 = post_checkin(&client, port, &checkin_request(CURRENT_CLOSURE)).await;
     let dispatched_rollout = resp1
         .target
@@ -465,7 +448,6 @@ async fn permissive_mode_does_not_block_dispatch_despite_failure() {
         .and_then(|t| t.rollout_id.clone())
         .expect("first checkin dispatches");
 
-    // Post a signed failure for the dispatched rollout.
     let report = build_signed_compliance_failure(&host_sk, &dispatched_rollout, "auditLogging");
     let _: ReportResponse = client
         .post(format!("https://localhost:{port}/v1/agent/report"))
@@ -477,26 +459,8 @@ async fn permissive_mode_does_not_block_dispatch_despite_failure() {
         .await
         .unwrap();
 
-    // Under permissive, the next checkin's dispatch decision is
-    // unaffected. The host is already mid-flight (pending_confirm
-    // exists from step 1's record_dispatch), so we expect
-    // InFlight (target=None) — NOT a wave-gate block. To distinguish
-    // the two outcomes, the journal would carry "dispatch: no target
-    // (InFlight)" rather than "wave-staging gate blocked". That
-    // distinction isn't observable over the wire; the test asserts
-    // that under permissive, the gate's WaveGateOutcome::Permissive
-    // path is taken (validated by unit tests in wave_gate). The
-    // observable contract is "permissive does not 500" + "dispatch
-    // continues to behave as it does without compliance" — which we
-    // assert by posting a SECOND host's report and watching its
-    // dispatch decision below.
-    //
-    // For this 1-host channel: we re-request and confirm the channel
-    // gate code path didn't poison the response shape.
+    // GOTCHA: observable contract under permissive is "no 500"; InFlight (target=None) is fine.
     let resp2 = post_checkin(&client, port, &checkin_request(CURRENT_CLOSURE)).await;
-    // Under InFlight, target is None — that's fine. The point is the
-    // CP returned 200 with a valid CheckinResponse rather than
-    // surfacing an internal error from the gate path.
     assert_eq!(resp2.next_checkin_secs, 60);
 
     handle.abort();
