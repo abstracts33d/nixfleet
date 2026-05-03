@@ -16,10 +16,13 @@
 //! - The body shape matches the persisted `LastDispatchRecord`.
 //! - On 204 Acknowledged, the state-dir ends up with
 //!   `last_confirmed_at` written + `last_dispatched` cleared.
-//! - On 410 Gone, the state-dir's `last_dispatched` is also cleared
-//!   (rollback fires synthetically; we don't test the actual
-//!   rollback subprocess in this integration — that's covered by
-//!   harness-level scenarios).
+//! - On 410 Gone with a failing rollback (the unit-test reality —
+//!   no `/nix/var/nix/profiles/system` to flip), the state-dir's
+//!   `last_dispatched` is PRESERVED for next-boot retry. Clearing
+//!   on rollback failure would create invisible split-brain (CP
+//!   rolled back, host still on the new closure, agent forgot a
+//!   target ever existed). Rollback success path (record cleared)
+//!   is covered by harness-level scenarios.
 //!
 //! Wiremock supports plain HTTP only by default, which is fine for
 //! the recovery contract — what we're proving is the agent-side
@@ -93,7 +96,7 @@ async fn posted_confirm_acknowledged_clears_dispatch_writes_confirmed() {
 }
 
 #[tokio::test]
-async fn posted_confirm_410_clears_dispatch_attempts_rollback() {
+async fn posted_confirm_410_with_failing_rollback_preserves_dispatch() {
     let dir = TempDir::new().unwrap();
     let closure = "def-nixos-system-boot-recovery-cancelled";
     write_last_dispatched(dir.path(), &record(closure)).unwrap();
@@ -106,11 +109,15 @@ async fn posted_confirm_410_clears_dispatch_attempts_rollback() {
         .mount(&server)
         .await;
 
-    // run_boot_recovery on Cancelled invokes rollback() — which in
-    // a unit-test environment will fail because there's no
-    // `/nix/var/nix/profiles/system` to flip. The rollback's
-    // failure is tracing-only (best-effort); the recovery decision
-    // path still returns Ok and clears the dispatch record.
+    // run_boot_recovery on Cancelled invokes activation::rollback() —
+    // which in a unit-test environment fails because there's no
+    // `/nix/var/nix/profiles/system` to flip. Recovery still returns
+    // Ok (rollback failure is tracing-only). The contract under
+    // failed rollback: KEEP last_dispatched so the next-boot recovery
+    // retries. Clearing on failure would silently split-brain (CP
+    // rolled back, host still on new closure, agent forgot a target
+    // ever existed). Rollback-success → record-cleared is covered by
+    // harness scenarios.
     run_boot_recovery(
         &plain_client(),
         dir.path(),
@@ -122,8 +129,9 @@ async fn posted_confirm_410_clears_dispatch_attempts_rollback() {
     .expect("recovery returned Ok despite synthetic rollback failure");
 
     assert!(
-        read_last_dispatched(dir.path()).unwrap().is_none(),
-        "410 Cancelled must clear last_dispatched",
+        read_last_dispatched(dir.path()).unwrap().is_some(),
+        "410 Cancelled with failing rollback must PRESERVE last_dispatched \
+         (next-boot retry signal); clearing here would split-brain",
     );
     // last_confirmed_at NOT written (rollback path doesn't confirm).
     assert!(

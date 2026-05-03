@@ -175,13 +175,28 @@ async fn decide_and_run(
                     // it on failure would create invisible split-brain
                     // (CP rolled back, host still on the new closure,
                     // agent forgot a target ever existed).
-                    if let Err(err) = activation::rollback().await {
-                        tracing::error!(
-                            error = %err,
-                            "boot-recovery: rollback FAILED — leaving last_dispatched in place for next-boot retry",
-                        );
-                    } else {
-                        let _ = checkin_state::clear_last_dispatched(state_dir);
+                    //
+                    // `activation::rollback()` returns Ok(Failed { .. })
+                    // for in-band failures (nix-env exit ≠ 0, poll
+                    // timeout) and Err(_) only for spawn errors — we
+                    // must inspect the outcome, not just the Result.
+                    match activation::rollback().await {
+                        Ok(outcome) if outcome.success() => {
+                            let _ = checkin_state::clear_last_dispatched(state_dir);
+                        }
+                        Ok(outcome) => {
+                            tracing::error!(
+                                phase = ?outcome.phase(),
+                                exit_code = ?outcome.exit_code(),
+                                "boot-recovery: rollback FAILED — leaving last_dispatched in place for next-boot retry",
+                            );
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                error = %err,
+                                "boot-recovery: rollback errored — leaving last_dispatched in place for next-boot retry",
+                            );
+                        }
                     }
                 }
                 comms::ConfirmOutcome::Other => {
