@@ -123,11 +123,10 @@ in
       host.wait_for_open_port(8443)
       host.wait_for_unit("microvms.target", timeout=300)
       host.wait_for_unit("microvm@${agentName}.service", timeout=300)
-      wait_for_microvm_ready(host, "${agentName}")
 
       # Step 1: baseline — wait for the agent to land at least one
-      # checkin against the freshly-booted CP. Post-readiness the
-      # 5s-poll-cadence agent lands its first checkin within ~10s.
+      # checkin against the freshly-booted CP. Budget covers cold
+      # boot + first poll (5s cadence in this scenario).
       print("step 1: waiting for initial agent checkin…")
       pre_inject_cursor = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
       wait_for_journal_match(
@@ -135,7 +134,7 @@ in
           since_cursor=pre_inject_cursor,
           unit="nixfleet-control-plane.service",
           pattern="checkin received.*${agentName}",
-          timeout=30,
+          timeout=180,
           label="initial agent checkin",
       )
       print("step 1: baseline checkin observed for ${agentName}")

@@ -67,21 +67,19 @@ in
       for vm in ${builtins.toJSON agentNames}:
           host.wait_for_unit(f"microvm@{vm}.service", timeout=300)
 
-      # Two-phase timing: gate on guest-side readiness BEFORE starting
-      # the activity-budget timer. See `testScriptPrelude` in
-      # tests/harness/lib.nix for the full rationale (boot-time
-      # variance is host-dependent and unbounded; activity time is
-      # fast and predictable). Per-vm timeout is 600s for fleet-10 on
-      # constrained hardware; once all guests are ready, the
-      # harness-agent oneshot fires within seconds.
-      wait_for_microvms_ready(host, ${builtins.toJSON agentNames})
-
-      # Activity phase: the harness-agent oneshot fetches fleet.resolved
-      # over mTLS and emits `harness-agent-ok` when the curl + jq
-      # parse both succeed. With guests already at multi-user.target
-      # this is single-digit seconds; 60s is comfortable headroom for
-      # network-online ordering and journal flush.
-      deadline = time.monotonic() + 60
+      # Budget covers BOTH cold boot and activity. The agent units are
+      # oneshot+RemainAfterExit; success == one successful mTLS fetch
+      # of the fixture. Scales with agent count because mass-booting
+      # microVMs on a single host VM serialises on qemu start, guest
+      # kernel cold-boot, and the curl that depends on a working
+      # default route.
+      #
+      # `max(180, 90 + 30*N)` is empirical: covers commodity Linux
+      # lab hardware where microvm guests can take 80-100s to reach
+      # the login banner. Generous over-provisioning is fine — the
+      # deadline is the *upper bound*, the loop short-circuits as
+      # soon as every agent posts the marker.
+      deadline = time.monotonic() + max(180, 90 + 30 * len(${builtins.toJSON agentNames}))
       pending = set(${builtins.toJSON agentNames})
       while pending and time.monotonic() < deadline:
           done = set()
@@ -100,10 +98,8 @@ in
               time.sleep(2)
 
       if pending:
-          raise Exception(
-              f"agents did not report harness-agent-ok within 60s of "
-              f"reaching multi-user: {pending}"
-          )
+          budget = max(180, 90 + 30 * len(${builtins.toJSON agentNames}))
+          raise Exception(f"agents did not report harness-agent-ok within {budget}s: {pending}")
 
       print("fleet-harness-smoke: all agents fetched fleet.resolved.json over mTLS")
     '';

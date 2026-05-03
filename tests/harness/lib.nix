@@ -353,24 +353,16 @@
   };
 
   # Python helpers prepended to every scenario's `testScript` by
-  # `mkFleetScenario`. Scenarios call these instead of reimplementing
-  # deadline-grep-sleep loops.
+  # `mkFleetScenario`. Scenarios call `wait_for_journal_match` instead
+  # of reimplementing the deadline-grep-sleep loop.
   #
-  # The two-stage timing model these helpers enforce:
-  #   1. Boot phase — `host.wait_for_unit("microvm@<name>.service")`
-  #      returns when qemu launches the guest, NOT when the guest's
-  #      systemd has reached multi-user.target. On slow hardware
-  #      (cold cache, memory pressure, CPU-shared CI) the gap can be
-  #      multi-minute. Wait for `wait_for_microvm_ready` to gate on
-  #      the actual readiness signal, not the launcher.
-  #   2. Activity phase — once the guest is ready, the agent's
-  #      checkin / harness-agent loop is fast (single-digit seconds).
-  #      Scenarios then set short, predictable budgets for the
-  #      activity they care about.
-  #
-  # Without the gate, every scenario's wallclock budget had to absorb
-  # both phases under whatever the slowest historical lab observed,
-  # which produces "bump deadline" feedback loops on every new host.
+  # On boot timing: agent service modules carry an `ExecStartPre` that
+  # blocks on `ip route show default` until the guest has a default
+  # route, so checkin attempts only fire once networking is genuinely
+  # ready. This is the right place for the wait — guest-side, in
+  # systemd's ordering — and removes the need for a test-driver-side
+  # readiness gate. Scenarios use generous activity budgets that
+  # cover boot + agent activity end-to-end.
   testScriptPrelude = ''
     import time
 
@@ -404,82 +396,6 @@
             + str(timeout) + "s\n=== " + unit + " journal ===\n"
             + dump + "\n=== end ==="
         )
-
-    def wait_for_microvm_ready(host, vm, timeout=600, sleep_secs=3):
-        """Block until guest `vm` has both multi-user AND network-online.
-
-        microvm@<vm>.service surfaces the guest's serial console in
-        the host journal. We require BOTH targets to be reached:
-
-        - `Multi-User System` proves systemd reached the
-          login-banner stage (so any wantedBy=multi-user.target
-          service has had a chance to start).
-        - `Network is Online` proves DHCP/networkd installed a
-          default route. Without this, real-binary agents that
-          depend on network-online.target have started but get
-          ENETUNREACH on their first connect because DHCP hasn't
-          completed yet — produces "Network is unreachable" errors
-          that look like config bugs but are pure boot-ordering.
-
-        `timeout` is generous (default 600s) because cold-cache or
-        memory-pressured hosts can spend several minutes per guest
-        in NixOS activation. The point of this helper is to absorb
-        that variability HERE, in one place, so individual scenario
-        budgets can stay short and predictable.
-
-        On timeout, dumps the launcher unit's journal so the
-        operator can see what stage the guest got stuck in (most
-        commonly: `A start job is running for NixOS Activation
-        (Xs / no limit)`).
-        """
-        unit = "microvm@" + vm + ".service"
-        deadline = time.monotonic() + timeout
-        # Both targets must show in the journal. Patterns match both
-        # the upstream string ("Multi-User System") and the spelled-
-        # out variant ("multi-user.target") that some systemd versions
-        # emit.
-        multi_user_re = "Reached target (Multi-User System|multi-user)"
-        network_online_re = "Reached target (Network is Online|network-online)"
-        seen_multi_user = False
-        seen_network_online = False
-        while time.monotonic() < deadline:
-            rc_mu, _ = host.execute(
-                "journalctl -u " + unit + " --no-pager "
-                + "| grep -E " + repr(multi_user_re)
-            )
-            if rc_mu == 0:
-                seen_multi_user = True
-            rc_no, _ = host.execute(
-                "journalctl -u " + unit + " --no-pager "
-                + "| grep -E " + repr(network_online_re)
-            )
-            if rc_no == 0:
-                seen_network_online = True
-            if seen_multi_user and seen_network_online:
-                return
-            time.sleep(sleep_secs)
-        dump = host.succeed("journalctl -u " + unit + " --no-pager | tail -60")
-        missing = []
-        if not seen_multi_user:
-            missing.append("multi-user")
-        if not seen_network_online:
-            missing.append("network-online")
-        raise Exception(
-            "microvm guest " + vm + " did not reach "
-            + " + ".join(missing) + " within "
-            + str(timeout) + "s\n=== " + unit + " (last 60 lines) ===\n"
-            + dump + "\n=== end ==="
-        )
-
-    def wait_for_microvms_ready(host, vms, timeout=600, sleep_secs=3):
-        """Sequentially gate on guest-readiness for every vm in `vms`.
-
-        Sequential rather than parallel because the typical bottleneck
-        is host-side memory + CPU sharing across N qemu instances —
-        polling N journals in parallel doesn't help, and the per-vm
-        timeout already absorbs the variability."""
-        for vm in vms:
-            wait_for_microvm_ready(host, vm, timeout=timeout, sleep_secs=sleep_secs)
   '';
 
   # Wrap a CP host-module + a list of agent microVM modules into a

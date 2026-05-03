@@ -60,6 +60,13 @@
       # stays invisible from the host. journal+console routes both.
       StandardOutput = "journal+console";
       StandardError = "journal+console";
+      # Block until the guest has a default route. systemd's
+      # `network-online.target` and networkd's
+      # `RequiredForOnline=routable` both fire prematurely under
+      # qemu user-net + microvm.nix, so the curl below would get
+      # ENETUNREACH otherwise. See agent-real.nix for the full
+      # rationale.
+      ExecStartPre = "${pkgs.bash}/bin/bash -c 'for i in $(seq 1 60); do ${pkgs.iproute2}/bin/ip route show default | grep -q . && exit 0; sleep 1; done; echo \"harness-agent: no default route after 60s\" >&2; exit 1'";
       # The `harness-agent-ok` marker is what the scenario greps on.
       # Emit it only when both the curl and the jq parse succeed.
       ExecStart = pkgs.writeShellScript "harness-agent-fetch" ''

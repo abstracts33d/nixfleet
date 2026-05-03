@@ -93,13 +93,10 @@ in
 
       host.wait_for_unit("microvms.target", timeout=300)
       host.wait_for_unit("microvm@agent-01.service", timeout=300)
-      wait_for_microvm_ready(host, "agent-01")
 
-      # Post-readiness: the decrypt-test-secret oneshot fires from
-      # multi-user.target and is single-digit-seconds. 30s is
-      # comfortable for journal flush.
+      # Budget covers cold boot + decrypt-test-secret oneshot.
       decrypt_re = re.compile(r"harness-decrypt-ok: bytes=(\d+)")
-      deadline = time.monotonic() + 30
+      deadline = time.monotonic() + 180
       match = None
       while time.monotonic() < deadline:
           rc, out = host.execute(
@@ -112,7 +109,7 @@ in
                   break
           time.sleep(2)
       if match is None:
-          raise Exception("agent did not emit harness-decrypt-ok marker within 30s of readiness")
+          raise Exception("agent did not emit harness-decrypt-ok marker within 180s")
 
       decrypted_bytes = int(match.group(1))
       expected_bytes = int(host.succeed(

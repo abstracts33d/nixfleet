@@ -160,12 +160,6 @@ in
       for vm in ${builtins.toJSON agentNames}:
           host.wait_for_unit(f"microvm@{vm}.service", timeout=300)
 
-      # Gate on guest-side readiness, not the launcher unit. See
-      # `testScriptPrelude` in `tests/harness/lib.nix` for why; tl;dr
-      # the post-readiness checkin budgets below are calibrated for
-      # actual agent activity, not for cold-boot time.
-      wait_for_microvms_ready(host, ${builtins.toJSON agentNames})
-
 
       def wait_for_checkins_since(cursor: str, timeout_s: int) -> dict:
           """Block until each agent in `agentNames` has at least one
