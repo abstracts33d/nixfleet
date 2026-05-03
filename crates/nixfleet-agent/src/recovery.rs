@@ -177,6 +177,19 @@ async fn decide_and_run<R: Reporter>(
                             "boot-recovery: write_last_confirmed failed (non-fatal)",
                         );
                     }
+                    // LOADBEARING: must mirror dispatch/confirm.rs:persist_confirmed_state.
+                    // Without this, the active-rollouts panel + outstanding-failure
+                    // filter on the CP both stay broken: hosts confirming via the
+                    // boot-recovery path (the dominant case when the agent unit
+                    // restarts mid-switch) would never write last_target, so every
+                    // subsequent checkin carries last_evaluated_target=None.
+                    if let Err(err) = checkin_state::write_last_target(state_dir, &synthetic_target)
+                    {
+                        tracing::warn!(
+                            error = %err,
+                            "boot-recovery: write_last_target failed (non-fatal)",
+                        );
+                    }
                     let _ = checkin_state::clear_last_dispatched(state_dir);
                 }
                 comms::ConfirmOutcome::Cancelled => {
