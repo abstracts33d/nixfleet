@@ -47,7 +47,7 @@ pub(super) async fn process_gate_outcome<R: Reporter>(
     ctx: &DispatchCtx<'_, R>,
     activation_completed_at: chrono::DateTime<chrono::Utc>,
 ) -> bool {
-    use nixfleet_agent::compliance::GateOutcome;
+    use nixfleet_agent::compliance::{GateMode, GateOutcome};
     match gate_outcome {
         GateOutcome::Pass { .. } => {
             tracing::info!("compliance gate: PASS (all controls compliant)");
@@ -59,7 +59,22 @@ pub(super) async fn process_gate_outcome<R: Reporter>(
         }
         GateOutcome::Failures { evidence, failures } => {
             post_compliance_failures(failures, evidence, ctx).await;
-            false
+            // LOADBEARING: enforce mode must actually enforce. The per-control
+            // events above are advisory; without rollback, the host stays on
+            // a non-compliant closure and the docstring lie ("Failures block
+            // dispatch / confirm and trigger recovery") becomes truth-by-fiat.
+            if resolved_mode == GateMode::Enforce {
+                let reason = compliance_failure_reason(failures);
+                tracing::error!(
+                    %reason,
+                    failure_count = failures.len(),
+                    "compliance gate: failures — refusing confirm + rolling back (enforce mode)",
+                );
+                trigger_rollback_with_reason(ctx, &reason).await;
+                true
+            } else {
+                false
+            }
         }
         GateOutcome::GateError {
             reason,
@@ -77,6 +92,13 @@ pub(super) async fn process_gate_outcome<R: Reporter>(
             .await
         }
     }
+}
+
+fn compliance_failure_reason(
+    failures: &[nixfleet_agent::compliance::ControlEvidence],
+) -> String {
+    let ids: Vec<&str> = failures.iter().map(|c| c.control.as_str()).collect();
+    format!("compliance failures: {}", ids.join(", "))
 }
 
 async fn post_compliance_failures<R: Reporter>(
@@ -174,38 +196,47 @@ async fn post_runtime_gate_error<R: Reporter>(
         )
         .await;
     if enforcing {
-        // LOADBEARING: qualify RollbackTriggered reason on rollback failure — auditor chain must reflect reality.
-        let rollback_result = nixfleet_agent::activation::rollback().await;
-        let rollback_reason = match &rollback_result {
-            Ok(_) => format!("compliance gate error: {reason}"),
-            Err(err) => {
-                tracing::error!(
-                    error = %err,
-                    reason = %reason,
-                    "compliance gate: rollback FAILED — host left in inconsistent state",
-                );
-                format!("compliance gate error: {reason}; rollback FAILED: {err}")
-            }
-        };
-        let rollback_payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
-            hostname: &ctx.args.machine_id,
-            rollout: Some(&ctx.target.channel_ref),
-            reason: &rollback_reason,
-        };
-        let rollback_signature = ctx
-            .evidence_signer
-            .as_ref()
-            .as_ref()
-            .and_then(|s| try_sign(s, &rollback_payload));
-        ctx.reporter
-            .post_report(
-                Some(&ctx.target.channel_ref),
-                ReportEvent::RollbackTriggered {
-                    reason: rollback_reason,
-                    signature: rollback_signature,
-                },
-            )
-            .await;
+        trigger_rollback_with_reason(ctx, &format!("compliance gate error: {reason}")).await;
     }
     enforcing
+}
+
+/// Roll back to the prior generation, then report `RollbackTriggered`. The
+/// reason in the report is qualified on rollback failure so the auditor chain
+/// reflects whether the host actually returned to the previous closure.
+async fn trigger_rollback_with_reason<R: Reporter>(
+    ctx: &DispatchCtx<'_, R>,
+    base_reason: &str,
+) {
+    let rollback_result = nixfleet_agent::activation::rollback().await;
+    let rollback_reason = match &rollback_result {
+        Ok(_) => base_reason.to_string(),
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                reason = %base_reason,
+                "compliance gate: rollback FAILED — host left in inconsistent state",
+            );
+            format!("{base_reason}; rollback FAILED: {err}")
+        }
+    };
+    let rollback_payload = nixfleet_agent::evidence_signer::RollbackTriggeredSignedPayload {
+        hostname: &ctx.args.machine_id,
+        rollout: Some(&ctx.target.channel_ref),
+        reason: &rollback_reason,
+    };
+    let rollback_signature = ctx
+        .evidence_signer
+        .as_ref()
+        .as_ref()
+        .and_then(|s| try_sign(s, &rollback_payload));
+    ctx.reporter
+        .post_report(
+            Some(&ctx.target.channel_ref),
+            ReportEvent::RollbackTriggered {
+                reason: rollback_reason,
+                signature: rollback_signature,
+            },
+        )
+        .await;
 }
