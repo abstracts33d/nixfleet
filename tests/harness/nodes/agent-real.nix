@@ -44,13 +44,24 @@
 
   microvm = harnessMicrovmDefaults;
 
-  # Without explicit DHCP, qemu user-net's DHCP server is ignored by
-  # the guest's stack; the guest comes up with no IP, agent's first
-  # checkin returns ENETUNREACH ("Network is unreachable"). The
-  # framework module's `after = network-online.target` doesn't help
-  # — network-online without a DHCP client times out and fires
-  # anyway, so the agent runs against an unconfigured stack.
-  networking.useDHCP = lib.mkDefault true;
+  # microvm.nix uses systemd-networkd by default but doesn't
+  # auto-configure DHCP on the user-net interface; without explicit
+  # config the guest's stack ignores qemu's DHCP offers and the
+  # agent's first checkin returns ENETUNREACH (os error 101).
+  # `networking.useDHCP` doesn't take effect under networkd; we
+  # have to give networkd an explicit .network unit.
+  #
+  # `RequiredForOnline = "routable"` is load-bearing: the default
+  # ("degraded") makes network-online.target fire even when no IP
+  # is assigned, masking the DHCP failure as an agent-level bug.
+  # "routable" requires an actual default route, gating the agent
+  # service correctly via its `wants = network-online.target`.
+  networking.useNetworkd = lib.mkDefault true;
+  systemd.network.networks."10-vm-net" = {
+    matchConfig.Name = "en* eth*";
+    networkConfig.DHCP = "yes";
+    linkConfig.RequiredForOnline = "routable";
+  };
 
   environment.etc = {
     "nixfleet-agent/ca.pem".source = "${testCerts}/ca.pem";

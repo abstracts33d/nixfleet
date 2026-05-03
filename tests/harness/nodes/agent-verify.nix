@@ -35,10 +35,15 @@
 }: {
   microvm = harnessMicrovmDefaults;
 
-  # Required so qemu user-net's DHCP gives the guest an address +
-  # default route; without it any HTTP fetch gets ENETUNREACH.
-  # See ./agent-real.nix for the full rationale.
-  networking.useDHCP = lib.mkDefault true;
+  # See ./agent-real.nix for the rationale; same systemd-networkd
+  # config so HTTP fetches get a default route + IP rather than
+  # ENETUNREACH.
+  networking.useNetworkd = lib.mkDefault true;
+  systemd.network.networks."10-vm-net" = {
+    matchConfig.Name = "en* eth*";
+    networkConfig.DHCP = "yes";
+    linkConfig.RequiredForOnline = "routable";
+  };
 
   environment.etc = {
     "nixfleet-harness/ca.pem".source = "${testCerts}/ca.pem";
