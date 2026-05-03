@@ -64,10 +64,14 @@ pub(super) async fn checkin(
         .as_ref()
         .map(|p| p.closure_hash.as_str())
         .unwrap_or("null");
-    // debug-level: at 50 hosts × 60s poll cadence this fires ~3000
-    // lines/hour of zero-signal traffic at info. Operators that want
-    // per-checkin visibility can RUST_LOG=nixfleet_control_plane=debug.
-    tracing::debug!(
+    // info-level: harness scenarios (teardown, rollback-policy,
+    // boot-recovery) gate on this line as the canonical "agent
+    // checked in" signal. Volume concern (3000 lines/hr at 50
+    // hosts × 60s poll) is real but breaks observability if
+    // demoted; revisit with a periodic-summary or first-checkin-
+    // after-restart approach if the spam becomes operationally
+    // painful.
+    tracing::info!(
         target: "checkin",
         hostname = %req.hostname,
         closure_hash = %req.current_generation.closure_hash,
