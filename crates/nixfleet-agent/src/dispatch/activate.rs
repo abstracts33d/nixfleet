@@ -144,26 +144,29 @@ pub(crate) async fn process_dispatch_target(
         );
     }
 
-    // GOTCHA: write_last_dispatched failure only loses boot-recovery path — next-checkin re-dispatches.
-    let dispatch_record = nixfleet_agent::checkin_state::LastDispatchRecord {
-        closure_hash: target.closure_hash.clone(),
-        channel_ref: target.channel_ref.clone(),
-        rollout_id: target.rollout_id.clone(),
-        compliance_mode: target.compliance_mode.clone(),
-        confirm_endpoint: target
-            .activate
-            .as_ref()
-            .map(|a| a.confirm_endpoint.clone()),
-        dispatched_at: chrono::Utc::now(),
-    };
-    if let Err(err) =
-        nixfleet_agent::checkin_state::write_last_dispatched(&args.state_dir, &dispatch_record)
-    {
-        tracing::warn!(
-            error = %err,
-            state_dir = %args.state_dir.display(),
-            "write_last_dispatched failed; boot-recovery path will fall back to next-checkin re-dispatch",
-        );
+    // Boot-recovery is the retroactive-confirm path; for non-confirmable
+    // targets (no activate block) there's no recovery work, so skip the
+    // write entirely. GOTCHA: write failure only loses boot-recovery —
+    // next-checkin re-dispatches.
+    if let Some(activate) = target.activate.as_ref() {
+        let dispatch_record = nixfleet_agent::checkin_state::LastDispatchRecord {
+            closure_hash: target.closure_hash.clone(),
+            channel_ref: target.channel_ref.clone(),
+            rollout_id: target.rollout_id.clone(),
+            compliance_mode: target.compliance_mode.clone(),
+            confirm_endpoint: activate.confirm_endpoint.clone(),
+            dispatched_at: chrono::Utc::now(),
+        };
+        if let Err(err) = nixfleet_agent::checkin_state::write_last_dispatched(
+            &args.state_dir,
+            &dispatch_record,
+        ) {
+            tracing::warn!(
+                error = %err,
+                state_dir = %args.state_dir.display(),
+                "write_last_dispatched failed; boot-recovery path will fall back to next-checkin re-dispatch",
+            );
+        }
     }
 
     reporter

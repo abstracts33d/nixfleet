@@ -40,10 +40,9 @@ pub struct LastDispatchRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compliance_mode: Option<String>,
     /// Wire-carried confirm endpoint from `target.activate.confirm_endpoint`.
-    /// Required for boot-recovery to retroactively confirm — the agent has
-    /// no fresh dispatch reply to read it from at startup.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confirm_endpoint: Option<String>,
+    /// Required: we only persist `last_dispatched` for confirmable targets,
+    /// so a record without an endpoint is impossible by construction.
+    pub confirm_endpoint: String,
     pub dispatched_at: DateTime<Utc>,
 }
 
@@ -289,7 +288,7 @@ mod write_read_tests {
             channel_ref: "stable@deadbeef".into(),
             rollout_id: Some("stable@deadbeef".into()),
             compliance_mode: Some("enforce".into()),
-            confirm_endpoint: Some("/v1/agent/confirm".into()),
+            confirm_endpoint: "/v1/agent/confirm".into(),
             dispatched_at: Utc::now(),
         }
     }
@@ -355,20 +354,6 @@ mod write_read_tests {
         assert!(read_last_fetch_outcome(dir.path()).unwrap().is_none());
     }
 
-    #[test]
-    fn last_dispatched_record_without_compliance_mode_round_trips() {
-        let dir = TempDir::new().unwrap();
-        let body = serde_json::json!({
-            "closure_hash": "abc-nixos-system",
-            "channel_ref": "stable@deadbeef",
-            "rollout_id": "stable@deadbeef",
-            "dispatched_at": Utc::now().to_rfc3339(),
-        })
-        .to_string();
-        std::fs::write(dir.path().join(LAST_DISPATCH_FILENAME), body).unwrap();
-        let got = read_last_dispatched(dir.path()).unwrap().expect("present");
-        assert_eq!(got.compliance_mode, None);
-    }
 
     #[test]
     fn last_dispatched_round_trips() {
