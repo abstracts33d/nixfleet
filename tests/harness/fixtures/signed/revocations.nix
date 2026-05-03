@@ -1,10 +1,4 @@
-# Signed `revocations.json` sidecar for the teardown harness.
-#
-# Same JCS+ed25519 path as the main fleet fixture (shared seedSalt
-# means both sidecars verify under the same `test-trust.json`). One
-# entry against a synthetic revoked-host to make the post-restart
-# replay assertion non-trivial; downstream consumers can override
-# the entries list as needed.
+# LOADBEARING: shared seedSalt with main fleet fixture so both verify under the same test-trust.json.
 {
   pkgs,
   nixfleet-canonicalize,

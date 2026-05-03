@@ -1,14 +1,4 @@
-//! Per-host state machine handling .
-//!
-//! Given a wave's host list, the reconciler's per-rollout state, and
-//! supporting context, emit the set of actions for each host and track
-//! whether the wave as a whole is soaked (all hosts in terminal ok states).
-//!
-//! Inner modules `budgets` and `edges` carry the disruption-budget +
-//! edge-predecessor predicates the wave loop consults before
-//! dispatching a host. Each had a single caller in this file and was
-//! folded back here when the abstraction wasn't earning the file
-//! split.
+//! Per-host state machine. Emits actions and tracks wave soaked-ness.
 
 use crate::observed::{Observed, Rollout};
 use crate::Action;
@@ -21,7 +11,6 @@ mod budgets {
     use crate::observed::Observed;
     use nixfleet_proto::FleetResolved;
 
-    /// Count hosts currently in-flight across all active rollouts.
     pub(super) fn in_flight_count(observed: &Observed, budget_hosts: &[String]) -> u32 {
         observed
             .active_rollouts
@@ -46,8 +35,7 @@ mod budgets {
             .sum()
     }
 
-    /// For a given host, return the tightest (in_flight, max_in_flight)
-    /// across all budgets that include the host.
+    /// Tightest (in_flight, max_in_flight) across budgets that include host.
     pub(super) fn budget_max(
         fleet: &FleetResolved,
         observed: &Observed,
@@ -129,9 +117,7 @@ mod edges {
     use crate::observed::Rollout;
     use nixfleet_proto::FleetResolved;
 
-    /// If `host`'s in-wave predecessors are NOT all Soaked/Converged,
-    /// return the name of the first incomplete predecessor.
-    /// Otherwise `None`.
+    /// First incomplete (not Soaked/Converged) edge predecessor, if any.
     pub(super) fn predecessor_blocking(
         fleet: &FleetResolved,
         rollout: &Rollout,
@@ -225,18 +211,9 @@ mod edges {
     }
 }
 
-/// Per-host rollout state. Canonical enum lives in `nixfleet_proto`
-/// so the CP (SQL CHECK round-trip) and the reconciler share one
-/// variant set; see `nixfleet_proto::host_rollout_state` for the
-/// full doc + accessors. `Reverted` is currently dormant on the wire
-/// — V003 reserves the literal so the explicit-rollback path can
-/// flip into it without an SQL migration.
 pub use nixfleet_proto::HostRolloutState;
 
-/// Look up `host`'s state in `rollout.host_states`, defaulting to
-/// [`HostRolloutState::Queued`] when absent. Hosts not yet
-/// dispatched have no row in `host_rollout_state`; the reconciler
-/// treats them as fresh Queued work.
+/// Defaults absent hosts to [`HostRolloutState::Queued`].
 pub fn lookup_host_state(rollout: &Rollout, host: &str) -> HostRolloutState {
     rollout
         .host_states
@@ -307,12 +284,9 @@ pub(crate) fn handle_wave(
                 out.wave_all_soaked = false;
             }
             HostRolloutState::Healthy => {
-                // : Healthy → Soaked once the host has
-                // remained Healthy for `wave.soak_minutes`. Without
-                // a `last_healthy_since` marker the soak gate stays
-                // closed (defensive — better to wait than promote
-                // a wave that's missing data). Steps 1+2
-                // populate this map; step 3 (this arm) consumes it.
+                // Healthy → Soaked once Healthy for `wave.soak_minutes`.
+                // Without a `last_healthy_since` marker the soak gate
+                // stays closed — better to wait than promote on missing data.
                 out.wave_all_soaked = false;
                 let soak_window = chrono::Duration::minutes(wave.soak_minutes as i64);
                 if let Some(since) = rollout.last_healthy_since.get(host) {
@@ -326,14 +300,9 @@ pub(crate) fn handle_wave(
             }
             HostRolloutState::Soaked | HostRolloutState::Converged => {}
             HostRolloutState::Failed | HostRolloutState::Reverted => {
-                // Both states block wave-soaking and halt the rollout
-                // per the channel's `on_health_failure` policy. The
-                // distinction is provenance: `Failed` is reconciler-
-                // observed (probe failure, exit-code != 0); `Reverted`
-                // is agent-attested (the host explicitly rolled back
-                // its activation). The downstream halt action treats
-                // them the same — the rollout is unsafe to advance
-                // until an operator inspects.
+                // `Failed` is reconciler-observed; `Reverted` is
+                // agent-attested. Both halt; only `Failed` triggers
+                // a fresh RollbackHost (Reverted is already rolled back).
                 out.wave_all_soaked = false;
                 if let Some(chan) = fleet.channels.get(&rollout.channel) {
                     if let Some(policy) = fleet.rollout_policies.get(&chan.rollout_policy) {
@@ -345,12 +314,6 @@ pub(crate) fn handle_wave(
                                 policy.on_health_failure
                             ),
                         });
-                        // RFC-0002 §5.1: under `rollback-and-halt`,
-                        // emit a `RollbackHost` action alongside the
-                        // halt for any *Failed* host. `Reverted` is
-                        // already rolled back (agent-attested), so
-                        // re-emitting the action would be no-op
-                        // signalling.
                         if matches!(
                             policy.on_health_failure,
                             nixfleet_proto::OnHealthFailure::RollbackAndHalt
@@ -375,10 +338,6 @@ pub(crate) fn handle_wave(
 mod tests {
     use super::*;
 
-    // HostRolloutState round-trip + unknown-string tests live with
-    // the canonical enum in `nixfleet-proto`; reconciler-side
-    // coverage is the lookup default below.
-
     #[test]
     fn lookup_defaults_absent_to_queued() {
         use crate::rollout_state::RolloutState;
@@ -397,9 +356,6 @@ mod tests {
         );
     }
 
-    /// Build a minimal fleet with one channel + one rollout policy
-    /// at the requested `on_health_failure`. Returns the inputs
-    /// `handle_wave` needs.
     fn fleet_with_policy(on_health_failure: nixfleet_proto::OnHealthFailure) -> FleetResolved {
         use nixfleet_proto::{
             Channel, Compliance, Host, Meta, PolicyWave, RolloutPolicy, Selector,
@@ -564,8 +520,6 @@ mod tests {
 
     #[test]
     fn reverted_under_rollback_and_halt_does_not_re_emit_rollback() {
-        // Reverted is agent-attested — already rolled back. Re-emitting
-        // RollbackHost would be a no-op signal loop.
         let fleet = fleet_with_policy(nixfleet_proto::OnHealthFailure::RollbackAndHalt);
         let rollout = rollout_with_state("host-a", HostRolloutState::Reverted);
         let observed = observed_online("host-a");

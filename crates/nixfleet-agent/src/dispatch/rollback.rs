@@ -1,9 +1,5 @@
-//! CP-driven rollback per `CheckinResponse.rollback`. Invoked when
-//! the CP signals `on_health_failure = "rollback-and-halt"` for a
-//! host that's reached the rollout's `Failed` state. Idempotent: the
-//! agent's own `rollback()` is a no-op if already on the prior gen,
-//! and the CP keeps re-emitting the signal until the agent's
-//! `RollbackTriggered` post flips the host's state to `Reverted`.
+//! CP-driven rollback per `CheckinResponse.rollback`; idempotent (CP re-emits
+//! until the agent's `RollbackTriggered` flips state to `Reverted`).
 
 use nixfleet_proto::agent_wire::ReportEvent;
 

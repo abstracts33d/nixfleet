@@ -1,33 +1,5 @@
 //! `releases/rollouts/<rolloutId>.json` — signed per-channel rollout
-//! manifest.
-//!
-//! Produced by CI alongside `fleet.resolved.json`: for every channel
-//! `c`, CI projects `fleet.resolved` into a `RolloutManifest` (host
-//! membership + wave layout + target closure for hosts on `c`),
-//! canonicalizes via JCS, and signs with the same `ciReleaseKey` used
-//! for `fleet.resolved.json` and `revocations.json`.
-//!
-//! Identifier semantics: the manifest's identity is the SHA-256 hex of
-//! its canonical bytes (computed by
-//! `nixfleet-reconciler::sidecar::compute_rollout_id`). The CP serves
-//! this identifier as `EvaluatedTarget.rollout_id`; agents fetch
-//! `GET /v1/rollouts/<rolloutId>`, verify the signature, recompute
-//! the hash, and assert it matches before consuming any other field
-//! of the dispatch target. The human-readable `<channel>@<short-ci-commit>`
-//! label lives inside the manifest as `display_name` for trace and
-//! CLI display only — it is not the primary key.
-//!
-//! Plan vs state: `fleet.resolved.json` is the desired-state snapshot
-//! at CI time and rolls forward as new commits land. A
-//! `RolloutManifest` is the frozen plan for one rollout's lifetime.
-//! The `fleet_resolved_hash` field anchors the manifest to the exact
-//! signed snapshot it was projected from — closes a mix-and-match
-//! attack where two snapshots at the same channel ref could otherwise
-//! be paired with each other's manifests.
-//!
-//! Trust class: same `ciReleaseKey` as `fleet.resolved.json` and
-//! `revocations.json`. Same trust root, same rotation surface, same
-//! verification path.
+//! manifest. Identity = SHA-256 of canonical bytes; signed by `ciReleaseKey`.
 
 use serde::{Deserialize, Serialize};
 
@@ -38,47 +10,25 @@ use crate::fleet_resolved::{HealthGate, Meta};
 pub struct RolloutManifest {
     pub schema_version: u32,
 
-    /// Human-readable annotation of the form `<channel>@<short-ci-commit>`.
-    /// NOT the manifest identifier — the rolloutId is a content hash
-    /// over the canonical bytes of this struct (see crate docs).
-    /// Exposed for trace / CLI / log readability; safe to break-glass
-    /// edit without affecting integrity (any edit changes the content
-    /// hash so any tampered manifest is rejected on hash recompute).
+    /// `<channel>@<short-ci-commit>` — display only, not the identifier.
     pub display_name: String,
 
     pub channel: String,
 
-    /// Git ref the channel resolved to at CI time. Same value the CP
-    /// stores in `host_rollout_state.target_ref` for hosts on this
-    /// channel.
     pub channel_ref: String,
 
-    /// SHA-256 (hex, lowercase) of the canonical bytes of the
-    /// `fleet.resolved.json` from which this manifest was projected.
-    /// Cryptographic anchor: the manifest belongs to one specific
-    /// signed snapshot, so an attacker can't mix-and-match a manifest
-    /// from snapshot X with the resolved.json from snapshot Y.
+    /// SHA-256 hex of the `fleet.resolved` this manifest projects from.
+    /// Anchors the manifest to one signed snapshot to prevent
+    /// mix-and-match.
     pub fleet_resolved_hash: String,
 
-    /// Hosts in this rollout, paired with their wave assignment and
-    /// the closure they're targeted to converge onto. MUST be sorted
-    /// by `hostname` ascending for canonical-byte stability — JCS
-    /// sorts object keys but not array elements, so the producer's
-    /// emission order is the canonical order. Verifiers should
-    /// re-assert the sort at parse time.
-    ///
-    /// Per-host closure (rather than one channel-level target) reflects
-    /// the reality that hosts on the same channel can target different
-    /// closures (different `system.build.toplevel` derivations); the
-    /// channel groups hosts by *rollout cadence*, not by *target binary*.
+    /// MUST be sorted by `hostname` ascending — JCS sorts object keys
+    /// but not array elements, so producer's order is canonical order.
     pub host_set: Vec<HostWave>,
 
     pub health_gate: HealthGate,
 
-    /// Mirrored from `fleet.resolved.channels[channel].compliance.frameworks`
-    /// at projection time. Lets agents apply the same compliance posture
-    /// they would have inferred from `fleet.resolved` directly, without
-    /// fetching the full snapshot.
+    /// Mirrored from `channels[channel].compliance.frameworks`.
     pub compliance_frameworks: Vec<String>,
 
     pub meta: Meta,
@@ -88,17 +38,10 @@ pub struct RolloutManifest {
 #[serde(rename_all = "camelCase")]
 pub struct HostWave {
     pub hostname: String,
-    /// 0-based index in `fleet.resolved.waves[channel]` at projection
-    /// time. Frozen for the manifest's lifetime; new CI commits that
-    /// reshape `waves[channel]` produce a different manifest with a
-    /// different `rolloutId`.
+    /// Frozen at projection time; reshaping waves produces a new rolloutId.
     pub wave_index: u32,
-    /// Closure hash this host is targeted to converge onto.
-    /// Identical to `fleet_resolved.hosts[hostname].closureHash` at
-    /// projection time. Letting the agent re-assert this value
-    /// against what the CP advertises in `EvaluatedTarget.closureHash`
-    /// closes another forgery vector — a compromised CP can't quietly
-    /// retarget a host inside an otherwise-valid rollout.
+    /// Per-host (not channel-level) — agent re-asserts this against the
+    /// CP-advertised closure to detect retargeting.
     pub target_closure: String,
 }
 
@@ -153,9 +96,7 @@ mod tests {
 
     #[test]
     fn manifest_canonical_bytes_stable_across_round_trip() {
-        // Serialize → canonicalize → parse → re-serialize → re-canonicalize.
-        // JCS canonical bytes must match byte-for-byte; this is the
-        // load-bearing property for `rolloutId = sha256(canonical(m))`.
+        // LOADBEARING: rolloutId = sha256(canonical(m)) depends on canonical-byte stability.
         let m = sample_manifest();
         let raw1 = serde_json::to_string(&m).unwrap();
         let canon1 = canonicalize(&raw1).unwrap();
@@ -169,10 +110,6 @@ mod tests {
 
     #[test]
     fn manifest_host_set_order_changes_canonical_bytes() {
-        // JCS sorts object keys but not array elements. Two manifests
-        // with the same logical host_set but different element order
-        // canonicalize differently — proves the producer must emit a
-        // sorted host_set for the rolloutId to be stable.
         let mut m1 = sample_manifest();
         let mut m2 = sample_manifest();
         m2.host_set.reverse();
@@ -185,21 +122,15 @@ mod tests {
             "host_set order must affect canonical bytes (CI must emit sorted)"
         );
 
-        // And re-sorting m2's host_set restores byte-equality.
         m2.host_set.sort_by(|a, b| a.hostname.cmp(&b.hostname));
         let canon2_resorted = canonicalize(&serde_json::to_string(&m2).unwrap()).unwrap();
         assert_eq!(canon1, canon2_resorted);
 
-        // Touch m1 to silence "doesn't need to be mut" — kept mut for
-        // symmetry with m2 in the assertion above.
         let _ = &mut m1;
     }
 
     #[test]
     fn fleet_resolved_hash_change_changes_canonical_bytes() {
-        // Sanity: the anchor field is part of the canonical surface,
-        // so two manifests projected from different fleet.resolved
-        // snapshots produce different rolloutIds.
         let m1 = sample_manifest();
         let mut m2 = sample_manifest();
         m2.fleet_resolved_hash =
@@ -213,9 +144,6 @@ mod tests {
 
     #[test]
     fn host_target_closure_change_changes_canonical_bytes() {
-        // Per-host target_closure is part of the canonical surface;
-        // a CP that quietly retargets one host inside an otherwise-
-        // valid rollout produces a different rolloutId.
         let m1 = sample_manifest();
         let mut m2 = sample_manifest();
         m2.host_set[0].target_closure =
@@ -237,7 +165,6 @@ mod tests {
         let s = serde_json::to_string(&h).unwrap();
         let parsed: HostWave = serde_json::from_str(&s).unwrap();
         assert_eq!(parsed, h);
-        // wire shape: camelCase
         assert!(s.contains("\"waveIndex\":2"));
         assert!(s.contains("\"targetClosure\""));
     }

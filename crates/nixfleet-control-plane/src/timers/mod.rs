@@ -1,6 +1,4 @@
-//! Background SQLite-state timers — prune of stale rows
-//! (`prune_timer`) and rollback-deadline enforcement
-//! (`rollback_timer`).
+//! Background SQLite-state timers: prune sweep and rollback-deadline enforcement.
 
 pub mod prune_timer;
 pub mod rollback_timer;

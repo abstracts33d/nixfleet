@@ -1,14 +1,10 @@
-//! Sanity check: the exact `test-trust.json` shape emitted by
-//! `tests/harness/fixtures/signed/default.nix` must deserialize with
-//! `TrustConfig`. Smoke-tests the contract between the harness
-//! fixture and the proto crate.
+//! Pin the harness `test-trust.json` shape against `TrustConfig`.
 
 use nixfleet_proto::TrustConfig;
 
 #[test]
 fn trust_json_from_fixture_shape_parses() {
-    // Byte-identical to the HEREDOC in tests/harness/fixtures/signed/default.nix
-    // (step 5) with a placeholder pubkey. If the fixture changes, update here.
+    // LOADBEARING: byte-identical to the harness HEREDOC — update both together.
     let raw = r#"
     {
       "schemaVersion": 1,

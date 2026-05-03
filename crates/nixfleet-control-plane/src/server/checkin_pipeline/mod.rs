@@ -1,16 +1,4 @@
 //! `/v1/agent/checkin` and `/v1/agent/confirm` handlers.
-//!
-//! Submodule layout:
-//!
-//! - [`recovery`] — orphan-confirm and soak-state recovery paths
-//!   (CP-rebuild robustness).
-//! - [`rollback_signal`] — RFC-0002 §5.1 rollback-and-halt signal
-//!   emission + the per-checkin "left Healthy" sweep.
-//! - [`dispatch_target`] — dispatch decision + persist the
-//!   `host_dispatch_state` operational + `dispatch_history` audit
-//!   rows that anchor idempotency.
-//! - [`wave_gate`] — checkin-side caller around the pure
-//!   `evaluate_channel_gate` evaluator (top-level `crate::wave_gate`).
 
 mod dispatch_target;
 mod recovery;
@@ -30,15 +18,7 @@ use nixfleet_proto::agent_wire::{CheckinRequest, CheckinResponse, ConfirmRequest
 use super::middleware::AuthenticatedCn;
 use super::state::{AppState, HostCheckinRecord, NEXT_CHECKIN_SECS};
 
-/// `POST /v1/agent/checkin` — record an agent checkin.
-///
-/// Validates the body's `hostname` matches the verified mTLS CN
-/// (sanity check, not a security boundary — the CN was already
-/// authenticated by WebPkiClientVerifier; this just catches
-/// configuration drift like a host using the wrong cert).
-///
-/// Emits a journal line per checkin so operators can grep
-/// `journalctl -u nixfleet-control-plane | grep checkin`.
+/// `POST /v1/agent/checkin`.
 pub(super) async fn checkin(
     State(state): State<Arc<AppState>>,
     Extension(cn): Extension<AuthenticatedCn>,
@@ -64,13 +44,6 @@ pub(super) async fn checkin(
         .as_ref()
         .map(|p| p.closure_hash.as_str())
         .unwrap_or("null");
-    // info-level: harness scenarios (teardown, rollback-policy,
-    // boot-recovery) gate on this line as the canonical "agent
-    // checked in" signal. Volume concern (3000 lines/hr at 50
-    // hosts × 60s poll) is real but breaks observability if
-    // demoted; revisit with a periodic-summary or first-checkin-
-    // after-restart approach if the spam becomes operationally
-    // painful.
     tracing::info!(
         target: "checkin",
         hostname = %req.hostname,
@@ -93,9 +66,7 @@ pub(super) async fn checkin(
 
     rollback_signal::clear_left_healthy_for_checkin(&state, &req).await;
     recovery::recover_soak_state_from_attestation(&state, &req, now).await;
-    // Catches the deadline-fired-before-confirm-arrived race: agent
-    // is on the target but the row got marked rolled-back. Revives
-    // to confirmed; lab/2026-05-02 split-brain class.
+    // Revives confirmed when deadline fired before confirm arrived (split-brain race).
     let _ = recovery::try_recover_pending_from_checkin(&state, &req).await;
 
     let target = dispatch_target::dispatch_target_for_checkin(&state, &req, now).await;
@@ -108,20 +79,7 @@ pub(super) async fn checkin(
     }))
 }
 
-/// `POST /v1/agent/confirm` — agent confirms successful activation.
-/// Flips the matching `host_dispatch_state` row from 'pending' to
-/// 'confirmed'.
-///
-/// Behaviour:
-/// - Pending row exists, deadline not passed → flip confirmed, 204.
-/// - No matching row in 'pending' state → orphan-recovery path:
-///   if the agent's reported `closure_hash` matches the host's
-///   declared target in the verified `FleetResolved`, treat as a
-///   CP-rebuild recovery — synthesise a confirmed operational row
-///   + transition to Healthy + 204. Closure-hash mismatch → genuine
-///   410 (rollout cancelled / wrong rollout / deadline expired;
-///   agent triggers local rollback per RFC §4.2).
-/// - DB unset → 503 (endpoint requires persistence).
+/// `POST /v1/agent/confirm`: 204 on flip or orphan-recovery; 410 on mismatch; 503 with no DB.
 pub(super) async fn confirm(
     State(state): State<Arc<AppState>>,
     Extension(cn): Extension<AuthenticatedCn>,
@@ -151,23 +109,9 @@ pub(super) async fn confirm(
         })?;
 
     if updated == 0 {
-        // Try the orphan-confirm recovery path before declaring 410.
-        // Recovery succeeds only when the agent's reported
-        // closure_hash matches the host's verified target — that's
-        // the same authorisation invariant as the positive flow
-        // (mTLS-CN + closure on file).
         if recovery::try_recover_orphan_confirm(&state, &req).await {
-            // Fall through to the success log + 204 path.
         } else {
-            // Stamp the operational row terminal-rolled-back inline
-            // before returning 410. The rollback_timer (30s tick)
-            // would do the same on its next pass, but doing it here
-            // means the agent's local-rollback decision (driven by
-            // the 410) and the CP's view of the host converge in a
-            // single round-trip rather than racing the timer.
-            //
-            // Best-effort: a write failure logs and falls through to
-            // 410 anyway — the timer will catch up.
+            // Inline mark_rolled_back so agent's 410-driven local rollback and CP view converge in one round-trip.
             if let Err(err) = db.host_dispatch_state().mark_rolled_back(&[(
                 req.hostname.clone(),
                 req.rollout.clone(),
@@ -190,9 +134,6 @@ pub(super) async fn confirm(
                 .expect("Response::builder with valid status + body is infallible"));
         }
     } else {
-        // Standard path: stamp last_healthy_since (ConfirmWindow →
-        // Healthy). The orphan-recovery branch already wrote it
-        // inline so we don't double-up here.
         if let Err(err) = db.rollout_state().transition_host_state(
             &req.hostname,
             &req.rollout,
@@ -225,10 +166,6 @@ pub(super) async fn confirm(
 
 #[cfg(test)]
 pub(super) mod tests {
-    //! Cross-submodule test fixtures. Each submodule's `tests`
-    //! reaches up into here for fleet/state/request constructors so
-    //! the recovery + rollback-signal scenarios share one definition.
-
     use crate::db::Db;
     use chrono::{DateTime, Utc};
     use nixfleet_proto::agent_wire::{ConfirmRequest, GenerationRef};
@@ -299,9 +236,6 @@ pub(super) mod tests {
         }
     }
 
-    /// Stable test fleet hash. Tests pass this as the
-    /// `fleet_resolved_hash` so the projection result is deterministic
-    /// even though the real one is computed from canonical bytes.
     pub(super) const TEST_FLEET_HASH: &str =
         "0000000000000000000000000000000000000000000000000000000000000000";
 

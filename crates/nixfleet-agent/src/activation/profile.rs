@@ -1,13 +1,10 @@
-//! Profile-flip helpers: self-correction after a concurrent
-//! profile-mutator races us, and resolution of the rolled-back
-//! profile target's basename.
+//! Profile-flip helpers: self-correction after a concurrent profile-mutator,
+//! and resolution of the rolled-back target's basename.
 
 use anyhow::{anyhow, Context, Result};
 use tokio::process::Command;
 
-/// Defensive against concurrent profile mutations during activation.
-/// `Err` only when self-correction itself failed (caller treats as
-/// non-fatal — current-system already verified).
+/// `Err` only when self-correction itself failed; caller treats as non-fatal.
 pub(super) async fn self_correct_profile(expected_store_path: &str) -> Result<()> {
     let profile = "/nix/var/nix/profiles/system";
     if profile_matches(expected_store_path, profile) {
@@ -42,8 +39,7 @@ pub(super) async fn self_correct_profile(expected_store_path: &str) -> Result<()
     Ok(())
 }
 
-/// Two-level symlink: profile → `system-<N>-link` → `/nix/store/<basename>`.
-/// Returns false on any read error (caller treats as mismatch).
+// GOTCHA: profile is two-level symlink: profile → `system-<N>-link` → `/nix/store/<basename>`.
 fn profile_matches(expected_store_path: &str, profile_path: &str) -> bool {
     let Ok(gen_link) = std::fs::read_link(profile_path) else {
         return false;
@@ -63,8 +59,6 @@ fn profile_matches(expected_store_path: &str, profile_path: &str) -> bool {
     final_target.to_string_lossy() == expected_store_path
 }
 
-/// Two symlink levels: profile → `system-<N>-link` (relative) →
-/// `/nix/store/<basename>` (absolute).
 pub(super) fn resolve_profile_target() -> Result<String> {
     let profile = std::path::Path::new("/nix/var/nix/profiles/system");
     let gen_link = std::fs::read_link(profile)

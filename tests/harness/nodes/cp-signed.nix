@@ -1,27 +1,6 @@
-# tests/harness/nodes/cp-signed.nix
-#
-# Signed-roundtrip CP stub. Serves two files from the Phase 2 signed
-# fixture over mTLS on :8443, routed by request path:
-#
-#   GET /canonical.json      -> application/json
-#   GET /canonical.json.sig  -> application/octet-stream (raw 64 bytes)
-#
-# Why this stub stays after `services.nixfleet-control-plane` landed:
-# the real CP serves `/v1/agent/*` and `/v1/rollouts/*`, not the bare
-# `/canonical.json{,.sig}` paths the verify-artifact CLI fetches in
-# the signed-roundtrip scenario. The CLI is the operator-facing
-# auditor tool — it's intentionally decoupled from the agent/CP
-# binary's protocol surface so an offline auditor can verify a fleet
-# release by fetching the canonical bytes from any HTTP source
-# (forge, mirror, archive). That's exactly what this stub provides.
-#
-# Implementation: Python stdlib `http.server` wrapped in `ssl`. An
-# earlier shell-over-socat implementation truncated binary responses:
-# even with request draining and `exec cat`, the socat EXEC pipeline
-# consistently delivered 54 of the signature's 64 bytes to the client,
-# though socat's own `-v` log confirmed the full 64 bytes had been
-# forwarded. The exact mangling point was never identified; the fix
-# was to stop debugging shell and ship a binary-safe server.
+# Real CP serves /v1/*; the verify-artifact CLI fetches bare
+# /canonical.json{,.sig} from any HTTP source — this stub provides those.
+# FOOTGUN: Python http.server (not socat); socat EXEC pipeline truncated 64-byte signature to 54 bytes.
 {
   pkgs,
   lib,
@@ -42,9 +21,6 @@
   systemd.services.harness-cp = let
     server =
       pkgs.writers.writePython3 "harness-cp-signed-server" {
-        # Route-table line for canonical.json.sig nudges past flake8's
-        # 79-char default. This is harness glue, not production Python —
-        # readability > line length.
         flakeIgnore = ["E501"];
       } ''
         import ssl

@@ -1,52 +1,15 @@
-# tests/harness/lib.nix
-#
-# Helpers for the microvm.nix-based fleet simulation harness.
-#
-# Builds lightweight microVM guests (cloud-hypervisor/qemu) that share the
-# host's /nix/store over virtiofs, for cheap fleet-scale scenarios.
-#
-# Public attrs:
-#   mkCpHostModule - NixOS module for the host VM that runs the CP stub
-#   mkAgentNode    - build an agent microVM NixOS module (curls CP at boot)
-#   mkFleetScenario- wrap CP-on-host + N agent microVMs into a runNixOSTest
-#   mkHarnessCerts - builds a fleet CA + CP server cert + one client cert per hostname
-#
-# Node mix: `cp-real.nix` / `agent-real.nix` use the framework's
-# `services.nixfleet-control-plane` / `services.nixfleet-agent`
-# modules and are the path for any scenario that needs real binary
-# semantics. `cp.nix` / `agent.nix` / `cp-signed.nix` /
-# `agent-verify.nix` stay as stubs because the real CP doesn't expose
-# `GET /` or `GET /canonical.json{,.sig}` (see those files' headers
-# for the per-stub rationale).
 {
   lib,
   pkgs,
   inputs,
 }: let
-  # Build a fleet CA + CP server cert + one client cert per hostname.
-  # Deterministic and cached — the same `hostnames` list yields the same
-  # derivation across scenarios. Inlined here (was previously in the now-
-  # retired modules/tests/_lib/helpers.nix that served v0.1 VM scenarios).
-  #
-  # X.509 extension posture (load-bearing for cp-real.nix): the CP's
-  # `WebPkiClientVerifier` strictly checks the chain's extensions —
-  # the CA needs basicConstraints CA:TRUE + keyCertSign; client certs
-  # need extendedKeyUsage clientAuth; server cert needs
-  # extendedKeyUsage serverAuth. The earlier smoke / signed-roundtrip
-  # scenarios used socat / Python http.server which did NOT enforce
-  # any of this; cp-real.nix is the first consumer that does.
-  # Explicit extensions below avoid relying on OpenSSL's default
-  # behaviour (which has shifted across versions).
+  # LOADBEARING: explicit X.509 extensions; CP's WebPkiClientVerifier strictly checks CA basicConstraints/keyCertSign, client/server EKU.
   mkTlsCerts = {hostnames ? ["cp" "agent-01" "agent-02"]}:
     pkgs.runCommand "nixfleet-harness-test-certs" {
       nativeBuildInputs = [pkgs.openssl];
     } ''
       mkdir -p $out
 
-      # OpenSSL config files. Single combined config for the CA
-      # (req section + extensions section, both required by
-      # `openssl req -x509`). Per-cert-type extension files for the
-      # `openssl x509 -req` step (uses `-extfile`, no config needed).
       cat > $out/ca.cnf <<'EOF'
       [req]
       distinguished_name = dn
@@ -75,16 +38,10 @@
       authorityKeyIdentifier = keyid
       EOF
 
-      # Fleet CA (self-signed, EC P-256, explicit CA:TRUE).
-      # `x509_extensions = ca_ext` in the [req] section is what
-      # `openssl req -x509` reads to apply the CA-cert extensions
-      # (basicConstraints CA:TRUE etc.) — no `-extensions` flag
-      # needed when it's wired into the config.
       openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout $out/ca-key.pem -out $out/ca.pem -days 365 -nodes \
         -config $out/ca.cnf
 
-      # CP server cert (CN=cp, SAN includes cp + localhost for test curl).
       openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout $out/cp-key.pem -out $out/cp-csr.pem -nodes \
         -subj '/CN=cp'
@@ -92,15 +49,8 @@
         -CAcreateserial -out $out/cp-cert.pem -days 365 \
         -extfile $out/server-ext.cnf
 
-      # Agent client certs (CN = hostname). Filter "cp" — its
-      # cert is the server cert generated above; iterating "cp"
-      # here would overwrite the server's cp-key.pem +
-      # cp-cert.pem with a client cert that has no SANs, breaking
-      # rustls's RFC 6125 SAN-only hostname validation. The
-      # earlier smoke / signed-roundtrip scenarios survived this
-      # because curl falls back to CN matching when SANs are
-      # absent; reqwest + rustls (used by cp-real.nix's agents)
-      # is stricter and requires SANs.
+      # Filter "cp" so iterating doesn't overwrite the SAN-bearing server
+      # cert with a SAN-less client cert (rustls requires SANs).
       ${lib.concatMapStringsSep "\n" (h: ''
           openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
             -keyout $out/${h}-key.pem -out $out/${h}-csr.pem -nodes \
@@ -114,28 +64,14 @@
       rm -f $out/*-csr.pem $out/*.srl $out/*-ext.cnf $out/ca.cnf
     '';
 
-  # One cert set covering the harness hostnames. Additional hostnames get
-  # added here as new scenarios land.
   mkHarnessCerts = {hostnames ? ["cp" "agent-01" "agent-02"]}:
     mkTlsCerts {inherit hostnames;};
 
-  # Common microvm guest settings.
-  # mem defaults to 256 MB per guest to fit the 16GB-dev-machine budget
-  # (≤512MB per VM allows fleet-20 on a 16GB host).
-  #
-  # Hypervisor: qemu. Cloud-hypervisor would cold-boot ~5x faster but
-  # only supports tap networking; this harness depends on qemu
-  # user-net (`type = "user"`) for bridge-less guest-to-host NAT, so
-  # CH is incompatible without a substantial network-model rewrite.
-  # Fleet-N scaling instead relies on staggered start (see
-  # smoke.nix's isFleetN branch) to spread cold-boot I/O contention
-  # over time rather than packing it into a single thundering herd.
+  # LOADBEARING: hypervisor=qemu (not cloud-hypervisor); harness needs user-net bridge-less guest-to-host NAT, CH only does tap.
   microvmGuestDefaults = {
     hypervisor = "qemu";
     mem = 256;
     vcpu = 1;
-    # virtiofs share of the host /nix/store keeps cold-start nearly free;
-    # the guest mounts it read-only and writes stateful paths elsewhere.
     shares = [
       {
         source = "/nix/store";
@@ -144,9 +80,7 @@
         proto = "virtiofs";
       }
     ];
-    # Bridge-less user-mode networking; every guest sees the host via
-    # qemu user-net's 10.0.2.2. Scenarios that need guest-to-guest
-    # networking (future: canary rollback) will switch to tap/bridge.
+    # LOADBEARING: user-mode networking — every guest sees the host via 10.0.2.2; guest-to-guest needs tap/bridge.
     interfaces = [
       {
         type = "user";
@@ -156,16 +90,7 @@
     ];
   };
 
-  # CP runs on the host VM, not inside a microVM.
-  #
-  # Rationale: qemu user-mode networking isolates every microVM's
-  # gateway (10.0.2.2) to the host VM itself — two user-net microVMs
-  # cannot reach each other directly. Running the CP on the host VM
-  # lets every agent microVM reach it via the shared user-net gateway
-  # without bridge/NAT plumbing. The same placement applies whether
-  # the CP is the smoke stub (cp.nix), the verify-artifact stub
-  # (cp-signed.nix), or the real binary via the framework module
-  # (cp-real.nix).
+  # LOADBEARING: CP runs on host VM (not microVM); user-net microVMs can't reach each other, but share host gateway.
   mkCpHostModule = {
     testCerts,
     resolvedJsonPath,
@@ -174,10 +99,6 @@
     _module.args = {inherit testCerts resolvedJsonPath;};
   };
 
-  # Signed-fixture CP: routes GET /canonical.json + /canonical.json.sig
-  # from `signedFixture` (the derivation output at
-  # tests/harness/fixtures/signed/default.nix). Used only by the
-  # signed-roundtrip scenario; the smoke scenario keeps `mkCpHostModule`.
   mkSignedCpHostModule = {
     testCerts,
     signedFixture,
@@ -186,19 +107,10 @@
     _module.args = {inherit testCerts signedFixture;};
   };
 
-  # Real-binary CP host module. Runs the crane-built
-  # `nixfleet-control-plane serve` binary against the signed fixture
-  # with persistent SQLite state. Used by the teardown scenario;
-  # future scenarios that need real CP semantics import this instead
-  # of mkCpHostModule.
   mkRealCpHostModule = {
     testCerts,
     signedFixture,
     cpPkg,
-    # Optional signed `revocations.json` sidecar fixture. When set,
-    # cp-real.nix runs a static HTTP server alongside the CP and
-    # configures `--revocations-*` to poll it. Scenarios that don't
-    # exercise revocations recovery pass `null`.
     revocationsFixture ? null,
   }: {
     imports = [./nodes/cp-real.nix];
@@ -228,15 +140,6 @@
     system.stateVersion = lib.mkDefault "24.11";
   };
 
-  # Verifying agent: fetches canonical.json + .sig from the signed CP,
-  # loads /etc/nixfleet-harness/test-trust.json from `signedFixture`,
-  # invokes the `nixfleet-verify-artifact` binary from
-  # `verifyArtifactPkg` (crane-built) and logs the OK marker on success.
-  #
-  # `now` defaults to the fixture's `passthru.now` (signedAt + 1h) so
-  # the freshness-window check passes regardless of how the fixture's
-  # signedAt is parameterised. Stale-refusal scenarios override `now`
-  # to a value past `signedAt + freshnessWindowSecs`.
   mkVerifyingAgentNode = {
     testCerts,
     hostName,
@@ -272,11 +175,6 @@
     system.stateVersion = lib.mkDefault "24.11";
   };
 
-  # Real-binary agent microVM. Runs the crane-built
-  # `nixfleet-agent` against `cp-real`. Pre-placed certs (no
-  # enrollment); poll loop ticks at `pollIntervalSecs` (default 10s
-  # in the harness so scenarios don't wait the full 60s production
-  # cadence between checkins).
   mkRealAgentNode = {
     testCerts,
     signedFixture,
@@ -303,21 +201,7 @@
     system.stateVersion = lib.mkDefault "24.11";
   };
 
-  # Convergence preseed: a NixOS module that overrides
-  # /run/current-system to a path whose basename equals `closureHash`,
-  # and writes `<state-dir>/last_confirmed_at` with that hash + the
-  # given `attestedAt` RFC3339 timestamp.
-  #
-  # Together those two pieces let the agent's reported
-  # `current_generation.closure_hash` match the fleet's declared
-  # `hosts[*].closureHash` (set via the signed fixture's
-  # `hostClosureHashes`) AND echo a known last_confirmed_at on every
-  # checkin. Required for any scenario that asserts CP-side soak-state
-  # attestation recovery; harmless for scenarios that don't, so it's
-  # safe to apply pre-emptively to any agent that uses the converged
-  # signed fixture.
-  #
-  # Returns a NixOS module; callers add it to `extraModules`.
+  # LOADBEARING: overrides /run/current-system + seeds last_confirmed_at so agent's closure_hash matches fleet hosts[*].closureHash.
   convergencePreseedModule = {
     closureHash,
     attestedAt ? "2026-04-01T00:00:00Z",
@@ -327,10 +211,7 @@
       wantedBy = ["multi-user.target"];
       before = ["nixfleet-agent.service"];
       after = ["local-fs.target"];
-      # `requiredBy` makes the agent unit fail loudly if preseed
-      # fails. Without it, read_last_confirmed silently returns
-      # Ok(None) on a missing file and convergence-dependent
-      # assertions would false-pass.
+      # FOOTGUN: without requiredBy, preseed failure silently false-passes convergence assertions (read_last_confirmed -> Ok(None)).
       requiredBy = ["nixfleet-agent.service"];
       serviceConfig = {
         Type = "oneshot";
@@ -339,15 +220,10 @@
       script = ''
         set -euo pipefail
 
-        # Override /run/current-system. The symlink target doesn't
-        # need to exist — the agent reads the symlink string via
-        # fs::read_link and reports its basename.
+        # Symlink target need not exist; the agent reports its basename.
         ${pkgs.coreutils}/bin/ln -sfn \
           /tmp/${closureHash} /run/current-system
 
-        # Seed last_confirmed_at in the agent's state dir. Format
-        # per crates/nixfleet-agent/src/checkin_state.rs:
-        # <closure_hash>\n<rfc3339>\n. Two-line plaintext.
         ${pkgs.coreutils}/bin/mkdir -p /var/lib/nixfleet-agent
         ${pkgs.coreutils}/bin/chmod 0700 /var/lib/nixfleet-agent
         ${pkgs.coreutils}/bin/printf '%s\n%s\n' \
@@ -359,17 +235,6 @@
     };
   };
 
-  # Python helpers prepended to every scenario's `testScript` by
-  # `mkFleetScenario`. Scenarios call `wait_for_journal_match` instead
-  # of reimplementing the deadline-grep-sleep loop.
-  #
-  # On boot timing: agent service modules carry an `ExecStartPre` that
-  # blocks on `ip route show default` until the guest has a default
-  # route, so checkin attempts only fire once networking is genuinely
-  # ready. This is the right place for the wait — guest-side, in
-  # systemd's ordering — and removes the need for a test-driver-side
-  # readiness gate. Scenarios use generous activity budgets that
-  # cover boot + agent activity end-to-end.
   testScriptPrelude = ''
     import time
 
@@ -405,17 +270,7 @@
         )
   '';
 
-  # Wrap a CP host-module + a list of agent microVM modules into a
-  # runNixOSTest that boots the host and the agent microVMs. The CP stub
-  # runs directly on the host VM (see mkCpHostModule for rationale);
-  # agents run as microVMs sharing the host's /nix/store via virtiofs.
-  #
-  # Extension path: `agents` is an attrset of name -> <nix module>. For
-  # fleet-N, the scenario file generates agent-01..agent-N programmatically
-  # and passes them here. The CP host module is a single entry.
-  # Default budget per microVM guest. Mirrors microvmGuestDefaults.mem
-  # so callers can size the host RAM correctly without re-deriving
-  # the per-guest figure.
+  # LOADBEARING: mirrors microvmGuestDefaults.mem so host-RAM sizing is correct (CP + N guests + headroom).
   guestMemMB = 256;
 
   mkFleetScenario = {
@@ -424,18 +279,8 @@
     agents,
     testScript,
     timeout ? 600,
-    # Optional host-VM memory override. Default sizes per
-    # `agents`-count: 4GB host + (count × guestMemMB), with a
-    # 1GB minimum host overhead reservation. Fleet-2 lands at
-    # 4GB; fleet-10 lands at ~7GB; fleet-50 (if attempted) would
-    # land at ~17GB which hits the 16GB-dev-machine cap.
     hostMemoryMB ? null,
-    # When false, agent VMs are NOT pulled in by `microvms.target` —
-    # the testScript is responsible for starting each
-    # `microvm@<name>.service` (allowing staggered boot to avoid
-    # cold-start I/O contention at high N). Default true preserves
-    # the parallel-start behavior single-agent and 2-agent scenarios
-    # rely on.
+    # GOTCHA: when false, testScript starts each microvm@<name>.service manually for staggered boot at high N.
     agentVmAutostart ? true,
   }: let
     agentCount = builtins.length (builtins.attrNames agents);
@@ -455,8 +300,6 @@
           cpHostModule
         ];
 
-        # The host VM needs KVM nested + enough disk for the microvm state
-        # dirs + enough RAM to cover every guest's declared mem budget.
         virtualisation = {
           cores = 2;
           memorySize = resolvedHostMemoryMB;

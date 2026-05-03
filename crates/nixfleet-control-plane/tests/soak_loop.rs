@@ -1,25 +1,4 @@
-//! End-to-end soak-loop integration test (closing the cycle).
-//!
-//! Exercises every piece the cycle wired up in one scenario:
-//!
-//! 1. `record_dispatch` + `confirm` (host_dispatch_state) simulate
-//!    the confirm handler's success path.
-//! 2. `transition_host_state(Healthy, Set(now), None)` stamps
-//!    `last_healthy_since`.
-//! 3. `active_rollouts_snapshot` projects the DB into the
-//!    reconciler's observed-state shape.
-//! 4. `observed_projection::project` builds the Observed struct.
-//! 5. `nixfleet_reconciler::reconcile` decides + emits
-//!    `Action::SoakHost` because the soak window has elapsed.
-//! 6. `transition_host_state(Soaked, Untouched, Some(Healthy))`
-//!    applies the SoakHost action.
-//! 7. The next snapshot reflects `host_state = 'Soaked'` and the
-//!    next reconcile tick fires `ConvergeRollout` (single-wave
-//!    fleet, so promotion = convergence).
-//!
-//! Each piece has its own unit / fixture coverage; this test
-//! proves they compose. If a future refactor breaks the chain at
-//! any join, this test fires.
+//! End-to-end soak-loop test composing record/confirm, snapshot, project, reconcile, and transition.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -90,11 +69,6 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
     let db = Arc::new(Db::open(&tmp.path().join("state.db")).unwrap());
     db.migrate().unwrap();
 
-    // Step A: simulate the confirm handler's success path.
-    // record_dispatch + confirm flip the operational row to
-    // confirmed; transition_host_state(Healthy) stamps the soak marker
-    // 10 minutes in the past so the wave's 5-minute soak window
-    // is elapsed at reconcile time.
     let host = "ohm";
     let rollout_id = "stable@abc12345";
     let target_closure = "deadbeef-system";
@@ -125,8 +99,6 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
         )
         .unwrap();
 
-    // Step B: project the DB state into the reconciler's
-    // observed-state struct.
     let rollouts = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
     assert_eq!(rollouts.len(), 1, "snapshot must surface the rollout");
     assert_eq!(
@@ -143,8 +115,6 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
         observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new());
     assert_eq!(observed.active_rollouts.len(), 1);
 
-    // Step C: reconcile against a fleet whose wave has soak_minutes
-    // = 5. The host has been Healthy for 10m → SoakHost emits.
     let fleet = fleet_with_single_wave_host(host, target_closure, 5);
     let actions = reconcile(&fleet, &observed, now);
     assert_eq!(actions.len(), 1, "expected exactly one action: {actions:?}");
@@ -159,8 +129,6 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
         other => panic!("expected Action::SoakHost, got {other:?}"),
     }
 
-    // Step D: apply the SoakHost action — what the CP-side
-    // action processor does on each tick.
     let n = db
         .rollout_state()
         .transition_host_state(
@@ -173,9 +141,6 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
         .unwrap();
     assert_eq!(n, 1, "transition Healthy → Soaked must update one row");
 
-    // Step E: re-project + re-reconcile. The host now appears as
-    // Soaked, the wave's `wave_all_soaked` check fires, and the
-    // single-wave fleet emits ConvergeRollout.
     let rollouts2 = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
     assert_eq!(
         rollouts2[0].host_states.get(host).map(String::as_str),
@@ -195,10 +160,6 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
 
 #[test]
 fn soak_loop_skips_when_window_not_elapsed() {
-    // Companion negative-side test: same chain, but the host has
-    // only been Healthy for 1m against a 5m soak window. The
-    // reconciler must NOT emit SoakHost (or any other action for
-    // this rollout) — the soak gate stays closed.
     let tmp = TempDir::new().unwrap();
     let db = Arc::new(Db::open(&tmp.path().join("state.db")).unwrap());
     db.migrate().unwrap();

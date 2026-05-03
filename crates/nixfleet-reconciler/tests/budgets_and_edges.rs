@@ -1,5 +1,3 @@
-//! Disruption-budget and edge-ordering fixtures.
-
 #[path = "common/mod.rs"]
 mod common;
 

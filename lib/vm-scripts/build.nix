@@ -1,8 +1,3 @@
-# build-vm — install a VM host via nixos-anywhere (ISO boot + disko).
-#
-# See ../vm-platform.nix for `platform` shape and ../vm-helpers.sh for
-# the bash helpers (`assign_port`, `wait_ssh`, `provision_identity_key`,
-# `build_iso`, `compute_vlan_args`) interpolated as `${sharedHelpers}`.
 {
   platform,
   pkgs,

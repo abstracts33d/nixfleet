@@ -1,21 +1,4 @@
-//! Wave-staging compliance gate.
-//!
-//! Pure decision: should dispatch be blocked because outstanding
-//! `ComplianceFailure` / `RuntimeGateError` events haven't been
-//! resolved? An event is **outstanding** until the host moves to a
-//! strictly newer rollout — events bound to `rollout` other than
-//! `current_rollout` are resolved-by-replacement.
-//!
-//! `Mismatch` / `Malformed` signature statuses disqualify events
-//! from the gate so an attacker with a forged sig can't grief
-//! deploys; every other status counts (mTLS already authenticated
-//! the post).
-//!
-//! Per-wave: a failing host on wave N blocks only waves > N.
-//! Same-wave or earlier-wave dispatches still flow — either the
-//! failing host itself (free to receive a fixed closure) or other
-//! hosts in the same wave. Permissive never blocks; events still
-//! recorded.
+//! Pure wave-staging compliance gate; resolution-by-replacement, per-wave, signature-aware.
 
 use nixfleet_proto::agent_wire::ReportEvent;
 use nixfleet_proto::compliance::GateMode;
@@ -36,9 +19,7 @@ fn record_is_compliance_failure(record: &ReportRecord) -> bool {
     }
 }
 
-/// Filter to outstanding failures relative to `current_rollout`.
-/// `None` current_rollout (legacy / first checkin) is conservative:
-/// all failure events count.
+/// `None` current_rollout is conservative — all failure events count.
 pub fn outstanding_failures<'a>(
     records: &'a [ReportRecord],
     current_rollout: Option<&str>,
@@ -57,14 +38,9 @@ pub fn outstanding_failures<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WaveGateOutcome {
-    /// Mode `disabled`; gate did not run.
     NotApplicable,
-    /// Mode `permissive`; events recorded but never block dispatch.
     Permissive { failing_events_count: usize },
-    /// Mode `enforce`, no outstanding events; proceed.
     EnforcePass,
-    /// Mode `enforce`, at least one host has outstanding events;
-    /// dispatch blocked.
     EnforceBlock {
         failing_hosts: Vec<String>,
         failing_events_count: usize,
@@ -81,15 +57,11 @@ pub struct HostGateInput<'a> {
     pub hostname: &'a str,
     pub records: &'a [ReportRecord],
     pub current_rollout: Option<&'a str>,
-    /// 0-based wave in `fleet.waves[channel]`. None for fleets
-    /// without a wave plan; under None every host counts toward
-    /// the gate (no wave granularity available).
+    /// `None` (no wave plan) → every host counts toward the gate.
     pub wave_index: Option<u32>,
 }
 
-/// `requesting_wave` is the wave being dispatched to. A failing
-/// host on wave N blocks only when `requesting_wave > N`. Unknown
-/// wave on either side → conservative (count toward gate).
+/// Failing host on wave N blocks only `requesting_wave > N`; unknown wave → conservative.
 pub fn evaluate_channel_gate<'a, I>(
     mode: GateMode,
     requesting_wave: Option<u32>,
@@ -121,7 +93,7 @@ where
     }
 
     match mode {
-        GateMode::Disabled => WaveGateOutcome::NotApplicable, // unreachable
+        GateMode::Disabled => WaveGateOutcome::NotApplicable,
         GateMode::Permissive => WaveGateOutcome::Permissive {
             failing_events_count,
         },
@@ -200,14 +172,12 @@ mod tests {
     #[test]
     fn outstanding_excludes_failure_for_different_rollout() {
         let records = vec![compliance_failure(Some("R0"), None)];
-        // Host has moved on to R1; R0's failure is resolved.
         assert!(outstanding_failures(&records, Some("R1")).is_empty());
     }
 
     #[test]
     fn outstanding_includes_failure_when_current_rollout_unknown() {
         let records = vec![compliance_failure(Some("R0"), None)];
-        // First checkin / legacy: assume outstanding.
         assert_eq!(outstanding_failures(&records, None).len(), 1);
     }
 
@@ -276,7 +246,6 @@ mod tests {
     #[test]
     fn evaluate_enforce_blocks_on_outstanding_failures() {
         let records = vec![compliance_failure(Some("R1"), None)];
-        // No wave info → conservative fallback: failing host counts.
         let r = evaluate_channel_gate(
             GateMode::Enforce,
             None,
@@ -309,8 +278,6 @@ mod tests {
 
     #[test]
     fn evaluate_enforce_resolved_by_replacement() {
-        // Host posted a failure for R0, then upgraded to R1 cleanly.
-        // No outstanding events under enforce → pass.
         let records = vec![compliance_failure(Some("R0"), None)];
         let r = evaluate_channel_gate(
             GateMode::Enforce,
@@ -340,10 +307,6 @@ mod tests {
 
     #[test]
     fn evaluate_per_wave_blocks_only_later_waves() {
-        // Wave-0 host failed; wave-1 dispatch should be blocked,
-        // wave-0 dispatch should NOT be blocked (same-wave or
-        // earlier-wave dispatches keep flowing — only promotion
-        // past the failing wave is held).
         let failing = vec![compliance_failure(Some("R1"), None)];
         let inputs = || {
             vec![
@@ -353,20 +316,15 @@ mod tests {
             ]
         };
 
-        // Dispatch decision for a wave-0 host: should NOT block.
         let r0 = evaluate_channel_gate(GateMode::Enforce, Some(0), inputs());
         assert_eq!(r0, WaveGateOutcome::EnforcePass);
 
-        // Dispatch decision for a wave-1 host: SHOULD block (the
-        // wave-0 failure holds wave-1 promotion).
         let r1 = evaluate_channel_gate(GateMode::Enforce, Some(1), inputs());
         assert!(r1.blocks(), "wave-1 dispatch must block on wave-0 failure");
     }
 
     #[test]
     fn evaluate_per_wave_unknown_request_falls_back_conservative() {
-        // Wave-0 failure; requesting wave is unknown — conservative
-        // path counts the failure (block).
         let failing = vec![compliance_failure(Some("R1"), None)];
         let r = evaluate_channel_gate(
             GateMode::Enforce,
@@ -375,13 +333,4 @@ mod tests {
         );
         assert!(r.blocks());
     }
-
-    // Earlier revisions had `evaluate_unknown_mode_falls_back_to_not_applicable`
-    // and `evaluate_none_mode_falls_back_to_not_applicable` here. With
-    // the move to a typed `GateMode` enum (issue D in the cycle quality
-    // pass), unknown / unset modes can no longer reach this function
-    // — they're collapsed at parse time by `GateMode::from_wire_str`
-    // and `GateMode::resolve` upstream. The forward-compat behaviour
-    // (unknown wire string → Permissive) is now tested in
-    // `nixfleet-proto::compliance::tests`.
 }

@@ -1,7 +1,5 @@
-//! Proto round-trip tests.
-//!
-//! Byte-exact: parse → re-serialize through JCS canonicalizer →
-//! assert bytes match the committed golden.
+//! Proto round-trip tests: parse → re-serialize → JCS canonicalize →
+//! assert byte-equality with golden.
 
 use nixfleet_canonicalize::canonicalize;
 use nixfleet_proto::FleetResolved;
@@ -48,10 +46,6 @@ fn signed_artifact_roundtrips_byte_for_byte() {
 }
 
 /// Sanity check against the Nix evaluator's real output.
-///
-/// Copied from `tests/lib/mk-fleet/fixtures/empty-selector-warns.resolved.json`.
-/// If the Nix evaluator changes the schema, this test fails and we
-/// re-copy + adjust proto types.
 #[test]
 fn stream_b_empty_selector_parses_and_canonicalizes() {
     let input = load("stream-b/empty-selector-warns.resolved.json");
@@ -64,7 +58,6 @@ fn stream_b_empty_selector_parses_and_canonicalizes() {
     assert!(chan.freshness_window > 0);
     assert!(chan.signing_interval_minutes > 0);
 
-    // Round-trip must not panic or produce invalid JSON.
     let reserialized = serde_json::to_string(&parsed).expect("serialize");
     let canonical = canonicalize(&reserialized).expect("canonicalize");
     assert!(!canonical.is_empty());
@@ -72,10 +65,7 @@ fn stream_b_empty_selector_parses_and_canonicalizes() {
 
 #[test]
 fn meta_signature_algorithm_none_round_trips_as_absent() {
-    // Per the §I/§II amendment: `meta.signatureAlgorithm` is OPTIONAL
-    // with default "ed25519" on the consumer side. The canonical way to
-    // encode "use the default" is ABSENT (not `null`). Explicit algorithm
-    // strings round-trip as themselves.
+    // Default-on-consumer-side: encode None as ABSENT, not null.
     let input = load("every-nullable.json");
     let parsed: FleetResolved = serde_json::from_str(&input).expect("parse");
     assert!(
@@ -92,8 +82,6 @@ fn meta_signature_algorithm_none_round_trips_as_absent() {
 
 #[test]
 fn meta_signature_algorithm_some_round_trips_as_explicit_string() {
-    // Inject signatureAlgorithm: "ecdsa-p256" into a fixture; parse;
-    // assert Some; re-serialize; assert the explicit string is present.
     let input = load("signed-artifact.json");
     let mut value: serde_json::Value = serde_json::from_str(&input).unwrap();
     value["meta"]["signatureAlgorithm"] = serde_json::json!("ecdsa-p256");
@@ -122,7 +110,7 @@ fn unknown_fields_at_any_level_are_ignored() {
 
     let injected = serde_json::to_string(&value).unwrap();
     let parsed: FleetResolved = serde_json::from_str(&injected)
-        .expect("unknown fields must parse (CONTRACTS §V forward compat)");
+        .expect("unknown fields must parse (forward compat)");
 
     assert_eq!(parsed.schema_version, 1);
     assert_eq!(parsed.hosts.len(), 1);
@@ -130,12 +118,7 @@ fn unknown_fields_at_any_level_are_ignored() {
 
 #[test]
 fn channel_freshness_window_duration_converts_minutes_to_seconds() {
-    // Unit landmine: `freshness_window` is declared in MINUTES by
-    // `lib/mk-fleet.nix` but the field name has no `_minutes` suffix.
-    // The helper converts via u64 * 60 so callers cannot accidentally
-    // pass the raw u32 into `Duration::from_secs` and shrink the
-    // window 60×. The `every-nullable.json` and `signed-artifact.json`
-    // fixtures both use `freshnessWindow: 180`, so 180 min → 10_800 s.
+    // freshness_window is MINUTES; helper guards against the 60× landmine.
     use std::time::Duration;
     let input = load("every-nullable.json");
     let parsed: FleetResolved = serde_json::from_str(&input).expect("parse every-nullable.json");

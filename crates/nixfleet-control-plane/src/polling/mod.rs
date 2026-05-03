@@ -1,6 +1,4 @@
-//! Periodic upstream polls — channel-refs source (`channel_refs_poll`),
-//! revocations sidecar (`revocations_poll`), and the shared signed-fetch
-//! primitive (`signed_fetch`) used by both.
+//! Periodic upstream polls and shared signed-fetch primitive.
 
 pub mod channel_refs_poll;
 pub mod poller;

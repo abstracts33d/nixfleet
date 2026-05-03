@@ -1,15 +1,4 @@
-//! `host_dispatch_state` — operational dispatch row, one per host.
-//!
-//! Recovery class: **soft state** (ARCHITECTURE.md §6 Phase 10).
-//! Loss could force the agent into an unnecessary local rollback when
-//! its confirm POST hits a 410. Mitigated by orphan-confirm recovery:
-//! when the agent's reported `closure_hash` matches the verified
-//! target, the handler synthesises a confirmed row via
-//! [`HostDispatchState::record_confirmed_dispatch`] and returns 204.
-//!
-//! Paired with [`super::dispatch_history`]: this module owns the live
-//! one-row-per-host operational state + the `active_rollouts_snapshot`
-//! projection; dispatch_history is the append-only audit log.
+//! Operational dispatch row, one per host (soft state); orphan-confirm recovers from loss.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -19,18 +8,11 @@ use std::sync::Mutex;
 
 use crate::state::{HostRolloutState, PendingConfirmState, TerminalState};
 
-/// Bundled args for [`HostDispatchState::record_dispatch`] and the
-/// audit insert in [`super::dispatch_history::DispatchHistory::record_dispatch`].
-/// Both tables share the same row shape at insertion time, so a single
-/// struct keeps call sites readable; the named fields make positional
-/// `&str` swaps a compile error.
 #[derive(Debug, Clone)]
 pub struct DispatchInsert<'a> {
     pub hostname: &'a str,
     pub rollout_id: &'a str,
-    /// Channel name the rollout was opened on. Persisted explicitly
-    /// since #62 made rolloutIds content hashes that no longer encode
-    /// the channel.
+    /// Persisted explicitly: rolloutIds are content hashes that don't encode the channel.
     pub channel: &'a str,
     pub wave: u32,
     pub target_closure_hash: &'a str,
@@ -38,26 +20,20 @@ pub struct DispatchInsert<'a> {
     pub confirm_deadline: DateTime<Utc>,
 }
 
-/// Joined snapshot of `host_dispatch_state` + `host_rollout_state` for
-/// the observed-state projection. Rollouts are derived (no dedicated
-/// table); operational rows in terminal states are filtered out so
-/// dead rollouts don't surface as empty-host-states the reconciler
-/// would re-dispatch.
+/// Joined snapshot for observed-state projection; terminal rows filtered out.
 #[derive(Debug, Clone)]
 pub struct RolloutDbSnapshot {
     pub rollout_id: String,
     pub channel: String,
     pub target_closure_hash: String,
     pub target_channel_ref: String,
-    /// `host_rollout_state` wins when present; otherwise derived
-    /// from the operational `host_dispatch_state.state`.
+    /// `host_rollout_state` wins when present; otherwise derived from operational state.
     pub host_states: HashMap<String, String>,
-    /// Excludes hosts whose marker is NULL (not currently Healthy).
+    /// Excludes hosts not currently Healthy.
     pub last_healthy_since: HashMap<String, DateTime<Utc>>,
 }
 
-/// `(hostname, rollout_id, wave, target_closure_hash)`. Rows whose
-/// `confirm_deadline` has passed and which haven't been confirmed.
+/// `(hostname, rollout_id, wave, target_closure_hash)` for rows with a passed deadline.
 pub type ExpiredDispatch = (String, String, u32, String);
 
 pub struct HostDispatchState<'a> {
@@ -65,12 +41,7 @@ pub struct HostDispatchState<'a> {
 }
 
 impl HostDispatchState<'_> {
-    /// Record a dispatched activation. Called from the dispatch loop
-    /// when CP populates `target` in a checkin response. Writes the
-    /// operational row (UPSERT — one row per host, replaced on every
-    /// new dispatch) AND appends an audit row to `dispatch_history`,
-    /// both inside a single transaction. The agent will later post
-    /// `/v1/agent/confirm` with the same `rollout_id` once it boots.
+    /// Upserts operational row + appends audit row in one transaction.
     pub fn record_dispatch(&self, row: &DispatchInsert<'_>) -> Result<()> {
         let mut guard = super::lock_conn(self.conn)?;
         let txn = guard.transaction().context("begin dispatch txn")?;
@@ -80,16 +51,7 @@ impl HostDispatchState<'_> {
         Ok(())
     }
 
-    /// Insert an operational row directly in `'confirmed'` state and
-    /// append the audit row — used by the orphan-confirm recovery
-    /// path when an agent posts `/v1/agent/confirm` but no matching
-    /// pending row exists (typically because the CP was rebuilt
-    /// mid-flight). The orphan handler verifies the agent's
-    /// `closure_hash` matches the host's declared target before
-    /// calling this; the synthetic row preserves the audit trail of
-    /// "this host activated this closure" without forcing a spurious
-    /// rollback. `confirm_deadline` is set to `confirmed_at` since
-    /// the deadline is moot for an already-confirmed row.
+    /// Orphan-confirm recovery: synthesises a row directly in `'confirmed'`.
     #[allow(clippy::too_many_arguments)]
     pub fn record_confirmed_dispatch(
         &self,
@@ -123,9 +85,7 @@ impl HostDispatchState<'_> {
         Ok(())
     }
 
-    /// Returns true if the host has an operational row in state
-    /// `'pending'`. Used by the dispatch loop to avoid re-dispatching
-    /// while an activation is in flight.
+    /// True if the host has a `'pending'` row.
     pub fn pending_dispatch_exists(&self, hostname: &str) -> Result<bool> {
         let guard = super::lock_conn(self.conn)?;
         let n: i64 = guard
@@ -139,20 +99,7 @@ impl HostDispatchState<'_> {
         Ok(n > 0)
     }
 
-    /// Mark a pending dispatch as confirmed. Called by the
-    /// `/v1/agent/confirm` handler. Returns the number of rows
-    /// updated — 0 means no matching pending row (rollout cancelled,
-    /// deadline already expired, agent confirming twice, or the host
-    /// has been overwritten by a newer dispatch).
-    ///
-    /// The `confirm_deadline > datetime('now')` clause is load-bearing:
-    /// without it, late confirms whose deadline has already passed
-    /// would still flip pending → confirmed, sneaking past the
-    /// rollback contract. The orphan-confirm-recovery path is the
-    /// legitimate "late confirm from a CP-rebuild" escape hatch —
-    /// it re-checks the closure hash against the verified target
-    /// before synthesizing a row, and is exercised by
-    /// `fleet-harness-deadline-expiry`.
+    /// Flips pending → confirmed; deadline gate prevents late confirms bypassing rollback.
     pub fn confirm(&self, hostname: &str, rollout_id: &str) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let n = guard
@@ -175,17 +122,7 @@ impl HostDispatchState<'_> {
         Ok(n)
     }
 
-    /// Operational rows whose deadline has passed and which haven't
-    /// been confirmed. Used by the magic-rollback timer — each row
-    /// returned is a host that failed to confirm in time and should
-    /// be rolled back.
-    ///
-    /// Wraps `confirm_deadline` in `datetime(...)` so SQLite parses
-    /// the stored RFC3339 string (`YYYY-MM-DDTHH:MM:SS+00:00`) into
-    /// the same canonical shape `datetime('now')` returns; naked
-    /// string compare ranks 'T' (0x54) above ' ' (0x20) at position
-    /// 10, so deadlines look greater than now forever and the timer
-    /// is a no-op.
+    /// `datetime(...)` wrapper is required: naked string compare ranks 'T' > ' ' and breaks the timer.
     pub fn pending_deadlines(&self) -> Result<Vec<ExpiredDispatch>> {
         let guard = super::lock_conn(self.conn)?;
         let mut stmt = guard.prepare(
@@ -207,13 +144,7 @@ impl HostDispatchState<'_> {
         Ok(rows)
     }
 
-    /// Mark expired dispatches as rolled-back at the operational
-    /// level. Idempotent — only updates rows still in 'pending', so
-    /// a second call with the same pairs is a no-op.
-    /// `(hostname, rollout_id)` pairs come from
-    /// [`Self::pending_deadlines`]; the rollback timer also stamps
-    /// the audit row via
-    /// [`super::dispatch_history::DispatchHistory::mark_terminal_for_rollout_host`].
+    /// Idempotent: only flips rows still in 'pending'.
     pub fn mark_rolled_back(&self, pairs: &[(String, String)]) -> Result<usize> {
         if pairs.is_empty() {
             return Ok(0);
@@ -242,24 +173,14 @@ impl HostDispatchState<'_> {
         Ok(updated)
     }
 
-    /// Race-resistant terminal flip. Used by the report handler when
-    /// `RollbackTriggered` closes the rollback-and-halt loop —
-    /// operational state moves to `terminal_state` for THIS rollout.
-    /// If a newer dispatch has overwritten the row (different
-    /// rollout_id), the WHERE clause doesn't match and the call is a
-    /// no-op (returns 0). The audit row is stamped separately via
-    /// [`super::dispatch_history::DispatchHistory::mark_terminal_for_rollout_host`].
+    /// Race-resistant: WHERE rollout_id guard makes a stale id a no-op when overwritten.
     pub fn record_terminal(
         &self,
         hostname: &str,
         rollout_id: &str,
         terminal: TerminalState,
     ) -> Result<usize> {
-        // Map TerminalState → operational state literal. Converged is
-        // not an operational terminal (operational stays Confirmed
-        // post-converge — the row's "current" rollout converged but
-        // the host's last known state was Confirmed); only RolledBack
-        // and Cancelled flip the operational column.
+        // LOADBEARING: Converged stays Confirmed at the operational level; only RolledBack/Cancelled flip the column.
         let new_state = match terminal {
             TerminalState::Converged => return Ok(0),
             TerminalState::RolledBack => PendingConfirmState::RolledBack,
@@ -278,8 +199,6 @@ impl HostDispatchState<'_> {
         Ok(n)
     }
 
-    /// Read the operational row for a host. Returns `Ok(None)` when
-    /// no row exists.
     pub fn host_state(&self, hostname: &str) -> Result<Option<HostDispatchStateRow>> {
         let guard = super::lock_conn(self.conn)?;
         let row = guard
@@ -297,26 +216,7 @@ impl HostDispatchState<'_> {
         Ok(row)
     }
 
-    /// Snapshot the active rollouts derived from the operational
-    /// table for the observed-state projection. One row per host,
-    /// terminal states (`rolled-back` / `cancelled`) filtered out.
-    /// LEFT JOIN `host_rollout_state` for the per-host machine
-    /// state + soak-timer marker.
-    ///
-    /// Filtering terminal rows is load-bearing: a rollout whose
-    /// every host is terminal would otherwise surface as an empty
-    /// `host_states` map, and the reconciler defaults absent host-
-    /// state lookups to "Queued" — re-dispatching all those hosts.
-    /// Skipping terminal rows entirely avoids that trap.
-    ///
-    /// Output order: rollout_id ascending. Deterministic so
-    /// projection tests can compare against expected vectors and
-    /// the reconciler's journal lines stay grep-stable.
-    ///
-    /// Lives on `HostDispatchState` because the operational table is
-    /// the authoritative source of "what each host is currently
-    /// dispatched to do" — `dispatch_history` is the audit log, not
-    /// the snapshot.
+    /// Filtering terminal rows prevents the reconciler defaulting absent host-states to Queued and re-dispatching.
     pub fn active_rollouts_snapshot(&self) -> Result<Vec<RolloutDbSnapshot>> {
         use std::collections::BTreeMap;
 
@@ -341,14 +241,14 @@ impl HostDispatchState<'_> {
                 ],
                 |row| {
                     Ok((
-                        row.get::<_, String>(0)?,         // rollout_id
-                        row.get::<_, String>(1)?,         // channel
-                        row.get::<_, String>(2)?,         // hostname
-                        row.get::<_, String>(3)?,         // target_closure_hash
-                        row.get::<_, String>(4)?,         // target_channel_ref
-                        row.get::<_, String>(5)?,         // hds.state
-                        row.get::<_, Option<String>>(6)?, // hrs.host_state
-                        row.get::<_, Option<String>>(7)?, // hrs.last_healthy_since
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 },
             )?
@@ -366,11 +266,6 @@ impl HostDispatchState<'_> {
             hrs_ts,
         ) in rows
         {
-            // Derive the host's state literal. `host_rollout_state`
-            // wins when present (post-confirm machine: Healthy /
-            // Soaked / …); otherwise infer from operational state.
-            // The RolledBack/Cancelled match guard is unreachable —
-            // the WHERE filter excludes terminal rows.
             let host_state = match hrs_state {
                 Some(s) => HostRolloutState::from_db_str(&s)?.as_db_str().to_string(),
                 None => match PendingConfirmState::from_db_str(&op_state)? {
@@ -386,12 +281,7 @@ impl HostDispatchState<'_> {
                 .to_string(),
             };
 
-            // Use the explicit `channel` column when populated; fall
-            // back to legacy parsing of the `<channel>@<short-ci-commit>`
-            // form for rows that came from a pre-content-addressed
-            // dispatch. If both fail, leave empty — the reconciler
-            // then emits ChannelUnknown legitimately (drift-detector
-            // intent).
+            // Legacy fallback: parse `<channel>@<ref>` for pre-content-addressed rows.
             let channel = if !row_channel.is_empty() {
                 row_channel
             } else {
@@ -423,7 +313,6 @@ impl HostDispatchState<'_> {
     }
 }
 
-/// Operational row returned by [`HostDispatchState::host_state`].
 #[derive(Debug, Clone)]
 pub struct HostDispatchStateRow {
     pub hostname: String,
@@ -453,9 +342,6 @@ fn row_to_host_dispatch_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<HostD
     })
 }
 
-/// UPSERT the operational row. Pulled out so [`HostDispatchState::record_dispatch`]
-/// and [`HostDispatchState::record_confirmed_dispatch`] share the
-/// same column-write contract.
 fn upsert_operational(
     conn: &Connection,
     row: &DispatchInsert<'_>,
@@ -525,10 +411,6 @@ mod tests {
 
     #[test]
     fn upsert_replaces_existing_row() {
-        // Re-dispatch overwrites the operational row in place but
-        // appends a new history row each time. After two dispatches
-        // there's one operational row (latest wins) and two history
-        // rows (full audit trail).
         let db = fresh_db();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
         db.host_dispatch_state()
@@ -560,10 +442,6 @@ mod tests {
 
     #[test]
     fn confirm_no_op_when_deadline_passed() {
-        // Regression-pin: late confirms whose deadline has already
-        // passed must NOT flip the row pending → confirmed. The
-        // rollback contract depends on this gate; absence here is the
-        // failure mode `fleet-harness-deadline-expiry` exercises.
         let db = fresh_db();
         let past_deadline = Utc::now() - chrono::Duration::seconds(30);
         db.host_dispatch_state()
@@ -596,7 +474,6 @@ mod tests {
         db.host_dispatch_state()
             .record_dispatch(&dispatch_insert("ohm", "stable@r1", "system-r1", deadline))
             .unwrap();
-        // Wrong rollout id — guard fails, no flip.
         let n = db.host_dispatch_state().confirm("ohm", "stable@r2").unwrap();
         assert_eq!(n, 0);
         let row = db.host_dispatch_state().host_state("ohm").unwrap().unwrap();
@@ -633,7 +510,6 @@ mod tests {
             .mark_rolled_back(&[("ohm".to_string(), "stable@r1".to_string())])
             .unwrap();
         assert_eq!(n, 1);
-        // Idempotent: repeat call is no-op (row no longer pending).
         let n = db
             .host_dispatch_state()
             .mark_rolled_back(&[("ohm".to_string(), "stable@r1".to_string())])
@@ -643,10 +519,6 @@ mod tests {
 
     #[test]
     fn record_terminal_no_op_when_rollout_id_mismatches() {
-        // Race-resistance: a newer dispatch landed (different
-        // rollout_id), the report handler's RollbackTriggered post
-        // arrives carrying the OLD rollout id. The WHERE filter
-        // protects the new row.
         let db = fresh_db();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
         db.host_dispatch_state()
@@ -679,10 +551,6 @@ mod tests {
 
     #[test]
     fn record_confirmed_dispatch_writes_confirmed_state() {
-        // Orphan-recovery path: synthetic row lands directly in
-        // 'confirmed' with confirmed_at populated. Surfaces in the
-        // snapshot with derived host_state="Healthy" until a
-        // host_rollout_state row is written.
         let db = fresh_db();
         let now = Utc::now();
         db.host_dispatch_state()
@@ -709,9 +577,6 @@ mod tests {
 
     #[test]
     fn active_rollouts_snapshot_excludes_terminal_states() {
-        // Operational row in rolled-back must NOT surface — its
-        // empty host_states map would default to "Queued" in the
-        // reconciler and trigger spurious re-dispatches.
         let db = fresh_db();
         let past = Utc::now() - chrono::Duration::seconds(60);
         db.host_dispatch_state()
@@ -776,9 +641,6 @@ mod tests {
 
     #[test]
     fn active_rollouts_snapshot_legacy_channel_fallback() {
-        // Pre-V005 row whose backfill missed: simulate by writing
-        // an empty channel directly. Snapshot must split the
-        // <channel>@<ref> form to recover the channel name.
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
         let mut row = dispatch_insert("ohm", "stable@abc12345", "system-r1", future);

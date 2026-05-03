@@ -1,11 +1,4 @@
-//! Orphan-confirm recovery (CP rebuild mid-flight) and soak-state
-//! recovery from agent attestation.
-//!
-//! Both paths share a defensive posture: the CP only synthesises
-//! state when the agent's claim matches what the verified fleet
-//! says about the host. Closure-hash mismatch, missing fleet
-//! snapshot, or missing host declaration → fall through (caller
-//! decides 410 vs no-op).
+//! Orphan-confirm + soak-state recovery; only synthesises state when agent claims match verified fleet.
 
 use std::sync::Arc;
 
@@ -14,10 +7,7 @@ use nixfleet_proto::agent_wire::{CheckinRequest, ConfirmRequest};
 
 use super::super::state::AppState;
 
-/// CP-rebuild recovery for an orphan confirm. Returns `true` when
-/// the CP can absorb the confirm without forcing rollback, `false`
-/// when it should fall through to 410. All failures are non-fatal:
-/// the agent's local rollback still fires on 410.
+/// `true` absorbs the confirm; `false` falls through to 410.
 pub(super) async fn try_recover_orphan_confirm(
     state: &Arc<AppState>,
     req: &ConfirmRequest,
@@ -31,10 +21,7 @@ pub(super) async fn try_recover_orphan_confirm(
     synthesise_orphan_confirm_rows(db, req, &target_closure, &channel)
 }
 
-/// Returns the validated target closure when the orphan confirm
-/// matches the verified fleet's declared target for this host
-/// (closure AND rollout id). None otherwise — caller falls through
-/// to 410.
+/// Returns `(target_closure, channel)` only when both closure AND rollout id match.
 async fn validate_orphan_recovery(
     state: &AppState,
     req: &ConfirmRequest,
@@ -73,11 +60,7 @@ async fn validate_orphan_recovery(
         return None;
     }
 
-    // Defensive: closure match doesn't prove `req.rollout` is THIS
-    // fleet's rollout id. With content-addressed manifests (RFC-0002
-    // §4.4), a CI re-sign with the same closure but different
-    // host_set / wave_layout / etc. produces a different rolloutId,
-    // and the cross-snapshot mismatch surfaces here.
+    // Closure match alone doesn't prove `req.rollout` is THIS snapshot's id; CI re-sign produces a new id.
     let expected_rollout_id = match nixfleet_reconciler::compute_rollout_id_for_channel(
         &fleet,
         &fleet_resolved_hash,
@@ -105,10 +88,7 @@ async fn validate_orphan_recovery(
     Some((target_closure.clone(), host_decl.channel.clone()))
 }
 
-/// Insert the synthetic operational+audit confirmed rows + Healthy
-/// marker. Returns true iff the operational write succeeded; the
-/// host_healthy write is best-effort (worst case the soak timer
-/// restarts on next confirm — same as pre-recovery behaviour).
+/// Returns true iff operational write succeeded; Healthy marker write is best-effort.
 fn synthesise_orphan_confirm_rows(
     db: &crate::db::Db,
     req: &ConfirmRequest,
@@ -157,27 +137,7 @@ fn synthesise_orphan_confirm_rows(
     true
 }
 
-/// Pending-dispatch recovery from a checkin that reports the
-/// expected target closure.
-///
-/// Closes the lab-2026-05-02 split-brain class: the agent activates
-/// successfully but its `/v1/agent/confirm` POST never reaches the
-/// CP because the CP service is being restarted by the same
-/// activation. The agent's boot-recovery confirm path retries (Bug
-/// A fix), but if the CP gets the deadline tick before the retry
-/// lands, `host_dispatch_state.<host>` flips to `rolled-back` while
-/// the host is still happily on the target closure.
-///
-/// This function fires from the **checkin** handler — agents send a
-/// checkin every 60s, so the next checkin after the rollback
-/// deadline catches the inconsistency. If the agent's reported
-/// `current_generation.closure_hash` matches the verified-fleet
-/// target AND the row's rollout_id matches what dispatch would
-/// emit AND the row is in `pending` OR `rolled-back`, we revive
-/// the row to `confirmed` and stamp `host_rollout_state` Healthy.
-///
-/// Returns true iff a row was revived. Called for telemetry only;
-/// the caller continues with normal checkin processing regardless.
+/// Revives `pending`/`rolled-back` rows to `confirmed` when agent reports matching closure + rollout_id.
 pub(super) async fn try_recover_pending_from_checkin(
     state: &Arc<AppState>,
     req: &CheckinRequest,
@@ -186,10 +146,6 @@ pub(super) async fn try_recover_pending_from_checkin(
         return false;
     };
 
-    // Only revive rows that the deadline timer has touched OR rows
-    // still in flight. `confirmed` / `cancelled` rows are out of
-    // scope — `confirmed` doesn't need fixing, `cancelled` was
-    // operator-driven and shouldn't auto-revive.
     let row = match db.host_dispatch_state().host_state(&req.hostname) {
         Ok(Some(r)) => r,
         Ok(None) => return false,
@@ -206,8 +162,6 @@ pub(super) async fn try_recover_pending_from_checkin(
         return false;
     }
 
-    // Verified fleet must declare this host with a target closure
-    // matching what the agent reports.
     let Some(snap) = state.verified_fleet.read().await.clone() else {
         return false;
     };
@@ -220,15 +174,9 @@ pub(super) async fn try_recover_pending_from_checkin(
         return false;
     };
     if target_closure != &req.current_generation.closure_hash {
-        // Agent isn't on the target — genuine in-flight or rolled-
-        // back state. Don't revive.
         return false;
     }
 
-    // The stored rollout_id must match what dispatch would project
-    // for this fleet snapshot. Mismatch = stale row from a previous
-    // release; leave it alone (the next dispatch UPSERT will
-    // overwrite cleanly).
     let expected_rollout_id = match nixfleet_reconciler::compute_rollout_id_for_channel(
         &fleet,
         &fleet_resolved_hash,
@@ -241,8 +189,6 @@ pub(super) async fn try_recover_pending_from_checkin(
         return false;
     }
 
-    // Revive: UPSERT operational row to `confirmed`, stamp Healthy
-    // marker so the soak gate counts from now.
     let now = Utc::now();
     if let Err(err) = db.host_dispatch_state().record_confirmed_dispatch(
         &req.hostname,
@@ -286,41 +232,7 @@ pub(super) async fn try_recover_pending_from_checkin(
     true
 }
 
-/// Soak-state recovery from agent attestation.
-///
-/// After a CP rebuild, `host_rollout_state.last_healthy_since` is
-/// gone for every host. Hosts that were mid-soak when the CP died
-/// would otherwise restart their soak window from zero on the
-/// next confirm, costing up to one full `soak_minutes` per
-/// affected wave. The agent's `last_confirmed_at` attestation
-/// (wire-additive field) lets the CP repopulate
-/// `last_healthy_since` from the agent-known timestamp — bringing
-/// the soak gate's effective state back close to its pre-rebuild
-/// position.
-///
-/// Triggers when ALL of:
-/// 1. Agent reports `last_confirmed_at` (legacy agents leave it
-///    None, no-op for them).
-/// 2. CP has a verified `FleetResolved` snapshot.
-/// 3. The host is declared in the fleet with a `closureHash`.
-/// 4. The host's reported `current_generation.closure_hash` matches
-///    the declared target — i.e. it's converged on the live target.
-/// 5. No `host_rollout_state` row already exists for
-///    (rollout, host). An existing row reflects the actual
-///    lifecycle (Healthy/Soaked/Reverted) and is more authoritative
-///    than a re-attestation.
-///
-/// On success: synthesise a confirmed `host_dispatch_state` row +
-/// a `host_rollout_state` Healthy marker stamped with
-/// `min(now, last_confirmed_at)`. The clamp prevents a clock-
-/// skewed agent from claiming future-dated state to short-circuit
-/// the soak gate.
-///
-/// Trust model: the agent has root on its own host — the soak
-/// gate is operator-policy, not a security boundary against the
-/// host. Cross-checking against `boot_id` / `uptime_secs` is
-/// available if a fleet wants stricter enforcement (out of scope
-/// here).
+/// Stamp `last_healthy_since` from `min(now, attested)` when no host_rollout_state row exists.
 pub(super) async fn recover_soak_state_from_attestation(
     state: &Arc<AppState>,
     req: &CheckinRequest,
@@ -347,12 +259,7 @@ pub(super) async fn recover_soak_state_from_attestation(
         return;
     }
 
-    // The recovered row's rollout_id MUST match what dispatch would
-    // emit so the per-rollout grouping in
-    // `outstanding_compliance_events_by_rollout` lines up. Same
-    // projection both dispatch and the orphan-confirm recovery path
-    // call — single source of truth at
-    // `nixfleet_reconciler::compute_rollout_id_for_channel`.
+    // Must match dispatch's projection so per-rollout event grouping lines up.
     let rollout_id = match nixfleet_reconciler::compute_rollout_id_for_channel(
         &fleet,
         &fleet_resolved_hash,
@@ -366,7 +273,7 @@ pub(super) async fn recover_soak_state_from_attestation(
         .rollout_state()
         .host_rollout_state_exists(&req.hostname, &rollout_id)
     {
-        Ok(true) => return, // already known — leave alone
+        Ok(true) => return,
         Ok(false) => {}
         Err(err) => {
             tracing::warn!(
@@ -381,11 +288,7 @@ pub(super) async fn recover_soak_state_from_attestation(
 
     let stamp = std::cmp::min(now, attested);
 
-    // Use the wave the agent is attesting against, not 0. Pre-fix
-    // this hardcoded wave=0 corrupted the dispatch_history audit row
-    // for any host in wave ≥1 going through CP-rebuild recovery.
-    // wave_index is on the wire as part of EvaluatedTarget; falls
-    // back to 0 only for legacy targets that pre-date the field.
+    // Pull wave from the agent's last_evaluated_target; hard-coding 0 corrupts the audit row for wave ≥1 hosts.
     let recovered_wave = req
         .last_evaluated_target
         .as_ref()
@@ -444,9 +347,6 @@ mod tests {
     use crate::db::Db;
     use std::sync::Arc;
 
-    /// Helper: insert a `host_dispatch_state` row directly into the
-    /// DB so tests can simulate a stuck pending or rolled-back state
-    /// without driving the full dispatch pipeline.
     fn insert_dispatch_row(
         db: &Db,
         hostname: &str,
@@ -474,10 +374,6 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_recovery_revives_rolled_back_when_agent_on_target() {
-        // The lab/2026-05-02 split-brain class. Row marked rolled-back
-        // by the deadline timer; agent's checkin reports it's still
-        // on the target closure. Recovery flips state back to
-        // confirmed and stamps Healthy.
         let fleet = fleet_with_host("test-host", Some("system-r1"));
         let expected_id = expected_rollout_id_for(&fleet, "stable");
         let (state, db) = state_with_fleet_and_db(fleet).await;
@@ -501,10 +397,6 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_recovery_revives_pending_before_deadline() {
-        // Less critical case: agent's confirm POST raced the CP and
-        // failed; the row is still 'pending' but the agent IS on the
-        // target. Recovery synthesises confirm now rather than waiting
-        // for the deadline to flip it to rolled-back first.
         let fleet = fleet_with_host("test-host", Some("system-r1"));
         let expected_id = expected_rollout_id_for(&fleet, "stable");
         let (state, db) = state_with_fleet_and_db(fleet).await;
@@ -524,15 +416,12 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_recovery_skips_when_agent_on_wrong_closure() {
-        // Agent is genuinely on a different closure than the verified
-        // target — the rolled-back state is correct, no revive.
         let fleet = fleet_with_host("test-host", Some("system-r1"));
         let expected_id = expected_rollout_id_for(&fleet, "stable");
         let (state, db) = state_with_fleet_and_db(fleet).await;
 
         insert_dispatch_row(&db, "test-host", &expected_id, "system-r1", "rolled-back");
 
-        // Agent reports OLD closure, not the target.
         let req = checkin_req_with_attestation("test-host", "stale-closure", None);
         assert!(
             !try_recover_pending_from_checkin(&state, &req).await,
@@ -549,8 +438,6 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_recovery_skips_confirmed_rows() {
-        // Already-confirmed rows don't need fixing. Recovery is a
-        // no-op so we don't double-stamp confirmed_at.
         let fleet = fleet_with_host("test-host", Some("system-r1"));
         let expected_id = expected_rollout_id_for(&fleet, "stable");
         let (state, db) = state_with_fleet_and_db(fleet).await;
@@ -576,8 +463,6 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_recovery_skips_when_no_row_exists() {
-        // No host_dispatch_state row at all (first-boot CP) — recovery
-        // is a no-op; the regular dispatch path will handle this host.
         let fleet = fleet_with_host("test-host", Some("system-r1"));
         let (state, _db) = state_with_fleet_and_db(fleet).await;
         let req = checkin_req_with_attestation("test-host", "system-r1", None);

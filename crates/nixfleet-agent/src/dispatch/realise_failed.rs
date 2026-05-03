@@ -1,7 +1,4 @@
-//! Realise-step failure handlers: `RealiseFailed` (network /
-//! substituter / missing-path) and `ClosureSignatureMismatch` (nix
-//! refused the closure's narinfo signature). Neither rolls back —
-//! nothing was switched.
+//! Realise-step failure handlers: nothing was switched, neither rolls back.
 
 use nixfleet_proto::agent_wire::ReportEvent;
 

@@ -1,10 +1,5 @@
-//! Integration test for the sign + smoke-verify pipeline.
-//!
-//! Doesn't exercise the build / push / git steps — those need a
-//! real flake + nix daemon. This test takes a hand-built
-//! `FleetResolved`, runs canonicalize → sign-via-shell-hook →
-//! smoke-verify-with-real-pubkey end-to-end, asserting the
-//! pipeline produces an artifact `verify_artifact` accepts.
+//! Sign + smoke-verify integration. Skips build/push/git (need real
+//! flake + nix daemon).
 
 use std::process::Command;
 use std::time::Duration;
@@ -65,16 +60,12 @@ fn end_to_end_sign_then_verify_artifact_accepts() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(signing_key.verifying_key());
 
-    // Canonicalize a real FleetResolved (the orchestrator's exact
-    // canonicalize path — not duplicated here).
     let resolved = dummy_resolved();
     let canonical =
         nixfleet_release::canonicalize_resolved(&resolved).expect("canonicalize");
     let canonical_bytes = canonical.as_bytes();
     let signature = signing_key.sign(canonical_bytes);
 
-    // Run verify_artifact directly — it's the same code-path
-    // smoke_verify takes when a pubkey is supplied.
     let trust = TrustConfig {
         schema_version: 1,
         ci_release_key: KeySlot {
@@ -108,11 +99,7 @@ fn end_to_end_sign_then_verify_artifact_accepts() {
 
 #[test]
 fn shell_hook_contract_invokes_sh_with_env_vars() {
-    // Verifies the public hook contract: when `--sign-cmd` runs, it
-    // sees NIXFLEET_INPUT and NIXFLEET_OUTPUT in its env, and the
-    // input file contains the bytes the orchestrator gave us.
-    //
-    // Uses a tiny sh hook that records its env, copies input → output.
+    // sh hook records env + copies input → output.
     let tmpdir = tempfile::tempdir().unwrap();
     let log = tmpdir.path().join("hook.log");
     let log_str = log.to_string_lossy();
@@ -121,8 +108,6 @@ fn shell_hook_contract_invokes_sh_with_env_vars() {
         log = log_str,
     );
 
-    // Round-trip via std::process::Command — no orchestrator
-    // involvement, just proves sh + env vars work.
     let in_file = tmpdir.path().join("in");
     let out_file = tmpdir.path().join("out");
     std::fs::write(&in_file, b"some-canonical-bytes").unwrap();
@@ -144,21 +129,8 @@ fn shell_hook_contract_invokes_sh_with_env_vars() {
     assert_eq!(copied, b"some-canonical-bytes");
 }
 
-// =================================================================
-// Pipeline edge-cases — the helper functions exercised here are
-// public surface (`inject_closure_hashes`, `canonicalize_resolved`,
-// `render_commit_message`) plus library invariants the consumer side
-// of CONTRACTS §I #1 depends on. Adversarial inputs that would
-// otherwise reach a real release run go here.
-// =================================================================
-
 #[test]
 fn inject_closure_hashes_silently_skips_unknown_hosts() {
-    // Per docstring: "Hosts in `hashes` that don't exist in
-    // `resolved.hosts` are silently skipped (matches the legacy jq
-    // behaviour)." Locks the contract — flipping to errors would
-    // break operator workflows that pre-build a hash map covering
-    // hosts removed from the fleet between build and release.
     let mut resolved = dummy_resolved();
     let mut hashes = std::collections::BTreeMap::new();
     hashes.insert("test-host".to_string(), "real-hash".to_string());
@@ -169,20 +141,12 @@ fn inject_closure_hashes_silently_skips_unknown_hosts() {
     assert_eq!(
         resolved.hosts["test-host"].closure_hash.as_deref(),
         Some("real-hash"),
-        "known host gets the new hash"
     );
-    assert!(
-        !resolved.hosts.contains_key("ghost-host"),
-        "unknown host is not added (silent skip, no panic)"
-    );
+    assert!(!resolved.hosts.contains_key("ghost-host"));
 }
 
 #[test]
 fn canonicalize_resolved_is_byte_stable_round_trip() {
-    // The smoke-verify invariant: parse(canonical) → canonicalize
-    // again yields the identical bytes. Every release run depends on
-    // this; if it ever fails, the whole sign-then-verify pipeline
-    // produces artifacts the verifier would reject.
     let resolved = dummy_resolved();
     let c1 = nixfleet_release::canonicalize_resolved(&resolved).expect("first canonicalize");
     let parsed: nixfleet_proto::FleetResolved =
@@ -197,9 +161,6 @@ fn canonicalize_resolved_is_byte_stable_round_trip() {
 
 #[test]
 fn render_commit_message_substitutes_known_placeholders() {
-    // Operator-facing template; locks the placeholder set
-    // (`{sha}`, `{sha:0:8}`, `{ts}`) so a future template-engine
-    // swap doesn't silently change what consumers grep for.
     let ts = chrono::DateTime::parse_from_rfc3339("2026-04-30T12:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
@@ -218,9 +179,7 @@ fn render_commit_message_substitutes_known_placeholders() {
 
 #[test]
 fn render_commit_message_short_sha_under_8_chars_passes_through() {
-    // Edge case: the truncation helper has `if sha.len() >= 8 …`
-    // — an explicit short sha (e.g. operator-supplied "HEAD")
-    // bypasses the slice and is substituted as-is.
+    // sha < 8 chars bypasses the slice and substitutes as-is.
     let ts = chrono::DateTime::parse_from_rfc3339("2026-04-30T12:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);

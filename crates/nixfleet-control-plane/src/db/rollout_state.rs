@@ -1,16 +1,4 @@
-//! `host_rollout_state` — per-host soak markers + state machine.
-//!
-//! Recovery class: **soft state** (ARCHITECTURE.md §6 Phase 10).
-//! Loss restarts soak windows from zero. Mitigated by agent-attested
-//! `last_confirmed_at` (#47): the agent persists the moment of its
-//! most recent successful confirm and echoes it on every checkin;
-//! the CP repopulates `last_healthy_since` from the attestation,
-//! clamped to `min(now, attested)`.
-//!
-//! The joined `active_rollouts_snapshot` projection lives on
-//! [`super::host_dispatch_state`] alongside the operational table
-//! it reads from; this module owns just the per-(host, rollout) soak
-//! state.
+//! Per-host soak markers + state machine (soft state); agent-attested timestamps recover loss.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -25,31 +13,7 @@ pub struct RolloutState<'a> {
 }
 
 impl RolloutState<'_> {
-    /// Transition (rollout, host) into `new_state`, optionally
-    /// stamping `last_healthy_since` via `marker`. Replaces the
-    /// per-state pair of methods (`record_host_healthy`,
-    /// `mark_host_soaked`) with a single typed entry routed through
-    /// [`HostRolloutState`] — magic strings stop leaking into db
-    /// and a typo'd variant becomes a compile error.
-    ///
-    /// Semantics:
-    /// - `expected_from = None`: UPSERT — insert a new row in
-    ///   `new_state` or overwrite the existing row's state. This is
-    ///   the shape the confirm handler needs (no precondition; the
-    ///   handler authoritatively declares the host Healthy).
-    /// - `expected_from = Some(prev)`: UPDATE-only with a
-    ///   state-machine guard — only fires when the existing row's
-    ///   `host_state` matches `prev`. Returns 0 if the precondition
-    ///   fails. Used by the reconciler arm whose actions are
-    ///   directional (e.g. Healthy → Soaked).
-    ///
-    /// `marker` controls `last_healthy_since`:
-    /// - `Set(now)`: stamp it (used when entering Healthy).
-    /// - `Untouched`: leave it as-is (default for every other
-    ///   transition).
-    ///
-    /// Returns the number of rows written (1 for UPSERT, 0 or 1 for
-    /// guarded UPDATE).
+    /// `expected_from = None` upserts; `Some(prev)` is a state-machine-guarded UPDATE.
     pub fn transition_host_state(
         &self,
         hostname: &str,
@@ -60,11 +24,7 @@ impl RolloutState<'_> {
     ) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let new_state_str = new_state.as_db_str();
-        // `Untouched` → NULL; the SQL uses COALESCE so a NULL bind
-        // preserves the existing column value rather than writing
-        // NULL over it. Single point of conversion lets each branch
-        // below stay a single static SQL statement (query plan is
-        // identical across every call regardless of marker variant).
+        // GOTCHA: NULL marker_bind + COALESCE preserves the existing column on Untouched (writing NULL would clobber).
         let marker_bind: Option<String> = match marker {
             HealthyMarker::Set(ts) => Some(ts.to_rfc3339()),
             HealthyMarker::Untouched => None,
@@ -72,13 +32,6 @@ impl RolloutState<'_> {
 
         let n = match expected_from {
             None => {
-                // UPSERT path. Mirrors the legacy `record_host_healthy`
-                // shape but parameterised over the target state and
-                // healthy-marker. Matches the V003 schema's column
-                // order. COALESCE on the conflict branch preserves
-                // the existing `last_healthy_since` when the marker is
-                // Untouched (NULL bind); on insert the column starts
-                // NULL anyway so the bind goes straight in.
                 guard
                     .execute(
                         "INSERT INTO host_rollout_state(rollout_id, hostname,
@@ -97,12 +50,6 @@ impl RolloutState<'_> {
                     .context("upsert host_rollout_state")?
             }
             Some(prev) => {
-                // Guarded UPDATE path. Mirrors the legacy
-                // `mark_host_soaked` "only from Healthy" filter, now
-                // parameterised so any directional transition (Healthy
-                // → Soaked, Soaked → Converged, etc.) routes through
-                // the same code. COALESCE keeps `last_healthy_since`
-                // unchanged when the marker is Untouched.
                 guard
                     .execute(
                         "UPDATE host_rollout_state
@@ -125,16 +72,7 @@ impl RolloutState<'_> {
         Ok(n)
     }
 
-    /// Clear the Healthy marker for (rollout, host) — the host has
-    /// left Healthy (its `current_generation.closure_hash` no
-    /// longer matches the rollout's target). Nulls
-    /// `last_healthy_since` so the soak timer must restart on the
-    /// next Healthy entry. The `host_state` column is intentionally
-    /// untouched — this is NOT a state transition: step 3's
-    /// reconciler arm decides what state to transition to
-    /// (typically back to ConfirmWindow, or Failed).
-    /// Returns the number of rows updated — 0 means there was no
-    /// Healthy marker to clear.
+    /// Nulls `last_healthy_since`; leaves `host_state` for the reconciler to transition.
     pub fn clear_healthy_marker(&self, hostname: &str, rollout_id: &str) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let n = guard
@@ -150,10 +88,6 @@ impl RolloutState<'_> {
         Ok(n)
     }
 
-    /// Read the current `host_state` for (rollout_id, hostname).
-    /// Returns `Ok(None)` when no row exists. Public so tests in
-    /// sibling modules can assert state transitions without
-    /// re-deriving the projection through `active_rollouts_snapshot`.
     pub fn host_state(&self, hostname: &str, rollout_id: &str) -> Result<Option<String>> {
         let guard = super::lock_conn(self.conn)?;
         let row = guard
@@ -167,12 +101,7 @@ impl RolloutState<'_> {
         Ok(row)
     }
 
-    /// True iff any `host_rollout_state` row exists for the given
-    /// (rollout_id, hostname). Used by the soak-state recovery path
-    /// to avoid overwriting existing host state when the agent's
-    /// attestation arrives — an existing row reflects the actual
-    /// lifecycle (Healthy/Soaked/Reverted/...) and is more
-    /// authoritative than a re-attestation.
+    /// Existing row authoritative over re-attestation; recovery skips when row exists.
     pub fn host_rollout_state_exists(&self, hostname: &str, rollout_id: &str) -> Result<bool> {
         let guard = super::lock_conn(self.conn)?;
         let n: i64 = guard
@@ -186,10 +115,7 @@ impl RolloutState<'_> {
         Ok(n > 0)
     }
 
-    /// Currently-Healthy hosts in `rollout_id` and the timestamp
-    /// they entered Healthy. The reconciler reads this to compute
-    /// `now - last_healthy_since >= wave.soak_minutes`. Excludes
-    /// rows whose `last_healthy_since` is NULL.
+    /// Healthy hosts and entry timestamp; excludes NULL markers.
     pub fn host_soak_state_for_rollout(
         &self,
         rollout_id: &str,
@@ -218,19 +144,7 @@ impl RolloutState<'_> {
         Ok(out)
     }
 
-    /// Rollouts in which `hostname` is currently Healthy, paired
-    /// with each rollout's `target_closure_hash` (joined from
-    /// `host_dispatch_state`). The checkin handler calls this on
-    /// every `/v1/agent/checkin` to detect the "left Healthy" case:
-    /// if the host's reported `current_generation.closure_hash` no
-    /// longer matches the rollout's target, the host has reverted
-    /// away and the Healthy marker must be cleared.
-    ///
-    /// Joining against the operational table avoids denormalising
-    /// the target closure. Operational state is `'confirmed'` for
-    /// any (rollout, host) where Healthy is the post-confirm machine
-    /// state — the confirm handler is the only emitter of Healthy
-    /// rows.
+    /// (rollout_id, target_closure_hash) for currently-Healthy rollouts of this host.
     pub fn healthy_rollouts_for_host(&self, hostname: &str) -> Result<Vec<(String, String)>> {
         let guard = super::lock_conn(self.conn)?;
         let mut stmt = guard.prepare(
@@ -252,11 +166,7 @@ impl RolloutState<'_> {
         Ok(rows)
     }
 
-    /// Rollouts the host is currently `Failed` on. RFC-0002 §5.1
-    /// `rollback-and-halt` policy needs (rollout_id, target_ref) at
-    /// checkin time so the agent can be told what failed target to
-    /// step away from. Joined with `host_dispatch_state` for the
-    /// target_channel_ref.
+    /// (rollout_id, target_channel_ref) for Failed rollouts of this host.
     pub fn failed_rollouts_for_host(&self, hostname: &str) -> Result<Vec<(String, String)>> {
         let guard = super::lock_conn(self.conn)?;
         let mut stmt = guard.prepare(
@@ -296,16 +206,11 @@ mod tests {
             .unwrap();
         assert_eq!(map.len(), 1, "expected one Healthy host: {map:?}");
         let stored = map.get("test-host").expect("test-host present");
-        // RFC3339 round-trip drops sub-second precision.
         assert_eq!(stored.timestamp(), now.timestamp());
     }
 
     #[test]
     fn transition_to_healthy_upserts_timestamp() {
-        // Re-recording Healthy moves last_healthy_since forward
-        // without breaking the row. The reconciler arm relies on the
-        // latest Healthy entry winning so the soak timer always
-        // reflects the most recent Healthy moment.
         let db = fresh_db();
         let t1 = Utc::now() - chrono::Duration::seconds(120);
         let t2 = Utc::now();
@@ -344,10 +249,6 @@ mod tests {
 
     #[test]
     fn clear_healthy_marker_is_noop_when_already_clear() {
-        // Idempotent: calling clear on a row whose marker is
-        // already NULL — or on a row that doesn't exist — returns 0
-        // and does not fail. The checkin handler may emit clear
-        // every checkin while the host stays diverged.
         let db = fresh_db();
         let n = db
             .rollout_state()
@@ -361,7 +262,6 @@ mod tests {
                 .unwrap(),
             1
         );
-        // Second clear: row exists, marker already NULL.
         assert_eq!(
             db.rollout_state()
                 .clear_healthy_marker("test-host", "stable@r1")
@@ -372,8 +272,6 @@ mod tests {
 
     #[test]
     fn host_soak_state_scopes_to_rollout() {
-        // Two rollouts, two hosts each — the projection must
-        // return only the requested rollout's hosts.
         let db = fresh_db();
         let now = Utc::now();
         mark_healthy(&db, "ohm", "stable@r1", now);
@@ -398,11 +296,6 @@ mod tests {
 
     #[test]
     fn healthy_rollouts_for_host_joins_dispatch_state() {
-        // The checkin handler calls this to compare reported
-        // current_generation against each rollout's target. The
-        // join requires a confirmed host_dispatch_state row — a
-        // still-'pending' row must NOT surface, since the host has
-        // not yet reached Healthy.
         let db = fresh_db();
         let future = Utc::now() + chrono::Duration::seconds(120);
         db.host_dispatch_state()
@@ -413,9 +306,6 @@ mod tests {
                 future,
             ))
             .unwrap();
-        // Still pending — healthy_rollouts_for_host must be empty
-        // even after recording Healthy (the join filter is
-        // hds.state = 'confirmed').
         mark_healthy(&db, "test-host", "stable@r1", Utc::now());
         let pre = db
             .rollout_state()
@@ -426,7 +316,6 @@ mod tests {
             "must not surface rollouts whose operational row is still pending: {pre:?}"
         );
 
-        // Confirm it; now the join hits.
         let n = db.host_dispatch_state().confirm("test-host", "stable@r1").unwrap();
         assert_eq!(n, 1);
         let post = db
@@ -460,8 +349,6 @@ mod tests {
             1
         );
 
-        // After clear_healthy_marker, the row falls out — it's no
-        // longer Healthy, so checkin doesn't need to re-clear.
         db.rollout_state()
             .clear_healthy_marker("test-host", "stable@r1")
             .unwrap();
@@ -474,9 +361,6 @@ mod tests {
 
     #[test]
     fn transition_to_soaked_only_from_healthy() {
-        // SoakHost handler: only Healthy → Soaked is valid. The
-        // guarded UPDATE shape encodes that as
-        // `expected_from = Some(Healthy)`.
         let db = fresh_db();
         let to_soaked = |db: &super::super::Db, host: &str, rollout: &str| {
             db.rollout_state()
@@ -489,18 +373,11 @@ mod tests {
                 )
                 .unwrap()
         };
-        // No row → no-op.
         assert_eq!(to_soaked(&db, "ohm", "stable@r1"), 0);
-        // Healthy → Soaked.
         mark_healthy(&db, "ohm", "stable@r1", Utc::now());
         assert_eq!(to_soaked(&db, "ohm", "stable@r1"), 1);
-        // Already Soaked → idempotent no-op (the WHERE filter
-        // guards the transition).
         assert_eq!(to_soaked(&db, "ohm", "stable@r1"), 0);
 
-        // Verify the active-rollout snapshot reflects the
-        // transition. Need a confirmed operational row to pass the
-        // snapshot's join filter.
         let future = Utc::now() + chrono::Duration::seconds(120);
         db.host_dispatch_state()
             .record_dispatch(&dispatch_insert("ohm", "stable@r1", "target", future))

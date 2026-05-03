@@ -1,4 +1,3 @@
-# stop-vm — stop a running VM daemon.
 {
   platform,
   pkgs,

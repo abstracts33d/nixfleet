@@ -1,7 +1,5 @@
-//! Runtime compliance gate: resolve effective mode (CP channel
-//! policy beats CLI default), run the gate, post per-control
-//! failures or a gate-error event. Returns whether confirm should
-//! be skipped (enforce-mode gate-error → rollback).
+//! Runtime compliance gate: resolve mode, run gate, post events; returns
+//! whether confirm must be skipped (enforce-mode gate-error → rollback).
 
 use nixfleet_proto::agent_wire::{EvaluatedTarget, ReportEvent};
 
@@ -11,8 +9,7 @@ use crate::Args;
 
 use super::handler::{try_sign, DispatchCtx};
 
-/// Resolve the effective compliance mode (CP channel policy beats
-/// the agent's CLI default) and run the runtime gate.
+/// CP channel policy beats CLI default.
 pub(super) async fn run_runtime_gate(
     target: &EvaluatedTarget,
     args: &Args,
@@ -43,8 +40,7 @@ pub(super) async fn run_runtime_gate(
     (resolved_mode, gate_outcome)
 }
 
-/// Post events for the gate outcome; return true iff the agent
-/// should skip confirm and stay on the rolled-back generation.
+/// Returns `true` iff the agent should skip confirm and stay rolled back.
 pub(super) async fn process_gate_outcome<R: Reporter>(
     gate_outcome: &nixfleet_agent::compliance::GateOutcome,
     resolved_mode: nixfleet_agent::compliance::GateMode,
@@ -128,9 +124,7 @@ async fn post_compliance_failures<R: Reporter>(
     }
 }
 
-/// Post the gate-error event; if enforcing, also roll back and
-/// post the rollback event. Returns true iff confirm must be
-/// skipped (i.e. enforce mode triggered a rollback).
+/// Returns `true` iff enforce mode triggered a rollback.
 async fn post_runtime_gate_error<R: Reporter>(
     reason: &str,
     collector_exit_code: Option<i32>,
@@ -180,12 +174,7 @@ async fn post_runtime_gate_error<R: Reporter>(
         )
         .await;
     if enforcing {
-        // §8 #2 (auditor offline chain) requires this event to reflect
-        // what actually happened on the host. Posting RollbackTriggered
-        // unconditionally — even when activation::rollback() failed —
-        // tells the auditor a falsehood. Capture the result, log the
-        // failure at error level, and qualify the reason string so the
-        // chain entry is unambiguous about the host's state.
+        // LOADBEARING: qualify RollbackTriggered reason on rollback failure — auditor chain must reflect reality.
         let rollback_result = nixfleet_agent::activation::rollback().await;
         let rollback_reason = match &rollback_result {
             Ok(_) => format!("compliance gate error: {reason}"),

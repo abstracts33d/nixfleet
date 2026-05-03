@@ -1,5 +1,3 @@
-# Two fleet inputs declaring the same host name: mergeFleets must throw
-# per RFC-0001 §5 "same host name fails eval".
 {mergeFleets, ...}: let
   stub = import ../fixtures/_stub-configuration.nix {};
   shared = hostTags: {

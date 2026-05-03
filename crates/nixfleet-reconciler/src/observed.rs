@@ -1,5 +1,5 @@
-//! Internal observed-state types. CP projects its SQLite state into
-//! these per reconcile tick; reconciler never mutates them.
+//! Observed-state types. CP projects SQLite state into these per tick;
+//! reconciler never mutates them.
 
 use crate::host_state::HostRolloutState;
 use crate::rollout_state::RolloutState;
@@ -7,8 +7,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::str::FromStr;
-
-// `FromStr` is still used here for `RolloutState` round-trips below.
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -18,9 +16,8 @@ pub struct Observed {
     pub host_state: HashMap<String, HostState>,
     pub active_rollouts: Vec<Rollout>,
     /// `[rollout_id][host] → count`. Per-rollout grouping enforces
-    /// resolution-by-replacement: events under R₀ don't contaminate
-    /// R₁'s gate decision once the host moves on. Drives
-    /// `Action::WaveBlocked` under enforce mode.
+    /// resolution-by-replacement so events under a superseded rollout
+    /// don't gate the new one.
     #[serde(default)]
     pub compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
 }
@@ -39,8 +36,7 @@ pub struct Rollout {
     pub id: String,
     pub channel: String,
     pub target_ref: String,
-    /// Serde shim keeps `observed.json` fixtures byte-identical
-    /// while in-memory we get exhaustive pattern matching.
+    /// Serde shim: wire is string, in-memory is typed enum.
     #[serde(
         serialize_with = "serialize_rollout_state",
         deserialize_with = "deserialize_rollout_state"
@@ -52,8 +48,8 @@ pub struct Rollout {
         deserialize_with = "deserialize_host_states_map"
     )]
     pub host_states: HashMap<String, HostRolloutState>,
-    /// `now - last_healthy_since[host] >= wave.soak_minutes` →
-    /// host has soaked. Hosts not in Healthy are absent.
+    /// `now - last_healthy_since[host] >= wave.soak_minutes` ⇒ soaked.
+    /// Hosts not in Healthy are absent.
     #[serde(default)]
     pub last_healthy_since: HashMap<String, DateTime<Utc>>,
 }

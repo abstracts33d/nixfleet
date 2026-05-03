@@ -1,24 +1,4 @@
-//! `/v1/agent/renew` integration tests.
-//!
-//! Counterpart to `enroll.rs`. Renewal is the steady-state cert
-//! rotation path: an agent already has a fleet-CA-signed cert,
-//! authenticates via mTLS, posts a fresh CSR, gets back a new cert.
-//!
-//! Coverage:
-//!
-//! 1. Happy path — agent presents existing cert + CSR → 200 with a
-//!    fresh cert that verifies under the same fleet CA, has the
-//!    same CN, and a notAfter further in the future than the input.
-//! 2. mTLS required — no client cert → 401.
-//! 3. Revoked cert — host has a `cert_revocations` row whose
-//!    `not_before` is later than the agent's cert's notBefore →
-//!    401 (covers the cert-revocation enforcement that the rest of
-//!    the v1/* endpoints rely on).
-//! 4. CA not configured — server started without `--fleet-ca-cert`
-//!    / `--fleet-ca-key` → 500 (handler can't sign).
-//!
-//! These are the regressions /enroll already guards against; /renew
-//! had no integration coverage before this file.
+//! Integration tests for `/v1/agent/renew`.
 
 mod common;
 
@@ -39,9 +19,6 @@ fn write_pem(path: &std::path::Path, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
-/// Mint a fleet CA + server cert + an agent cert under that CA for
-/// `agent_cn`. Returns paths + the agent KeyPair so the test can
-/// build an mTLS client identity.
 struct TestPki {
     ca_cert: PathBuf,
     ca_key: PathBuf,
@@ -184,7 +161,6 @@ fn build_no_cert_client(ca_pem_path: &std::path::Path) -> reqwest::Client {
         .unwrap()
 }
 
-/// Mint a fresh CSR with the given hostname (for the renewal request).
 fn mint_csr(hostname: &str) -> String {
     let key = KeyPair::generate().unwrap();
     let mut params = CertificateParams::default();
@@ -260,11 +236,7 @@ async fn renew_rejects_request_without_client_cert() {
     let req = RenewRequest { csr_pem };
     let client = build_no_cert_client(&pki.ca_cert);
 
-    // Without an mTLS identity the server's WebPkiClientVerifier will
-    // reject the handshake; reqwest surfaces this as a connection
-    // error before we even receive a status code. Either shape (HTTP
-    // 401 if the handshake completed with no client cert, OR a
-    // connect-level error) constitutes "rejected".
+    // GOTCHA: TLS-layer rejection or HTTP 401 are both acceptable shapes for "rejected".
     let resp = client
         .post(format!("https://localhost:{port}/v1/agent/renew"))
         .json(&req)
@@ -272,10 +244,7 @@ async fn renew_rejects_request_without_client_cert() {
         .await;
     match resp {
         Ok(r) => assert_eq!(r.status(), 401, "expected 401, got {}", r.status()),
-        Err(_) => {
-            // TLS-layer rejection is also acceptable — the point is
-            // unauthenticated /v1/agent/renew must not succeed.
-        }
+        Err(_) => {}
     }
 
     handle.abort();
@@ -289,9 +258,6 @@ async fn renew_rejects_revoked_cert() {
     let pki = mint_pki(&dir, "test-host");
     let db_path = dir.path().join("state.db");
 
-    // Revoke test-host with a `not_before` set firmly in the future of
-    // the agent cert's notBefore. The cert-revocation gate in
-    // `require_cn` must reject the request.
     {
         let db = Db::open(&db_path).unwrap();
         db.migrate().unwrap();
@@ -341,8 +307,6 @@ async fn renew_returns_500_when_ca_not_configured() {
     let dir = TempDir::new().unwrap();
     let pki = mint_pki(&dir, "test-host");
     let port = pick_free_port().await;
-    // Spawn WITHOUT fleet_ca_cert / fleet_ca_key — the renew handler
-    // can't sign a fresh cert and should respond 500.
     let handle = spawn_server(
         &dir,
         pki.server_cert.clone(),

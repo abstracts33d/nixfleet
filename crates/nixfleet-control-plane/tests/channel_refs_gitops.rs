@@ -1,15 +1,4 @@
-//! GitOps closure: a stub HTTP server serves raw signed
-//! `fleet.resolved.json` + `.sig` bytes, the channel-refs poll
-//! task fetches both, verify_artifact accepts, the shared
-//! `verified_fleet` snapshot flips from `None` to `Some(...)`.
-//! End-to-end test for "operator pushes fleet → CI re-signs →
-//! CP picks it up within one poll cycle without redeploy".
-//!
-//! Source-agnostic — the stub responds to any GET with the
-//! configured body, mirroring the simplest possible implementation
-//! (Forgejo `raw/branch/...`, GitHub raw URL, plain HTTP, etc.).
-//! Stub uses the same tiny tokio TcpListener pattern as
-//! `closure_proxy.rs` — minimal moving parts, no wiremock dep.
+//! GitOps closure: stub HTTP serves signed fleet.resolved bytes; poll task picks them up.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -62,8 +51,6 @@ fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (String
     (raw, canonical.into_bytes())
 }
 
-/// Tiny single-purpose HTTP stub. Serves raw bytes for whichever of
-/// the two paths the request line matches; 404 otherwise.
 async fn spawn_stub_http(
     artifact_path: &'static str,
     artifact_body: Vec<u8>,
@@ -88,9 +75,7 @@ async fn spawn_stub_http(
                     Err(_) => return,
                 };
                 let req = String::from_utf8_lossy(&buf[..n]).to_string();
-                // Match signature path first because the artifact
-                // path is a prefix of it (`.../fleet.resolved.json`
-                // vs `.../fleet.resolved.json.sig`).
+                // FOOTGUN: match sig path first; artifact path is a prefix of it.
                 let target_body = if req.contains(signature_path) {
                     Some(signature_clone)
                 } else if req.contains(artifact_path) {
@@ -101,10 +86,7 @@ async fn spawn_stub_http(
 
                 let resp: Vec<u8> = match target_body {
                     Some(body) => {
-                        // Connection: close forces reqwest to open a
-                        // fresh TCP connection per request — the stub
-                        // handles exactly one per accept, so keepalive
-                        // would deadlock the second GET.
+                        // FOOTGUN: stub handles one request per accept; keepalive deadlocks the second GET.
                         let mut header = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
                             body.len(),
@@ -294,16 +276,7 @@ async fn poll_retains_snapshot_on_verify_failure() {
         cfg,
     );
 
-    // Negative-observation test: we're asserting that a verify failure
-    // does NOT swap the sentinel snapshot. The polling task's first
-    // tick fires immediately (tokio::time::interval semantics); we
-    // need to give it long enough to fire that tick, attempt the
-    // verify, fail, and (correctly) leave the sentinel alone. A
-    // deadline-bounded poll loop is the wrong shape here — there is
-    // no positive condition to converge on; the assertion is about
-    // the absence of state change. Keep the fixed sleep; the 2s
-    // budget is comfortably over per-tick verify latency on heavily-
-    // loaded CI runners.
+    // GOTCHA: negative-observation test — fixed sleep is correct because no positive condition can converge.
     tokio::time::sleep(Duration::from_secs(2)).await;
     let snapshot = verified_fleet.read().await.clone();
     let fleet = snapshot.expect("sentinel must be retained on verify failure").fleet;

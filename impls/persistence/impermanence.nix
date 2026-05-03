@@ -1,21 +1,4 @@
-# Persistence implementation: upstream `impermanence` flake +
-# btrfs root-wipe initrd hook.
-#
-# Implements the framework-declared `nixfleet.persistence.*` schema
-# from `nixfleet/modules/contracts/persistence.nix`. Reads the
-# accumulated `directories` and `files` lists (framework baseline +
-# scope/fleet contributions) and applies them via the upstream
-# `impermanence` NixOS module.
-#
-# The btrfs wipe-on-boot model: at every boot, the root subvolume
-# `@root` is moved to `old_roots/<timestamp>` and a fresh empty
-# `@root` is created. State that should survive lives on the
-# `persistRoot` btrfs subvolume; the impermanence module bind-mounts
-# the listed paths back into the wiped root before activation.
-#
-# Alternative implementations (ZFS rollback, snapper, none) are
-# sibling files in this directory or future ones. Each reads the
-# same `nixfleet.persistence.*` schema; fleets pick exactly one.
+# Persistence impl: upstream `impermanence` + btrfs root-wipe initrd hook.
 {
   inputs,
   config,
@@ -57,11 +40,7 @@ in {
       files = cfg.files;
     };
 
-    # Ensure the persist tree's home directory exists with the right
-    # ownership so the agent + HM bind-mounts succeed. The .keys
-    # subdirectory is the secrets-backend decryption target —
-    # recursive chown so rotation drops new files in place with the
-    # right uid.
+    # GOTCHA: pre-create persist home dir with correct ownership so HM bind-mounts succeed; recursive chown on .keys covers rotation.
     system.activationScripts.persistHomeOwnership = lib.mkIf (hS.userName != "") {
       text = ''
         install -d -o ${lib.escapeShellArg hS.userName} -g users ${lib.escapeShellArg "${cfg.persistRoot}/home/${hS.userName}"}
@@ -72,10 +51,7 @@ in {
       deps = [];
     };
 
-    # Btrfs root-wipe: every boot, move the active root subvol to
-    # old_roots/<timestamp> and create a fresh empty @root. State
-    # survives only via the persisted bind-mounts above. Old roots
-    # past 30 days are recursively deleted.
+    # FOOTGUN: btrfs root-wipe — moves @root → old_roots/<ts> and recreates empty @root every boot; prunes past retention.
     boot.initrd.postResumeCommands = lib.mkAfter ''
       mkdir /btrfs_tmp
       mount ${impl.rootDevice} /btrfs_tmp

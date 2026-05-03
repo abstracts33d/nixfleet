@@ -1,16 +1,3 @@
-# Shared CLI-argument assembly for `nixfleet-agent`.
-#
-# Both supervisor modules — `_agent.nix` (NixOS / systemd) and
-# `_agent-darwin.nix` (nix-darwin / launchd) — invoke the same agent
-# binary with the same flags except for two platform-specific bits:
-# darwin appends `--ssh-host-key-file` and wraps the whole thing in
-# `/bin/sh -c "sleep 15 && exec …"` for boot-race resilience.
-#
-# This helper returns the platform-neutral args as a list; each
-# supervisor concatenates whatever it needs on top before joining.
-# Single source of truth — protects against per-platform flag drift
-# (the prior shape had identical arg-assembly duplicated across both
-# modules, which is exactly the audit-A-#6 maintenance trap).
 {
   lib,
   cfg,

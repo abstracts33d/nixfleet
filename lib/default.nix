@@ -1,12 +1,4 @@
-# NixFleet framework library — wired entry point.
-#
-# Returns the full public API. Takes both `inputs` (for mkHost /
-# mkVmApps, which need the flake's nixpkgs / darwin / home-manager
-# inputs) and `lib` (for mkFleet's pure module evaluation).
-#
-# Pure consumers that only need mkFleet (e.g. the canonicalize binary,
-# eval-only tests) import `./mk-fleet.nix` directly with just `{lib}`
-# — that file's signature stays pure on purpose.
+# LOADBEARING: mk-fleet.nix takes only {lib}; pure consumers import it directly to avoid the inputs dependency.
 {
   inputs,
   lib,

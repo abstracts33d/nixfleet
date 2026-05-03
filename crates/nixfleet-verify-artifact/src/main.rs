@@ -1,17 +1,6 @@
 //! `nixfleet-verify-artifact` — offline verifier CLI.
 //!
-//! Two subcommands:
-//! - `artifact`: verify a signed `fleet.resolved.json` against a
-//!   `trust.json` file (the original Phase 2 use case).
-//! - `probe`: verify a signed probe-output blob against an OpenSSH
-//!   ed25519 pubkey. Lets an auditor confirm a host's compliance
-//!   evidence chain offline (no CP access). The pubkey comes from
-//!   `hosts.<hostname>.pubkey` in fleet.resolved.
-//!
-//! Exit codes (per spec §6):
-//! - 0 — verified
-//! - 1 — verify error (stderr carries the variant + detail)
-//! - 2 — argument / I/O / parse error
+//! Exit codes: 0 verified, 1 verify error, 2 argument / I/O / parse error.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -45,12 +34,7 @@ enum Cmd {
         #[arg(long)]
         freshness_window_secs: u64,
     },
-    /// Verify a signed `releases/rollouts/<rolloutId>.json` against
-    /// a trust.json. Asserts the signature, recomputes the manifest's
-    /// content hash and compares against the operator-provided
-    /// `rollout-id`, and surfaces the projection's anchor (the
-    /// `fleetResolvedHash` field) so an offline auditor can cross-
-    /// check the manifest against the corresponding fleet.resolved.
+    /// Verify a signed manifest; recompute hash matches `--rollout-id`.
     RolloutManifest {
         #[arg(long)]
         manifest: PathBuf,
@@ -62,24 +46,19 @@ enum Cmd {
         now: DateTime<Utc>,
         #[arg(long)]
         freshness_window_secs: u64,
-        /// Expected rolloutId the manifest's content hash must match.
-        /// In production this is the value the CP advertised in
-        /// `EvaluatedTarget.rollout_id`. Catches the mix-and-match /
-        /// rename attack where on-disk filename diverges from content.
+        /// Catches mix-and-match / rename attacks: filename ≠ content hash.
         #[arg(long)]
         rollout_id: String,
     },
     /// Verify a signed probe-output payload against a host's pubkey.
     Probe {
-        /// Path to the JSON payload that was signed (any shape; will
-        /// be JCS-canonicalized then verified).
+        /// JSON payload; will be JCS-canonicalized then verified.
         #[arg(long)]
         payload: PathBuf,
-        /// Path to a file containing the base64 ed25519 signature.
+        /// File containing the base64 ed25519 signature.
         #[arg(long)]
         signature: PathBuf,
-        /// Path to a file containing the host's OpenSSH-format
-        /// `ssh-ed25519 AAAA...` pubkey.
+        /// File containing the host's OpenSSH-format `ssh-ed25519` pubkey.
         #[arg(long)]
         pubkey: PathBuf,
     },

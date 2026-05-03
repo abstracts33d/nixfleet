@@ -1,11 +1,4 @@
 //! Shared TLS / cert / port helpers for CP integration tests.
-//!
-//! Cargo recognises `tests/common/mod.rs` (subdirectory form) as
-//! a module rather than a separate test binary. Each integration
-//! test file imports it with `mod common;` at the top.
-//!
-//! `#[allow(dead_code)]` on every item: not every test uses every
-//! helper, and cargo emits per-binary unused-code warnings.
 
 #![allow(dead_code)]
 
@@ -21,9 +14,6 @@ use reqwest::{Certificate as ReqwestCert, Identity};
 use tempfile::TempDir;
 use tokio::net::{TcpListener, TcpStream};
 
-/// Install the rustls aws-lc-rs crypto provider exactly once per
-/// test process, and wire `tracing_subscriber` so `RUST_LOG=info`
-/// surfaces dispatch / reconcile traces during triage.
 pub fn install_crypto_provider_once() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -38,8 +28,7 @@ pub fn install_crypto_provider_once() {
     });
 }
 
-/// Bind 127.0.0.1:0 and return the OS-allocated port. Caller is
-/// responsible for racing the rebind in the spawn step.
+// FOOTGUN: returns OS-allocated port; caller races the rebind in the spawn step.
 pub async fn pick_free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .await
@@ -49,13 +38,7 @@ pub async fn pick_free_port() -> u16 {
         .port()
 }
 
-/// Poll until a TCP connect to `127.0.0.1:port` succeeds, or the
-/// deadline elapses. Replaces the fixed `sleep(N)` immediately after
-/// `tokio::spawn(server::serve(...))`; the listener-up signal is the
-/// real precondition every test was waiting for. `handle` is the
-/// server task — if it exits before the listener binds we surface
-/// that as a panic with the same message the old sleep+is_finished
-/// pair did.
+/// Poll TCP connect until success or deadline; panics if server task exits before binding.
 pub async fn wait_for_listener_ready(
     port: u16,
     handle: &tokio::task::JoinHandle<anyhow::Result<()>>,
@@ -75,27 +58,19 @@ pub async fn wait_for_listener_ready(
     panic!("server listener on 127.0.0.1:{port} did not bind within 15s");
 }
 
-/// Write `contents` to `dir/name` and return the absolute path.
 pub fn write_pem(dir: &TempDir, name: &str, contents: &str) -> PathBuf {
     let path = dir.path().join(name);
     std::fs::write(&path, contents).unwrap();
     path
 }
 
-/// Same as [`write_pem`] but for raw bytes (signature files,
-/// canonicalised JSON sig blobs, etc.).
 pub fn write_bytes(dir: &TempDir, name: &str, contents: &[u8]) -> PathBuf {
     let path = dir.path().join(name);
     std::fs::write(&path, contents).unwrap();
     path
 }
 
-/// Mint a self-signed CA, a server cert (CN=test-cp-server,
-/// SAN=localhost) and a client cert (CN=`client_cn`) under that
-/// CA. Writes all five PEM files into `dir`.
-///
-/// Returns paths in the order: `(ca, server_cert, server_key,
-/// client_cert, client_key)`.
+/// Returns `(ca, server_cert, server_key, client_cert, client_key)` PEM paths.
 pub fn mint_ca_and_certs(
     dir: &TempDir,
     client_cn: &str,
@@ -141,9 +116,6 @@ pub fn mint_ca_and_certs(
     )
 }
 
-/// Build a `reqwest::Client` configured for mTLS against the
-/// CP: trusts `ca`, presents the `(client_cert, client_key)`
-/// identity. Use [`mint_ca_and_certs`] to produce the inputs.
 pub fn build_mtls_client(
     ca: &PathBuf,
     client_cert: &PathBuf,

@@ -1,6 +1,4 @@
-//! Live `Observed` projection from in-memory checkin state.
-//! `--observed` (file-backed) stays as a dev/test + offline-replay
-//! fallback. Pass `&[]` for `rollouts` when no DB is configured.
+//! Live `Observed` projection from in-memory checkin state; pass `&[]` rollouts when no DB.
 
 use std::collections::HashMap;
 
@@ -10,7 +8,6 @@ use nixfleet_reconciler::{HostRolloutState, RolloutState};
 use crate::db::RolloutDbSnapshot;
 use crate::server::HostCheckinRecord;
 
-/// Pure: caller holds the read locks and runs the DB query.
 pub fn project(
     host_checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
@@ -28,9 +25,6 @@ pub fn project(
         );
     }
 
-    // No dedicated rollouts table yet; every snapshotted rollout
-    // surfaces as Executing. Multi-wave tracking is a Phase 4
-    // follow-up.
     let active_rollouts: Vec<Rollout> = rollouts
         .iter()
         .map(|snap| Rollout {
@@ -39,11 +33,7 @@ pub fn project(
             target_ref: snap.target_channel_ref.clone(),
             state: RolloutState::Executing,
             current_wave: 0,
-            // Unknown SQL strings fall back to `Failed` (not
-            // `Queued`!) — `Queued` would re-dispatch the host
-            // every tick, defeating resolution-by-replacement.
-            // The variant set is canonical for V003 CHECK; drift
-            // is caught by `host_rollout_state_check_matches_enum`.
+            // Unknown SQL strings fall back to Failed; Queued would re-dispatch every tick.
             host_states: snap
                 .host_states
                 .iter()
@@ -68,7 +58,6 @@ pub fn project(
 
     Observed {
         channel_refs: channel_refs.clone(),
-        // Dispatch loop populates last_rolled_refs; empty case fine.
         last_rolled_refs: HashMap::new(),
         host_state,
         active_rollouts,
@@ -132,14 +121,7 @@ mod tests {
 
     #[test]
     fn host_rollout_state_check_matches_enum() {
-        // Drift detector: every value in the V001 `host_rollout_state`
-        // CHECK list must be parseable by
-        // `HostRolloutState::from_db_str`. If the SQL gets a new value
-        // without the enum being extended (or vice versa), the
-        // projection's `Failed` fallback fires for live rows and
-        // silently halts rollouts. Catch it at test time instead.
         let schema = include_str!("../migrations/V001__schema.sql");
-        // Extract the parenthesised list after `host_state IN (`.
         let needle = "host_state IN (";
         let start = schema.find(needle).expect("CHECK clause present");
         let after = &schema[start + needle.len()..];
@@ -163,13 +145,6 @@ mod tests {
 
     #[test]
     fn projection_falls_back_to_failed_on_unknown_host_state() {
-        // The projection's defense-in-depth: an unrecognised SQL
-        // value must surface as Failed (halt the rollout) rather
-        // than Queued (re-dispatch loop). The current schema
-        // doesn't permit this in steady state, but a future CHECK
-        // extension that lands before the enum update would
-        // otherwise re-dispatch every "Reverted" host on every
-        // tick.
         let mut host_states = HashMap::new();
         host_states.insert("ohm".to_string(), "TotallyBogus".to_string());
         let snap = RolloutDbSnapshot {
@@ -194,9 +169,6 @@ mod tests {
 
     #[test]
     fn projection_round_trips_reverted_state() {
-        // V003 reserves Reverted; the typed enum carries it.
-        // Confirm the projection round-trips the wire string into
-        // the typed variant rather than misclassifying it.
         let mut host_states = HashMap::new();
         host_states.insert("ohm".to_string(), "Reverted".to_string());
         let snap = RolloutDbSnapshot {
@@ -221,9 +193,6 @@ mod tests {
 
     #[test]
     fn projection_surfaces_active_rollouts_from_snapshot() {
-        // The snapshot's host_states + last_healthy_since flow
-        // through to the Rollout struct so step 3's reconciler arm
-        // can read them on the next tick.
         let now = Utc::now();
         let mut host_states = HashMap::new();
         host_states.insert("ohm".to_string(), "Healthy".to_string());

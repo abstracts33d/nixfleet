@@ -1,13 +1,4 @@
-//! `/v1/enroll` integration test.
-//!
-//! Mints a real ed25519 keypair on the operator side, signs a token,
-//! materialises a `trust.json` carrying the public half, spins up the
-//! server, and verifies:
-//!
-//! 1. Happy path — valid token + matching CSR → 200, cert returned.
-//! 2. Signature tampering — flipped byte in signature → 401.
-//! 3. Replay — same nonce twice → 200 then 409.
-//! 4. Hostname-vs-CSR-CN mismatch → 401.
+//! Integration tests for `/v1/enroll`.
 
 mod common;
 
@@ -31,7 +22,6 @@ fn write(path: &std::path::Path, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
-/// Mint a fleet CA + server cert in `dir`. Returns paths.
 fn mint_fleet_ca(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let mut ca_params = CertificateParams::default();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -69,10 +59,8 @@ fn mint_fleet_ca(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     (ca_cert_path, ca_key_path, server_cert_path, server_key_path)
 }
 
-/// Write a trust.json with the given org-root ed25519 pubkey (base64).
+/// LOADBEARING: place trust.json next to ca.pem; handler looks up dirname(fleet-ca-cert)/trust.json.
 fn write_trust_json(dir: &TempDir, org_root_pubkey_b64: &str) -> PathBuf {
-    // Place trust.json next to ca.pem so the enroll handler's lookup
-    // (parent of fleet-ca-cert + "trust.json") finds it.
     let path = dir.path().join("trust.json");
     let contents = format!(
         r#"{{
@@ -90,15 +78,7 @@ fn write_trust_json(dir: &TempDir, org_root_pubkey_b64: &str) -> PathBuf {
     path
 }
 
-/// Mint a CSR with CN=`hostname` and a fresh keypair. Returns
-/// (PEM, pubkey-DER, fingerprint-base64).
-///
-/// Crucially, the fingerprint must come from the *parsed* CSR's
-/// PublicKey via `PublicKeyData::der_bytes`, not from the
-/// KeyPair-side `public_key_der()` — those produce different
-/// DER framings, and the server does its check against the
-/// parsed-CSR view. Round-trip the CSR to make the fingerprint
-/// match what the server will compute.
+// FOOTGUN: fingerprint must be over parsed-CSR `der_bytes`, not KeyPair `public_key_der()` — different framings.
 fn mint_csr(hostname: &str) -> (String, Vec<u8>, String) {
     let key = KeyPair::generate().unwrap();
     let mut params = CertificateParams::default();
@@ -108,8 +88,6 @@ fn mint_csr(hostname: &str) -> (String, Vec<u8>, String) {
     let csr: CertificateSigningRequest = params.serialize_request(&key).unwrap();
     let pem = csr.pem().unwrap();
 
-    // Round-trip through the same parser the server uses so the
-    // fingerprint is computed from the same byte slice.
     let parsed = rcgen::CertificateSigningRequestParams::from_pem(&pem).unwrap();
     let pubkey_der: Vec<u8> = parsed.public_key.der_bytes().to_vec();
     let digest = sha2::Sha256::digest(&pubkey_der);
@@ -119,7 +97,6 @@ fn mint_csr(hostname: &str) -> (String, Vec<u8>, String) {
 }
 use sha2::Digest;
 
-/// Sign a TokenClaims with `signing_key` over the JCS canonical bytes.
 fn sign_token(claims: &TokenClaims, signing_key: &SigningKey, version: u32) -> BootstrapToken {
     let claims_json = serde_json::to_string(claims).unwrap();
     let canonical = nixfleet_canonicalize::canonicalize(&claims_json).unwrap();
@@ -152,9 +129,7 @@ async fn spawn_server(
     write(&artifact, "{}");
     let signature = obs_dir.path().join("fleet.resolved.json.sig");
     write(&signature, "");
-    // trust_path here is the legacy `--trust-file` flag path, not the
-    // enroll handler's lookup. The handler reads trust.json from
-    // dirname(fleet_ca_cert)/trust.json instead.
+    // GOTCHA: this trust_path is the legacy --trust-file flag, distinct from the enroll handler lookup.
     let trust = obs_dir.path().join("trust-stub.json");
     write(
         &trust,
@@ -165,15 +140,12 @@ async fn spawn_server(
         &observed,
         r#"{"channelRefs":{},"lastRolledRefs":{},"hostState":{},"activeRollouts":[]}"#,
     );
-    // Tempdir-backed SQLite — enroll uses it for token replay defense.
-    // Same pattern as tests/confirm.rs / wave_gate.rs / dispatch.rs.
     let db_path = obs_dir.path().join("state.db");
 
     let args = server::ServeArgs {
         listen,
         tls_cert: server_cert,
         tls_key: server_key,
-        // /v1/enroll doesn't require mTLS — explicit None.
         client_ca: None,
         fleet_ca_cert: Some(fleet_ca_cert),
         fleet_ca_key: Some(fleet_ca_key),
@@ -224,7 +196,6 @@ async fn enroll_happy_path_signs_cert() {
     };
     let token = sign_token(&claims, &signing_key, 1);
 
-    // CA-pin reqwest to the test fleet CA so the TLS handshake works.
     let ca_pem = std::fs::read(&ca_cert).unwrap();
     let ca_certb = reqwest::Certificate::from_pem(&ca_pem).unwrap();
     let client = reqwest::Client::builder()
@@ -285,7 +256,6 @@ async fn enroll_rejects_tampered_signature() {
         nonce: random_nonce(),
     };
     let mut token = sign_token(&claims, &signing_key, 1);
-    // Flip the last byte of the signature.
     let mut sig_bytes = base64::engine::general_purpose::STANDARD
         .decode(&token.signature)
         .unwrap();
@@ -358,7 +328,6 @@ async fn enroll_rejects_replayed_nonce() {
         .build()
         .unwrap();
 
-    // First call: 200.
     let req1 = EnrollRequest {
         token: token.clone(),
         csr_pem: csr_pem.clone(),
@@ -371,7 +340,6 @@ async fn enroll_rejects_replayed_nonce() {
         .unwrap();
     assert_eq!(resp1.status(), 200);
 
-    // Second call (same token, same nonce): 409.
     let req2 = EnrollRequest { token, csr_pem };
     let resp2 = client
         .post(format!("https://localhost:{port}/v1/enroll"))

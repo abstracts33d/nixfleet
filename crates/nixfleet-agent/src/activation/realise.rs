@@ -1,21 +1,12 @@
-//! `nix-store --realise` wrapper + signature-error heuristic.
-//!
-//! Realise is the agent's "force fetch + verify before we commit
-//! to switching" step. The signature-error detection is a string
-//! match against nix's stderr because nix doesn't surface a
-//! distinct exit code for trust-failure; the matcher is locked in
-//! by per-phrasing tests so a nix wording change breaks the test
-//! rather than silently downgrading to generic RealiseFailed.
+//! `nix-store --realise` wrapper. Signature-error detection is a stderr
+//! string match because nix has no distinct exit code for trust-failure;
+//! per-phrasing tests guard against silent downgrade to RealiseFailed.
 
 use anyhow::{anyhow, Context};
 use tokio::process::Command;
 
-/// Distinct so the agent can map signature-mismatch to a different
-/// `ReportEvent` than transient fetch failures.
 pub enum RealiseError {
-    /// Stderr trimmed to last ~500 bytes for triage.
     SignatureMismatch { stderr_tail: String },
-    /// Spawn failure, network error, missing path, non-utf8 stdout, etc.
     Other(anyhow::Error),
 }
 
@@ -25,11 +16,7 @@ impl From<anyhow::Error> for RealiseError {
     }
 }
 
-/// nix has several wordings for substituter-trust failures across
-/// versions. The set covers 2.18+ stable phrasings plus legacy 2.x.
-/// Tested in `tests::detect_signature_error_*` so a nix wording
-/// change breaks the test rather than silently downgrading to
-/// generic RealiseFailed.
+/// Covers 2.18+ stable phrasings plus legacy 2.x.
 pub fn looks_like_signature_error(stderr: &str) -> bool {
     let lower = stderr.to_lowercase();
     [

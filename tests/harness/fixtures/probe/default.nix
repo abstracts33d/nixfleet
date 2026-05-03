@@ -1,13 +1,3 @@
-# Pre-signed probe-output fixture for the auditor-chain scenario.
-# Bakes an ed25519-signed compliance-event payload that verifies
-# under a host's OpenSSH-format pubkey — the contract an auditor
-# follows when reconstructing the host↔probes link without CP access.
-#
-# Output: payload.canonical.json (JCS bytes), payload.sig.b64 (base64
-# raw signature), pubkey.openssh (OpenSSH-format ed25519 pubkey).
-#
-# Determinism: every byte is a function of `seedSalt` + the embedded
-# payload below. Same seed → same key → same signature.
 {
   pkgs,
   nixfleet-canonicalize,
@@ -15,11 +5,7 @@
 }: let
   seedHex = builtins.substring 0 64 (builtins.hashString "sha256" seedSalt);
 
-  # Sample ComplianceFailureSignedPayload — shape mirrors
-  # crates/nixfleet-proto/src/evidence_signing.rs. The CLI verifier
-  # is shape-agnostic (it canonicalizes whatever JSON it gets and
-  # matches against the signature), so this stands in for any signed
-  # probe output.
+  # The CLI verifier is shape-agnostic; canonicalizes whatever JSON it gets.
   payload = {
     hostname = "agent-01";
     rollout = "stable@deadbeef";
@@ -42,9 +28,6 @@
         f.write("-----END PRIVATE KEY-----\n")
   '';
 
-  # OpenSSH wire format for ed25519 pubkeys: 4-byte length-prefix
-  # "ssh-ed25519" string + 4-byte length-prefix raw 32-byte pubkey,
-  # then base64-wrapped, then "ssh-ed25519 <b64> <comment>".
   toOpenssh = pkgs.writers.writePython3 "raw-to-openssh-ed25519" {} ''
     import base64
     import struct
@@ -66,7 +49,6 @@ in
 
     ${keygen} "$seedHex" privkey.pem
 
-    # Raw 32-byte pubkey from PKCS#8 SPKI — strip the 12-byte header.
     openssl pkey -in privkey.pem -pubout -outform DER -out pubkey.spki.der
     tail -c 32 pubkey.spki.der | base64 -w0 > pubkey.raw.b64
     ${toOpenssh} pubkey.raw.b64 > "$out/pubkey.openssh"

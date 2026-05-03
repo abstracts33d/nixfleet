@@ -1,27 +1,3 @@
-# Framework-level persistence schema.
-#
-# Pure schema, no implementation. Auto-imported by mkHost so that
-# nixfleet's own service modules (agent, control-plane, microvm-host)
-# can contribute persisted-directory paths via
-# `nixfleet.persistence.directories = lib.mkIf cfg.enable [ ... ]`
-# without each having to know which persistence implementation a
-# fleet uses (impermanence-flake-based wipe-on-boot, ZFS rollback,
-# snapper-driven snapshots, or none).
-#
-# Implementations live in `impls/persistence/*` (this repo) and are
-# exposed at `flake.scopes.persistence.<impl>`. A persistence-aware
-# fleet imports exactly one of them; the impl reads
-# `config.nixfleet.persistence.{enable, persistRoot, directories,
-# files}` and translates to whatever its mechanism requires (e.g.
-# `environment.persistence."/persist".directories = ...` for the
-# impermanence impl).
-#
-# Schema lives here in `contracts/`; the impermanence implementation
-# lives in `impls/`. Fleets that don't enable the impermanence impl
-# pay no runtime cost from the upstream `inputs.impermanence` input.
-#
-# Home Manager-side persistence remains a separate concern — fleets
-# wire it via their own HM module imports.
 {
   config,
   lib,
@@ -84,9 +60,6 @@ in {
     };
   };
 
-  # Framework-baseline contributions — every fleet that enables a
-  # persistence implementation should keep system identity and logs
-  # across reboots regardless of what else they pick to persist.
   config = lib.mkIf cfg.enable {
     nixfleet.persistence.directories = [
       "/etc/nixos"

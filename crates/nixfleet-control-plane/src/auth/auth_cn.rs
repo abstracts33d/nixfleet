@@ -1,12 +1,4 @@
-//! mTLS: extract verified peer cert + CN, expose as request extension.
-//!
-//! `axum-server 0.7` doesn't expose peer certificates publicly. We
-//! vendor a minimal `Accept` wrapper that reads
-//! `TlsStream::get_ref().1.peer_certificates()` after the handshake
-//! and injects the chain via a per-connection `tower::Service`.
-//!
-//! When mTLS isn't configured the extension exists but is empty;
-//! middleware treats it as a no-op so TLS-only mode keeps working.
+//! mTLS peer-cert extraction; injects chain as a per-request extension.
 
 use axum::extract::{Path, Request};
 use axum::http::StatusCode;
@@ -23,7 +15,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::server::TlsStream;
 use x509_parser::prelude::*;
 
-/// Client cert chain injected into every request by [`MtlsAcceptor`].
 /// Empty when no client cert was presented.
 #[derive(Clone, Debug, Default)]
 pub struct PeerCertificates {
@@ -60,9 +51,7 @@ impl PeerCertificates {
         cn
     }
 
-    /// `notBefore` as UTC. Revocation entries say "any cert with
-    /// notBefore < X is bad" — re-enrolled cert (notBefore > X)
-    /// re-grants access.
+    /// `notBefore` as UTC; revocations are "any cert with notBefore < X".
     pub fn leaf_not_before(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         let leaf = self.leaf()?;
         let (_, cert) = X509Certificate::from_der(leaf.as_ref()).ok()?;
@@ -71,8 +60,6 @@ impl PeerCertificates {
     }
 }
 
-/// Extracts the peer cert chain after handshake and injects it into
-/// every request on the connection via [`PeerCertService`].
 #[derive(Clone, Debug)]
 pub struct MtlsAcceptor<A = axum_server::accept::DefaultAcceptor> {
     inner: RustlsAcceptor<A>,
@@ -117,7 +104,6 @@ where
     }
 }
 
-/// Internal — built by [`MtlsAcceptor::accept`].
 #[derive(Clone, Debug)]
 pub struct PeerCertService<S> {
     inner: S,
@@ -151,8 +137,7 @@ where
     }
 }
 
-/// 403 if leaf CN doesn't match `{id}`. No-op when the extension is
-/// absent (raw axum harness) or empty (TLS-only mode).
+/// 403 if leaf CN doesn't match `{id}`; no-op when extension is absent or empty.
 pub async fn cn_matches_path_machine_id(
     Path(params): Path<HashMap<String, String>>,
     request: Request,

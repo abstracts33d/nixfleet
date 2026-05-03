@@ -1,16 +1,8 @@
-# lib/mk-fleet.nix
-#
-# Produces `fleet.resolved` per RFC-0001 §4.1 + docs/CONTRACTS.md §I #1.
-# Output is canonicalized to JCS (RFC 8785) by `bin/nixfleet-canonicalize`
-# before signing — DO NOT introduce floats, opaque derivations, or
-# attrsets whose iteration order is significant here.
+# LOADBEARING: output is canonicalized to JCS before signing — no floats, opaque derivations, or attrsets with significant iteration order.
 {lib}: let
   inherit (lib) mkOption types;
 
-  # --- Selector algebra (RFC-0001 §3) ---
-  # Variants evaluated in precedence order: `not` > `and` > base OR over
-  # (tags, tagsAny, hosts, channel, all). `not` and `and` are recursive —
-  # selectors compose to arbitrary set algebra.
+  # LOADBEARING: selector precedence is `not` > `and` > base OR over (tags, tagsAny, hosts, channel, all); `not`/`and` are recursive.
   selectorType = types.submodule {
     options = {
       tags = mkOption {
@@ -48,7 +40,6 @@
     };
   };
 
-  # --- Host ---
   hostType = types.submodule {
     options = {
       system = mkOption {type = types.str;};
@@ -75,15 +66,6 @@
     };
   };
 
-  # --- Revocations sidecar (signed `revocations.json`) ---
-  # Operator-declared agent-cert revocation entries. The release
-  # pipeline serialises this list, signs it with the same
-  # ciReleaseKey that signs `fleet.resolved`, and writes
-  # `revocations.json` alongside `fleet.resolved.json`. The CP
-  # fetches + verifies the signed sidecar on each reconcile tick
-  # and replays entries into `cert_revocations`. An empty list is
-  # the steady state — it still gets signed so a CP rebuilt from
-  # empty has a verifiable source for the (empty) revocation set.
   revocationType = types.submodule {
     options = {
       hostname = mkOption {
@@ -177,11 +159,6 @@
       compliance = mkOption {
         type = types.submodule {
           options = {
-            # Tri-state policy mode shared by the static
-            # gate (this file) and the runtime gate (agent-side).
-            # Default `enforce` matches the original `strict = true`
-            # default the legacy boolean form had — fleets that
-            # didn't opt out of compliance keep being gated.
             mode = mkOption {
               type = types.enum ["disabled" "permissive" "enforce"];
               default = "enforce";
@@ -234,9 +211,7 @@
     };
   };
 
-  # Tarjan-free cycle detection using iterative DFS marking.
-  # Edges: { after = "a"; before = "b"; } means a must finish before b starts.
-  # So we walk "after → before" edges.
+  # LOADBEARING: edge { after = "a"; before = "b"; } walks "after → before".
   hasCycle = edges: let
     adj =
       lib.foldl' (
@@ -305,9 +280,6 @@
   in
     (scan nodes).cycle;
 
-  # --- Selector resolution: selector × hosts → [host-name] ---
-  # Variant precedence (RFC-0001 §3): `not` > `and` > base OR composition.
-  # Base OR = host matches iff any of tags/tagsAny/hosts/channel/all matches.
   resolveSelector = sel: hosts: let
     names = lib.attrNames hosts;
     matchHost = s: n: h:
@@ -324,7 +296,6 @@
   in
     builtins.filter (n: matchHost sel n hosts.${n}) names;
 
-  # --- Invariant checks (RFC-0001 §4.2) ---
   checkInvariants = cfg: let
     hostNames = lib.attrNames cfg.hosts;
     channelNames = lib.attrNames cfg.channels;
@@ -392,16 +363,9 @@
       )
       (lib.attrNames cfg.channels);
 
-    # Effective compliance mode is just `compliance.mode` — the
-    # legacy `strict` boolean was removed once the unified
-    # vocabulary stabilised. Schema default is `enforce`, matching
-    # the prior `strict = true` default.
     resolvedComplianceMode = channelName: cfg.channels.${channelName}.compliance.mode;
 
-    # Compute the (host, control) failure tuples for a channel's
-    # static-or-both controls. Shared by the enforce + permissive
-    # branches below — the difference between the two is only what
-    # we DO with the failures (throw vs. lib.warn).
+    # LOADBEARING: shared by enforce + permissive; only the action on failures differs (throw vs lib.warn).
     staticFailuresForChannels = channelNames: let
       hostsOnChannels =
         lib.filter (n: builtins.elem cfg.hosts.${n}.channel channelNames) (lib.attrNames cfg.hosts);
@@ -411,9 +375,7 @@
           host = cfg.hosts.${hostName};
           probes = host.configuration.config.compliance.evidence.probes or {};
           probeNames = lib.attrNames probes;
-          # Only static + both controls participate in the build-time
-          # gate. `runtime`-only controls produce evidence after
-          # activation and are gated by the agent / CP at confirm time.
+          # LOADBEARING: only static + both controls participate in the build-time gate.
           staticOrBoth =
             lib.filter (
               p: let
@@ -436,18 +398,6 @@
       )
       hostsOnChannels;
 
-    # Static compliance gate. For every host on a
-    # channel whose effective mode is `enforce`, walk
-    # `compliance.evidence.probes.*` (populated by the
-    # nixfleet-compliance modules each host imports) and collect
-    # static/both probes whose `staticEvidence.passed` is explicitly
-    # false. Failures throw at fleet-eval time, before CI ever signs
-    # a release.
-    #
-    # Hosts on `permissive` channels emit `lib.warn` per failure but
-    # don't block eval — operators can introduce compliance to an
-    # existing fleet incrementally. `disabled` skips the gate
-    # entirely (no traversal, no warnings).
     enforceChannels =
       lib.filter (n: resolvedComplianceMode n == "enforce") (lib.attrNames cfg.channels);
     staticComplianceErrors = staticFailuresForChannels enforceChannels;
@@ -458,7 +408,6 @@
     then true
     else throw ("nixfleet invariant violations:\n  - " + lib.concatStringsSep "\n  - " errs);
 
-  # --- Resolved projection (RFC-0001 §4.1) ---
   resolveFleet = cfg:
     assert checkInvariants cfg; let
       emptySelectorWarnings =
@@ -491,14 +440,6 @@
         )
         cfg.disruptionBudgets;
 
-      # Permissive-mode compliance warnings. Mirrors
-      # the staticComplianceErrors accumulator in checkInvariants but
-      # selects channels whose effective mode is `permissive` instead
-      # of `enforce`. Failures emit `lib.warn` and let eval succeed,
-      # so operators see what would fail without breaking
-      # `nix flake check`. checkInvariants already ran (via the
-      # outer `assert`), so we know the resolved fleet is otherwise
-      # valid — this is purely informational.
       compliancePermissiveWarnings = let
         permissiveChannels =
           lib.filter (n: cfg.channels.${n}.compliance.mode == "permissive") (lib.attrNames cfg.channels);
@@ -536,8 +477,7 @@
         ++ budgetWarnings
         ++ compliancePermissiveWarnings;
 
-      # Force the warnings side effect before returning the resolved value.
-      # `lib.warn` prints to stderr during eval and returns its second arg.
+      # LOADBEARING: builtins.seq below forces the warning side-effect before return.
       emittedWarnings =
         lib.foldl' (acc: msg: lib.warn msg acc) null allWarnings;
 
@@ -551,7 +491,7 @@
         hosts =
           lib.mapAttrs (_: h: {
             inherit (h) system tags channel pubkey;
-            closureHash = null; # CI fills this in from h.configuration.config.system.build.toplevel
+            closureHash = null; # Filled by CI from h.configuration.config.system.build.toplevel.
           })
           cfg.hosts;
         channels =
@@ -582,12 +522,7 @@
     in
       builtins.seq emittedWarnings resolved;
 
-  # Stamp CI-provided signing metadata onto a resolved fleet value.
-  # `signatureAlgorithm` is optional — omit it when signing with ed25519
-  # (the default per CONTRACTS §I #1 for backward-compatible consumers).
-  # Set it to `"ecdsa-p256"` (or any future value the contract accepts)
-  # when CI signs with a non-default algorithm, e.g. when the TPM
-  # keyslot emits ECDSA P-256.
+  # GOTCHA: signatureAlgorithm omitted defaults to ed25519 for backward compat.
   withSignature = {
     signedAt,
     ciCommit,
@@ -661,14 +596,7 @@
       revocations = evaluated.config.revocations;
     };
 
-  # --- Composition (RFC-0001 §5) ---
-  # Merge a list of mkFleet-input attrsets into a single fleet value.
-  # Precedence rules:
-  #   - hosts / tags / channels: strict merge — same name across inputs throws.
-  #   - rolloutPolicies: later wins (associative, not commutative per RFC §5).
-  #   - edges / disruptionBudgets: concatenated (no dedup; order preserved).
-  #   - complianceFrameworks: union of whatever each input specified; if no
-  #     input declared any, the mkFleet default list applies.
+  # LOADBEARING: hosts/tags/channels strict-merge (collision throws); rolloutPolicies later-wins; edges/disruptionBudgets concat; complianceFrameworks union.
   mergeFleets = fleetInputs: let
     mergeStrict = kind: a: b:
       lib.foldl' (

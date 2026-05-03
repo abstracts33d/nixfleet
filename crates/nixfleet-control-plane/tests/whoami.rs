@@ -1,12 +1,4 @@
-//! `/v1/whoami` integration test.
-//!
-//! Mints a synthetic fleet CA + server cert + client cert in-test
-//! with rcgen, spins up `serve` with the CA wired as `--client-ca`
-//! (mTLS-required mode), hits `/v1/whoami` with the client cert and
-//! asserts the verified CN matches what we put in the cert.
-//!
-//! Also covers the negative case: same server, but a request
-//! without a client cert is rejected at the TLS handshake.
+//! `/v1/whoami` mTLS integration tests: verified-CN happy path + 401 without cert.
 
 mod common;
 
@@ -29,9 +21,6 @@ struct WhoamiBody {
     issued_at: String,
 }
 
-/// Minimal stub inputs the reconcile loop expects to find. See the
-/// `/healthz` test for the rationale: `/v1/whoami` doesn't depend on
-/// the reconcile loop, but the serve loop spawns it regardless.
 fn write_phase2_input_stubs(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let artifact = write_pem(dir, "fleet.resolved.json", "{}");
     let signature = write_pem(dir, "fleet.resolved.json.sig", "");
@@ -81,7 +70,6 @@ async fn whoami_returns_verified_cn_when_client_cert_present() {
     })
     .await;
 
-    // Build reqwest client with our client cert + key as Identity.
     let mut client_pem_bytes = std::fs::read(&client_cert).unwrap();
     client_pem_bytes.extend_from_slice(&std::fs::read(&client_key).unwrap());
     let identity = Identity::from_pem(&client_pem_bytes).unwrap();
@@ -130,13 +118,9 @@ async fn whoami_rejects_request_without_client_cert() {
     })
     .await;
 
-    // Same client config but NO identity — no client cert presented.
-    // The TLS layer accepts unauthenticated connections (load-bearing
-    // for `/v1/enroll`, which is the bootstrap endpoint and cannot
-    // present a cert yet), so the handshake succeeds. Defence happens
-    // at the route level: `require_cn` returns 401 for any
-    // `/v1/agent/*` or `/v1/whoami` request without a verified peer
-    // cert.
+    // LOADBEARING: TLS layer accepts unauthenticated connections so
+    // `/v1/enroll` can bootstrap without a client cert; the 401 must come
+    // from `require_cn` middleware at the route layer, not the handshake.
     let ca_pem = std::fs::read(&ca).unwrap();
     let ca_cert = ReqwestCert::from_pem(&ca_pem).unwrap();
     let client = reqwest::Client::builder()

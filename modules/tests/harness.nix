@@ -1,16 +1,3 @@
-# Tier A - microvm.nix-based fleet simulation harness.
-#
-# Registers `checks.x86_64-linux.fleet-harness-*` discoverable scenarios.
-# Each scenario boots one CP microVM + N agent microVMs on a single host
-# VM, with /nix/store shared over virtiofs for near-zero cold-start cost.
-#
-# DIFFERENT from modules/tests/vm-fleet-scenarios.nix: that file wires
-# full-closure agent/CP nodes through pkgs.testers.runNixOSTest with
-# nothing microvm-related. The harness here uses astro/microvm.nix guests.
-# Do NOT unify the two substrates - they solve different problems.
-#
-# Run (once the user is ready):
-#   nix build .#checks.x86_64-linux.fleet-harness-smoke --no-link
 {inputs, ...}: {
   perSystem = {
     pkgs,
@@ -19,22 +6,10 @@
     config,
     ...
   }: let
-    # Pull crane-built packages from the workspace (same perSystem,
-    # declared in `modules/rust-packages.nix`). The harness entry point
-    # uses `nixfleet-canonicalize` to bake the signed fixture and
-    # `nixfleet-verify-artifact` as the binary the signed-roundtrip
-    # agent microVM runs.
     nixfleet-canonicalize = config.packages.nixfleet-canonicalize or null;
     nixfleet-verify-artifact = config.packages.nixfleet-verify-artifact or null;
-    # Real binaries for the teardown scenario. Static-
-    # fixture stub nodes (cp.nix / agent.nix / cp-signed.nix) keep
-    # working with the existing scenarios; the teardown scenario opts
-    # into the real-binary nodes via these.
     nixfleet-control-plane = config.packages.nixfleet-control-plane or null;
     nixfleet-agent = config.packages.nixfleet-agent or null;
-    # Operator-side helper binaries — `nixfleet-mint-token` is the
-    # binary the enroll-replay scenario invokes inside the host VM
-    # to mint bootstrap tokens at runtime.
     nixfleet-cli = config.packages.nixfleet-cli or null;
     harness = import ../../tests/harness {
       inherit lib pkgs inputs nixfleet-canonicalize nixfleet-verify-artifact;
@@ -46,57 +21,19 @@
         {
           fleet-harness-smoke = harness.fleet-harness-smoke;
         }
-        # Only register the signed-fixture check when the canonicalize
-        # package is available for this system (x86_64-linux only today;
-        # other systems skip it silently).
         // lib.optionalAttrs (nixfleet-canonicalize != null) {
-          # Signed-fixture derivation. Byte-stability regression guard;
-          # rebuild failure signals non-determinism in mkFleet,
-          # canonicalize, or the keygen helper.
           signed-fixture = harness.signedFixture;
-
-          # Signed `revocations.json` sidecar fixture exposed
-          # standalone — same byte-stability role as signed-fixture.
           revocations-fixture = harness.revocationsFixture;
         }
         // lib.optionalAttrs (nixfleet-canonicalize != null && nixfleet-verify-artifact != null) {
-          # Signed-roundtrip scenario. Exercises the full stack:
-          # fixture build -> mTLS serve -> agent fetch ->
-          # verify_artifact accept -> OK marker.
           fleet-harness-signed-roundtrip = harness.fleet-harness-signed-roundtrip;
-
-          # Auditor offline-chain scenario. Validates that
-          # verify-artifact probe accepts a well-formed signed probe
-          # payload and rejects a byte-flipped copy.
           fleet-harness-auditor-chain = harness.fleet-harness-auditor-chain;
-
-          # Corruption-rejection scenario. Bit-flips the signed
-          # fixture's canonical bytes and signature; asserts
-          # verify-artifact rejects each.
           fleet-harness-corruption-rejection = harness.fleet-harness-corruption-rejection;
-
-          # Future-dated rejection scenario. Drives verify-artifact's
-          # `--now` flag around the fixture's fixed signedAt to
-          # assert symmetric slack behaviour (reject Δ=+2d, accept
-          # ±30s, accept 0). Validates today's
-          # freshness symmetric-bound fix in
-          # nixfleet-reconciler::verify::finish_sidecar_verification.
           fleet-harness-future-dated-rejection =
             harness.fleet-harness-future-dated-rejection;
-
-          # Manifest-tamper-rejection scenario. Same shape as
-          # corruption-rejection, but for `releases/rollouts/<id>.json`
-          # signed manifests (RFC-0002 §4.4). Adds a content-address
-          # mismatch case (rename/swap attack).
           fleet-harness-manifest-tamper-rejection =
             harness.fleet-harness-manifest-tamper-rejection;
-
-          # Probe-output fixture exposed standalone — byte-stability
-          # regression guard, same role as signed-fixture.
           probe-fixture = harness.probeFixture;
-
-          # Rollout-manifest fixture exposed standalone — same
-          # byte-stability role as signed-fixture / probe-fixture.
           rollout-manifest-fixture = harness.rolloutManifestFixture;
         }
         // lib.optionalAttrs (
@@ -105,79 +42,24 @@
           && nixfleet-control-plane != null
           && nixfleet-agent != null
         ) {
-          # Teardown scenario. Real CP + real agents;
-          # wipes the CP DB mid-run and asserts state recovery
-          # within one reconcile cycle.
           fleet-harness-teardown = harness.fleet-harness-teardown;
-
-          # Confirm-deadline expiry → 410.
-          # Host-side curl drives the wire flow against cp-real
-          # with --confirm-deadline-secs 3.
           fleet-harness-deadline-expiry = harness.fleet-harness-deadline-expiry;
-
-          # Agent-side freshness gate wire-format. CP
-          # serves a year-and-a-half-old fixture; testScript asserts
-          # dispatched targets carry signedAt + freshnessWindowSecs
-          # such that the agent's freshness::check returns Stale.
           fleet-harness-stale-target = harness.fleet-harness-stale-target;
-
-          # ADR-011 boot-recovery: agent boots with a pre-staged
-          # stale last_dispatched file; check_boot_recovery clears
-          # it before the regular poll loop fires.
           fleet-harness-boot-recovery = harness.fleet-harness-boot-recovery;
-
-          # Parameterised fleet-N variants. Same
-          # scenario as fleet-harness-smoke but with N agents.
-          # CI runs fleet-2 on PR; fleet-10 / fleet-50 are
-          # available for nightly / on-demand.
           fleet-harness-fleet-2 = harness.fleet-harness-fleet-2;
           fleet-harness-fleet-5 = harness.fleet-harness-fleet-5;
           fleet-harness-fleet-10 = harness.fleet-harness-fleet-10;
-
-          # Secret-hygiene scenario. Agent decrypts an age-encrypted
-          # blob at boot; testScript greps the CP's disk + journal
-          # and asserts the plaintext does not appear.
           fleet-harness-secret-hygiene = harness.fleet-harness-secret-hygiene;
-
-          # Module-rollouts-wire scenario. Boots the NixOS service
-          # module (`services.nixfleet-control-plane`) with
-          # `rolloutsDir` set, and asserts the running CP serves
-          # `GET /v1/rollouts/<id>{,/sig}` byte-for-byte. The only
-          # scenario that exercises the real module's ExecStart
-          # construction end-to-end against a running service.
           fleet-harness-module-rollouts-wire = harness.fleet-harness-module-rollouts-wire;
-
-          # Rollback-policy scenario (#76). cp-real + agent microvm
-          # under the rollback-and-halt fleet variant; injects a
-          # Failed host_state row, walks the wire round-trip end-
-          # to-end (CP rollback_signal → agent rollback handler →
-          # RollbackTriggered post → Reverted transition → idempotent
-          # stop). Hardware-level proof of the #69 implementation.
           fleet-harness-rollback-policy = harness.fleet-harness-rollback-policy;
-
-          # Concurrent-checkin scenario. cp-real + 5 host-side
-          # curl loops firing /v1/agent/checkin under steady-state
-          # fleet for 30s; asserts the `dispatch: target issued`
-          # rollout_ids form a stable set (cardinality ≤ 1) and no
-          # torn-snapshot indicators surface in the journal.
-          # Validates the atomic VerifiedFleetSnapshot fix.
           fleet-harness-concurrent-checkin = harness.fleet-harness-concurrent-checkin;
         }
-        # Enroll-replay scenario gate: needs the cli too (for
-        # nixfleet-mint-token at runtime).
         // lib.optionalAttrs (
           nixfleet-canonicalize
           != null
           && nixfleet-control-plane != null
           && nixfleet-cli != null
         ) {
-          # Token-replay race scenario. Two parallel POSTs to
-          # /v1/enroll with the same bootstrap-token nonce; asserts
-          # exactly one 200 + one 409 (the post-fix
-          # AlreadyRecorded branch of the token_replay PK race) +
-          # exactly one row in token_replay + the operator-readable
-          # log line. Edge case: dropped table → 500 (closes the
-          # pre-fix fail-open on DB error).
           fleet-harness-enroll-replay = harness.fleet-harness-enroll-replay;
         };
     };

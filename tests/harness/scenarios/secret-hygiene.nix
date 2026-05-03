@@ -1,15 +1,3 @@
-# Secret-hygiene demonstration. ARCHITECTURE.md §8: a CP whose disk
-# is stolen in its entirety must yield zero plaintext secret material.
-# The agent decrypts an age-encrypted blob at boot, lands the
-# plaintext in /run/secrets/test-token, then talks to the CP
-# normally. testScript dumps every CP-resident artifact (SQLite,
-# journal, audit.log, observed.json, etc files) and grep-asserts the
-# plaintext does NOT appear.
-#
-# Regression-catcher framing: under code construction the agent
-# never reads /run/secrets, so no plaintext can travel. This
-# scenario fails loudly the first time someone wires a debug log
-# that dumps secret material into a CP-bound request.
 {
   harnessLib,
   testCerts,
@@ -17,7 +5,6 @@
   agenixFixture,
   cpPkg,
   agentPkg,
-  # Convergence target — see boot-recovery.nix for rationale.
   closureHash,
   ...
 }: let
@@ -27,15 +14,7 @@
 
   preseedModule = harnessLib.convergencePreseedModule {inherit closureHash;};
 
-  # Extra NixOS module that lands on the agent microVM. Stages the
-  # encrypted blob + age identity at fixed paths and runs a one-shot
-  # decrypt unit before the agent service boots so the plaintext is
-  # in place during the agent's poll loop.
-  #
-  # The unit emits `harness-decrypt-ok: bytes=N` on success — a
-  # non-leaky proof that the decrypt happened, and the byte count
-  # lets the testScript sanity-check against the fixture without
-  # ever shipping the plaintext through the host journal.
+  # LOADBEARING: emits `harness-decrypt-ok: bytes=N` so testScript verifies decrypt without piping plaintext through journal.
   decryptModule = {pkgs, ...}: {
     environment.etc = {
       "harness-secret/identity.txt".source = "${agenixFixture}/identity.txt";
@@ -62,8 +41,6 @@
             /etc/harness-secret/secret.age
           chmod 600 /run/secrets/test-token
           bytes=$(${pkgs.coreutils}/bin/stat -c %s /run/secrets/test-token)
-          # Marker carries byte count, never plaintext. Surfaces in
-          # the host journal via the microvm guest's console pipe.
           echo "harness-decrypt-ok: bytes=$bytes"
         '';
       };
@@ -94,7 +71,6 @@ in
       host.wait_for_unit("microvms.target", timeout=300)
       host.wait_for_unit("microvm@agent-01.service", timeout=300)
 
-      # Budget covers cold boot + decrypt-test-secret oneshot.
       decrypt_re = re.compile(r"harness-decrypt-ok: bytes=(\d+)")
       deadline = time.monotonic() + 180
       match = None
@@ -121,15 +97,11 @@ in
       )
       print(f"decrypt unit landed {decrypted_bytes}-byte plaintext on agent")
 
-      # Let checkin traffic accumulate so CP-side journal + SQLite
-      # have meaningful content to grep through.
       print("waiting 45s for checkin traffic to accumulate…")
       time.sleep(45)
 
-      # Inspect every CP-resident artifact. The fixture's plaintext
-      # path is in the host's nix store (build input of this test);
-      # `grep -aFf` reads the needle from the file directly so we
-      # never ship the plaintext through the host journal.
+      # `grep -aFf needle` reads plaintext from the file so it never
+      # transits the host journal.
       needle = "${agenixFixture}/plaintext.txt"
       checks = [
           ("CP state.db", "cat /var/lib/nixfleet-cp/state.db 2>/dev/null"),

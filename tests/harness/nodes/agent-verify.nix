@@ -1,18 +1,3 @@
-# Signed-roundtrip agent microVM. At boot, fetches `canonical.json` and
-# `canonical.json.sig` from the CP over mTLS, stages `test-trust.json`
-# from the signed fixture, then runs `nixfleet-verify-artifact`. On
-# successful verify the unit emits `harness-roundtrip-ok:
-# schemaVersion=<n> hosts=<n>` — the scenario testScript greps for the
-# marker.
-#
-# Why this stub stays after `services.nixfleet-agent` landed: the real
-# agent binary verifies signatures internally as part of its activation
-# flow, not as an exposed CLI. The `nixfleet-verify-artifact` CLI is
-# the operator-facing offline auditor tool whose contract this scenario
-# exercises end-to-end (fetch from arbitrary HTTP source, run verify,
-# OK / VerifyError); pairing this stub with cp-signed.nix is the only
-# way to test that contract under harness mTLS. Sibling tamper /
-# freshness-refusal scenarios fork from here, not agent-real.
 {
   lib,
   pkgs,
@@ -23,31 +8,19 @@
   agentHostName,
   signedFixture,
   verifyArtifactPkg,
-  # Resolved by mkVerifyingAgentNode: `now` defaults to
-  # `signedFixture.now` (signedAt + 1h) so the freshness gate passes
-  # for any fixture variant. NixOS's module system resolves function
-  # arguments through `_module.args` and does not consult
-  # module-function defaults — so these are unconditionally required
-  # at this layer.
   now,
   freshnessWindowSecs,
   ...
 }: {
   microvm = harnessMicrovmDefaults;
 
-  # See agent.nix for rationale: harness microvms run behind qemu
-  # user-net and the harness-agent is an outbound-only oneshot client.
-  # The default firewall service can spend 3+ minutes starting under
-  # heavy concurrent boot; disabling it removes the bottleneck.
+  # See agent-real.nix for rationale on these networking knobs.
   networking.firewall.enable = false;
-
-  # See ./agent-real.nix for the rationale; same systemd-networkd
-  # config so HTTP fetches get a default route + IP rather than
-  # ENETUNREACH.
   networking.useNetworkd = lib.mkDefault true;
   systemd.network.networks."10-vm-net" = {
     matchConfig.Name = "en* eth*";
     networkConfig.DHCP = "yes";
+    # FOOTGUN: RequiredForOnline=routable; default "degraded" fires before DHCP, masking failures.
     linkConfig.RequiredForOnline = "routable";
   };
 
@@ -68,8 +41,6 @@
       RemainAfterExit = true;
       StandardOutput = "journal+console";
       StandardError = "journal+console";
-      # Block until guest has a default route. See agent-real.nix
-      # for the full rationale; same pattern.
       ExecStartPre = "${pkgs.bash}/bin/bash -c 'for i in $(seq 1 60); do ${pkgs.iproute2}/bin/ip route show default | grep -q . && exit 0; sleep 1; done; echo \"harness-agent: no default route after 60s\" >&2; exit 1'";
       ExecStart = pkgs.writeShellScript "harness-agent-verify" ''
         set -euo pipefail
@@ -90,12 +61,7 @@
             "$base$url_path" -o "$out"
         }
 
-        # Wait until the CP is reachable before starting the verify
-        # flow. Microvm guest boots independently of the host's CP
-        # service so the first agent attempt can race a not-yet-up
-        # CP — that's a harness-only ordering artefact, not a
-        # production failure mode. Budget: 60s (30 attempts × 2s).
-        # Beyond that, treat as a real outage and emit FAIL.
+        # Microvm boot races CP startup; budget 60s before treating as outage.
         echo "harness-agent: waiting for CP to accept TLS" >&2
         for attempt in $(seq 1 30); do
           if curl -sfS \
@@ -138,9 +104,6 @@
           --now ${now} \
           --freshness-window-secs ${toString freshnessWindowSecs})
 
-        # Belt-and-suspenders: also write to /dev/console so the marker
-        # reaches the host journal even if journald forwarding from the
-        # guest is disabled (same pattern as nodes/agent.nix).
         msg="harness-roundtrip-ok: $verify_out"
         echo "$msg" >&2
         echo "$msg" > /dev/console || true

@@ -1,17 +1,4 @@
-//! `dispatch_history` — append-only audit of every dispatch.
-//!
-//! Recovery class: **soft state** (ARCHITECTURE.md §6 Phase 10).
-//! The audit log is for forensics, not the control loop. Loss
-//! removes a debugging surface (which rollouts has host X been
-//! through?) but does not affect convergence or safety: the
-//! operational row in [`super::host_dispatch_state`] is the single
-//! source of truth for "what is host X doing right now". Pruned by
-//! retention window (default 90d).
-//!
-//! Paired with [`super::host_dispatch_state`] (the live operational
-//! half); both tables share the same row shape at insert time but
-//! diverge in lifecycle: history is append-only, the operational
-//! row is UPSERTed on every new dispatch.
+//! Append-only dispatch audit (soft state); 90d retention.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -22,7 +9,6 @@ use crate::state::TerminalState;
 
 use super::host_dispatch_state::DispatchInsert;
 
-/// One audit row.
 #[derive(Debug, Clone)]
 pub struct DispatchHistoryRow {
     pub id: i64,
@@ -42,9 +28,7 @@ pub struct DispatchHistory<'a> {
 }
 
 impl DispatchHistory<'_> {
-    /// Stamp the most-recent open audit row for (rollout, host) with
-    /// a terminal state. Idempotent — if no open row exists (already
-    /// stamped, or never dispatched in this rollout), returns 0.
+    /// Idempotent: returns 0 when no open row exists for (rollout, host).
     pub fn mark_terminal_for_rollout_host(
         &self,
         rollout_id: &str,
@@ -75,12 +59,7 @@ impl DispatchHistory<'_> {
         Ok(n)
     }
 
-    /// Stamp every open history row of a converged rollout with
-    /// `terminal_state = 'converged'`. Called from the
-    /// [`Action::ConvergeRollout`](nixfleet_reconciler::Action) arm
-    /// of the reconciler; the operational table doesn't need
-    /// cleanup because converged hosts stay parked on Confirmed
-    /// rows that the next dispatch overwrites.
+    /// Stamp every open row of a converged rollout with `terminal_state = 'converged'`.
     pub fn mark_rollout_converged(
         &self,
         rollout_id: &str,
@@ -98,10 +77,7 @@ impl DispatchHistory<'_> {
         Ok(n)
     }
 
-    /// Drop history rows older than `max_age_hours` whose
-    /// `terminal_state` is set. Open rows are never pruned (they
-    /// reflect dispatches still in flight). Mirror of the
-    /// `prune_token_replay` and `prune_host_reports` shape.
+    /// Drop terminal rows older than `max_age_hours`; open rows never pruned.
     pub fn prune_history(&self, max_age_hours: i64) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let n = guard
@@ -115,10 +91,7 @@ impl DispatchHistory<'_> {
         Ok(n)
     }
 
-    /// Most-recent `limit` audit rows for a host, newest first.
-    /// Surfaces the per-host dispatch history for the future
-    /// `nixfleet status` CLI (#66). Internal contract: callers may
-    /// rely on dispatched_at DESC ordering.
+    /// Newest-first; ordering is part of the contract.
     pub fn recent_for_host(
         &self,
         hostname: &str,
@@ -141,10 +114,6 @@ impl DispatchHistory<'_> {
     }
 }
 
-/// Append a history row inside an existing connection / transaction.
-/// `pub(super)` so [`super::host_dispatch_state::HostDispatchState::record_dispatch`]
-/// can call us from inside its own transaction guarding the
-/// operational + audit pair.
 pub(super) fn insert_history(conn: &Connection, row: &DispatchInsert<'_>) -> Result<i64> {
     conn.execute(
         "INSERT INTO dispatch_history(
@@ -188,9 +157,6 @@ mod tests {
 
     #[test]
     fn append_only_grows_on_each_dispatch() {
-        // Each record_dispatch (operational write) appends a new
-        // history row. Two dispatches → two rows, regardless of
-        // whether the operational row was upserted.
         let db = fresh_db();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
         for rollout in ["stable@r1", "stable@r2", "stable@r3"] {
@@ -200,7 +166,6 @@ mod tests {
         }
         let history = db.dispatch_history().recent_for_host("ohm", 10).unwrap();
         assert_eq!(history.len(), 3);
-        // recent_for_host returns newest-first.
         assert_eq!(history[0].rollout_id, "stable@r3");
         assert_eq!(history[2].rollout_id, "stable@r1");
     }
@@ -218,7 +183,6 @@ mod tests {
             .mark_terminal_for_rollout_host("stable@r1", "ohm", TerminalState::RolledBack, now)
             .unwrap();
         assert_eq!(n, 1);
-        // Second call: row is already terminal, no open row to find.
         let n = db
             .dispatch_history()
             .mark_terminal_for_rollout_host("stable@r1", "ohm", TerminalState::RolledBack, now)
@@ -228,8 +192,6 @@ mod tests {
 
     #[test]
     fn mark_rollout_converged_stamps_all_open_rows() {
-        // Two hosts, same rollout → both audit rows flip to
-        // converged in one shot.
         let db = fresh_db();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
         for host in ["ohm", "krach"] {
@@ -252,10 +214,6 @@ mod tests {
 
     #[test]
     fn mark_rollout_converged_skips_terminal_rows() {
-        // A host already RolledBack on this rollout (e.g. wave-
-        // earlier failure that triggered cleanup) must NOT have its
-        // terminal_state overwritten by a subsequent ConvergeRollout
-        // for the same rollout.
         let db = fresh_db();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
         db.host_dispatch_state()
@@ -285,7 +243,6 @@ mod tests {
     fn prune_history_drops_old_terminal_rows_only() {
         let db = fresh_db();
         let deadline = Utc::now() + chrono::Duration::seconds(120);
-        // Old terminal row.
         db.host_dispatch_state()
             .record_dispatch(&dispatch_insert("ohm", "stable@old", "system", deadline))
             .unwrap();
@@ -298,11 +255,9 @@ mod tests {
                 old_terminal_at,
             )
             .unwrap();
-        // Recent open row: stays.
         db.host_dispatch_state()
             .record_dispatch(&dispatch_insert("krach", "stable@live", "system", deadline))
             .unwrap();
-        // Recent terminal row: stays (within 90d retention).
         db.host_dispatch_state()
             .record_dispatch(&dispatch_insert("pixel", "stable@recent", "system", deadline))
             .unwrap();

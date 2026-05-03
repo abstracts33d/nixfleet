@@ -1,14 +1,3 @@
-# tests/lib/mk-fleet/negative/static-compliance-fail-strict.nix
-#
-# Static compliance gate: when `channels.X.compliance.strict
-# = true`, any host on that channel whose evaluated NixOS config has
-# a `compliance.evidence.probes.<n>` with `type ∈ {static, both}`
-# and `staticEvidence.passed = false` must fail mkFleet eval.
-#
-# Stub a minimal nixosConfiguration that injects one failing static
-# probe into `config.compliance.evidence.probes`. Channel marked
-# strict. Expected: mkFleet's `checkInvariants` throws on the
-# `staticComplianceErrors` accumulator.
 {mkFleet, ...}:
 mkFleet {
   hosts.m = {

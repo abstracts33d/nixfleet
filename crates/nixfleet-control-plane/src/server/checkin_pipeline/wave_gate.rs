@@ -1,20 +1,11 @@
-//! Per-channel wave-staging compliance gate evaluation. Lives
-//! alongside `dispatch_target` because it gates dispatch decisions
-//! on signature-verified failures from earlier waves.
-//!
-//! Note: there is also a `crate::wave_gate` module (top-level CP)
-//! that exposes the pure `evaluate_channel_gate` function. This
-//! module is the checkin-side caller — orchestration around the
-//! pure evaluator.
+//! Checkin-side caller for the pure `crate::wave_gate::evaluate_channel_gate`.
 
 use nixfleet_proto::agent_wire::CheckinRequest;
 
 use super::super::state::AppState;
 use super::dispatch_target::{stage_channel_hosts, wave_index_for};
 
-/// Per-channel wave-staging compliance gate. Returns true iff dispatch
-/// must be blocked (enforce mode + outstanding signature-verified
-/// failures on an earlier wave). Permissive mode logs an advisory.
+/// Returns true iff dispatch must be blocked.
 pub(super) async fn wave_gate_blocks_dispatch(
     state: &AppState,
     req: &CheckinRequest,

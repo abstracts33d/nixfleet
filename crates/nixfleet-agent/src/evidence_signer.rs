@@ -1,13 +1,6 @@
-//! Host probe-output signing — signs JCS-canonical event payloads
-//! with `/etc/ssh/ssh_host_ed25519_key`. CP verifies against
-//! `fleet.nix` `hosts.<hostname>.pubkey`.
-//!
-//! Why SSH host key (not mTLS cert): the auditor trust root needs to
-//! rotate independently from the mTLS cert. A leaked agent cert
-//! doesn't compromise the third-party auditor chain.
-//!
-//! Best-effort: missing/unreadable/wrong-algorithm key returns
-//! `None`; agent posts events unsigned and CP flags them.
+//! Sign JCS-canonical event payloads with the SSH host key. The auditor trust
+//! root rotates independently from mTLS, so a leaked agent cert doesn't
+//! compromise the third-party chain.
 
 use std::path::{Path, PathBuf};
 
@@ -32,8 +25,7 @@ pub struct EvidenceSigner {
 }
 
 impl EvidenceSigner {
-    /// `Ok(None)` when the file is absent (graceful); `Err` only on
-    /// parse errors, wrong algorithm, or non-NotFound IO.
+    /// `Ok(None)` when absent; `Err` on parse errors, wrong algorithm, or non-NotFound IO.
     pub fn load(path: &Path) -> Result<Option<Self>> {
         let raw = match std::fs::read_to_string(path) {
             Ok(s) => s,
@@ -53,8 +45,7 @@ impl EvidenceSigner {
         let private = ssh_key::PrivateKey::from_openssh(&raw)
             .with_context(|| format!("parse OpenSSH key at {}", path.display()))?;
 
-        // OpenSSH stores 64 bytes (32 seed + 32 pubkey); dalek
-        // wants the 32-byte seed only.
+        // FOOTGUN: OpenSSH stores 64 bytes (seed + pubkey); dalek wants only the 32-byte seed.
         let key_data = match private.key_data() {
             ssh_key::private::KeypairData::Ed25519(kp) => kp.private.to_bytes(),
             other => {
@@ -70,8 +61,7 @@ impl EvidenceSigner {
         Ok(Some(Self { signing_key }))
     }
 
-    /// Returns base64-standard 64-byte ed25519 sig. Errors only on
-    /// serde failure (would indicate a buggy ReportEvent variant).
+    /// base64-standard 64-byte ed25519 sig.
     pub fn sign<T: Serialize>(&self, payload: &T) -> Result<String> {
         let canonical = serde_jcs::to_vec(payload)
             .context("JCS canonicalisation of evidence payload failed")?;
@@ -80,16 +70,11 @@ impl EvidenceSigner {
     }
 }
 
-/// Hex-lowercase SHA-256 of JCS-canonical bytes. Binds
-/// `evidence_snippet` to the signed envelope without inflating size.
-/// Thin re-export of [`nixfleet_canonicalize::sha256_jcs_hex`] —
-/// every signer + verifier across the fleet must produce identical
-/// digests, so the implementation lives in one crate.
+/// Hex SHA-256 of JCS-canonical bytes; binds evidence_snippet to its envelope.
 pub fn sha256_jcs<T: Serialize>(payload: &T) -> Result<String> {
     nixfleet_canonicalize::sha256_jcs_hex(payload)
 }
 
-/// Default key path resolver — for use in main.rs CLI wiring.
 pub fn default_ssh_host_key_path() -> PathBuf {
     PathBuf::from(DEFAULT_SSH_HOST_KEY_PATH)
 }
@@ -100,11 +85,7 @@ mod tests {
     use ed25519_dalek::Verifier;
 
     fn write_test_key(dir: &Path) -> PathBuf {
-        // Generate an ed25519 keypair, write OpenSSH-encoded private
-        // key (no passphrase) to a temp file, return the path.
-        // Avoid SigningKey::generate (gated behind rand_core feature
-        // we don't pull in for the agent runtime); roll the seed by
-        // hand from the rand crate the agent already depends on.
+        // Roll the seed by hand: SigningKey::generate is feature-gated.
         use ed25519_dalek::SigningKey;
         use rand::RngCore;
         let mut seed = [0u8; 32];
@@ -161,7 +142,6 @@ mod tests {
         let sig_arr: [u8; 64] = sig_bytes.as_slice().try_into().expect("64-byte sig");
         let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
 
-        // Verify with the matching pubkey.
         let canonical = serde_jcs::to_vec(&payload).expect("canonicalise");
         let vk = signer.signing_key.verifying_key();
         vk.verify(&canonical, &sig).expect("verify");
@@ -198,7 +178,7 @@ mod tests {
         let h1 = sha256_jcs(&v).unwrap();
         let h2 = sha256_jcs(&v).unwrap();
         assert_eq!(h1, h2);
-        assert_eq!(h1.len(), 64); // 32 bytes hex
+        assert_eq!(h1.len(), 64);
     }
 
     #[test]

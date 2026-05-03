@@ -1,13 +1,4 @@
-//! `/v1/agent/closure/{hash}` integration tests.
-//!
-//! Coverage:
-//! - 501 Not Implemented when no upstream is configured.
-//! - 200 forward when upstream is reachable: stub HTTP server
-//!   returns a synthetic narinfo body, CP forwards it verbatim.
-//! - 502 Bad Gateway when upstream is unreachable.
-//!
-//! The stub upstream is a tiny tokio TcpListener that handles one
-//! connection per test — minimal moving parts, no wiremock dep.
+//! Integration tests for `/v1/agent/closure/{hash}` proxy.
 
 mod common;
 
@@ -66,15 +57,12 @@ async fn spawn_cp(
     handle
 }
 
-/// Tiny stub HTTP server. Handles ONE connection: reads the request
-/// (drains until \r\n\r\n) and replies with `body` as the HTTP body.
 async fn stub_http_once(addr: SocketAddr, body: &'static str) -> tokio::task::JoinHandle<()> {
     let listener = TcpListener::bind(addr).await.unwrap();
     tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let mut buf = vec![0u8; 4096];
         let n = socket.read(&mut buf).await.unwrap();
-        // Drain — we don't bother parsing.
         let _ = &buf[..n];
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/x-nix-narinfo\r\nContent-Length: {}\r\n\r\n{}",
@@ -121,8 +109,7 @@ async fn closure_proxy_forwards_to_upstream() {
     let (ca, server_cert, server_key, client_cert, client_key) =
         mint_ca_and_certs(&dir, "test-host");
 
-    // Stub HTTP upstream. Must bind before spawning CP so the CP can
-    // resolve the URL at startup.
+    // GOTCHA: stub must bind before CP spawn so URL resolves at startup.
     let upstream_port = pick_free_port().await;
     let upstream_addr: SocketAddr = format!("127.0.0.1:{upstream_port}").parse().unwrap();
     let stub_body = "StorePath: /nix/store/abc123-test\nURL: nar/abc.nar.zst\n";
@@ -160,10 +147,7 @@ async fn closure_proxy_returns_502_when_upstream_unreachable() {
     let (ca, server_cert, server_key, client_cert, client_key) =
         mint_ca_and_certs(&dir, "test-host");
 
-    // Pick a port and DON'T bind anything to it — guaranteed
-    // connection refused. Note: there's a small race where another
-    // process could bind it before our test runs. Acceptable for a
-    // local test.
+    // GOTCHA: small race if another proc binds the port before the test runs; acceptable locally.
     let dead_port = pick_free_port().await;
 
     let cp_port = pick_free_port().await;

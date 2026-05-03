@@ -1,8 +1,4 @@
-//! `GET /healthz` — operator status probe.
-//!
-//! Lives outside the `/v1/*` namespace so it bypasses the
-//! protocol-version middleware (status probes should always reply,
-//! regardless of header version drift).
+//! `GET /healthz` — outside `/v1/*` so it bypasses the protocol-version middleware.
 
 use std::sync::Arc;
 
@@ -16,9 +12,7 @@ use super::super::state::AppState;
 pub(in crate::server) struct HealthzResponse {
     ok: bool,
     version: &'static str,
-    /// rfc3339-formatted UTC timestamp, or `null` if the reconcile
-    /// loop has not yet ticked once. (Realistic only for the first
-    /// ~30s after boot.)
+    /// RFC3339 UTC; `null` until the reconcile loop ticks once.
     last_tick_at: Option<String>,
 }
 

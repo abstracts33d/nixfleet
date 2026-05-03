@@ -1,12 +1,4 @@
-# Secrets wiring - backend-agnostic identity path management.
-# Provides identity path computation, persistence contribution,
-# boot ordering (host key generation), and key validation.
-# Consumers import their chosen backend (agenix, sops-nix) separately and
-# read `config.nixfleet.secrets.resolvedIdentityPaths`.
-#
-# Persistence contribution writes to `nixfleet.persistence.files`; the
-# active persistence implementation (impermanence, ZFS rollback, ...)
-# materialises it. When no impl is imported the contribution is a no-op.
+# Backend-agnostic secrets wiring: identity paths, host-key bootstrap, persistence contribution.
 {
   config,
   lib,
@@ -60,7 +52,7 @@ in {
   };
 
   config = lib.mkMerge [
-    # Always compute resolvedIdentityPaths (even when not enabled, for introspection)
+    # LOADBEARING: resolvedIdentityPaths computed unconditionally so consumers can introspect even when disabled.
     {
       nixfleet.secrets.resolvedIdentityPaths =
         lib.optional (cfg.identityPaths.hostKey != null) cfg.identityPaths.hostKey
@@ -68,9 +60,8 @@ in {
         ++ cfg.identityPaths.extra;
     }
 
-    # Active config only when enabled
     (lib.mkIf cfg.enable {
-      # Boot ordering: ensure host key exists before sshd
+      # LOADBEARING: generate host SSH key before sshd so secret decryption can use it.
       systemd.services."nixfleet-host-key-check" = lib.mkIf (cfg.identityPaths.hostKey != null) {
         description = "Ensure SSH host key exists for secret decryption";
         wantedBy = ["multi-user.target"];
@@ -85,7 +76,6 @@ in {
         '';
       };
 
-      # Key validation: non-fatal warning at activation
       system.activationScripts.nixfleet-secrets-check = lib.stringAfter ["users"] ''
         for key in ${lib.concatStringsSep " " (map lib.escapeShellArg cfg.resolvedIdentityPaths)}; do
           if [[ ! -f "$key" ]]; then

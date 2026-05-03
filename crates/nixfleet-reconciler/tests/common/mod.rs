@@ -1,9 +1,6 @@
-//! Shared fixture-triple runner for integration tests.
-//!
-//! Each fixture lives at `tests/fixtures/<category>/<name>/{fleet,observed,expected}.json`.
-//! `run(name)` loads the triple, runs `reconcile`, and returns (actual, expected).
+//! Shared fixture-triple runner: tests/fixtures/<cat>/<name>/{fleet,observed,expected}.json.
 
-#![allow(dead_code)] // each integration test file uses a subset
+#![allow(dead_code)]
 
 use chrono::{DateTime, Utc};
 use nixfleet_proto::FleetResolved;

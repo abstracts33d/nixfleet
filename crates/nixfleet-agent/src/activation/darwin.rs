@@ -1,27 +1,6 @@
-//! Darwin (nix-darwin) activation primitives.
-//!
-//! Compiled only on `target_os = "macos"`. The `activation` parent
-//! module exports `DarwinBackend` as the cfg-selected `DefaultBackend`
-//! type alias; callers in the rest of the agent never see
-//! `cfg(target_os)`.
-//!
-//! Platform contract:
-//!
-//! - `is_switch_in_progress` always returns `false` — Darwin has no
-//!   equivalent to NixOS's `/run/nixos/switch-to-configuration.lock`.
-//!   Nothing serialises concurrent darwin activations today; if a
-//!   future tool adds a lock primitive, wire it here.
-//! - `read_unit_exit_code` always returns `None` — there's no
-//!   systemd surface to query. The agent's poll loop is the
-//!   authoritative success signal on darwin.
-//! - `fire_switch` runs `<store>/activate-user` (legacy; modern
-//!   closures often omit it) followed by `<store>/activate`, both
-//!   `setsid`-detached so launchd's process-group SIGTERM during
-//!   plist reload doesn't propagate to the activation child.
-//!   `nohup` doesn't work in launchd-daemon context (no controlling
-//!   TTY); only `setsid` gives the survivable session.
-//! - `fire_rollback` runs `<store>/activate` for the rolled-back
-//!   target, same setsid-detached pattern.
+//! Darwin (nix-darwin) activation primitives. `setsid`-detached children
+//! survive launchd's process-group SIGTERM during plist reload; `nohup`
+//! doesn't work in launchd's no-controlling-tty context.
 
 use std::process::Stdio;
 
@@ -30,7 +9,6 @@ use nixfleet_proto::agent_wire::EvaluatedTarget;
 
 use super::{ActivationBackend, ActivationOutcome, RollbackOutcome};
 
-/// Unit-struct backend; method bodies hold the darwin-specific logic.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DarwinBackend;
 
@@ -53,9 +31,6 @@ impl ActivationBackend for DarwinBackend {
     }
 }
 
-/// `setsid` puts the activate child in its own session so launchd's
-/// process-group SIGTERM (issued during plist reload when the new
-/// closure changes the agent binary path) doesn't propagate to it.
 async fn fire_switch(
     target: &EvaluatedTarget,
     store_path: &str,
@@ -67,15 +42,13 @@ async fn fire_switch(
         "agent: firing darwin activation (setsid-detached activate-user + activate)",
     );
 
-    // Step 1: activate-user (legacy; modern closures often omit it).
-    // Errors here are non-fatal.
+    // GOTCHA: activate-user is legacy — modern closures often omit it; spawn errors non-fatal.
     let activate_user = format!("{store_path}/activate-user");
     if std::path::Path::new(&activate_user).exists() {
         let mut cmd = std::process::Command::new(&activate_user);
         cmd.stdin(Stdio::null());
         attach_activate_log_to(&mut cmd, ACTIVATE_LOG);
-        // SAFETY: setsid is async-signal-safe; closure does no
-        // allocation or lock acquisition.
+        // SAFETY: setsid is async-signal-safe; no alloc/lock in the closure.
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -106,10 +79,7 @@ async fn fire_switch(
         );
     }
 
-    // Step 2: system activate. May unload+reload the launchd plist,
-    // killing the agent if the binary path changed. setsid keeps the
-    // child alive; if the agent dies, launchd restarts it and
-    // `recovery::run_boot_recovery` posts the retroactive confirm.
+    // LOADBEARING: setsid detach survives launchd plist reload; nohup doesn't work without controlling tty.
     let activate = format!("{store_path}/activate");
     let mut cmd = std::process::Command::new(&activate);
     cmd.stdin(Stdio::null());
@@ -193,8 +163,7 @@ async fn fire_rollback(target_basename: &str) -> Result<Option<RollbackOutcome>>
 
 const ACTIVATE_LOG: &str = "/var/log/nixfleet-activate.log";
 
-/// Falls back to inherit on permission/IO error; launchd's
-/// StandardOutPath/StandardErrorPath catches the inherited stream.
+/// Falls back to inherit on IO error; launchd's StandardOutPath catches it.
 fn attach_activate_log_to(cmd: &mut std::process::Command, path: &str) {
     match std::fs::OpenOptions::new()
         .create(true)
@@ -202,7 +171,6 @@ fn attach_activate_log_to(cmd: &mut std::process::Command, path: &str) {
         .open(path)
     {
         Ok(out) => {
-            // stdout + stderr each consume one handle.
             let err = match out.try_clone() {
                 Ok(c) => c,
                 Err(e) => {
@@ -234,34 +202,20 @@ mod tests {
 
     #[tokio::test]
     async fn darwin_backend_is_switch_in_progress_returns_false() {
-        // Pin: darwin has no equivalent to NixOS's switch-to-configuration
-        // lock; the contract is "always false". Wiring a real lock primitive
-        // here would require updating both this test and the parent module's
-        // assumption (in activation/mod.rs) that darwin never reports
-        // contention.
         assert!(!DarwinBackend.is_switch_in_progress().await);
     }
 
     #[tokio::test]
     async fn darwin_backend_read_unit_exit_code_returns_none() {
-        // Pin: darwin has no systemd surface — the agent's poll loop is
-        // the authoritative success signal, so this MUST return None and
-        // the parent module's polling logic is structured around that.
         assert_eq!(DarwinBackend.read_unit_exit_code("anything").await, None);
     }
 
     #[test]
     fn attach_activate_log_falls_back_to_inherit_when_path_unwritable() {
-        // Path inside a non-existent parent directory — open(create) fails;
-        // attach_activate_log_to MUST fall back to Stdio::inherit() rather
-        // than panic or propagate the error.
         let dir = tempfile::tempdir().expect("tempdir");
         let unwritable = dir.path().join("does-not-exist").join("nope.log");
         let mut cmd = std::process::Command::new("true");
         attach_activate_log_to(&mut cmd, unwritable.to_str().unwrap());
-        // No assertion on the Stdio variant (Command's getters are private),
-        // but we confirm the call returned without panicking — the entire
-        // contract of this function is "never panic, always set stdio".
     }
 
     #[test]
@@ -275,12 +229,7 @@ mod tests {
 
     #[test]
     fn darwin_backend_default_is_unit_struct() {
-        // Pin: DarwinBackend is a zero-sized unit struct — switching it to
-        // a non-Default would break the cfg-aliased DefaultBackend.
         let _b: DarwinBackend = DarwinBackend;
-        // Default impl smoke: must compile (clippy flags this as
-        // "redundant" because the type's a unit struct, but exercising
-        // the trait is the test's whole point).
         #[allow(clippy::default_constructed_unit_structs)]
         let _: DarwinBackend = DarwinBackend::default();
     }

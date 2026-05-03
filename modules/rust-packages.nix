@@ -12,13 +12,6 @@
     packages =
       workspace.packages
       // {
-        # Fully-built static site: mdbook (curated guide + RFCs +
-        # nixosOptionsDoc) with the cargo doc Rust API reference
-        # mounted at `api/`. Pure derivation, no source-tree mutation —
-        # consumers reference it as a /nix/store path (e.g. as a
-        # reverse-proxy doc root or a CI publish target). Mirrors
-        # what `apps.docs` writes into the working tree, but produces
-        # a single immutable output.
         docs-site =
           pkgs.runCommand "nixfleet-docs-site" {
             nativeBuildInputs = [pkgs.mdbook];
@@ -58,14 +51,7 @@
       meta.description = "NixFleet control plane server";
     };
 
-    # NB: there is no `apps.nixfleet` — `nixfleet-cli` ships
-    # `nixfleet-mint-token` + `nixfleet-derive-pubkey` only. The
-    # historical `apps.nixfleet` pointed at a binary that never
-    # existed (left over from an early-design CLI plan), causing
-    # `nix run .#nixfleet` to fail with "No such file or directory".
-    # Operators reach the helpers via `nix shell nixfleet#nixfleet-cli`
-    # (gets both binaries on PATH); the validate app + per-binary
-    # apps below cover the rest.
+    # GOTCHA: no `apps.nixfleet`; nixfleet-cli ships only mint-token + derive-pubkey via `nix shell nixfleet#nixfleet-cli`.
 
     apps.nixfleet-canonicalize = {
       type = "app";
@@ -84,15 +70,6 @@
       program = "${workspace.packages.nixfleet-release}/bin/nixfleet-release";
       meta.description = "Producer for fleet.resolved.json — build → inject closureHash → canonicalize → sign → release (CONTRACTS §I #1)";
     };
-
-    # Single doc build path: `packages.docs-site` (pure derivation,
-    # above). Use `nix build .#packages.<system>.docs-site` to
-    # produce the static site at `<store>/`. The previous procedural
-    # `apps.docs` shell pipeline was redundant — it wrote the same
-    # mdbook + cargo doc output into the working tree, with the only
-    # operational difference being out-of-sandbox `cargo doc` reuse
-    # of the local `target/doc` cache. Use the derivation for CI /
-    # publishing; use `cargo doc` directly for dev-loop iteration.
 
     devShells.default = craneLib.devShell {
       checks = workspace.checks;

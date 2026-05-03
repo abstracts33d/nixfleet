@@ -1,6 +1,4 @@
-//! Linux/NixOS impl. All `/proc` + `/run/booted-system` paths live
-//! here; the module is cfg-gated so symbols don't need per-item
-//! gates.
+//! Linux/NixOS impl: `/proc` + `/run/booted-system`.
 
 use std::fs;
 

@@ -1,16 +1,5 @@
 #![allow(clippy::doc_lazy_continuation)]
-//! NixFleet control plane.
-//!
-//! The binary runs as a long-running TLS server: the [`tick`] function
-//! is the body of a 30s `tokio::time::interval` loop inside the
-//! [`server`] module, and `GET /healthz` is exposed as an axum
-//! endpoint. The `tick` subcommand is preserved for tests + ad-hoc
-//! operator runs (see `src/main.rs`).
-//!
-//! [`tick`] is a pure function so the long-running serve loop and the
-//! oneshot CLI share one verify-and-reconcile path. The file-backed
-//! `--observed` flag remains as a dev/test fallback alongside the
-//! live projection from agent check-ins.
+//! NixFleet control plane: TLS server + reconciler.
 
 pub mod auth;
 pub mod db;
@@ -135,17 +124,7 @@ fn classify_verify_error(err: &VerifyError) -> String {
     }
 }
 
-/// Render a tick result as one summary JSON line plus one JSON line per
-/// action. Each line is intended for the systemd journal — `journalctl
-/// -o cat` produces the raw JSON; `jq` filters trivially.
-///
-/// — `Skip { reason: "offline" }` actions are coalesced into
-/// a single `skip_summary` line per tick. With N active rollouts × M
-/// offline hosts the journal previously flooded (lab observed 28+
-/// skip-offline lines per 30s tick); coalescing drops that to 1.
-/// Other `Skip` reasons (edge predecessor / disruption budget) keep
-/// per-line semantics — those carry per-host context the operator
-/// needs to triage.
+/// Render a tick as one summary JSON line plus one JSON line per action; offline `Skip` actions coalesce into one `skip_summary`.
 pub fn render_plan(out: &TickOutput) -> String {
     let mut s = String::new();
     s.push_str(&render_summary(out));
@@ -153,9 +132,6 @@ pub fn render_plan(out: &TickOutput) -> String {
     if let VerifyOutcome::Ok(ok) = &out.verify {
         let mut offline_hosts: Vec<&str> = Vec::new();
         for action in &ok.actions {
-            // Skip { reason="offline" } gets folded into one summary
-            // line emitted at the end. Every other action emits its
-            // own JSON line as before.
             if let Action::Skip { host, reason } = action {
                 if reason == "offline" {
                     offline_hosts.push(host.as_str());
@@ -166,15 +142,7 @@ pub fn render_plan(out: &TickOutput) -> String {
             s.push('\n');
         }
         if !offline_hosts.is_empty() {
-            // Stable order + dedup. The reconciler emits one
-            // Skip-offline action per (rollout, host), so with N
-            // active rollouts × M offline hosts we collect N×M
-            // entries here; the operator-facing summary wants the
-            // distinct host set, not the per-rollout multiplicity.
-            // (Lab caught this on the first audit-fix redeploy:
-            // 14 active rollouts × 4 offline hosts produced 56
-            // entries with each host repeated 12–15 times in the
-            // JSON line.)
+            // Reconciler emits one Skip-offline per (rollout, host); summary wants distinct hosts.
             offline_hosts.sort_unstable();
             offline_hosts.dedup();
             s.push_str(
@@ -291,11 +259,6 @@ mod tests {
         };
         let body = render_plan(&out);
         let lines: Vec<&str> = body.lines().collect();
-        // : skip-offline actions now coalesce into one
-        // `skip_summary` line. The fixture has 1 OpenRollout + 1
-        // offline-Skip → 3 lines total (summary + open_rollout +
-        // skip_summary), same total as before but with different
-        // shape on the third line.
         assert_eq!(lines.len(), 3, "one summary + open_rollout + skip_summary");
 
         let summary: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -312,10 +275,6 @@ mod tests {
 
     #[test]
     fn render_plan_offline_skips_coalesce_other_skips_keep_per_line() {
-        // Mixed-reason fixture: 2 offline skips + 1 budget-exhausted
-        // skip + 1 OpenRollout. Offline-pair coalesces to one
-        // skip_summary; the budget skip keeps its per-line shape so
-        // the operator can read the per-host context.
         let out = TickOutput {
             now: Utc::now(),
             verify: VerifyOutcome::Ok(Box::new(VerifyOk {
@@ -344,12 +303,10 @@ mod tests {
         };
         let body = render_plan(&out);
         let lines: Vec<&str> = body.lines().collect();
-        // summary + open_rollout + budget-skip + skip_summary = 4
         assert_eq!(lines.len(), 4);
         let summary_action: serde_json::Value = serde_json::from_str(lines[3]).unwrap();
         assert_eq!(summary_action["action"], "skip_summary");
         assert_eq!(summary_action["reason"], "offline");
-        // Stable sort.
         assert_eq!(
             summary_action["hosts"],
             serde_json::json!(["host-a", "host-b"])
@@ -358,14 +315,6 @@ mod tests {
 
     #[test]
     fn render_plan_skip_summary_dedups_across_rollouts() {
-        // Hardware-caught regression: the reconciler emits one
-        // Skip-offline action per (rollout, host), so a fleet with
-        // 14 active rollouts and 4 offline hosts produces 56 raw
-        // skip-actions. The summary's `hosts` field must contain
-        // each hostname ONCE, not N times. Without `dedup `
-        // following `sort_unstable `, the JSON line on lab carried
-        // `["aether","aether",…14×]`; this test prevents that
-        // recurring.
         let actions: Vec<Action> = (0..14)
             .flat_map(|_| {
                 ["host-a", "host-b", "host-c"].iter().map(|h| Action::Skip {
@@ -385,7 +334,6 @@ mod tests {
         };
         let body = render_plan(&out);
         let lines: Vec<&str> = body.lines().collect();
-        // summary + ONE skip_summary line (no per-host skip lines).
         assert_eq!(
             lines.len(),
             2,

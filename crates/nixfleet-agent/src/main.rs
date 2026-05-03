@@ -1,19 +1,5 @@
 #![allow(clippy::doc_lazy_continuation)]
 //! `nixfleet-agent` — main poll + activation loop.
-//!
-//! Binary-local module layout:
-//!
-//! - `main.rs` (this file) — clap-parsed `Args`, run-loop, send_checkin,
-//!   boot-recovery, cert renewal.
-//! - `dispatch.rs` — `process_dispatch_target` + the `handle_*`
-//!   family that consume an `EvaluatedTarget` or one of
-//!   `ActivationOutcome`'s failure variants and chain into
-//!   activation / comms / compliance / manifest_cache.
-//!
-//! `Args` is `pub(crate)` so dispatch.rs can read state-dir +
-//! compliance-mode; CP-bound side-effects route through
-//! `comms::Reporter` (production impl: `comms::ReqwestReporter`)
-//! so the dispatch handlers are unit-testable.
 
 mod dispatch;
 
@@ -58,9 +44,7 @@ pub(crate) struct Args {
     #[arg(long, env = "NIXFLEET_AGENT_CLIENT_KEY")]
     client_key: Option<PathBuf>,
 
-    /// When `client_cert` doesn't exist on startup AND this is set,
-    /// the agent enrolls via /v1/enroll and writes the issued cert
-    /// to `client_cert` / `client_key`.
+    /// When `client_cert` is absent and this is set, agent enrolls via /v1/enroll.
     #[arg(long, env = "NIXFLEET_AGENT_BOOTSTRAP_TOKEN_FILE")]
     bootstrap_token_file: Option<PathBuf>,
 
@@ -68,15 +52,11 @@ pub(crate) struct Args {
     state_dir: PathBuf,
 
     /// One of `"disabled"`, `"permissive"`, `"enforce"`, `"auto"`.
-    /// CP-relayed channel mode wins when present. `auto` resolves
-    /// to `permissive` when `compliance-evidence-collector.service`
-    /// is on this host, `disabled` when absent.
+    /// CP-relayed channel mode wins when present.
     #[arg(long, env = "NIXFLEET_AGENT_COMPLIANCE_GATE_MODE")]
     compliance_gate_mode: Option<String>,
 
-    /// Used to sign `ComplianceFailure` / `RuntimeGateError`
-    /// payloads. Missing file is fine — events post unsigned and
-    /// are accepted but flagged unverified by the CP.
+    /// Signs evidence payloads; absent file → events post unsigned.
     #[arg(
         long,
         env = "NIXFLEET_AGENT_SSH_HOST_KEY_FILE",
@@ -102,8 +82,7 @@ async fn main() -> anyhow::Result<()> {
         args.client_key.as_deref(),
     )?;
 
-    // Best-effort: a recovery failure here is not fatal — the next
-    // regular checkin re-converges via the dispatch decision.
+    // Best-effort: next checkin re-converges via dispatch.
     if let Err(err) = check_boot_recovery(&client, &args).await {
         tracing::warn!(
             error = %err,
@@ -131,8 +110,7 @@ fn init_tracing() {
         .init();
 }
 
-/// Parse on startup just to fail fast on misconfiguration. The agent
-/// doesn't otherwise consume the parsed value — it's a contract check.
+/// Fail fast on misconfiguration; parsed value is otherwise unused.
 fn parse_trust_file(path: &std::path::Path) -> anyhow::Result<()> {
     let trust_raw = std::fs::read_to_string(path)
         .with_context(|| format!("read trust file {}", path.display()))?;
@@ -141,8 +119,7 @@ fn parse_trust_file(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Best-effort. Missing/unreadable key → signer is None → events post
-/// unsigned. Hard-fail only on parse errors (corrupt key).
+/// Missing/unreadable key → events post unsigned. Hard-fail only on corrupt key.
 fn load_evidence_signer(
     path: &std::path::Path,
 ) -> std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>> {
@@ -167,7 +144,6 @@ fn load_evidence_signer(
     std::sync::Arc::new(signer)
 }
 
-/// First-boot enrollment when no client cert exists yet.
 async fn maybe_run_first_boot_enrollment(args: &Args) -> anyhow::Result<()> {
     let (Some(cert_path), Some(key_path), Some(token_file)) = (
         args.client_cert.as_deref(),
@@ -208,9 +184,7 @@ async fn run_poll_loop(
         args.machine_id.clone(),
         AGENT_VERSION,
     );
-    // Exponential backoff with ±20% jitter on consecutive failures.
-    // Doubles each failure, capped at 8× the base interval. Resets
-    // to 1× on first success.
+    // Exponential backoff with ±20% jitter; doubles per failure, capped at 8×.
     let mut consecutive_failures: u32 = 0;
 
     loop {
@@ -219,15 +193,7 @@ async fn run_poll_loop(
         }
         ticker.tick().await;
 
-        // Retry pending boot-recovery confirm if a `last_dispatched`
-        // record still exists. The fire-and-forget activation path
-        // (ADR-011) restarts the agent alongside the system; the new
-        // agent's startup boot-recovery confirm POST commonly races
-        // the CP service restart and fails. `run_boot_recovery` is
-        // idempotent: NoRecord on cleared state, no-op; otherwise
-        // retries the retroactive confirm. Without this retry, the
-        // CP runs out the confirm deadline and rolls back a
-        // successful host (lab/2026-05-02 split-brain class).
+        // LOADBEARING: retry boot-recovery every tick — startup POST races CP restart; missed confirm rolls back healthy host.
         if let Err(err) = check_boot_recovery(&client_handle, args).await {
             tracing::warn!(
                 error = %err,
@@ -243,11 +209,7 @@ async fn run_poll_loop(
         match send_checkin(&client_handle, args, started_at).await {
             Ok(resp) => {
                 consecutive_failures = 0;
-                // RFC-0002 §5.1 rollback-and-halt: the CP signals
-                // policy-driven rollback via CheckinResponse.rollback.
-                // Process before any new target dispatch — the host
-                // must step away from the failed gen before considering
-                // anything else this tick.
+                // LOADBEARING: process CP rollback before new dispatch — host must step away from failed gen first.
                 if let Some(rb) = &resp.rollback {
                     handle_cp_rollback_signal(rb, &reporter, args, &evidence_signer).await;
                 }
@@ -264,12 +226,7 @@ async fn run_poll_loop(
             }
             Err(err) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
-                // `{:#}` walks the anyhow chain so the underlying
-                // reqwest/rustls cause surfaces in the journal —
-                // `%err` alone shows only the topmost context (e.g.
-                // "POST https://cp:8443/v1/agent/checkin") and hides
-                // the actual TLS / connect / status-code reason that
-                // operators need to triage outages.
+                // FOOTGUN: `{:#}` walks anyhow chain — `%err` alone hides TLS/connect cause below POST context.
                 tracing::warn!(
                     error = %format!("{err:#}"),
                     consecutive_failures,
@@ -281,7 +238,7 @@ async fn run_poll_loop(
 }
 
 async fn sleep_with_backoff(consecutive_failures: u32, poll_interval: u64) {
-    let multiplier = 1u64 << (consecutive_failures.min(3)); // 1, 2, 4, 8
+    let multiplier = 1u64 << (consecutive_failures.min(3));
     let base = poll_interval.saturating_mul(multiplier);
     let jitter_pct: f64 = {
         use rand::Rng;
@@ -296,9 +253,7 @@ async fn sleep_with_backoff(consecutive_failures: u32, poll_interval: u64) {
     tokio::time::sleep(Duration::from_secs(jittered)).await;
 }
 
-/// Self-paced renewal at 50% of cert validity. Returns `Some(new
-/// client)` when renewal happened so the caller can swap; None
-/// otherwise. Failure is non-fatal — next tick retries.
+/// Self-paced renewal at 50% of cert validity; returns the rebuilt client on success.
 async fn maybe_renew_cert(
     client: &reqwest::Client,
     reporter: &impl comms::Reporter,
@@ -357,11 +312,8 @@ async fn send_checkin(
     let pending_generation = nixfleet_agent::host_facts::pending_generation()?;
     let uptime_secs = checkin_state::uptime_secs(started_at);
 
-    // Gap B: attest the most recent confirm timestamp when it
-    // applies to the live closure. read_last_confirmed handles all
-    // mismatch cases (rolled-back closure, missing file, malformed,
-    // future-dated) by returning Ok(None) so the checkin always
-    // populates a sensible Option<DateTime>.
+    // read_last_confirmed returns Ok(None) on any mismatch (rollback, malformed,
+    // future-dated) so the checkin always carries a sensible Option<DateTime>.
     let last_confirmed_at = match checkin_state::read_last_confirmed(
         &args.state_dir,
         &current_generation.closure_hash,
@@ -392,33 +344,8 @@ async fn send_checkin(
     comms::checkin(client, &args.control_plane_url, &req).await
 }
 
-/// boot recovery path. Closes the timing window where
-/// fire-and-forget activation gets self-killed mid-poll.
-///
-/// Sequence:
-/// 1. Read `<state-dir>/last_dispatched`. Absent → no in-flight
-/// dispatch from a prior agent run, nothing to recover.
-/// 2. Read `/run/current-system`. Compare basename to
-/// `last_dispatched.closure_hash`.
-/// 3. **Match**: the prior agent fired a switch, got SIGTERMed by
-/// the new closure's unit-restart, but `nixfleet-switch.service`
-/// kept running and successfully activated the new closure.
-/// Post the retroactive `/v1/agent/confirm`. On Acknowledged →
-/// clear the dispatch record + write the confirm timestamp. On
-/// 410 → CP already deadline-rolled-back; we should rollback
-/// locally too. On error → leave the record so a future cycle
-/// can retry.
-/// 4. **Mismatch**: either we crashed before the switch took
-/// effect (system stayed on old closure), or rollback fired and
-/// we're back on the previous gen. Either way the dispatch
-/// record describes a transient state the agent is no longer
-/// in — clear it and let the next checkin re-decide.
-///
-/// All paths are best-effort: returns `Ok( )` on logical decisions
-/// (mismatch, no-record, post-failure-but-not-a-bug); `Err` only on
-/// genuinely-unexpected I/O failures. The main loop's normal poll
-/// cadence is the safety net — even total recovery failure means
-/// the agent eventually re-dispatches and converges.
+/// Closes the timing window where fire-and-forget activation self-kills
+/// the agent mid-poll: matching dispatch record + live closure → retroactive confirm.
 async fn check_boot_recovery(client: &reqwest::Client, args: &Args) -> anyhow::Result<()> {
     let current = match checkin_state::current_closure_hash() {
         Ok(c) => Some(c),

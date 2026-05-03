@@ -1,5 +1,4 @@
-//! `/v1/agent/report` handler plus its signature-verification and
-//! event-id helpers.
+//! `/v1/agent/report` handler plus signature-verification helpers.
 
 use std::sync::Arc;
 
@@ -12,14 +11,7 @@ use nixfleet_proto::agent_wire::{ReportRequest, ReportResponse};
 use super::super::middleware::AuthenticatedCn;
 use super::super::state::{AppState, ReportRecord, REPORT_RING_CAP};
 
-/// `POST /v1/agent/report` — record an out-of-band event report.
-///
-/// Persisted via `db.host_reports().insert(...)` (V004) AND mirrored
-/// into an in-memory ring buffer per host capped at `REPORT_RING_CAP`
-/// for fast wave-gate reads. New reports push to the back of the
-/// ring; oldest is dropped on overflow. SQLite is the durable copy
-/// — the ring is rebuilt from it on CP rebuild via the boot
-/// hydration path.
+/// `POST /v1/agent/report` — persists to SQLite and mirrors into a per-host ring buffer.
 pub(in crate::server) async fn report(
     State(state): State<Arc<AppState>>,
     Extension(cn): Extension<AuthenticatedCn>,
@@ -38,21 +30,14 @@ pub(in crate::server) async fn report(
     let event_id = format!("evt-{}-{}", Utc::now().timestamp_millis(), rand_suffix(8));
     let received_at = Utc::now();
 
-    // Render the event variant for the journal in a grep-friendly
-    // way: `event=activation-failed`, `event=verify-mismatch`, etc.
-    // The serde_json round-trip extracts the kebab-case discriminator.
+    // GOTCHA: serde_json round-trip extracts the kebab-case discriminator for grep-friendly logs.
     let event_str = serde_json::to_value(&req.event)
         .ok()
         .and_then(|v| v.get("event").and_then(|e| e.as_str()).map(String::from))
         .unwrap_or_else(|| "<unknown>".to_string());
     let rollout_str = req.rollout.clone().unwrap_or_else(|| "<none>".to_string());
 
-    // root-3 — verify probe-output signatures on the
-    // two event variants that carry them. Non-signed events surface
-    // as `None`; the wave-staging gate consults `signature_status`
-    // when honouring outstanding events. Verification is best-
-    // effort: we always store the record (mTLS already authenticated
-    // the post), the signature verdict shapes downstream gating.
+    // Best-effort: we always store the record (mTLS already authenticated); verdict shapes gating.
     let signature_status = compute_signature_status(&state, &req).await;
 
     tracing::info!(
@@ -73,27 +58,13 @@ pub(in crate::server) async fn report(
         signature_status,
     };
 
-    // — write through to SQLite alongside the in-memory
-    // ring buffer. Ring stays for hot-path latency in dispatch
-    // decisions; SQLite is the durable record that survives CP
-    // restart. DB write is best-effort: a failure logs warn + lets
-    // the in-memory write proceed (degraded == old in-memory-only
-    // behaviour, so no regression).
     if let Some(db) = state.db.as_ref() {
         let signature_status_str = signature_status.as_ref().and_then(|s| {
             serde_json::to_value(s)
                 .ok()
                 .and_then(|v| v.as_str().map(String::from))
         });
-        // Best-effort SQLite persistence. Two failure modes, both
-        // handled the same way: log + skip the DB write, let the
-        // in-memory ring buffer below absorb the event regardless.
-        // The serde failure path is what matters here — previously
-        // `unwrap_or_default ` would write `""` into report_json,
-        // and on next CP startup the hydration parse would fail and
-        // skip the row, leaving a phantom DB row that could never
-        // be replayed. Now we never write the row at all on serde
-        // failure.
+        // FOOTGUN: writing "" on serde failure produced phantom DB rows that hydration silently skipped.
         match serde_json::to_string(&req) {
             Ok(report_json) => {
                 if let Err(err) = db
@@ -129,17 +100,7 @@ pub(in crate::server) async fn report(
         }
     }
 
-    // — close the rollback-and-halt loop. After the agent
-    // posts `RollbackTriggered`, advance host_rollout_state from
-    // `Failed` to `Reverted` so `compute_rollback_signal` stops
-    // emitting the signal on every checkin (otherwise the agent's
-    // idempotent `rollback()` keeps churning fresh
-    // `RollbackTriggered` posts forever). The wire docstring on
-    // `RollbackSignal` already promises this behaviour; this arm
-    // makes the promise real. Best-effort: a transition error must
-    // NOT fail the report POST — the report endpoint is a
-    // write-only sink for evidence, and a stale state row gets
-    // re-detected on the next reconcile tick.
+    // LOADBEARING: flips Failed → Reverted so compute_rollback_signal stops re-emitting forever.
     if let Some(db) = state.db.as_ref() {
         apply_rollback_state_transition(db, &req);
     }
@@ -154,16 +115,7 @@ pub(in crate::server) async fn report(
     Ok(Json(ReportResponse { event_id }))
 }
 
-/// Flip `host_rollout_state.host_state` from `Failed` to `Reverted`
-/// when a `RollbackTriggered` event arrives. No-op for any other
-/// event variant or when the report carries no `rollout` id (the
-/// CP-410 cancellation path can post `RollbackTriggered` without
-/// a rollout context). Guarded with `expected_from = Failed` so
-/// the other emitters of `RollbackTriggered` (`handle_cp_cancellation`
-/// in CP-410, `handle_switch_failed` for agent self-detected
-/// activation failure) leave non-Failed rows untouched —
-/// `transition_host_state` returns `Ok(0)` when the WHERE clause
-/// doesn't match.
+/// Flip `host_rollout_state` Failed → Reverted on `RollbackTriggered`; guard leaves non-Failed alone.
 fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
     use nixfleet_proto::agent_wire::ReportEvent;
     if !matches!(req.event, ReportEvent::RollbackTriggered { .. }) {
@@ -180,9 +132,6 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
         Some(crate::state::HostRolloutState::Failed),
     ) {
         Ok(0) => {
-            // Row not in Failed (or absent). Expected for the CP-410
-            // cancellation and agent self-detected activation-failure
-            // paths; the guard intentionally leaves them alone.
             tracing::debug!(
                 target: "report",
                 hostname = %req.hostname,
@@ -197,16 +146,7 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
                 rollout = %rollout,
                 "RollbackTriggered: host_rollout_state Failed → Reverted",
             );
-            // Terminal stamp for the rollback-and-halt path. The
-            // host has been rolled back; flip operational state to
-            // `rolled-back` (so it stops surfacing in
-            // `active_rollouts_snapshot`) and stamp the audit row's
-            // terminal_state. Both are best-effort: an error is
-            // logged but doesn't fail the report POST.
-            //
-            // record_terminal is race-resistant via WHERE rollout_id
-            // — a newer dispatch on a different rollout_id is left
-            // alone.
+            // GOTCHA: record_terminal scopes by rollout_id so a newer dispatch is not clobbered.
             let now = Utc::now();
             if let Err(err) = db.host_dispatch_state().record_terminal(
                 &req.hostname,
@@ -237,9 +177,6 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
             }
         }
         Err(err) => {
-            // Best-effort: a transition error does not fail the
-            // report POST. The reconciler will re-detect on the
-            // next tick.
             tracing::warn!(
                 target: "report",
                 hostname = %req.hostname,
@@ -251,11 +188,7 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
     }
 }
 
-/// Compute the signature verdict for an incoming report (
-/// root-3). Only `ComplianceFailure` and `RuntimeGateError`
-/// carry probe-output signatures today; all other variants return
-/// `None`. The host's pubkey comes from `verified_fleet`'s
-/// `hosts.<hostname>.pubkey`; absent pubkey → `NoPubkey`.
+/// Verdict for incoming reports; absent pubkey → `NoPubkey`, unsigned variants return `None`.
 async fn compute_signature_status(
     state: &Arc<AppState>,
     req: &ReportRequest,
@@ -287,10 +220,7 @@ async fn compute_signature_status(
             evidence_collected_at,
             signature,
         } => {
-            // Re-derive the snippet hash the agent included in its
-            // signed payload (sha256 of JCS-canonical snippet bytes;
-            // empty when snippet is None). On JCS failure we abort
-            // verification (None) rather than persist a wrong hash.
+            // GOTCHA: snippet_sha must match the agent's JCS-canonical hash; abort to None on JCS failure.
             let snippet_sha = match evidence_snippet {
                 Some(v) => nixfleet_canonicalize::sha256_jcs_hex(v).ok()?,
                 None => String::new(),
@@ -490,19 +420,6 @@ async fn compute_signature_status(
             ))
         }
 
-        // Variants that intentionally carry no signature. Each line
-        // is a deliberate decision documented in RFC-0003 §7 / agent
-        // wire docs — touching this list means revisiting whether
-        // the auditor chain wants to extend to a new evidence class.
-        //
-        // - ActivationStarted: pre-fire announcement, not evidence.
-        // - EnrollmentFailed:  agent has no host-key-bound cert yet.
-        // - RenewalFailed:     identity material, doesn't gate state.
-        // - TrustError:        trust.json failed to load — signing key
-        //                      can't be verified by an auditor without
-        //                      the very roots that just failed.
-        // - Other:             opaque catch-all; signing it would
-        //                      paper over an unmodelled event class.
         ReportEvent::ActivationStarted { .. }
         | ReportEvent::EnrollmentFailed { .. }
         | ReportEvent::RenewalFailed { .. }
@@ -511,8 +428,6 @@ async fn compute_signature_status(
     }
 }
 
-/// 8-char lowercase-alnum suffix for event IDs. Not crypto-grade
-/// just enough to make IDs visually distinct in journal output.
 fn rand_suffix(n: usize) -> String {
     use rand::Rng;
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -524,9 +439,6 @@ fn rand_suffix(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! Unit tests for `apply_rollback_state_transition` — the
-    //! Failed → Reverted flip that closes the rollback-and-halt
-    //! signal loop after the agent's `RollbackTriggered` post.
     use super::*;
     use crate::db::Db;
     use crate::state::{HealthyMarker, HostRolloutState};
@@ -555,7 +467,6 @@ mod tests {
     #[test]
     fn rollback_triggered_flips_failed_to_reverted_then_stamps_terminals() {
         let db = fresh_db();
-        // Seed an operational dispatch row + a Failed hrs row.
         let deadline = Utc::now() + chrono::Duration::seconds(120);
         db.host_dispatch_state()
             .record_dispatch(&crate::db::DispatchInsert {
@@ -577,7 +488,6 @@ mod tests {
                 None,
             )
             .unwrap();
-        // Pre-call sanity: hrs row is Failed.
         assert_eq!(
             db.rollout_state()
                 .host_state("ohm", "stable@abc12345")
@@ -589,8 +499,6 @@ mod tests {
         let req = rollback_report("ohm", Some("stable@abc12345"));
         apply_rollback_state_transition(&db, &req);
 
-        // hrs row flipped Failed → Reverted; cleanup of the audit
-        // surface lives on dispatch_history now.
         assert_eq!(
             db.rollout_state()
                 .host_state("ohm", "stable@abc12345")
@@ -598,14 +506,12 @@ mod tests {
                 .as_deref(),
             Some("Reverted"),
         );
-        // Operational state flipped to 'rolled-back'.
         let op = db
             .host_dispatch_state()
             .host_state("ohm")
             .unwrap()
             .expect("operational row present");
         assert_eq!(op.state, "rolled-back");
-        // Audit row stamped terminal=rolled-back.
         let history = db
             .dispatch_history()
             .recent_for_host("ohm", 10)
@@ -617,11 +523,6 @@ mod tests {
 
     #[test]
     fn rollback_triggered_leaves_non_failed_states_untouched() {
-        // The CP-410 cancel path and agent self-detected
-        // activation-failure path both post `RollbackTriggered`
-        // without entering `Failed` first. The DB-level guard
-        // (`expected_from = Failed`) leaves Healthy / Soaked /
-        // ConfirmWindow rows alone.
         let db = fresh_db();
         for state in [
             HostRolloutState::Healthy,
@@ -650,10 +551,6 @@ mod tests {
 
     #[test]
     fn rollback_triggered_without_rollout_is_a_noop() {
-        // A `RollbackTriggered` post with no rollout id (e.g. a
-        // CP-410 cancellation that wasn't tied to a rollout in
-        // the agent's state) must not error and must not touch
-        // any state row. The report still records elsewhere.
         let db = fresh_db();
         db.rollout_state()
             .transition_host_state(
@@ -666,8 +563,6 @@ mod tests {
             .unwrap();
         let req = rollback_report("ohm", None);
         apply_rollback_state_transition(&db, &req);
-        // Failed row untouched — no rollout id meant we couldn't
-        // even target the right row.
         assert_eq!(
             db.rollout_state()
                 .host_state("ohm", "stable@abc12345")
@@ -679,10 +574,6 @@ mod tests {
 
     #[test]
     fn non_rollback_events_do_not_transition_state() {
-        // The transition arm must only fire on `RollbackTriggered`.
-        // ActivationFailed / RealiseFailed / etc. arrive in the
-        // same handler but follow their own (currently empty)
-        // pipelines.
         let db = fresh_db();
         db.rollout_state()
             .transition_host_state(

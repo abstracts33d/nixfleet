@@ -1,21 +1,3 @@
-# Signed fleet.resolved round-trip test. Proves that a signed
-# artifact passes through every layer of the trust pipeline:
-#   mkFleet -> withSignature -> nixfleet-canonicalize -> ed25519-sign
-#   (fixture build)
-#   -> CP mTLS serve -> agent mTLS fetch
-#   -> nixfleet-verify-artifact (trust.json + verify_artifact) -> ok marker
-#
-# Failure in any step surfaces as either `harness-roundtrip-FAIL:` (fetch
-# / shape error, surfaced before verify) or a `VerifyError` variant on
-# stderr (verify_artifact rejected). Both are visible to the scenario's
-# grep on `harness-roundtrip-ok:`, which never appears in those paths.
-#
-# Sibling-scenario extension path (Checkpoint 2):
-#   - copy this file, tamper one byte in `canonical.json` or `.sig`
-#     before the CP serves it, assert `harness-roundtrip-ok:` does NOT
-#     appear within the deadline -> tamper refusal scenario.
-#   - copy, shift agent's `--now` past `signedAt + freshnessWindow`,
-#     assert Stale -> freshness refusal scenario.
 {
   harnessLib,
   testCerts,
@@ -47,9 +29,6 @@ in
       host.wait_for_unit("microvms.target", timeout=300)
       host.wait_for_unit("microvm@agent-01.service", timeout=300)
 
-      # Budget covers boot + activity end-to-end. The agent's
-      # ExecStartPre route-wait keeps the harness-roundtrip oneshot
-      # from firing until networking is genuinely ready.
       deadline = time.monotonic() + 180
       while time.monotonic() < deadline:
           rc, _ = host.execute(

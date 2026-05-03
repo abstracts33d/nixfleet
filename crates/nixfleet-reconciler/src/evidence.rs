@@ -1,14 +1,5 @@
-//! Probe-output signature verification.
-//!
-//! Two entry points:
-//! - [`verify_canonical_payload`]: bytes-level. Caller owns
-//!   canonicalization. Used by offline auditor tooling that doesn't
-//!   know the typed wire-payload shape.
-//! - [`verify_event`]: typed wrapper. Caller passes a `Serialize`
-//!   payload; this fn JCS-canonicalizes then calls the bytes-level fn.
-//!
-//! Pubkey is OpenSSH-format `ssh-ed25519 AAAA...`. Source is
-//! `hosts.<hostname>.pubkey` from `fleet.resolved.json`.
+//! Probe-output signature verification. Pubkey is OpenSSH `ssh-ed25519 ...`
+//! sourced from `hosts.<hostname>.pubkey`.
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -18,35 +9,27 @@ use serde::Serialize;
 #[serde(rename_all = "kebab-case")]
 pub enum SignatureStatus {
     Verified,
-    /// Agent pre-dates the signature field, or the host has no SSH
-    /// ed25519 key.
+    /// Agent pre-dates the signature field, or no SSH ed25519 key.
     Unsigned,
-    /// Signature present but the host has no pubkey declared in
-    /// fleet.resolved (lab pre-enrollment state).
+    /// Signature present, host has no pubkey (lab pre-enrollment).
     NoPubkey,
-    /// verify_strict refused — active tampering, should alarm.
+    /// `verify_strict` refused — active tampering.
     Mismatch,
-    /// Signature decoding or pubkey parse failed — active tampering.
+    /// Decoding or pubkey parse failed — active tampering.
     Malformed,
-    /// Host's pubkey is non-ed25519 (RSA/ECDSA). Currently
-    /// unsupported; soft skip.
+    /// Non-ed25519 pubkey (RSA/ECDSA). Soft skip.
     WrongAlgorithm,
 }
 
 impl SignatureStatus {
-    /// CP gating trust comes from mTLS (report handler enforces
-    /// `cert_cn == body.hostname` upstream of this verdict). The
-    /// probe-output signature is defense-in-depth + auditor-chain
-    /// seam, not the primary trust root. Everything counts except
-    /// statuses that signal active tampering.
+    /// Gate counts everything except active-tampering signals (mTLS is
+    /// the primary trust root; this signature is defense-in-depth).
     pub fn counts_for_gate(self) -> bool {
         !matches!(self, SignatureStatus::Mismatch | SignatureStatus::Malformed)
     }
 }
 
 /// Verify a base64 ed25519 signature over already-canonical bytes.
-/// `Some/None` semantics on the inputs let callers thread Optional
-/// signature/pubkey fields through to a single verdict.
 pub fn verify_canonical_payload(
     canonical: &[u8],
     pubkey_openssh: Option<&str>,
@@ -81,7 +64,7 @@ pub fn verify_canonical_payload(
     }
 }
 
-/// Typed wrapper: JCS-canonicalize `payload`, then verify.
+/// JCS-canonicalize `payload`, then verify.
 pub fn verify_event<T: Serialize>(
     signature: Option<&str>,
     pubkey_openssh: Option<&str>,
@@ -94,9 +77,7 @@ pub fn verify_event<T: Serialize>(
     verify_canonical_payload(&canonical, pubkey_openssh, signature)
 }
 
-/// `Ok(Some(_))` for a well-formed ed25519 pubkey, `Ok(None)` for
-/// non-ed25519 algorithms (caller → `WrongAlgorithm`), `Err(_)` on
-/// parse failure (caller → `Malformed`).
+/// `Ok(Some)` ed25519, `Ok(None)` non-ed25519, `Err` parse failure.
 fn parse_ssh_ed25519_pubkey(line: &str) -> anyhow::Result<Option<VerifyingKey>> {
     use anyhow::Context;
     let public = ssh_key::PublicKey::from_openssh(line.trim())
@@ -117,8 +98,7 @@ mod tests {
     use super::*;
     use nixfleet_proto::evidence_signing::ComplianceFailureSignedPayload;
 
-    /// Distinct keypairs from a counter — tests need pairs that
-    /// don't match each other, but they don't need randomness.
+    /// Deterministic distinct keypairs from a seed byte.
     fn keypair_from(byte: u8) -> (ed25519_dalek::SigningKey, String) {
         let seed = [byte; 32];
         let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
@@ -248,8 +228,6 @@ mod tests {
         );
     }
 
-    /// Round-trip helper for the activation-evidence payload variants.
-    /// One assertion per variant covers the proto + sign + verify path.
     fn round_trip<T: Serialize>(payload: &T) {
         use ed25519_dalek::Signer;
         let (sk, pubkey_str) = keypair_from(7);

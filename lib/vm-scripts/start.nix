@@ -1,4 +1,3 @@
-# start-vm — start an installed VM (headless or graphical).
 {
   platform,
   pkgs,

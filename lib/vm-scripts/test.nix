@@ -1,4 +1,3 @@
-# test-vm — end-to-end VM test: build, install, verify, cleanup.
 {
   platform,
   pkgs,

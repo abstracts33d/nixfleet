@@ -1,44 +1,3 @@
-# tests/harness/scenarios/deadline-expiry.nix
-#
-# Deadline-expiry scenario.
-#
-# Validates the magic-rollback CP-side path: when an agent's confirm
-# deadline expires before /v1/agent/confirm lands, the rollback_timer
-# marks the host_dispatch_state row as `rolled-back` and any future
-# confirm POST against that row receives HTTP 410 Gone — which the
-# agent maps to `ConfirmOutcome::Cancelled` and triggers a local
-# rollback (see crates/nixfleet-agent/src/main.rs:285-305).
-#
-# Sequence:
-#   1. Host VM boots cp-real with --confirm-deadline-secs 3 (much
-#      smaller than production's 120s default so the deadline window
-#      is observable inside a test budget).
-#   2. testScript waits for CP up, then directly INSERTs a
-#      host_dispatch_state row into /var/lib/nixfleet-cp/state.db with
-#      deadline 30s in the past (mimics what dispatch would emit on
-#      a real checkin, minus the dispatch round-trip itself).
-#   3. testScript POSTs ConfirmRequest via mTLS curl using the
-#      pre-minted agent-01 cert. Expects HTTP 410.
-#   4. testScript asserts the row state in the DB has flipped to
-#      'rolled-back' (the rollback_timer or the handler itself
-#      transitioning the row counts as a pass).
-#
-# Why no agent microVM:
-#   The wire behavior under test is fully CP-side. Spinning up a
-#   real-binary agent microVM that activates a stub closure would
-#   add boot time, fail at the realise step (the fixture's
-#   closure_hash is the deterministic stub `0000…0000`), and not
-#   exercise the deadline path — the agent would post
-#   ActivationFailed long before any /confirm. Using host-side curl
-#   keeps the test focused on the 410 contract.
-#
-# Why deadline=now-30s instead of deadline=now+1s + sleep:
-#   handlers.rs `record_pending_confirm` is the only caller in
-#   production code; tests bypass it via direct INSERT to set up
-#   exactly the state we want. Making the deadline already-past
-#   means the handler's UPDATE-with-WHERE-clause finds 0 rows
-#   matching `state='pending' AND deadline > now`, returns 410, and
-#   we assert that. Removes any timing flakiness from the test.
 {
   harnessLib,
   testCerts,
@@ -50,9 +9,6 @@
     inherit testCerts signedFixture cpPkg;
   };
 
-  # Override the CP unit's --confirm-deadline-secs flag to 3 so the
-  # test doesn't depend on the production default. The cp-real node
-  # builds the ExecStart from a list; we patch it via mkOverride.
   shortDeadlineModule = {lib, ...}: {
     systemd.services.nixfleet-control-plane.serviceConfig.ExecStart = lib.mkForce (
       lib.concatStringsSep " " [
@@ -75,8 +31,6 @@
       ]
     );
 
-    # Mount the agent-01 client cert + key on the host VM so the
-    # testScript can curl with mTLS without spinning up a microVM.
     environment.etc = {
       "harness/agent-cert.pem".source = "${testCerts}/agent-01-cert.pem";
       "harness/agent-key.pem".source = "${testCerts}/agent-01-key.pem";
@@ -84,10 +38,6 @@
     };
   };
 
-  # cp-real doesn't include sqlite3 in systemPackages; the testScript
-  # needs the CLI on the host VM to inject the expired-deadline row.
-  # Same scenario-local override rollback-policy uses for the same
-  # reason.
   sqliteHostModule = {pkgs, ...}: {
     environment.systemPackages = [pkgs.sqlite];
   };
@@ -99,7 +49,7 @@ in
   harnessLib.mkFleetScenario {
     name = "fleet-harness-deadline-expiry";
     cpHostModule = combinedHostModule;
-    agents = {}; # no agent microVMs — wire flow driven by host-side curl
+    agents = {};
     timeout = 300;
     testScript = ''
       import json
@@ -110,14 +60,7 @@ in
       host.wait_for_unit("nixfleet-control-plane.service")
       host.wait_for_open_port(8443)
 
-      # Step 1: inject a host_dispatch_state row with deadline 30s in
-      # the past. Bypasses dispatch (no real agent in the loop) but
-      # produces exactly the DB state the rollback_timer + /confirm
-      # handler are designed to detect.
       print("step 1: inject expired host_dispatch_state row…")
-      # Quoting: open `\"` here, close `\"` after the SQL on the
-      # last line. Adjacent Python string literals concatenate, so
-      # the shell sees one big `sqlite3 path "<SQL>"` invocation.
       host.succeed(
           "sqlite3 /var/lib/nixfleet-cp/state.db \""
           "INSERT INTO host_dispatch_state ("
@@ -134,15 +77,12 @@ in
           "\""
       )
 
-      # Sanity: row visible, state=pending.
       pre_state = host.succeed(
           "sqlite3 /var/lib/nixfleet-cp/state.db "
           "\"SELECT state FROM host_dispatch_state WHERE rollout_id='stable@expired1';\""
       ).strip()
       assert pre_state == "pending", f"expected pending pre-confirm, got {pre_state!r}"
 
-      # Step 2: POST /v1/agent/confirm with mTLS. Expect HTTP 410
-      # because the deadline has passed.
       print("step 2: POST /v1/agent/confirm against expired row…")
       confirm_body = {
           "hostname": "agent-01",
@@ -170,10 +110,6 @@ in
       )
       print("step 2: 410 received as expected")
 
-      # Step 3: row state should be `rolled-back` after the handler
-      # transitions it (or the rollback_timer's 30s tick — whichever
-      # fires first; in practice the handler itself updates the row
-      # when it returns 410 from /confirm).
       print("step 3: assert row marked rolled-back…")
       post_state = host.succeed(
           "sqlite3 /var/lib/nixfleet-cp/state.db "

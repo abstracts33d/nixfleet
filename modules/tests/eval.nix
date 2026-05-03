@@ -1,13 +1,3 @@
-# Tier C - Eval tests: assert config properties at evaluation time.
-# Runs via `nix flake check` (--no-build skips VM tests, eval checks are instant).
-#
-# Currently restricted to the mkFleet harness — all per-host eval
-# assertions previously here (web-01, cache-test, agent-test, …)
-# were defined against the example fleet in `modules/fleet.nix`,
-# which was removed during the framework decoupling. Real per-host
-# coverage now lives in the consuming fleet repo's CI; the framework
-# keeps only the lib-level mkFleet fixtures that don't depend on a
-# concrete fleet instance.
 {...}: {
   perSystem = {
     pkgs,
@@ -17,11 +7,6 @@
   }:
     lib.optionalAttrs (system == "x86_64-linux") {
       checks = {
-        # --- lib/mk-fleet: eval-only harness (positive + negative fixtures) ---
-        # Evaluates every fixture under tests/lib/mk-fleet/{fixtures,negative}.
-        # Positive fixtures compare against golden .resolved.json files;
-        # negative fixtures are expected to throw. Each entry in `results`
-        # must be the literal string "ok" - anything else fails the check.
         mkFleet-eval-tests = let
           harness = import ../../tests/lib/mk-fleet {inherit lib;};
           results = harness.results;

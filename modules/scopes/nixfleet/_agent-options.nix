@@ -1,13 +1,3 @@
-# Shared option declarations for the NixFleet fleet agent.
-#
-# Imported by both `_agent.nix` (NixOS / systemd supervisor) and
-# `_agent-darwin.nix` (nix-darwin / launchd supervisor) so a fleet's
-# `services.nixfleet-agent.<...>` settings work unchanged regardless
-# of host platform. Options-only — the supervisor modules carry the
-# platform-specific `config = mkIf cfg.enable { ... }` blocks.
-#
-# Auto-included transitively via the supervisor module that mkHost
-# selects per platform; no separate import needed at the call site.
 {
   config,
   inputs,
@@ -84,13 +74,6 @@
       };
     };
 
-    # Bootstrap token for first-boot enrollment. When set, and
-    # `tls.clientCert` doesn't exist yet on disk, the agent reads
-    # this token, generates a CSR, POSTs /v1/enroll, and writes the
-    # issued cert + key to the configured paths before entering its
-    # poll loop. The fleet wires this to a secrets-backend-decrypted
-    # `bootstrap-token-${hostname}` path (agenix, sops, systemd-creds,
-    # …).
     bootstrapTokenFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -105,16 +88,6 @@
       '';
     };
 
-    # Per-host state directory. The agent persists
-    # `last_confirmed_at` here after every successful confirm so
-    # subsequent checkins can attest the timestamp; the CP-side
-    # `recover_soak_state_from_attestation` repopulates
-    # `host_rollout_state.last_healthy_since` after a CP rebuild.
-    # Each supervisor pre-creates this with mode 0700 (systemd
-    # `StateDirectory=` on NixOS; preActivation `mkdir`/`chmod` on
-    # darwin) so the agent never has to manage the path itself.
-    # Agent-side population of last_confirmed_at folds into the
-    # magic-rollback work.
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/nixfleet-agent";
@@ -129,12 +102,6 @@
       '';
     };
 
-    # SSH host key used to sign ComplianceFailure / RuntimeGateError
-    # event payloads. The pubkey is published by the host to
-    # `nixfleet.trust.hosts.<n>.pubkey`; auditors verify event
-    # signatures against this pubkey offline. Default matches OpenSSH's
-    # stock path on both NixOS and macOS; override only if the host
-    # uses a non-default sshd config.
     sshHostKeyFile = lib.mkOption {
       type = lib.types.str;
       default = "/etc/ssh/ssh_host_ed25519_key";
@@ -158,14 +125,6 @@
       '';
     };
 
-    # Runtime compliance gate policy.
-    # `auto` (default) auto-detects from collector unit presence:
-    # Permissive when present, Disabled when absent. Operators
-    # introducing compliance to an existing fleet typically: deploy
-    # `permissive` while observing what would fail; flip to `enforce`
-    # once the fleet's compliance posture is healthy. The CP can
-    # relay a per-channel override via `EvaluatedTarget.compliance_mode`
-    # — when present, the relay wins over this local default.
     complianceGate.mode = lib.mkOption {
       type = lib.types.enum ["auto" "disabled" "permissive" "enforce"];
       default = "auto";

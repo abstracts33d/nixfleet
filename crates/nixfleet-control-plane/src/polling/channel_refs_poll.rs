@@ -1,6 +1,4 @@
-//! Channel-refs poll: every 60s GET artifact + signature URLs,
-//! verify, refresh the in-memory snapshot. Source-agnostic — only
-//! knows `GET` + Bearer token. Failure retains previous state.
+//! Channel-refs poll: every 60s fetch + verify; failure retains previous state.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,10 +18,9 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(60);
 pub struct ChannelRefsSource {
     pub artifact_url: String,
     pub signature_url: String,
-    /// Read on each poll so token rotation propagates without restart.
-    /// None for unauthenticated public sources.
+    /// Re-read each poll so token rotation propagates without restart.
     pub token_file: Option<PathBuf>,
-    /// Read fresh per poll so trust.json rotation propagates.
+    /// Re-read each poll so trust.json rotation propagates.
     pub trust_path: PathBuf,
     pub freshness_window: Duration,
 }
@@ -34,11 +31,7 @@ pub struct ChannelRefsCache {
     pub last_refreshed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Spawn the poll task. Failure logs warn + retains previous state
-/// (transient outage / bad sig must not blank out a good snapshot).
-///
-/// `cancel` propagates SIGTERM / shutdown into the loop's select arm;
-/// the task exits cleanly when fired (see `serve()` orchestration).
+/// Failure retains previous state; cancel exits the loop cleanly.
 pub fn spawn(
     cancel: tokio_util::sync::CancellationToken,
     cache: Arc<RwLock<ChannelRefsCache>>,
@@ -61,12 +54,7 @@ pub fn spawn(
     })
 }
 
-/// Update the in-memory snapshot pair (cache + atomic verified_fleet)
-/// and emit the per-tick INFO heartbeat. Runs only on successful
-/// verify; the poller's per-tick warn covers the failure path and
-/// leaves these untouched. The (fleet, fleet_resolved_hash) pair is
-/// written under one RwLock so dispatch readers can never see a
-/// torn snapshot.
+/// (fleet, fleet_resolved_hash) under one RwLock so readers never see a torn snapshot.
 async fn apply_verified_refs(
     cache: &RwLock<ChannelRefsCache>,
     verified_fleet: &RwLock<Option<crate::server::VerifiedFleetSnapshot>>,
@@ -91,8 +79,6 @@ async fn apply_verified_refs(
     guard.last_refreshed_at = Some(chrono::Utc::now());
     drop(guard);
 
-    // INFO heartbeat per tick — operators need a positive signal
-    // the poll is alive.
     tracing::info!(
         count = refs.len(),
         changed = changed,
@@ -102,18 +88,7 @@ async fn apply_verified_refs(
     );
 }
 
-/// One-shot fetch + verify before the reconcile loop starts. Without
-/// this, dispatch on CP boot uses the compile-time `--artifact`,
-/// which is always older than upstream (CI commits the release after
-/// building the closure) — observed as stair-stepping backwards
-/// through deploy history. Failure falls back to the build-time
-/// artifact.
-///
-/// Returns `(fleet, fleet_resolved_hash)` — the hash anchors every
-/// rolloutId derivation downstream (RFC-0002 §4.4).
-///
-/// Builds its own client (one-shot path; not on the timer, so it
-/// doesn't share the poller's long-lived client).
+/// One-shot fetch+verify at boot; without it dispatch uses the stale build-time artifact.
 pub async fn prime_once(
     config: &ChannelRefsSource,
 ) -> Result<(nixfleet_proto::FleetResolved, String)> {
@@ -151,18 +126,11 @@ async fn poll_once(
     )
     .map_err(|e| anyhow::anyhow!("verify_artifact (channel-refs poll): {e:?}"))?;
 
-    // Compute the canonical-bytes hash that anchors every rolloutId
-    // derivation downstream. Re-canonicalising the parsed FleetResolved
-    // is byte-stable (same JCS implementation produced the bytes we
-    // just verified), so this matches what producers and auditors get.
+    // Anchors every downstream rolloutId derivation; byte-stable JCS round-trip.
     let fleet_resolved_hash = nixfleet_reconciler::compute_canonical_hash(&fleet_resolved)
         .map_err(|e| anyhow::anyhow!("compute_canonical_hash: {e:?}"))?;
 
-    // Flatten channels → channel_refs (telemetry + the shape the
-    // reconciler's `Observed.channel_refs` expects). For now every
-    // channel gets the same CI commit — single fleet repo, single
-    // signing rev. Multi-channel-rev semantics (e.g. dev tracks main,
-    // prod tracks a release branch) would split this map per channel.
+    // Single signing rev: every channel maps to the same CI commit.
     let ci_commit = fleet_resolved
         .meta
         .ci_commit

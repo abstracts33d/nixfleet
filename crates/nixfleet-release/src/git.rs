@@ -1,6 +1,4 @@
-//! Git plumbing for the release pipeline. Extracted from `lib.rs`
-//! to keep the orchestrator slim. All ops shell out to `git`; the
-//! framework never embeds a git library.
+//! Git plumbing — shells out to `git`, never embeds a library.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

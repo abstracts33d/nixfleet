@@ -1,15 +1,3 @@
-# modules/tests/_cp-v2-trust.nix
-#
-# Eval-only assertions for the control-plane scope module
-# (modules/scopes/nixfleet/_control-plane.nix). Verifies:
-#   - trust.json materialises at /etc/nixfleet/cp/trust.json
-#   - --artifact, --signature, --trust-file, --observed,
-#     --freshness-window-secs land on the ExecStart
-#   - Default paths match the contract
-#   - A timer unit is declared
-#
-# Called from modules/tests/eval.nix. Imported (not auto-imported by
-# import-tree) because the filename starts with an underscore.
 {
   lib,
   cfg,

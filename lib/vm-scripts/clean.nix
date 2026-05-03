@@ -1,4 +1,3 @@
-# clean-vm — delete VM disk, pidfile, and port file.
 {
   platform,
   pkgs,

@@ -1,9 +1,4 @@
-//! Golden-file JCS test (`docs/CONTRACTS.md §III`).
-//!
-//! Asserts the canonicalizer produces byte-exact output matching
-//! the committed golden. Runs on every push via pre-push
-//! `cargo nextest run --workspace`. Any drift = signature contract
-//! broken.
+//! Golden-file JCS test. Drift = signature contract broken.
 
 use nixfleet_canonicalize::canonicalize;
 
@@ -43,19 +38,8 @@ fn invalid_json_is_rejected() {
     assert!(result.is_err(), "invalid JSON must be rejected");
 }
 
-/// Cross-component JCS byte-identity check.
-///
-/// `nixfleet-compliance` pins a 69-byte canonical reference at
-/// `tests/typed-controls/fixtures/_jcs-golden.json`. That file is already
-/// JCS-canonical (keys sorted, compact, no trailing newline). Feeding it
-/// through `nixfleet_canonicalize::canonicalize` MUST produce identical
-/// bytes — otherwise CI and the agent verifier would compute different
-/// signing bytes from the same declaration, silently breaking every
-/// signature at rotation time.
-///
-/// The fixture is vendored at copy-time. If the source changes, this
-/// test fails loudly and the copy gets refreshed. That failure IS the
-/// cross-component drift alarm working.
+/// Cross-component JCS byte-identity: a vendored canonical fixture must
+/// round-trip byte-identical through our canonicalizer.
 #[test]
 fn stream_b_jcs_golden_round_trips_byte_identical() {
     const STREAM_B_GOLDEN: &str = include_str!("fixtures/stream-b/jcs-golden.json");

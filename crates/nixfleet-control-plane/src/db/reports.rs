@@ -1,12 +1,4 @@
-//! `host_reports` — durable per-host event log.
-//!
-//! Recovery class: **soft state** (ARCHITECTURE.md §6 Phase 10).
-//! In-memory ring buffer with persistence; loss is bounded —
-//! outstanding `ComplianceFailure` / `RuntimeGateError` events that
-//! gated wave promotion clear briefly on a CP restart, and a host
-//! that re-runs the gate and finds the same failure re-posts the
-//! event. Elevation candidate when probe-output signing extends to
-//! non-compliance variants.
+//! Durable per-host event log (soft state); loss is bounded by re-posts.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -14,8 +6,7 @@ use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// `signature_status` is the raw kebab-case string; caller
-/// deserialises into `nixfleet_reconciler::evidence::SignatureStatus`.
+/// `signature_status` is the raw kebab-case `SignatureStatus` serde rep.
 #[derive(Debug, Clone)]
 pub struct HostReportRow {
     pub event_id: String,
@@ -26,7 +17,6 @@ pub struct HostReportRow {
     pub report_json: String,
 }
 
-/// Bundled to keep call sites readable (avoids `too_many_arguments`).
 #[derive(Debug, Clone)]
 pub struct HostReportInsert<'a> {
     pub hostname: &'a str,
@@ -43,12 +33,6 @@ pub struct Reports<'a> {
 }
 
 impl Reports<'_> {
-    /// Persist an event report. Mirrors the in-memory ring buffer
-    /// write in `server::handlers::report` so the event survives CP
-    /// restart. `signature_status` is the kebab-case `SignatureStatus`
-    /// serde representation (or `None` for events that don't carry
-    /// the contract). `report_json` is the canonical JSON envelope of
-    /// the wire `ReportRequest`.
     pub fn record_host_report(&self, row: &HostReportInsert<'_>) -> Result<()> {
         let guard = super::lock_conn(self.conn)?;
         guard
@@ -71,11 +55,7 @@ impl Reports<'_> {
         Ok(())
     }
 
-    /// Hydrate the in-memory ring buffer at CP startup. Returns up
-    /// to `limit_per_host` most-recent rows per `hostname`,
-    /// chronological order. Used by `server::serve` after migration
-    /// completes — the dispatch path consults the ring buffer for
-    /// hot-path latency, but durability lives in this table.
+    /// Up to `limit_per_host` most-recent rows in chronological order (oldest first).
     pub fn host_reports_recent_per_host(
         &self,
         hostname: &str,
@@ -110,14 +90,11 @@ impl Reports<'_> {
             })?
             .collect();
         let mut rows = rows.context("query host_reports")?;
-        // Caller wants chronological (oldest first) for ring-buffer
-        // insertion order; DB returns newest first.
+        // Reverse: DB returns newest-first, ring buffer wants oldest-first.
         rows.reverse();
         Ok(rows)
     }
 
-    /// List every hostname that has at least one host_reports row.
-    /// Used at CP startup to drive the per-host hydration loop.
     pub fn host_reports_known_hostnames(&self) -> Result<Vec<String>> {
         let guard = super::lock_conn(self.conn)?;
         let mut stmt = guard.prepare("SELECT DISTINCT hostname FROM host_reports")?;
@@ -126,9 +103,6 @@ impl Reports<'_> {
         names.context("query host_reports hostnames")
     }
 
-    /// Drop host_reports rows older than `max_age_hours`. Mirror of
-    /// `Tokens::prune_token_replay`; 7-day retention default. Wired
-    /// into `prune_timer.rs`.
     pub fn prune_host_reports(&self, max_age_hours: i64) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let n = guard
@@ -141,28 +115,8 @@ impl Reports<'_> {
         Ok(n)
     }
 
-    /// Count outstanding ComplianceFailure / RuntimeGateError events
-    /// per `(rollout_id, hostname)`. Used by the reconciler's
-    /// wave-staging gate emission. The per-rollout grouping is what
-    /// enforces resolution-by-replacement: an event posted against
-    /// rollout R₀ contributes to `(R₀, host)` not to `host`-globally,
-    /// so once the host moves to R₁ and the reconciler iterates
-    /// active rollouts, R₀'s events don't appear under R₁'s key —
-    /// correct behaviour.
-    ///
-    /// Events with `rollout IS NULL` (enrollment errors, trust-root
-    /// problems — pre-cert-bound paths) are excluded; those are
-    /// not rollout-scoped and don't gate wave promotion.
-    ///
-    /// `signature_status` filter mirrors the
-    /// `nixfleet_reconciler::evidence::SignatureStatus::counts_for_gate`
-    /// rule: `mismatch` and `malformed` are forged FAIL events from
-    /// a compromised mTLS cert and don't count; everything else
-    /// (verified, unsigned, no-pubkey, wrong-algorithm, NULL) does.
-    ///
-    /// Returns a nested map keyed first by rollout id, then by
-    /// hostname → count. Empty inner maps are absent (rollouts with
-    /// zero outstanding events don't appear at all).
+    /// Per-(rollout, host) counts; per-rollout grouping enforces resolution-by-replacement.
+    /// `mismatch` and `malformed` excluded: they could be forged FAIL events from a stolen cert.
     pub fn outstanding_compliance_events_by_rollout(
         &self,
     ) -> Result<HashMap<String, HashMap<String, usize>>> {
@@ -222,9 +176,6 @@ mod tests {
 
     #[test]
     fn outstanding_events_by_rollout_filters_tampered() {
-        // Verified + unsigned + no-pubkey count toward the gate;
-        // mismatch + malformed do NOT (defends against forged FAIL
-        // events from a compromised mTLS cert).
         let db = fresh_db();
         for (eid, sig) in [
             ("e1", Some("verified")),
@@ -241,8 +192,6 @@ mod tests {
             .reports()
             .outstanding_compliance_events_by_rollout()
             .unwrap();
-        // verified + unsigned + no-pubkey = 3; mismatch + malformed
-        // are filtered out.
         assert_eq!(
             by_rollout.get("R1").and_then(|m| m.get("lab")).copied(),
             Some(3),
@@ -251,10 +200,6 @@ mod tests {
 
     #[test]
     fn outstanding_events_by_rollout_groups_per_rollout() {
-        // Resolution-by-replacement test: events for R0 stay under R0,
-        // events for R1 stay under R1. The reconciler iterates active
-        // rollouts and looks up its own ID's outstanding events; an
-        // R0-bound event must NOT contaminate R1's count.
         let db = fresh_db();
         let mut e0 = fail_event(Some("R0"), Some("verified"));
         e0.event_id = "evt-r0-1";
@@ -278,8 +223,6 @@ mod tests {
 
     #[test]
     fn outstanding_events_by_rollout_excludes_null_rollout() {
-        // Events with rollout=NULL (enrollment, trust-root errors)
-        // are not rollout-scoped and don't appear in the projection.
         let db = fresh_db();
         let mut row = fail_event(None, Some("verified"));
         row.event_id = "evt-orphan";
@@ -298,7 +241,6 @@ mod tests {
     #[test]
     fn prune_host_reports_drops_old_rows() {
         let db = fresh_db();
-        // Insert with a past received_at so the prune sweep matches.
         let past = Utc::now() - chrono::Duration::hours(48);
         let row = HostReportInsert {
             hostname: "lab",
@@ -310,7 +252,6 @@ mod tests {
             report_json: "{}",
         };
         db.reports().record_host_report(&row).unwrap();
-        // 24h retention drops the past row.
         let n = db.reports().prune_host_reports(24).unwrap();
         assert_eq!(n, 1);
         let names = db.reports().host_reports_known_hostnames().unwrap();

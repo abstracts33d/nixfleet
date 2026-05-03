@@ -1,7 +1,4 @@
-# btrfs impermanence disk template - GPT + ESP + btrfs root with
-# @root, @persist, @nix, optional @swap subvolumes. Intended for use
-# alongside the `impermanence` scope (the @root subvolume is wiped
-# at boot by that scope).
+# @root is wiped at boot by the impermanence scope.
 {
   lib,
   disk ? "/dev/vda",

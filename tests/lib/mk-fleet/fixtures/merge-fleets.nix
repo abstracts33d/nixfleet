@@ -1,11 +1,3 @@
-# tests/lib/mk-fleet/fixtures/merge-fleets.nix
-#
-# Exercises RFC-0001 §5 composition via mergeFleets.
-# Two fleet inputs (paris, lyon) with disjoint hosts + tags + channels.
-# Both share a single rolloutPolicy name; per RFC the later input wins
-# (associative, not commutative) — here they define the same policy so the
-# winner is indistinguishable.
-# Edges and disruptionBudgets from both inputs concatenate.
 {mergeFleets, ...}: let
   stub = import ./_stub-configuration.nix {};
   paris = {

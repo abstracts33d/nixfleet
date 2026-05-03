@@ -1,33 +1,3 @@
-# Control-plane teardown scenario. Validates
-# ARCHITECTURE.md §8: destroying the CP's database and rebuilding
-# from empty state restores full fleet visibility within one
-# reconcile cycle.
-#
-# Sequence:
-#   1. Boot host VM running cp-real + N agent microVMs running
-#      agent-real. Each agent is pre-seeded with last_confirmed_at
-#      and an overridden /run/current-system so its reported
-#      closure_hash matches the fleet's declared expectation.
-#   2. Wait for both agents to log at least one successful checkin
-#      ("checkin received" line in the CP journal). Steady-state.
-#   3. Stop the CP service, `rm -rf /var/lib/nixfleet-cp/state.db*`
-#      (matches the runbook's wipe step), restart the service.
-#   4. Wait for the post-restart CP to:
-#      - accept fresh checkins from each agent (soft-state replay),
-#      - replay the signed revocations.json sidecar into
-#        cert_revocations within one poll cycle,
-#      - apply the agent-attested last_confirmed_at to repopulate
-#        host_rollout_state.last_healthy_since (soak-state recovery).
-#
-# What this proves:
-#   - CP restart from empty SQLite resumes accepting checkins
-#     within one reconcile cycle (soft-state).
-#   - verified_fleet snapshot reprimes from the build-time signed
-#     artifact path.
-#   - cert_revocations rebuilds from the signed sidecar (hard-state,
-#     security-material).
-#   - host_rollout_state.last_healthy_since rebuilds from the
-#     agent-attested last_confirmed_at field on convergence.
 {
   lib,
   harnessLib,
@@ -35,16 +5,7 @@
   signedFixture,
   cpPkg,
   agentPkg,
-  # Optional signed revocations sidecar. When supplied, the CP runs
-  # with --revocations-* flags pointed at a static HTTP server on the
-  # host VM, and the post-wipe step asserts the sidecar replays into
-  # `cert_revocations` within one poll cycle.
   revocationsFixture ? null,
-  # Convergence target for the soak-state recovery proof. Must match
-  # the closureHash injected into `signedFixture`'s fleet.resolved
-  # for both agents — the preseed module below makes the agent's
-  # /run/current-system resolve to a path with this basename so
-  # current_generation.closure_hash matches fleet.hosts[*].closureHash.
   closureHash,
   agentNames ? ["agent-01" "agent-02"],
   ...
@@ -53,13 +14,6 @@
     inherit testCerts signedFixture cpPkg revocationsFixture;
   };
 
-  # Convergence preseed: shared helper that pre-seeds
-  # last_confirmed_at and overrides /run/current-system so each
-  # agent reports the convergence closure_hash + echoes a known
-  # attestation timestamp on every checkin. Both pieces are required
-  # for the CP's recover_soak_state_from_attestation path to apply:
-  # the closure match unlocks the recovery, the attestation provides
-  # the timestamp to clamp into host_rollout_state.last_healthy_since.
   preseedModule = harnessLib.convergencePreseedModule {inherit closureHash;};
 
   mkAgent = name:
@@ -83,9 +37,6 @@ in
     testScript = let
       assertRevocationsReplayed = lib.optionalString (revocationsFixture != null) ''
 
-        # Hard-state recovery: the signed revocations.json sidecar
-        # must replay into `cert_revocations` after the wipe. Poll
-        # interval is 60s on the CP side, so give it 90s of slack.
         print("step 4: waiting for revocations sidecar replay…")
         wait_for_journal_match(
             host,
@@ -99,12 +50,6 @@ in
         print("step 4: revocations sidecar replayed (1 entry verified)")
       '';
 
-      # Soft-state attestation recovery: each agent's pre-seeded
-      # last_confirmed_at must echo on its first post-wipe checkin
-      # and trigger recover_soak_state_from_attestation, which
-      # stamps host_rollout_state.last_healthy_since from the
-      # attested timestamp. The CP emits the load-bearing log line
-      # from checkin_pipeline::recover_soak_state_from_attestation.
       assertSoakStateRecovered = ''
 
         print("step 5: waiting for soak-state attestation recovery…")
@@ -125,9 +70,6 @@ in
                 time.sleep(3)
         missing = agents_set - recovered
         if missing:
-            # Diagnostic dump: surface the post-wipe CP journal AND
-            # each missing agent's console-forwarded journal so the
-            # failure mode is debuggable from build logs alone.
             cp_dump = host.succeed(
                 "journalctl -u nixfleet-control-plane.service "
                 f"--since='{post_wipe_cursor}' --no-pager"
@@ -162,22 +104,13 @@ in
 
 
       def wait_for_checkins_since(cursor: str, timeout_s: int) -> dict:
-          """Block until each agent in `agentNames` has at least one
-          'checkin received' line in the CP journal AFTER `cursor`
-          (a 'YYYY-MM-DD HH:MM:SS' timestamp from `date`), or fail.
-          Returns a dict[hostname → first-seen-at-monotonic-secs]
-          for recovery-time measurement."""
+          """Block until each agent has a 'checkin received' line in the
+          CP journal after `cursor`. Returns hostname -> seen-at."""
           deadline = time.monotonic() + timeout_s
           pending = set(${builtins.toJSON agentNames})
           seen_at = {}
           while pending and time.monotonic() < deadline:
               for hostname in list(pending):
-                  # tracing's default formatter renders fields as
-                  # `hostname="agent-01"` (quoted) or
-                  # `hostname=agent-01` (unquoted) depending on the
-                  # subscriber config. Match both via a grep that
-                  # just looks for the hostname token on a "checkin
-                  # received" line.
                   rc, _ = host.execute(
                       f"journalctl -u nixfleet-control-plane.service "
                       f"--since='{cursor}' --no-pager "
@@ -189,14 +122,6 @@ in
               if pending:
                   time.sleep(2)
           if pending:
-              # Dump every relevant journal so the operator doesn't
-              # have to re-run with --keep-failed to diagnose. CP
-              # journal since the cursor reveals whether any agent
-              # tried to connect at all (TLS handshake errors land
-              # here too); each agent's microvm@<vm>.service journal
-              # reveals what the guest's nixfleet-agent.service did
-              # after the readiness gate (typical: the agent crashed
-              # loading certs, or hit a TLS error on first checkin).
               cp_dump = host.succeed(
                   "journalctl -u nixfleet-control-plane.service "
                   f"--since='{cursor}' --no-pager"
@@ -213,41 +138,22 @@ in
           return seen_at
 
 
-      # Establish baseline: each agent must check in at least once
-      # against the freshly-booted CP. The cursor is captured at
-      # host time AFTER `microvm@agent-XX.service` reaches active
-      # (= qemu launched), so the budget covers the full guest-side
-      # boot + cert mount + agent startup + first poll cycle. Lab
-      # boot of two microvms typically lands the first checkins
-      # within 90-120s; 180s is the safe upper bound.
       print("step 1: waiting for initial checkins…")
       pre_wipe_cursor = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
       pre_wipe = wait_for_checkins_since(pre_wipe_cursor, timeout_s=180)
       print(f"step 1: baseline checkins observed: {pre_wipe}")
 
-      # Wipe step: stop the CP, delete the SQLite database,
-      # restart. Mirrors the operator runbook in DISASTER-RECOVERY.md.
       print("step 2: simulating CP destruction (stop + DB wipe + restart)…")
       host.succeed("systemctl stop nixfleet-control-plane.service")
       host.succeed("rm -rf /var/lib/nixfleet-cp/state.db /var/lib/nixfleet-cp/state.db-wal /var/lib/nixfleet-cp/state.db-shm")
-      # Sleep 2s before cursor capture so the cursor's wall-clock
-      # second is comfortably after every pre-wipe checkin's
-      # journal timestamp. journalctl --since='YYYY-MM-DD HH:MM:SS'
-      # rounds DOWN to the second, so a pre-wipe checkin at second
-      # T+0.5 and a cursor captured at second T+0.1 share the same
-      # `--since` second-bucket and would surface as a false-
-      # positive "post-wipe" line. The 2s gap eliminates the race.
+      # 2s gap: journalctl --since rounds to whole seconds, so without
+      # the sleep a pre-wipe checkin can land in the post-wipe bucket.
       host.succeed("sleep 2")
       post_wipe_cursor = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
       host.succeed("systemctl start nixfleet-control-plane.service")
       host.wait_for_unit("nixfleet-control-plane.service")
       host.wait_for_open_port(8443)
 
-      # Recovery window: agents are on 10s poll, give them 30s
-      # margin (3 poll cycles) to land a fresh checkin against the
-      # post-restart CP. ARCHITECTURE.md §8's "one reconcile cycle"
-      # with the harness's 10s poll = ~10-20s expected; 30s budget
-      # is comfortable.
       print("step 3: waiting for post-wipe recovery checkins…")
       recovery_start = time.monotonic()
       post_wipe = wait_for_checkins_since(post_wipe_cursor, timeout_s=30)
@@ -258,8 +164,6 @@ in
           f"{recovery_secs:.1f}s (budget 30s)"
       )
 
-      # Surface the verified-fleet reprime in the journal so an
-      # operator reading the test log sees the snapshot reload.
       host.succeed(
           "journalctl -u nixfleet-control-plane.service "
           f"--since='{post_wipe_cursor}' --no-pager "

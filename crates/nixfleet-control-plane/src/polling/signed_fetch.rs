@@ -1,6 +1,4 @@
-//! Shared HTTP fetch + Bearer-token primitive for the poll tasks.
-//! Verification stays per-task — the artifacts diverge enough that
-//! a generic abstraction would force semantics through trait objects.
+//! Shared HTTP fetch + Bearer-token primitive; verification stays per-task.
 
 use std::path::Path;
 use std::time::Duration;
@@ -9,7 +7,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::TrustedPubkey;
 
-/// 15s timeout — faster trips on transient upstream blips.
+/// 15s timeout.
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .use_rustls_tls()
@@ -18,10 +16,7 @@ pub fn build_client() -> reqwest::Client {
         .expect("build signed-fetch client (rustls + 15s timeout)")
 }
 
-/// Read trust.json fresh, returning the active CI release keys +
-/// the optional `reject_before` compromise switch. Both polls and
-/// the reconcile loop call this — rotation in trust.json propagates
-/// without a CP restart.
+/// Re-read each call so trust.json rotation propagates without restart.
 pub fn read_trust_roots(path: &Path) -> Result<(Vec<TrustedPubkey>, Option<DateTime<Utc>>)> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read trust file {}", path.display()))?;
@@ -33,8 +28,7 @@ pub fn read_trust_roots(path: &Path) -> Result<(Vec<TrustedPubkey>, Option<DateT
     ))
 }
 
-/// Read fresh on each poll so token rotation propagates without
-/// restart. `None` skips auth (public sources).
+/// Re-read each poll so token rotation propagates; `None` skips auth.
 pub fn read_token(path: Option<&Path>) -> Result<Option<String>> {
     match path {
         Some(p) => Ok(Some(
@@ -47,8 +41,7 @@ pub fn read_token(path: Option<&Path>) -> Result<Option<String>> {
     }
 }
 
-/// Non-2xx or network error → `Err`. Caller logs warn + retains
-/// previous state.
+/// Non-2xx or network error → `Err`; caller retains previous state.
 pub async fn fetch_signed_pair(
     client: &reqwest::Client,
     artifact_url: &str,

@@ -1,30 +1,10 @@
-//! Per-host rollout state machine. Canonical source of truth for
-//! the variant set, shared by the CP (SQL CHECK constraint round-trip)
-//! and the reconciler (decision-procedure pattern matches).
-//!
-//! Two consumers used to declare separate enums with identical literals.
-//! The alignment was guarded only by the
-//! `host_rollout_state_check_matches_enum` test in the CP crate, which
-//! passes as long as both enums and the migration SQL stay in sync —
-//! a fragile compile-time-check-via-test posture. Promoting the enum
-//! here makes the proto crate the single source of truth; both
-//! consumers re-export.
-//!
-//! `as_db_str` and `from_db_str` carry the SQL-literal name even though
-//! the same strings are used on the reconciler's wire-shaped
-//! `observed.json` fixtures. The discipline is "one literal, one shape,
-//! one set of accessors" — naming it after the SQL boundary follows
-//! the pre-existing module convention in `nixfleet-control-plane::state`.
+//! Per-host rollout state machine. Single source of truth for both CP
+//! (SQL CHECK round-trip) and reconciler decision-procedure.
 
 use serde::{Deserialize, Serialize};
 
-/// Returned by [`HostRolloutState::from_db_str`] when the input does
-/// not match a known variant. Implements `std::error::Error` so it
-/// converts cleanly into `anyhow::Error` at consumer crates and is
-/// accepted by `serde::de::Error::custom`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRolloutStateParseError {
-    /// The unknown literal that was passed in.
     pub got: String,
 }
 
@@ -50,9 +30,7 @@ pub enum HostRolloutState {
 }
 
 impl HostRolloutState {
-    /// Canonical literal. Matches the `host_rollout_state.host_state`
-    /// CHECK constraint in the CP schema and the wire string emitted
-    /// in `observed.json` fixtures.
+    /// Canonical literal — matches the SQL CHECK and `observed.json`.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             HostRolloutState::Queued => "Queued",
@@ -67,9 +45,6 @@ impl HostRolloutState {
         }
     }
 
-    /// Parse a literal back into the typed variant. Returns an error
-    /// on unknown strings so a future schema drift surfaces loudly
-    /// rather than silently mis-classifying.
     pub fn from_db_str(s: &str) -> Result<Self, HostRolloutStateParseError> {
         match s {
             "Queued" => Ok(HostRolloutState::Queued),
@@ -112,8 +87,8 @@ mod tests {
     #[test]
     fn unknown_strings_error() {
         assert!(HostRolloutState::from_db_str("").is_err());
-        assert!(HostRolloutState::from_db_str("healthy").is_err()); // case-sensitive
+        assert!(HostRolloutState::from_db_str("healthy").is_err());
         assert!(HostRolloutState::from_db_str("soaked").is_err());
-        assert!(HostRolloutState::from_db_str("Healhty").is_err()); // typo guard
+        assert!(HostRolloutState::from_db_str("Healhty").is_err());
     }
 }

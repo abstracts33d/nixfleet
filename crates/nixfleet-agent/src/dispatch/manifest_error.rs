@@ -1,9 +1,5 @@
-//! Manifest-gate failure handler (RFC-0002 §4.4 / RFC-0003 §4.1):
-//! the CP advertised a `rolloutId` we couldn't fetch, couldn't
-//! verify, or whose content didn't match the partition-attack
-//! defenses. Emit the matching signed `ReportEvent` and return —
-//! caller does not proceed with any other field of `target`. No
-//! rollback because nothing was activated.
+//! Manifest-gate failure handler: emit signed event, do not proceed with target.
+//! No rollback because nothing was activated.
 
 use nixfleet_proto::agent_wire::ReportEvent;
 

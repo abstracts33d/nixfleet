@@ -1,13 +1,4 @@
 //! Cert issuance for `/v1/enroll` and `/v1/agent/renew`.
-//!
-//! Validates the CSR + token, builds a TBS certificate with the
-//! standard agent-cert profile (clientAuth EKU, SAN dNSName), and
-//! signs with the fleet CA's private key.
-//!
-//! Audit log: every issuance writes one JSON line to journal AND
-//! appends to a configured audit-log file. The file is plaintext
-//! JSON-lines (one record per line) so an operator can `tail -f`
-//! it during incidents.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -22,23 +13,16 @@ use rcgen::{
 };
 use sha2::{Digest, Sha256};
 
-/// 30 days — D6 default. Agent self-paces renewal at 50% via
-/// `/v1/agent/renew`.
+/// 30 days; agents self-pace renewal at 50% via `/v1/agent/renew`.
 pub const AGENT_CERT_VALIDITY: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
-/// Audit context attached to every issuance record. Distinguishes
-/// /enroll from /renew in the audit log so operators can grep
-/// post-incident.
 #[derive(Debug, Clone)]
 pub enum AuditContext {
     Enroll { token_nonce: String },
     Renew { previous_cert_serial: String },
 }
 
-/// Verify a bootstrap token's signature against the org root key.
-/// Caller is responsible for: nonce-replay check, hostname match,
-/// expected-pubkey-fingerprint match, expiry check. This function
-/// only validates the cryptographic signature.
+/// Cryptographic signature only; caller handles replay/hostname/fingerprint/expiry.
 pub fn verify_token_signature(token: &BootstrapToken, org_root_pubkey: &[u8]) -> Result<()> {
     if token.version != 1 {
         anyhow::bail!("unsupported token version: {}", token.version);
@@ -54,8 +38,7 @@ pub fn verify_token_signature(token: &BootstrapToken, org_root_pubkey: &[u8]) ->
         .context("decode token signature base64")?;
     let signature = Signature::from_slice(&sig_bytes).context("parse ed25519 signature")?;
 
-    // Canonical bytes of `claims` per JCS — this is what the
-    // operator-side mint tool signs.
+    // JCS canonical bytes; matches what the operator-side mint tool signed.
     let claims_json = serde_json::to_string(&token.claims).context("serialize claims")?;
     let canonical =
         nixfleet_canonicalize::canonicalize(&claims_json).context("canonicalize claims")?;
@@ -65,9 +48,7 @@ pub fn verify_token_signature(token: &BootstrapToken, org_root_pubkey: &[u8]) ->
     Ok(())
 }
 
-/// Validate the typed parts of a token's claims (expiry, hostname-vs-CN,
-/// pubkey fingerprint). Pure function — caller has already verified
-/// the signature and replay status.
+/// Validates expiry, hostname-vs-CN, and pubkey fingerprint; caller verifies signature/replay.
 pub fn validate_token_claims(
     claims: &TokenClaims,
     csr_cn: &str,
@@ -92,23 +73,13 @@ pub fn validate_token_claims(
     Ok(())
 }
 
-/// SHA-256 of an SPKI DER (or any pubkey byte representation), base64-
-/// encoded. Caller decides what bytes to feed in — we just hash.
+/// Base64(SHA-256(bytes)).
 pub fn fingerprint(pubkey_bytes: &[u8]) -> String {
     let digest = Sha256::digest(pubkey_bytes);
     base64::engine::general_purpose::STANDARD.encode(digest)
 }
 
-/// Issue a signed agent certificate.
-///
-/// The CSR is parsed; the new cert inherits the CSR's subject DN
-/// + pubkey, gets a clientAuth EKU, a SAN dNSName matching the CN
-///   (rustls/webpki rejects CN-only certs), and the configured
-///   validity. Signed with the fleet CA private key loaded from
-///   `ca_key_path`.
-///
-/// Caller is expected to have validated the CSR's CN already; this
-/// function does not double-check.
+/// Issues an agent cert (clientAuth EKU + SAN dNSName=CN); caller pre-validates CN.
 pub fn issue_cert(
     csr_pem: &str,
     ca_cert_path: &Path,
@@ -116,7 +87,6 @@ pub fn issue_cert(
     validity: Duration,
     now: DateTime<Utc>,
 ) -> Result<(String, DateTime<Utc>)> {
-    // Load the fleet CA cert + private key.
     let ca_cert_pem = std::fs::read_to_string(ca_cert_path)
         .with_context(|| format!("read fleet CA cert {}", ca_cert_path.display()))?;
     let ca_key_pem = std::fs::read_to_string(ca_key_path)
@@ -128,7 +98,6 @@ pub fn issue_cert(
         .self_signed(&ca_key)
         .context("rebuild fleet CA from PEM (rcgen quirk)")?;
 
-    // Parse the CSR into params we can re-emit signed.
     let csr_params = CertificateSigningRequestParams::from_pem(csr_pem).context("parse CSR PEM")?;
     let cn = csr_params
         .params
@@ -145,8 +114,7 @@ pub fn issue_cert(
 
     let mut params = csr_params.params;
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-    // Add SAN dNSName matching the CN. rustls/webpki rejects CN-only
-    // certs, so without this the cert is unusable for mTLS.
+    // FOOTGUN: rustls/webpki rejects CN-only certs — SAN dNSName=CN is required for mTLS to work.
     let cn_str = match &cn {
         rcgen::DnValue::PrintableString(s) => s.to_string(),
         rcgen::DnValue::Utf8String(s) => s.to_string(),
@@ -172,9 +140,7 @@ pub fn issue_cert(
     Ok((cert.pem(), not_after))
 }
 
-/// Append one JSON line to the audit log file. Best-effort
-/// failure to write the audit log warns but does not fail the
-/// issuance (the journal still has a tracing record).
+/// Best-effort append; write failure warns but doesn't fail issuance.
 pub fn audit_log(
     path: &Path,
     now: DateTime<Utc>,

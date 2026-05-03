@@ -1,28 +1,4 @@
 //! `nixfleet-mint-token` — operator-side bootstrap token minter.
-//!
-//! Run once on the operator's workstation per new fleet host
-//! (typically as part of declaring the host and committing an
-//! encrypted token via the fleet's secrets backend).
-//!
-//! Usage:
-//!
-//! ```text
-//! nixfleet-mint-token \
-//! --hostname test-host \
-//! --csr-pubkey-fingerprint <sha256-base64-of-CSR-spki> \
-//! --org-root-key /path/to/org-root.ed25519.key \
-//! --validity-hours 24 \
-//! > bootstrap-token-test-host.json
-//! ```
-//!
-//! The agent's first-boot enrollment generates its own keypair
-//! before posting the CSR; in practice the operator runs
-//! `nixfleet-mint-token` AFTER the host has booted and produced
-//! its CSR (typically captured by the deploy tooling). For an even
-//! simpler workflow, omit `--csr-pubkey-fingerprint` and accept any
-//! pubkey — but that weakens the binding (a leaked token can be
-//! used with an attacker-controlled key). Default keeps the
-//! fingerprint required.
 
 use std::path::PathBuf;
 
@@ -40,28 +16,21 @@ use rand::RngCore;
     about = "Mint a bootstrap token for first-boot fleet enrollment."
 )]
 struct Args {
-    /// Target hostname (must match the fleet.nix entry + the CSR's CN
-    /// at enroll time).
+    /// Must match the fleet.nix entry + CSR CN at enroll time.
     #[arg(long)]
     hostname: String,
 
-    /// SHA-256 fingerprint of the CSR's pubkey, base64-encoded. Lets
-    /// the CP refuse a leaked token used with the wrong key.
+    /// base64 SHA-256 of the CSR's pubkey; binds the token to the key.
     #[arg(long)]
     csr_pubkey_fingerprint: String,
 
-    /// Path to the org root ed25519 private key (PEM-encoded
-    /// `BEGIN PRIVATE KEY` PKCS#8 raw 32 bytes, or hex). When the
-    /// path doesn't exist, the tool errors — never silently mints
-    /// an unsigned token.
+    /// Org root ed25519 private key: PKCS#8 PEM, 32 raw bytes, or hex.
     #[arg(long)]
     org_root_key: PathBuf,
 
-    /// Token validity window in hours. Default 24h.
     #[arg(long, default_value_t = 24)]
     validity_hours: u32,
 
-    /// Token schema version. Always 1.
     #[arg(long, default_value_t = 1)]
     version: u32,
 }
@@ -69,18 +38,9 @@ struct Args {
 fn read_signing_key(path: &PathBuf) -> Result<SigningKey> {
     let bytes = std::fs::read(path)
         .with_context(|| format!("read org root key {}", path.display()))?;
-    // Accept three formats. PEM is checked first because newlines are
-    // load-bearing for the line-based body extraction; the all-
-    // whitespace strip used for the raw + hex paths would collapse
-    // BEGIN/body/END onto one line and break `lines()`.
-    // - PEM PKCS#8 (BEGIN PRIVATE KEY ... END PRIVATE KEY)
-    // - 32 raw bytes (whitespace-tolerant)
-    // - hex-encoded 64 chars (with optional 0x/whitespace)
+    // FOOTGUN: detect PEM before whitespace strip — strip would collapse BEGIN/body/END and break lines().
     if let Ok(orig) = std::str::from_utf8(&bytes) {
         if orig.trim_start().starts_with("-----BEGIN") {
-            // PKCS#8 PEM. Manual extraction since we don't pull
-            // rustls-pemfile here. The 32-byte raw key is at the end
-            // of the DER blob.
             let body: String = orig
                 .lines()
                 .filter(|l| !l.starts_with("-----"))
@@ -89,8 +49,7 @@ fn read_signing_key(path: &PathBuf) -> Result<SigningKey> {
             let der = base64::engine::general_purpose::STANDARD
                 .decode(&body)
                 .context("base64 decode PEM body")?;
-            // Heuristic: PKCS#8 ed25519 PrivateKey OCTET STRING is
-            // the last 34 bytes (0x04 0x20 + 32 bytes).
+            // LOADBEARING: PKCS#8 ed25519 OCTET STRING is the last 34 bytes (0x04 0x20 + 32).
             if der.len() < 34 {
                 anyhow::bail!("PEM too short for PKCS#8 ed25519");
             }
@@ -123,11 +82,6 @@ fn read_signing_key(path: &PathBuf) -> Result<SigningKey> {
     );
 }
 
-// Test module sits between read_signing_key and main intentionally:
-// the helpers + tests live next to the function under test, then
-// random_nonce + main below. Clippy's items-after-test-module lint
-// prefers tests strictly last; the local layout aids readability
-// more than the lint helps.
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
@@ -135,8 +89,7 @@ mod tests {
     use std::io::Write;
 
     fn pkcs8_pem_for_seed(seed: &[u8; 32]) -> String {
-        // Same DER prefix the harness `org-root-key` fixture uses:
-        // SEQUENCE(46) { v=0 ; AlgId(Ed25519) ; OCTET-STRING(32){seed} }
+        // SEQUENCE(46) { v=0; AlgId(Ed25519); OCTET-STRING(32){seed} }
         let mut der = hex::decode("302e020100300506032b657004220420").unwrap();
         der.extend_from_slice(seed);
         let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
@@ -145,12 +98,6 @@ mod tests {
 
     #[test]
     fn read_signing_key_accepts_pkcs8_pem() {
-        // Regression: pre-fix, `read_signing_key` ran the PEM body
-        // extractor over a string that had been pre-stripped of all
-        // whitespace, so `lines()` saw a single concatenated line
-        // (BEGIN…body…END), the filter dropped it, and the body was
-        // empty → "PEM too short for PKCS#8 ed25519". This is the
-        // exact failure that surfaced in fleet-harness-enroll-replay.
         let seed = [0x42u8; 32];
         let pem = pkcs8_pem_for_seed(&seed);
         let mut tmp = tempfile::NamedTempFile::new().unwrap();

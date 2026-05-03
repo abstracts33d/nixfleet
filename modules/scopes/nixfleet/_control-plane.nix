@@ -1,13 +1,3 @@
-# NixOS service module for the NixFleet control plane.
-#
-# Long-running TLS server. The binary's `serve` subcommand runs
-# forever, accepts mTLS-authenticated connections, and ticks an
-# internal reconcile loop every 30s. The unit runs as `Type=simple`
-# (no timer companion). The `tick` subcommand on the binary is
-# preserved for tests and ad-hoc operator runs.
-#
-# Auto-included by mkHost (disabled by default). Enable on the
-# coordinator host (typically lab) only.
 {
   config,
   inputs,
@@ -18,19 +8,10 @@
   cfg = config.services.nixfleet-control-plane;
   nixfleet-control-plane = cfg.package;
 
-  # Shared trust.json payload — see ./_trust-json.nix for shape rationale
-  # and the orgRootKey ed25519 promotion that matches proto::TrustConfig.
   trustConfig = import ./_trust-json.nix {trust = config.nixfleet.trust;};
   trustJson = pkgs.writers.writeJSON "trust.json" trustConfig;
 
-  # Build the CLI flags for one signed-sidecar polling source. The
-  # three sidecars (channel-refs / revocations / rollouts) share an
-  # identical "artifact + signature + optional token, with optional
-  # fallback to channel-refs's token" shape; this helper is the
-  # single source of truth for that wiring. Adding a fourth signed
-  # sidecar (audit-log or probe-signature, per the rule-of-three
-  # threshold) is now a 4-line addition rather than a 28-line copy-
-  # paste.
+  # LOADBEARING: single source of truth for sidecar (artifact + signature + token) wiring; tokenFallback covers shared upstream tokens.
   mkPollingSource = {
     artifactFlag,
     signatureFlag,
@@ -59,12 +40,7 @@
       ]
     );
 
-  # First-deploy bootstrap for observed.json — laid down via
-  # systemd-tmpfiles `C` (copy only if path does not exist) so the
-  # reconciler's first tick has a parseable file even before the
-  # operator has hand-written one. The in-memory projection from
-  # agent check-ins is preferred; this stays as the offline dev/test
-  # fallback.
+  # GOTCHA: systemd-tmpfiles `C` copies only if path absent.
   initialObservedJson = pkgs.writers.writeJSON "observed-initial.json" {
     channelRefs = {};
     lastRolledRefs = {};
@@ -72,7 +48,6 @@
     activeRollouts = [];
   };
 
-  # Parse the listen address into HOST:PORT for the firewall rule.
   listenPort = lib.toInt (lib.last (lib.splitString ":" cfg.listen));
 in {
   options.services.nixfleet-control-plane = {
@@ -246,10 +221,6 @@ in {
       '';
     };
 
-    # Cert issuance (enroll + renew). The CP holds the fleet
-    # CA private key online; a TPM-bound replacement is deferred.
-    # The fleet wires these to paths produced
-    # by its secrets backend.
     fleetCaCert = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -283,10 +254,6 @@ in {
       '';
     };
 
-    # Closure proxy upstream. Cache server (harmonia, attic, nix-serve,
-    # cachix, …) the CP forwards /v1/agent/closure/<hash> requests to.
-    # Typically a cache running on the same host as the CP. When null,
-    # the endpoint returns 501.
     closureUpstream = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -299,13 +266,6 @@ in {
       '';
     };
 
-    # Directory of pre-signed rollout manifests
-    # (`<rolloutId>.{json,sig}`) the CP serves at
-    # `GET /v1/rollouts/<rolloutId>`. Produced by `nixfleet-release`
-    # alongside `fleet.resolved.json` (RFC-0002 §4.4 / CONTRACTS §I #8).
-    # When `null`, agents that receive a `target.rollout_id` will get
-    # 503 on fetch and refuse to dispatch with `ManifestMissing` —
-    # the spec-mandated refuse-to-act posture.
     rolloutsDir = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -318,10 +278,6 @@ in {
       '';
     };
 
-    # SQLite path. When set, the CP opens + migrates the DB on
-    # startup. Token replay + cert revocations + pending confirms +
-    # rollouts persist across CP restarts. When null, in-memory state
-    # only — fine for dev, not production.
     dbPath = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = "/var/lib/nixfleet-cp/state.db";
@@ -334,15 +290,6 @@ in {
       '';
     };
 
-    # Channel-refs poll. When set, the CP polls a configured pair of
-    # URLs every 60s for the signed `fleet.resolved.json` + `.sig`,
-    # verifies, and refreshes the in-memory verified-fleet snapshot.
-    # Implementation-agnostic — the framework only knows how to issue
-    # `GET <url>` with an optional Bearer token. URL templates for
-    # specific git forges (Forgejo `/raw/branch/...`, GitHub
-    # `raw.githubusercontent.com/...`, GitLab `/-/raw/...`) live in
-    # `impls/gitops/` and are exposed at `flake.scopes.gitops.<forge>`;
-    # consumers either use those helpers or build the URLs by hand.
     channelRefsSource = {
       artifactUrl = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -383,16 +330,6 @@ in {
       };
     };
 
-    # Gap C: signed `revocations.json` sidecar. Mirrors
-    # `channelRefsSource` —
-    # same `(artifact, signature, token)` shape, same Bearer auth,
-    # same trust class (ciReleaseKey signs both artifacts). When
-    # configured, the CP polls the upstream every 60s and replays
-    # entries into `cert_revocations` so a CP rebuilt from empty
-    # state re-establishes the revocation set within one reconcile
-    # tick. When all three are null, the legacy "operator runs CLI
-    # against the CP" path stays in effect (which has no recovery
-    # source — see DISASTER-RECOVERY.md).
     revocationsSource = {
       artifactUrl = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -430,20 +367,7 @@ in {
       };
     };
 
-    # Rollout-manifest HTTP source. Companion to `rolloutsDir` for
-    # fleets where the manifests can't reach the closure via
-    # `inputs.self` — which is every fleet using a normal release
-    # pipeline, since `nixfleet-release` writes
-    # `releases/rollouts/<rolloutId>.{json,sig}` AFTER building the
-    # closures it just signed. The first activation of any new closure
-    # therefore points `rolloutsDir` at a path inside its own source
-    # tree that doesn't yet contain the manifests.
-    #
-    # Mirrors `channelRefsSource` / `revocationsSource` shape but uses
-    # URL TEMPLATES (containing `{rolloutId}`) instead of fixed URLs,
-    # because the rolloutId is part of the path. Same Bearer token
-    # pattern, same trust class (`ciReleaseKey` — verification stays
-    # in the agent on receipt; the CP only checks content-address).
+    # LOADBEARING: URL templates contain literal `{rolloutId}`; CP substitutes per fetch.
     rolloutsSource = {
       artifactUrlTemplate = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -503,14 +427,7 @@ in {
         }
       ];
 
-      # Recommend `strict = true` when the listener is exposed beyond
-      # loopback. Plain warning rather than assertion: the lab and dev
-      # deployments legitimately run non-strict, but production fleets
-      # exposed on a real interface should opt in. See #70.
-      #
-      # Loopback-detection done via prefix checks because Nix's
-      # `builtins.match` uses POSIX ERE, which rejects `\[` outside a
-      # bracket expression — string-prefix checks are clearer anyway.
+      # FOOTGUN: prefix checks (not regex); Nix builtins.match uses POSIX ERE which rejects `\[` outside a bracket expression.
       warnings = let
         listen = cfg.listen;
         isLoopback =
@@ -620,11 +537,6 @@ in {
           RestartSec = 10;
           StateDirectory = "nixfleet-cp";
 
-          # Hardening. Network access is required (TLS listener), so
-          # PrivateNetwork is not set. ProtectSystem=strict is fine
-          # since the server reads from /etc + /var/lib + the
-          # secrets-backend mountpoint, and only writes to its
-          # StateDirectory.
           ProtectSystem = "strict";
           ProtectHome = true;
           PrivateTmp = true;
@@ -637,10 +549,7 @@ in {
         };
       };
 
-      # First-deploy auto-bootstrap of observed.json. tmpfiles type `C`
-      # (without the `+` modifier) copies from the seed path only if
-      # the target does not already exist — operator edits to
-      # observed.json survive rebuilds.
+      # GOTCHA: tmpfiles `C` (no `+`) copies only if target absent.
       systemd.tmpfiles.rules = [
         "d /var/lib/nixfleet-cp 0755 root root -"
         "C ${cfg.observedPath} 0644 root root - ${initialObservedJson}"
@@ -649,8 +558,6 @@ in {
       networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [listenPort];
     })
 
-    # Persistence: contribute the CP state dir to the framework
-    # persistence list. The active implementation reads the list.
     (lib.mkIf cfg.enable {
       nixfleet.persistence.directories = ["/var/lib/nixfleet-cp"];
     })

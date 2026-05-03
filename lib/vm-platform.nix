@@ -1,20 +1,4 @@
-# Platform abstractions for mkVmApps.
-#
-# Returns the values consumed by lib/vm-scripts/*.nix:
-#
-#   system / isLinux / isDarwin   — host platform identity
-#   lib                            — pkgs.lib (cached)
-#   mkScript                       — name -> description -> bash -> flake app attr
-#   nixos-anywhere-bin             — absolute path or a stub `exit 1` on unsupported
-#   qemuBin / qemuAccel            — `qemu-system-*` binary name + accel flag
-#   qemuFirmware                   — OVMF/AAVMF firmware path (lazy: see note)
-#   basePkgs / spicePkgs           — pkg sets for makeBinPath
-#   sharedHelpers                  — bash helper library (read from vm-helpers.sh)
-#
-# qemuFirmware references `pkgs.OVMF.fd`, which is marked broken on
-# aarch64-darwin. Callers must keep this attribute lazy by gating
-# evaluation on `isLinux`; mk-vm-apps.nix does that via
-# `lib.optionalAttrs platform.isLinux`.
+# FOOTGUN: qemuFirmware references pkgs.OVMF.fd (broken on aarch64-darwin); callers MUST gate eval on isLinux to keep lazy.
 {inputs}: {pkgs}: let
   system = pkgs.stdenv.hostPlatform.system;
   isLinux = builtins.elem system ["x86_64-linux" "aarch64-linux"];

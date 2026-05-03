@@ -1,15 +1,3 @@
-# tests/lib/mk-fleet/fixtures/static-compliance-fail-permissive.nix
-#
-# When a channel's `compliance.mode = "permissive"`, the
-# static gate emits `lib.warn` per failing host/control but eval
-# SUCCEEDS. Mirror of negative/static-compliance-fail-strict.nix
-# with mode flipped from default-strict (legacy) to explicit
-# permissive.
-#
-# Stub a minimal nixosConfiguration that injects one failing static
-# probe into `config.compliance.evidence.probes`. Channel marked
-# permissive. Expected: mkFleet's `checkInvariants` does NOT throw;
-# the resolved fleet is returned with a warning trace.
 {mkFleet, ...}:
 mkFleet {
   hosts.m = {

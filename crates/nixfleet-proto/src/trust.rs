@@ -1,18 +1,12 @@
-//! Trust root declarations. Per CONTRACTS.md §II, the algorithm is
-//! a property of the key, not of the artifact — the verifier matches
-//! `(artifact, signature) → trust root → algorithm`. Artifacts MUST
-//! NOT carry their own algorithm claim.
+//! Trust root declarations. Algorithm is a property of the key, not the
+//! artifact — verifier matches `(artifact, sig) → trust root → algorithm`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// `algorithm` is a `String` rather than an enum so an old proto
-/// parsing a newer Nix-declared `{"algorithm": "p256", ...}` doesn't
-/// crash. Unknown algorithms surface as `VerifyError::UnsupportedAlgorithm`
-/// at verify time.
-///
-/// Today: `ed25519` only — `public` is the 32-byte Edwards-curve
-/// public key, base64 (standard alphabet, padded).
+/// `algorithm` is `String` (not enum) for forward-compat with future
+/// algorithms. Unknown values surface as `UnsupportedAlgorithm` at verify
+/// time. Today: ed25519 — `public` is 32-byte base64 (padded).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustedPubkey {
@@ -20,22 +14,15 @@ pub struct TrustedPubkey {
     pub public: String,
 }
 
-/// Loaded from `/etc/nixfleet/{cp,agent}/trust.json`. Materialised
-/// by the NixOS scope modules from `config.nixfleet.trust`.
-/// Reload model: restart-only.
+/// Loaded from `/etc/nixfleet/{cp,agent}/trust.json`. Restart-only reload.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustConfig {
-    /// Bumped only on breaking changes; binaries refuse to start on
-    /// unknown versions. Distinct from the wire-protocol schema for
-    /// `fleet.resolved` (see `fleet_resolved::Meta`).
     pub schema_version: u32,
 
     pub ci_release_key: KeySlot,
 
-    /// Raw strings nix accepts in `nix.settings.trusted-public-keys`
-    /// — forwarded opaquely. Covers harmonia, attic, cachix, etc.
-    /// interchangeably.
+    /// Forwarded opaquely to `nix.settings.trusted-public-keys`.
     #[serde(default)]
     pub cache_keys: Vec<String>,
 
@@ -47,11 +34,8 @@ impl TrustConfig {
     pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 }
 
-/// Trust-root slot with current/previous rotation grace.
-///
-/// `reject_before` is the compromise switch — artifacts whose
-/// `signedAt` is older than this are refused regardless of which
-/// key signed them. Enforcement lives in `verify_artifact`.
+/// `reject_before` is the compromise switch — artifacts older than this
+/// are refused regardless of signing key.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeySlot {
@@ -66,9 +50,7 @@ pub struct KeySlot {
 }
 
 impl KeySlot {
-    /// Returns `[current, previous]` (newer first) — load-bearing
-    /// for the rotation semantics: first-match callers see the
-    /// newer key.
+    /// `[current, previous]` (newer first) — first-match wins on rotation.
     pub fn active_keys(&self) -> Vec<TrustedPubkey> {
         let mut keys = Vec::with_capacity(2);
         if let Some(k) = &self.current {

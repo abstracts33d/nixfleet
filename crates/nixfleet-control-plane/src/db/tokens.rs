@@ -1,8 +1,4 @@
-//! `token_replay` — bootstrap-token nonces.
-//!
-//! Recovery class: **soft state** (ARCHITECTURE.md §6 Phase 10).
-//! Loss extends the replay window by up to one TTL (24h); bounded,
-//! no security regression on rebuild.
+//! Bootstrap-token nonces (soft state); loss bounded by one TTL.
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
@@ -12,29 +8,14 @@ pub struct Tokens<'a> {
     pub(super) conn: &'a Mutex<Connection>,
 }
 
-/// Outcome of an attempt to record a bootstrap-token nonce.
-///
-/// The variants exist so the `/v1/enroll` handler can distinguish a
-/// concurrent-replay race (`AlreadyRecorded` → 409 CONFLICT) from a
-/// transient DB failure (`Err` → 500 INTERNAL_SERVER_ERROR). The old
-/// `INSERT OR IGNORE` collapsed both into `Ok(())`, which let two
-/// simultaneous enroll requests for the same nonce both succeed —
-/// only one row inserted, but both code paths returned `Ok` and
-/// minted certs.
+/// Distinguishes concurrent-replay race (409) from transient DB failure (500).
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecordTokenOutcome {
-    /// This call inserted the nonce row. The caller is the
-    /// authoritative consumer of the bootstrap token.
     Recorded,
-    /// The nonce was already recorded (PRIMARY KEY conflict). Either
-    /// a benign retry of an idempotent enroll OR a concurrent replay.
-    /// The handler treats this as 409 CONFLICT — only one of the
-    /// concurrent callers should proceed to mint a cert.
     AlreadyRecorded,
 }
 
 impl Tokens<'_> {
-    /// True iff `nonce` was previously recorded.
     pub fn token_seen(&self, nonce: &str) -> Result<bool> {
         let guard = super::lock_conn(self.conn)?;
         let exists: bool = guard
@@ -51,16 +32,7 @@ impl Tokens<'_> {
         Ok(exists)
     }
 
-    /// Atomically record `nonce` as seen. Returns `Recorded` if THIS
-    /// call inserted the row; `AlreadyRecorded` if a concurrent
-    /// caller (or earlier successful enroll) won the race. Genuine
-    /// IO/SQL failures bubble up as `Err`.
-    ///
-    /// Plain `INSERT` (not `INSERT OR IGNORE`): on PRIMARY KEY
-    /// conflict SQLite returns `SQLITE_CONSTRAINT_PRIMARYKEY`, which
-    /// we map to `AlreadyRecorded`. This is the atomic check-and-set
-    /// the enroll handler relies on for replay defence under
-    /// concurrent requests.
+    /// Plain INSERT (not OR IGNORE): PK conflict surfaces as `AlreadyRecorded` for atomic check-and-set.
     pub fn record_token_nonce(
         &self,
         nonce: &str,
@@ -81,9 +53,6 @@ impl Tokens<'_> {
         }
     }
 
-    /// Drop replay records older than `max_age` (typical: 24h, the
-    /// token validity window). Returns the number of pruned rows.
-    /// A periodic background task invokes this.
     pub fn prune_token_replay(&self, max_age_hours: i64) -> Result<usize> {
         let guard = super::lock_conn(self.conn)?;
         let n = guard
@@ -115,10 +84,6 @@ mod tests {
 
     #[test]
     fn record_token_nonce_returns_already_recorded_on_repeat() {
-        // The TOCTOU race fix: a second record_token_nonce for the
-        // same nonce must surface the conflict (not silently no-op
-        // as the old `INSERT OR IGNORE` did). The /v1/enroll handler
-        // turns this into a 409 CONFLICT.
         let db = fresh_db();
         let first = db
             .tokens()

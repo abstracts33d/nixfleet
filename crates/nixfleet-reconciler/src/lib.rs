@@ -1,14 +1,5 @@
 #![allow(clippy::doc_lazy_continuation)]
-//! Pure-function rollout reconciler + step 0 verification.
-//!
-//! - [`verify_artifact`]: parse, canonicalize, signature-verify and
-//!   freshness-check a `fleet.resolved.json` artifact. Returns a
-//!   verified [`FleetResolved`] or a [`VerifyError`].
-//! - [`reconcile`]: pure decision procedure. Takes a verified
-//!   [`FleetResolved`], an [`Observed`] state, and `now`; returns
-//!   `Vec<`[`Action`]`>`.
-//!
-//! Both are stateless: state lives in the inputs.
+//! Pure-function rollout reconciler + sidecar verification. Stateless.
 
 pub mod action;
 pub mod evidence;

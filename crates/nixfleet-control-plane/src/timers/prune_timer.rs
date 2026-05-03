@@ -1,21 +1,4 @@
-//! Periodic SQLite hygiene sweep.
-//!
-//! Every hour, walks the soft-state tables that accumulate without
-//! their own retention semantics:
-//!
-//! - `token_replay` — bootstrap nonces past the 24h validity window
-//!   (`Db::prune_token_replay`)
-//! - `dispatch_history` — terminal audit rows past 90 days
-//!   (`DispatchHistory::prune_history`)
-//! - `host_reports` — event log past 7 days (`Db::prune_host_reports`)
-//! - filesystem `state.db.pre-*` pre-migration backups past 14 days
-//!   (refinery / module activation creates these for safety;
-//!   they're vestigial after a couple of weeks)
-//!
-//! All helpers are idempotent — the task can be killed at any tick
-//! boundary without losing semantics. Mirrors the rollback-timer
-//! shape so operators see `prune` lines in the same JSON-line journal
-//! they already follow.
+//! Hourly SQLite + backup-file hygiene sweep; idempotent steps, kill-safe at any tick.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,15 +15,7 @@ const HOST_REPORTS_RETENTION_HOURS: i64 = 24 * 7;
 const BACKUP_RETENTION_DAYS: u64 = 14;
 const BACKUP_FILENAME_PREFIX: &str = "state.db.pre-";
 
-/// Spawn the periodic prune task. Runs forever; one INFO line per
-/// tick summarising what was pruned. Failures are non-fatal — the
-/// task logs a warn + continues with the next tick.
-///
-/// `db_path` enables the filesystem backup sweep: when set, the task
-/// also deletes `state.db.pre-*` siblings older than
-/// [`BACKUP_RETENTION_DAYS`] from the DB's parent directory. Pass
-/// `None` for in-memory deployments / tests that don't have a backing
-/// file.
+/// `db_path = None` skips the filesystem backup sweep (in-memory deployments).
 pub fn spawn(
     cancel: CancellationToken,
     db: Arc<Db>,
@@ -90,9 +65,7 @@ pub fn spawn(
     })
 }
 
-/// Run a prune step. On `Ok(n)` returns `n`; on `Err` logs a `warn`
-/// with the step's `name` and returns 0 — failures are non-fatal so
-/// the sweep continues to the next step.
+/// On `Err` logs a warn and returns 0 so the sweep continues.
 fn try_prune<E>(name: &str, f: impl FnOnce() -> std::result::Result<usize, E>) -> usize
 where
     E: std::fmt::Display,
@@ -106,13 +79,7 @@ where
     }
 }
 
-/// Delete files in `parent` whose basename starts with `prefix` and
-/// whose mtime is older than `retention_days`. Returns the count of
-/// files actually deleted.
-///
-/// Errors during enumeration propagate (e.g. parent dir missing); a
-/// per-file delete error is logged and counted as not-pruned but does
-/// not abort the sweep.
+/// Per-file delete errors are logged + skipped; enumeration errors propagate.
 pub(crate) fn prune_backup_files(
     parent: &Path,
     prefix: &str,

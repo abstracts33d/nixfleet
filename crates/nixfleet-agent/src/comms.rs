@@ -1,18 +1,4 @@
-//! HTTP client wiring for talking to the control plane.
-//!
-//! Builds an mTLS `reqwest::Client` from the operator-supplied PEM
-//! paths. Provides typed `checkin` and `report` calls that round-
-//! trip the wire types defined in `nixfleet_proto::agent_wire`.
-//!
-//! [`Reporter`] abstracts `post_report`'s capture of `(client, cp_url,
-//! hostname, agent_version)` so the dispatch handlers in `dispatch.rs`
-//! are unit-testable with a capturing fake. Production impl:
-//! [`ReqwestReporter`]. The `confirm` and `checkin` paths take the
-//! raw `(client, cp_url)` pair directly — they have no per-variant
-//! branch logic that benefits from a trait, and the boot-recovery
-//! tests already exercise the relevant code paths through the real
-//! `reqwest::Client` against a transport-error CP. Add a `Confirmer`
-//! trait if a per-variant test surface for confirm appears.
+//! mTLS HTTP client to the control plane: typed checkin/confirm/report calls.
 
 use std::path::Path;
 use std::time::Duration;
@@ -24,19 +10,11 @@ use nixfleet_proto::agent_wire::{
 };
 use reqwest::{Certificate, Client, Identity, StatusCode};
 
-/// Connect timeout. Generous because lab is often on Tailscale and
-/// the first connect after a sleep can be slow. The poll cadence
-/// itself is 60s, so even ~10s connects don't compound badly.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Per-request timeout (handshake + full request lifecycle).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Construct an mTLS-enabled HTTP client. CA cert pins the CP's
-/// fleet CA; the client identity is the agent's per-host cert +
-/// key. TLS-only mode is supported (caller passes None for
-/// `client_cert` and `client_key`); production deploys always wire
-/// both.
+/// TLS-only mode (None cert/key) supported but production always wires both.
 pub fn build_client(
     ca_cert: Option<&Path>,
     client_cert: Option<&Path>,
@@ -67,8 +45,6 @@ pub fn build_client(
     builder.build().context("build reqwest client")
 }
 
-/// POST /v1/agent/checkin. Returns the typed response for the agent
-/// to consume.
 pub async fn checkin(
     client: &Client,
     cp_url: &str,
@@ -90,27 +66,14 @@ pub async fn checkin(
     resp.json::<CheckinResponse>().await.context("parse checkin response")
 }
 
-/// Outcome of POST /v1/agent/confirm. Distinguishes the three
-/// cases the activation loop needs to handle differently:
-/// 204 acknowledged, 410 cancelled (trigger local rollback per
-/// ), other (deadline timer will sort it out).
+/// 204 → Acknowledged; 410 → Cancelled (agent must rollback); else Other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmOutcome {
-    /// 204 No Content — CP accepted the confirmation.
     Acknowledged,
-    /// 410 Gone — CP says the rollout was cancelled OR the deadline
-    /// already passed. Agent should run `nixos-rebuild --rollback`
-    /// per
     Cancelled,
-    /// Any other status code. Treated as "couldn't confirm but
-    /// don't need to take immediate action" — the CP-side rollback
-    /// timer will handle deadline expiry independently.
     Other,
 }
 
-/// POST /v1/agent/confirm. Called after a successful
-/// `nixos-rebuild switch` to acknowledge the activation. Wire shape
-/// per
 pub async fn confirm(
     client: &Client,
     cp_url: &str,
@@ -138,8 +101,6 @@ pub async fn confirm(
     Ok(outcome)
 }
 
-/// POST /v1/agent/report. Used for out-of-band failure events
-/// (verify-failed, fetch-failed, trust-error).
 pub async fn report(
     client: &Client,
     cp_url: &str,
@@ -161,12 +122,7 @@ pub async fn report(
     resp.json::<ReportResponse>().await.context("parse report response")
 }
 
-/// Out-of-band event posting (the `/v1/agent/report` endpoint).
-///
-/// Best-effort by contract: telemetry must never crash the activation
-/// loop. Implementations log on failure and return; they don't
-/// propagate errors. The matching production impl is
-/// [`ReqwestReporter`]; tests inject a capturing fake.
+/// Best-effort by contract: telemetry must never crash the activation loop.
 pub trait Reporter: Send + Sync {
     fn post_report(
         &self,
@@ -175,10 +131,6 @@ pub trait Reporter: Send + Sync {
     ) -> impl std::future::Future<Output = ()> + Send;
 }
 
-/// Production [`Reporter`]: wraps a configured `reqwest::Client`
-/// plus the constants every report needs (`cp_url`, `hostname`,
-/// `agent_version`). Constructed once in `main.rs` and shared
-/// across the dispatch tree.
 pub struct ReqwestReporter {
     client: Client,
     cp_url: String,
@@ -201,16 +153,10 @@ impl ReqwestReporter {
         }
     }
 
-    /// Replace the inner `reqwest::Client` (called after cert renewal
-    /// rebuilds the mTLS identity).
     pub fn replace_client(&mut self, client: Client) {
         self.client = client;
     }
 
-    /// Borrow the inner client for callers that still need to thread
-    /// a `&reqwest::Client` directly (checkin, confirm, manifest
-    /// fetch). Trait-only callers should use the [`Reporter`]
-    /// surface instead.
     pub fn client(&self) -> &Client {
         &self.client
     }

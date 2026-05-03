@@ -1,13 +1,4 @@
 //! Bootstrap enrollment + cert renewal client.
-//!
-//! - On first boot, when the agent's `--client-cert` / `--client-key`
-//!   files don't exist, it reads `--bootstrap-token-file`, generates
-//!   a fresh keypair + CSR, POSTs `/v1/enroll`, writes the issued
-//!   cert + private key atomically.
-//! - During the regular poll loop, when the existing cert has < 50%
-//!   remaining validity, the agent generates a fresh keypair + CSR,
-//!   POSTs `/v1/agent/renew` over the current valid mTLS, writes
-//!   the new cert + key atomically.
 
 use std::path::Path;
 
@@ -21,8 +12,7 @@ use rcgen::{CertificateParams, DnType, KeyPair};
 use reqwest::Client;
 use x509_parser::prelude::*;
 
-/// Generate a fresh keypair + a CSR with `CN=hostname`. Returns the
-/// (PEM CSR, PEM key, raw pubkey bytes for fingerprinting).
+/// Returns (PEM CSR, PEM key, raw pubkey DER for fingerprinting).
 pub fn generate_csr(hostname: &str) -> Result<(String, String, Vec<u8>)> {
     let key = KeyPair::generate().context("generate agent keypair")?;
     let mut params = CertificateParams::default();
@@ -33,8 +23,7 @@ pub fn generate_csr(hostname: &str) -> Result<(String, String, Vec<u8>)> {
     Ok((csr.pem().context("CSR PEM encode")?, key.serialize_pem(), key.public_key_der()))
 }
 
-/// SHA-256 fingerprint (base64) of pubkey DER bytes — matches the CP's
-/// `expected_pubkey_fingerprint` shape in the bootstrap token.
+/// base64 SHA-256 of pubkey DER; matches CP's `expected_pubkey_fingerprint`.
 pub fn fingerprint_pubkey_der(pubkey_der: &[u8]) -> String {
     use base64::Engine;
     let digest = sha2::Sha256::digest(pubkey_der);
@@ -42,9 +31,6 @@ pub fn fingerprint_pubkey_der(pubkey_der: &[u8]) -> String {
 }
 use sha2::Digest;
 
-/// First-boot enrollment. Reads token file, generates CSR, POSTs
-/// `/v1/enroll`, writes the cert + key atomically to the configured
-/// paths.
 pub async fn enroll(
     client: &Client,
     cp_url: &str,
@@ -78,10 +64,6 @@ pub async fn enroll(
     Ok(())
 }
 
-/// Renew the existing cert. Generates a fresh keypair + CSR, POSTs
-/// `/v1/agent/renew` over the current authenticated mTLS connection
-/// (caller wires the existing client identity into `client`), writes
-/// the new cert + key atomically.
 pub async fn renew(
     client: &Client,
     cp_url: &str,
@@ -107,8 +89,7 @@ pub async fn renew(
     Ok(())
 }
 
-/// Atomic write: write to a sibling tempfile then rename, so a crash
-/// mid-write doesn't leave a half-written cert at the canonical path.
+/// Tempfile + rename so a crash mid-write doesn't leave a half-written cert.
 fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path.parent().context("path has no parent")?;
     let tmp = parent.join(format!(
@@ -123,9 +104,7 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Read an existing cert PEM and decide whether it needs renewal.
-/// Returns `(remaining_fraction, not_after)` where
-/// `remaining_fraction < 0.5` means time to renew.
+/// Returns `(remaining_fraction, not_after)`; `< 0.5` means time to renew.
 pub fn cert_remaining_fraction(cert_path: &Path, now: DateTime<Utc>) -> Result<(f64, DateTime<Utc>)> {
     let pem = std::fs::read_to_string(cert_path)
         .with_context(|| format!("read cert {}", cert_path.display()))?;
@@ -143,7 +122,6 @@ pub fn cert_remaining_fraction(cert_path: &Path, now: DateTime<Utc>) -> Result<(
     Ok((remaining, na_dt))
 }
 
-/// Lightweight PEM parser fallback so we don't pull a full pem crate.
 mod pem {
     use anyhow::{Context, Result};
     pub struct Parsed {

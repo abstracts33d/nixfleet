@@ -1,8 +1,5 @@
-//! Defense-in-depth: refuse any dispatched target whose backing
-//! `fleet.resolved.json` is older than the channel's
-//! `freshness_window`. CP applies the same gate at tick start.
-//! Seeing a stale target normally indicates clock skew or a CP gate
-//! that failed open.
+//! Defense-in-depth: refuse targets whose backing fleet.resolved is older
+//! than the channel's freshness window (CP applies the same gate at tick start).
 
 use chrono::{DateTime, Utc};
 use nixfleet_proto::agent_wire::EvaluatedTarget;
@@ -12,13 +9,12 @@ pub const CLOCK_SKEW_SLACK_SECS: i64 = 60;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FreshnessCheck {
     Fresh,
-    /// Agent must refuse activation and post `StaleTarget`.
     Stale {
         signed_at: DateTime<Utc>,
         freshness_window_secs: u32,
         age_secs: i64,
     },
-    /// Older CP didn't relay enough info — fail open with warn.
+    /// Older CP didn't relay enough info — fail open.
     Unknown,
 }
 
@@ -91,7 +87,6 @@ mod tests {
 
     #[test]
     fn fresh_within_slack_past_window() {
-        // 60s slack means age=window+60 is still fresh.
         let signed = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let now = signed + chrono::Duration::seconds(3660);
         let t = target_with(Some(signed), Some(3600));
@@ -100,7 +95,6 @@ mod tests {
 
     #[test]
     fn stale_just_past_slack() {
-        // age=window+61 → stale.
         let signed = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let now = signed + chrono::Duration::seconds(3661);
         let t = target_with(Some(signed), Some(3600));
@@ -131,8 +125,6 @@ mod tests {
 
     #[test]
     fn fresh_when_clock_skew_slightly_negative() {
-        // Agent clock 30s behind signing clock — age is "negative",
-        // never trips the freshness gate.
         let signed = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         let now = signed - chrono::Duration::seconds(30);
         let t = target_with(Some(signed), Some(3600));

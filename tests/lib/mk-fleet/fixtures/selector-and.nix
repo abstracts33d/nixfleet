@@ -1,9 +1,3 @@
-# tests/lib/mk-fleet/fixtures/selector-and.nix
-#
-# Exercises RFC-0001 §3 selector intersection (`and`).
-# Fleet: four hosts with mixed tags. The wave selector
-# { and = [ { tags = ["eu-fr"]; } { tags = ["server"]; } ]; } must
-# resolve to hosts that carry BOTH tags.
 {mkFleet, ...}: let
   stub = import ./_stub-configuration.nix {};
 in

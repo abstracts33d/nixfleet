@@ -1,10 +1,3 @@
-# Crane-based workspace build — layered caching for independent packages,
-# rebuild isolation, and shared dependency artifacts.
-#
-# Layers:
-#   1. cargoArtifacts (buildDepsOnly) — shared compiled deps
-#   2. Per-crate packages (buildPackage) — scoped source per crate, doCheck=false
-#   3. workspace-tests (cargoTest) — one test run for the whole workspace
 {
   lib,
   craneLib,
@@ -23,11 +16,7 @@
     pname = "nixfleet-workspace-deps";
   };
 
-  # Per-crate fileset. Shares the three v0.2 library crates
-  # (nixfleet-proto, nixfleet-canonicalize, nixfleet-reconciler) so
-  # every binary crate has access to the common boundary-contract +
-  # canonicalization surface. `extraFiles` lets callers include
-  # non-Rust files (e.g. SQL migrations under crates/*/migrations/).
+  # Per-crate source: always includes the three shared library crates; `extraFiles` for non-Rust files (e.g. SQL migrations).
   fileSetForCrate = {
     crate,
     extraFiles ? [],
@@ -134,10 +123,6 @@
     cargoExtraArgs = "--workspace --locked";
   };
 
-  # cargo doc HTML for the whole workspace, built sandbox-pure via
-  # crane (shares cargoArtifacts with the binary builds). Consumed by
-  # `packages.docs-site` in modules/rust-packages.nix where it's
-  # composed with the mdbook output and the options reference.
   cargoDocs = craneLib.cargoDoc (commonArgs
     // {
       src = workspaceSrc;

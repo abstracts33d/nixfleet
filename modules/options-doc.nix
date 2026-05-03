@@ -1,17 +1,4 @@
-# Generates a Markdown reference for the framework's NixOS option
-# declarations. Run via `nix build .#options-doc`; the docs pipeline
-# (apps.docs in rust-packages.nix) copies the result into
-# docs/mdbook/src/options.md.
-#
-# Standard tooling: `pkgs.nixosOptionsDoc` is the same renderer
-# nixpkgs uses for the official NixOS option reference. It consumes
-# the `options` attribute of an `lib.evalModules` result.
-#
-# The scope modules reference `inputs.self.packages.<system>.nixfleet-*`,
-# which we'd otherwise have to actually build. For documentation we
-# only need the *option declarations*, never the resolved config — so
-# we pass stubs in specialArgs and set `_module.check = false` to skip
-# strict module-arg validation.
+# LOADBEARING: stubs in specialArgs + _module.check=false; scope modules reference inputs.self.packages.* not built for option docs.
 {...}: {
   perSystem = {
     pkgs,
@@ -40,8 +27,6 @@
     in
       pkgs.nixosOptionsDoc {inherit (eval) options;};
 
-    # Each entry: heading shown above the section + module file.
-    # Modules with non-NixOS shapes (helpers, fragments) are not listed.
     sections = [
       {
         heading = "Trust roots — `nixfleet.trust.*`";

@@ -17,7 +17,7 @@ mkFleet {
       {
         selector.tags = ["role-b"];
         soakMinutes = 10;
-      } # resolves to zero hosts — warning expected
+      }
       {
         selector.all = true;
         soakMinutes = 0;

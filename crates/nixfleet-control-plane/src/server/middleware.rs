@@ -1,18 +1,4 @@
-//! Cross-cutting auth + protocol middleware for the v1 router.
-//!
-//! Three functions, all consumed by `serve.rs`'s router builder:
-//!
-//! - [`require_cn`] — helper that extracts the verified mTLS CN
-//!   from `PeerCertificates` and enforces cert revocation. Handlers
-//!   that need the CN value (e.g. for logging or path-binding)
-//!   call this directly.
-//! - [`require_cn_layer`] — the same auth check expressed as a tower
-//!   middleware. Applied router-wide to the authenticated `/v1/*`
-//!   subset so any future route added there is auth-by-default. The
-//!   `/v1/enroll` endpoint is on a separate anonymous sub-router.
-//! - [`protocol_version_middleware`] — protocol-version header
-//!   enforcement on `/v1/*`. Forward-compat: missing header accepted
-//!   with debug log; present+mismatched returns 426.
+//! Auth + protocol middleware for the v1 router.
 
 use std::sync::Arc;
 
@@ -25,12 +11,7 @@ use crate::auth::auth_cn::PeerCertificates;
 
 use super::state::AppState;
 
-/// Extract the verified CN from `PeerCertificates`, or return 401.
-/// Also enforces cert revocation when `AppState.db` is set: a cert
-/// whose notBefore predates the host's revocation entry is rejected
-/// with 401. Re-enrolled certs (notBefore > revoked_before) pass.
-///
-/// Centralised so each `/v1/*` handler reads identity the same way.
+/// 401 on missing/revoked cert; re-enrolled certs (notBefore > revoked_before) pass.
 pub(super) async fn require_cn(
     state: &AppState,
     peer_certs: &PeerCertificates,
@@ -56,7 +37,7 @@ pub(super) async fn require_cn(
                     return Err(StatusCode::UNAUTHORIZED);
                 }
             }
-            Ok(None) => {} // not revoked
+            Ok(None) => {}
             Err(err) => {
                 tracing::error!(error = %err, "db cert_revoked_before failed");
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -67,15 +48,7 @@ pub(super) async fn require_cn(
     Ok(cn)
 }
 
-/// Authenticated common-name extracted by [`require_cn_layer`] and
-/// inserted into request extensions. Handlers on the authenticated
-/// sub-router consume this via `Extension<AuthenticatedCn>` instead
-/// of re-deriving the CN themselves — the middleware is the boundary,
-/// the type carries the proof.
-///
-/// Constructed only inside [`require_cn_layer`]; cannot be forged by
-/// handler code (the field is private) so its presence is a
-/// type-system witness that auth ran and passed.
+/// Type-system witness that auth ran; private field prevents forgery in handler code.
 #[derive(Clone, Debug)]
 pub(crate) struct AuthenticatedCn(String);
 
@@ -89,16 +62,6 @@ impl AuthenticatedCn {
     }
 }
 
-/// Middleware-shaped wrapper around [`require_cn`]. Applied to every
-/// `/v1/*` route that requires authentication; rejects anonymous
-/// connections with 401 before the handler runs and inserts the
-/// verified CN as an [`AuthenticatedCn`] extension for handler use.
-///
-/// The `/v1/enroll` route is the only intentional exception — it
-/// bootstraps a host's first cert and lives on a separate anonymous
-/// sub-router that this layer is NOT applied to. New auth-required
-/// routes added to the authenticated sub-router get auth for free
-/// (deny-by-default).
 pub(super) async fn require_cn_layer(
     state: Arc<AppState>,
     mut req: HttpRequest<Body>,
@@ -114,21 +77,7 @@ pub(super) async fn require_cn_layer(
     Ok(next.run(req).await)
 }
 
-/// Middleware: enforce `X-Nixfleet-Protocol: <PROTOCOL_MAJOR_VERSION>`
-/// on `/v1/*` requests .
-///
-/// Forward-compat posture: missing header → log debug + accept. This
-/// lets older agents that pre-date the version header keep working
-/// during the transition. Header present + mismatched major → 426
-/// Upgrade Required + log warn.
-///
-/// Strict mode (`AppState.strict`, opt-in via `--strict`): missing
-/// header → 400 Bad Request, no forward-compat slack. See #70.
-///
-/// `/healthz` is not subject to this — it's the operator's status
-/// probe and runs unauthenticated; protocol-versioning the health
-/// check makes the operational debug story worse without buying
-/// anything.
+/// Forward-compat: missing header accepted; mismatched major → 426. Strict mode rejects missing.
 pub(super) async fn protocol_version_middleware(
     strict: bool,
     req: HttpRequest<Body>,

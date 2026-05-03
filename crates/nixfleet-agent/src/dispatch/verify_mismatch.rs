@@ -1,10 +1,5 @@
-//! Switch / post-switch-verify failures: both run the same shape —
-//! emit the failure event, call `rollback()`, emit a follow-up
-//! event whose shape depends on the rollback outcome.
-//!
-//! `compose_rollback_followup_event` is the shared 3-arm match over
-//! `Result<RollbackOutcome>` that produces the correct follow-up
-//! event for either path.
+//! Switch / post-switch-verify failures: emit failure event, rollback, emit
+//! follow-up event whose shape depends on the rollback outcome.
 
 use nixfleet_proto::agent_wire::ReportEvent;
 
@@ -12,15 +7,9 @@ use nixfleet_agent::comms::Reporter;
 
 use super::handler::{try_sign, DispatchCtx, DispatchHandler};
 
-/// Compose the follow-up `ReportEvent` posted after a `rollback()`
-/// call. Shared by `SwitchFailedHandler` and `VerifyMismatchHandler`
-/// — both run the same 3-arm match against `Result<RollbackOutcome>`,
-/// differing only in the success-path reason string and the failure-
-/// path phase prefix.
-///
-/// - `Ok(success)` → `RollbackTriggered { reason: success_reason, .. }`.
-/// - `Ok(partial-fail)` → `ActivationFailed { phase: "{prefix}/{poll-phase}", exit_code, stderr_tail: None, .. }`.
-/// - `Err(transport)` → `ActivationFailed { phase: prefix, exit_code: None, stderr_tail: Some(err), .. }`.
+/// Shared by `SwitchFailedHandler` + `VerifyMismatchHandler`; arms map:
+/// success → `RollbackTriggered`, partial-fail → `ActivationFailed{prefix/poll}`,
+/// transport-err → `ActivationFailed{prefix, stderr_tail: err}`.
 pub(super) fn compose_rollback_followup_event<R: Reporter>(
     rb_outcome: &anyhow::Result<nixfleet_agent::activation::RollbackOutcome>,
     ctx: &DispatchCtx<'_, R>,
@@ -156,10 +145,6 @@ impl DispatchHandler for SwitchFailedHandler {
     }
 }
 
-/// Post-switch verify caught `/run/current-system` resolving to a
-/// basename that is neither expected nor pre-switch. Emit a signed
-/// `VerifyMismatch` then roll back, mirroring the failure-and-rollback
-/// shape of `SwitchFailedHandler`.
 pub(crate) struct VerifyMismatchHandler {
     pub expected: String,
     pub actual: String,

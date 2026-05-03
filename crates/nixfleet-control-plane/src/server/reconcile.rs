@@ -1,14 +1,4 @@
-//! Background reconcile loop.
-//!
-//! Runs every [`RECONCILE_INTERVAL`] (30s default), reads the
-//! in-memory projection of host checkins + Forgejo channel-refs,
-//! verifies the build-time `--artifact` against the trust file,
-//! reconciles, and writes the resulting `FleetResolved` snapshot
-//! into `AppState.verified_fleet` — *only* when the new bytes are
-//! at least as fresh as what's already there. The Forgejo poll
-//! task is the other writer; the freshness gate keeps its
-//! Forgejo-fresh snapshot from being clobbered by the static
-//! build-time bytes.
+//! 30s reconcile loop; freshness gate prevents stale build-time bytes clobbering upstream-fresh snapshot.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,32 +12,13 @@ use crate::{render_plan, tick, TickInputs};
 
 use super::state::{AppState, HostCheckinRecord, RECONCILE_INTERVAL};
 
-/// Spawn the reconcile loop. Each tick:
-/// 1. Reads the channel-refs cache (refreshed by the Forgejo poll
-///   task; falls back to file-backed observed.json when empty).
-/// 2. Builds an `Observed` from the in-memory checkin state +
-///   cached channel-refs.
-/// 3. Verifies the resolved artifact and reconciles against the
-///   projected `Observed`.
-/// 4. Emits the plan via tracing.
-///
-/// Errors at any step are logged and fall through; the loop never
-/// crashes on transient failures.
 pub(super) fn spawn_reconcile_loop(
     cancel: CancellationToken,
     state: Arc<AppState>,
     inputs: TickInputs,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // Prime the verified-fleet snapshot from the build-time
-        // artifact, IF it isn't already populated. The Forgejo
-        // prime in `serve ` runs first and sets it from the
-        // operator's freshest repo bytes; this fallback only fires
-        // when Forgejo isn't configured or its fetch failed. Either
-        // way we don't overwrite a Forgejo-fresh snapshot with a
-        // stale build-time one — that's exactly the regression that
-        // caused lab to stair-step backwards through deploy history
-        // during the GitOps validation pass.
+        // Build-time artifact is the fallback prime; never overwrite an already-primed upstream-fresh snapshot.
         {
             let already_primed = state.verified_fleet.read().await.is_some();
             if !already_primed {
@@ -56,11 +27,6 @@ pub(super) fn spawn_reconcile_loop(
                     ..inputs.clone()
                 };
                 if let Some(fleet) = verify_fleet_only(&prime_inputs) {
-                    // Compute the canonical-bytes hash that anchors
-                    // every rolloutId derivation downstream (RFC-0002
-                    // §4.4). Re-canonicalising the parsed FleetResolved
-                    // is byte-stable. Atomic write of (fleet, hash)
-                    // pair: a torn snapshot would corrupt the anchor.
                     let fleet_hash = nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
                     if let Some(h) = fleet_hash {
                         *state.verified_fleet.write().await =
@@ -82,7 +48,7 @@ pub(super) fn spawn_reconcile_loop(
             } else {
                 tracing::debug!(
                     target: "reconcile",
-                    "verified-fleet snapshot already populated by Forgejo prime; skipping build-time prime",
+                    "verified-fleet snapshot already populated; skipping build-time prime",
                 );
             }
         }
@@ -101,21 +67,12 @@ pub(super) fn spawn_reconcile_loop(
             }
             let now = Utc::now();
 
-            // Snapshot the cache + checkins under read locks. Drop
-            // the locks before doing the (potentially slow) verify +
-            // reconcile work.
             let channel_refs = {
                 let cache = state.channel_refs_cache.read().await;
                 cache.refs.clone()
             };
             let checkins = state.host_checkins.read().await.clone();
 
-            // Active rollouts come from the DB snapshot when the
-            // CP has persistence. Without a DB, the projection
-            // sees no rollouts (same as before this PR landed).
-            // Errors here are logged + treated as empty so the
-            // tick still runs; the reconciler is read-only on
-            // active_rollouts so missing data is conservative.
             let rollouts = match state
                 .db
                 .as_deref()
@@ -129,10 +86,6 @@ pub(super) fn spawn_reconcile_loop(
                 None => Vec::new(),
             };
 
-            // — fold the durable per-host outstanding-event
-            // counts into Observed so the reconciler can emit
-            // Action::WaveBlocked. Empty map on missing DB or query
-            // failure (degraded == old behaviour).
             let compliance_failures_by_rollout = match state
                 .db
                 .as_deref()
@@ -149,11 +102,7 @@ pub(super) fn spawn_reconcile_loop(
                 None => HashMap::new(),
             };
 
-            // Live projection: in-memory checkins + cached channel-refs
-            // + DB-derived rollouts. When the Forgejo poll hasn't
-            // succeeded yet AND no agents have checked in, fall
-            // back to the file-backed observed.json so the deploy-
-            // without-agents path keeps working.
+            // Empty projection falls back to file-backed observed.json (deploy-without-agents path).
             let inputs_now = TickInputs {
                 now,
                 ..inputs.clone()
@@ -170,17 +119,7 @@ pub(super) fn spawn_reconcile_loop(
                 )
             };
 
-            // Snapshot the verified fleet so the dispatch path can
-            // read it. Three preserve rules layered on top:
-            //
-            // 1. Verify-failed tick → preserve previous snapshot.
-            // 2. The build-time artifact path is immutable for the
-            // CP's lifetime, so the bytes verify_fleet_only re-
-            // reads here are the SAME every tick.
-            // 3. Compare `signed_at`: only overwrite if the new
-            // snapshot is at least as fresh as what's already
-            // there. Keeps the Forgejo-fresh snapshot from being
-            // clobbered.
+            // Overwrite only if new snapshot's signed_at >= existing; preserves upstream-fresh state.
             if let Some(fleet) = verified_fleet {
                 let mut guard = state.verified_fleet.write().await;
                 let should_overwrite = match guard.as_ref() {
@@ -188,18 +127,12 @@ pub(super) fn spawn_reconcile_loop(
                     Some(existing) => {
                         match (existing.fleet.meta.signed_at, fleet.meta.signed_at) {
                             (Some(prev), Some(new)) => new >= prev,
-                            // Either lacks signed_at (shouldn't happen
-                            // for verified artifacts) → fall back to
-                            // overwriting.
                             _ => true,
                         }
                     }
                 };
                 if should_overwrite {
                     if let Ok(h) = nixfleet_reconciler::compute_canonical_hash(&fleet) {
-                        // Atomic write of (fleet, hash) pair under a
-                        // single lock: dispatch readers can never see
-                        // a torn snapshot.
                         *guard = Some(crate::server::VerifiedFleetSnapshot {
                             fleet: Arc::new(fleet),
                             fleet_resolved_hash: h,
@@ -223,26 +156,7 @@ pub(super) fn spawn_reconcile_loop(
     })
 }
 
-/// Apply the side-effects of the reconciler's action stream that
-/// require CP-side state mutation:
-///
-/// - `Action::SoakHost` — flip Healthy → Soaked on the host's row.
-/// - `Action::ConvergeRollout` — stamp every open `dispatch_history`
-///   row for the rollout with `terminal_state = 'converged'`. The
-///   operational `host_dispatch_state` row stays Confirmed and is
-///   replaced on the next dispatch. The action is the
-///   reconciler's terminal signal — ConvergeRollout fires only when
-///   every wave is fully Soaked, i.e. no host on that rollout still
-///   has work to do.
-///
-/// Other action variants (HaltRollout, RollbackHost, ChannelUnknown,
-/// WaveBlocked, …) are emitted for journal/observability and don't
-/// write to the DB. Errors per action are logged + skipped; the tick
-/// completes regardless. The action stream is at-least-once: the
-/// reconciler re-emits SoakHost on every tick while the host remains
-/// Healthy + soak elapsed, so transient failures retry on the next
-/// tick automatically. ConvergeRollout is also re-emitted while the
-/// rows survive — first run deletes, subsequent runs are no-ops.
+/// At-least-once action handler; SoakHost + ConvergeRollout mutate DB, others are journal-only.
 async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
     use nixfleet_reconciler::Action;
 
@@ -290,23 +204,11 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                 }
             }
             Action::ConvergeRollout { rollout } => {
-                // Stamp every open `dispatch_history` row for this
-                // rollout with `terminal_state = 'converged'`. The
-                // operational `host_dispatch_state` rows are
-                // intentionally left as 'confirmed' — they're the
-                // host's current state and will be UPSERTed by the
-                // next dispatch. No host_rollout_state cleanup
-                // either; ConvergeRollout is idempotent and
-                // re-emits each tick (handle_wave keeps reading
-                // 'Soaked' rows as wave_all_soaked = true).
                 match db
                     .dispatch_history()
                     .mark_rollout_converged(rollout, chrono::Utc::now())
                 {
-                    Ok(0) => {
-                        // Already stamped by a prior tick — expected
-                        // on every re-emission after the first.
-                    }
+                    Ok(0) => {}
                     Ok(n) => {
                         tracing::info!(
                             target: "converge",
@@ -329,14 +231,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
     }
 }
 
-/// Run a tick using the in-memory projection rather than reading
-/// `observed.json`. Mirrors `crate::tick` but takes the projected
-/// `Observed` from the caller.
-///
-/// Returns both the tick output (for the journal plan) and the
-/// verified `FleetResolved` (for the dispatch path's snapshot in
-/// `AppState`). The fleet is `None` when the tick failed verify
-/// the caller preserves whatever snapshot was previously in place.
+/// Returns `(tick_output, fleet)`; fleet `None` on verify failure so caller preserves prior snapshot.
 fn run_tick_with_projection(
     inputs: &TickInputs,
     checkins: &HashMap<String, HostCheckinRecord>,
@@ -418,11 +313,7 @@ fn run_tick_with_projection(
     )
 }
 
-/// Verify-only variant for the empty-projection fallback path. The
-/// caller runs the rest of the tick via `crate::tick` — this just
-/// produces the verified fleet snapshot for `AppState.verified_fleet`.
-/// Returns `None` when verify fails; the caller preserves the prior
-/// snapshot.
+/// `None` on verify failure → caller preserves prior snapshot.
 pub(super) fn verify_fleet_only(inputs: &TickInputs) -> Option<FleetResolved> {
     let artifact = std::fs::read(&inputs.artifact_path).ok()?;
     let signature = std::fs::read(&inputs.signature_path).ok()?;

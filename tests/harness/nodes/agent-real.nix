@@ -1,25 +1,3 @@
-# Real-binary agent microVM node. Drives the framework's
-# `services.nixfleet-agent` module (modules/scopes/nixfleet/_agent.nix)
-# so the harness boots the same systemd unit + ExecStart shape operators
-# get when consuming nixfleet.
-#
-# Talks to `cp-real` over mTLS. Pre-placed client cert + key + CA + trust
-# mean enrollment is skipped (the harness's mkTlsCerts hands the agent a
-# CA-signed cert directly); the agent comes up, polls /v1/agent/checkin
-# every poll_interval seconds, and reports its currentGeneration.
-#
-# Activation IS wired in the binary (activation.rs realises +
-# switches + verifies + confirms); the harness avoids triggering
-# it by giving the fleet fixture a `closureHash: null` per host —
-# dispatch returns Decision::NoDeclaration and the agent never
-# receives a target. Future scenarios that exercise activation
-# fork this node and inject a closureHash that matches the
-# microVM's actual /run/current-system.
-#
-# Network: same qemu user-net pattern as nodes/agent.nix —
-# 10.0.2.2 from inside the microVM is the host VM where cp-real's
-# systemd unit listens. /etc/hosts maps the cert's CN ("cp") to
-# that gateway IP.
 {
   lib,
   pkgs,
@@ -34,10 +12,6 @@
   ...
 }: {
   imports = [
-    # Trust-root + persistence option schemas the framework module
-    # reads. Defaults (all keys null) are fine: the test points
-    # `trustFile` at the fixture's pre-built test-trust.json so the
-    # module's auto-generated trust.json is unused.
     ../../../contracts/trust.nix
     ../../../contracts/persistence.nix
     ../../../modules/scopes/nixfleet/_agent.nix
@@ -45,31 +19,16 @@
 
   microvm = harnessMicrovmDefaults;
 
-  # Harness microvms run behind qemu user-net (NAT-isolated, no
-  # external inbound) and the agent is an outbound-only client. The
-  # default NixOS firewall can spend 3+ minutes starting under
-  # heavy concurrent fleet-N boot, blocking multi-user.target.
-  # Disabling it eliminates the cold-boot bottleneck without changing
-  # production hosts (which still get the firewall via non-harness
-  # modules).
+  # Default firewall startup blocks multi-user.target for 3+ minutes
+  # under concurrent fleet-N boot.
   networking.firewall.enable = false;
 
-  # microvm.nix uses systemd-networkd by default but doesn't
-  # auto-configure DHCP on the user-net interface; without explicit
-  # config the guest's stack ignores qemu's DHCP offers and the
-  # agent's first checkin returns ENETUNREACH (os error 101).
-  # `networking.useDHCP` doesn't take effect under networkd; we
-  # have to give networkd an explicit .network unit.
-  #
-  # `RequiredForOnline = "routable"` is load-bearing: the default
-  # ("degraded") makes network-online.target fire even when no IP
-  # is assigned, masking the DHCP failure as an agent-level bug.
-  # "routable" requires an actual default route, gating the agent
-  # service correctly via its `wants = network-online.target`.
+  # microvm.nix uses networkd but won't auto-configure DHCP on user-net.
   networking.useNetworkd = lib.mkDefault true;
   systemd.network.networks."10-vm-net" = {
     matchConfig.Name = "en* eth*";
     networkConfig.DHCP = "yes";
+    # FOOTGUN: RequiredForOnline=routable; default "degraded" fires before DHCP, masking failures.
     linkConfig.RequiredForOnline = "routable";
   };
 
@@ -80,9 +39,6 @@
     "nixfleet-agent/test-trust.json".source = "${signedFixture}/test-trust.json";
   };
 
-  # The agent's reqwest client connects to "cp" — /etc/hosts pins it
-  # to the qemu user-net gateway IP (10.0.2.2 by default). Cert SAN
-  # (CN=cp, SAN includes "cp" + "localhost") accepts the hostname.
   networking.hosts."${controlPlaneHost}" = ["cp"];
 
   services.nixfleet-agent = {
@@ -100,20 +56,7 @@
     };
   };
 
-  # Surface the agent's journal in the host VM via console forwarding
-  # so scenarios can grep `microvm@<name>.service` without per-VM
-  # journal mounts. The framework module's serviceConfig doesn't set
-  # this (production deploys go through journald → vector → rsyslog),
-  # so override here for the harness.
-  #
-  # `ExecStartPre` waits for an actual default route. systemd's
-  # `network-online.target` and `RequiredForOnline=routable` both
-  # fire prematurely in the qemu user-net + microvm.nix combo —
-  # the agent otherwise hits ENETUNREACH on its first checkin and
-  # spends its retry budget waiting for DHCP that already fired. The
-  # explicit gate makes networking-up the precondition for the
-  # agent's main process actually starting, so the test budget
-  # measures agent activity rather than DHCP timing.
+  # GOTCHA: ExecStartPre waits for default route; network-online.target fires prematurely on user-net (ENETUNREACH).
   systemd.services.nixfleet-agent.serviceConfig = {
     StandardOutput = "journal+console";
     StandardError = "journal+console";

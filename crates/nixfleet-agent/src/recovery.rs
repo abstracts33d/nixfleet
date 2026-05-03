@@ -1,22 +1,5 @@
-//! Boot-time recovery for fire-and-forget activation.
-//!
-//! The fire-and-forget pattern (see `crates/nixfleet-agent/src/activation.rs`)
-//! commonly lets the agent be SIGTERMed mid-poll: the new closure restarts
-//! `nixfleet-agent.service`, the agent dies, but `nixfleet-switch.service`
-//! continues independently and lands the activation. The post-self-switch
-//! agent boots into the new closure and needs to know "what was I dispatching"
-//! to acknowledge the activation to the CP — otherwise the CP runs out the
-//! confirm deadline and rolls a successful host back.
-//!
-//! `run_boot_recovery` is the agent-startup hook that closes that gap. It
-//! reads `<state-dir>/last_dispatched` (written by main before firing) and
-//! compares to the current `/run/current-system` basename. Match → post the
-//! retroactive `/v1/agent/confirm`. Mismatch → clear the stale record and
-//! let the regular checkin loop re-decide.
-//!
-//! Extracted from `main.rs` so the decision logic is unit-testable: the
-//! `current_closure` is passed in rather than read from the live filesystem,
-//! so tests inject synthetic values.
+//! Boot-time recovery: a post-self-switch agent reads `last_dispatched` to
+//! retroactively confirm the in-flight target before its deadline expires.
 
 use std::path::Path;
 
@@ -24,38 +7,18 @@ use nixfleet_proto::agent_wire::EvaluatedTarget;
 
 use crate::{activation, checkin_state, comms};
 
-/// Outcome of the recovery decision. Exposed so tests can assert on
-/// the branch taken without observing side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryAction {
-    /// No `last_dispatched` record exists — first boot or no
-    /// in-flight dispatch from a prior agent run.
     NoRecord,
-    /// `current_closure` couldn't be read (e.g. test harness with
-    /// no `/run/current-system`). Recovery was skipped.
     NoCurrent,
-    /// `current_closure != last_dispatched.closure_hash` — the
-    /// dispatch never landed (or rolled back). Stale record cleared,
-    /// next regular checkin will re-decide.
     StaleClearedMismatch,
-    /// `current == last_dispatched.closure_hash` — the self-switch
-    /// landed. Posted the retroactive `/v1/agent/confirm`. The
-    /// `confirm_outcome` distinguishes Acknowledged / Cancelled / etc.
     PostedConfirm {
         confirm_outcome: comms::ConfirmOutcome,
     },
-    /// Posted the retroactive confirm but the POST itself errored.
-    /// Record left in place; next cycle retries.
     PostedConfirmFailed { error: String },
 }
 
-/// Run the boot-recovery decision flow. Returns the action taken so
-/// callers (tests, future operator-status surfaces) can introspect.
-///
-/// Best-effort: failures inside the function are logged, never
-/// propagated. The main loop's regular checkin cadence is the safety
-/// net — total recovery failure means "agent eventually re-converges
-/// via dispatch".
+/// Best-effort: failures are logged, never propagated; main poll re-converges.
 pub async fn run_boot_recovery(
     client: &reqwest::Client,
     state_dir: &Path,
@@ -120,12 +83,8 @@ async fn decide_and_run(
         return RecoveryAction::StaleClearedMismatch;
     }
 
-    // Match — post retroactive confirm.
     let boot_id = crate::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
-    // Synthesize an EvaluatedTarget shape from the persisted record.
-    // signed_at + freshness_window_secs deliberately None: the
-    // freshness gate already passed when we first dispatched, and
-    // the agent's confirm path doesn't re-check those fields.
+    // LOADBEARING: signed_at/freshness_window_secs None — freshness already passed at dispatch.
     let synthetic_target = EvaluatedTarget {
         closure_hash: dispatched.closure_hash.clone(),
         channel_ref: dispatched.channel_ref.clone(),
@@ -150,11 +109,6 @@ async fn decide_and_run(
     .await
     {
         Ok(outcome) => {
-            // On Acknowledged: write last_confirmed + clear dispatch.
-            // On Cancelled: CP already rolled this back via deadline;
-            // the system is on the new closure but CP says not.
-            // Run rollback to converge.
-            // On Other: leave record in place; next cycle retries.
             match outcome {
                 comms::ConfirmOutcome::Acknowledged => {
                     if let Err(err) = checkin_state::write_last_confirmed(
@@ -170,16 +124,8 @@ async fn decide_and_run(
                     let _ = checkin_state::clear_last_dispatched(state_dir);
                 }
                 comms::ConfirmOutcome::Cancelled => {
-                    // If rollback fails we MUST keep last_dispatched
-                    // so the next-boot recovery loop retries. Clearing
-                    // it on failure would create invisible split-brain
-                    // (CP rolled back, host still on the new closure,
-                    // agent forgot a target ever existed).
-                    //
-                    // `activation::rollback()` returns Ok(Failed { .. })
-                    // for in-band failures (nix-env exit ≠ 0, poll
-                    // timeout) and Err(_) only for spawn errors — we
-                    // must inspect the outcome, not just the Result.
+                    // LOADBEARING: rollback failure must NOT clear last_dispatched (clearing splits brain).
+                    // GOTCHA: rollback() returns Ok(Failed) for in-band failure — inspect outcome, not just Result.
                     match activation::rollback().await {
                         Ok(outcome) if outcome.success() => {
                             let _ = checkin_state::clear_last_dispatched(state_dir);
@@ -199,9 +145,7 @@ async fn decide_and_run(
                         }
                     }
                 }
-                comms::ConfirmOutcome::Other => {
-                    // Leave record in place.
-                }
+                comms::ConfirmOutcome::Other => {}
             }
             RecoveryAction::PostedConfirm {
                 confirm_outcome: outcome,
@@ -263,7 +207,6 @@ mod tests {
         )
         .await;
         assert_eq!(action, RecoveryAction::NoCurrent);
-        // Record should still be there for the next attempt.
         assert!(checkin_state::read_last_dispatched(dir.path())
             .unwrap()
             .is_some());
@@ -295,8 +238,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         checkin_state::write_last_dispatched(dir.path(), &sample_record("matching-closure"))
             .unwrap();
-        // CP URL points at an unreachable port. Recovery should attempt
-        // the POST, hit a transport error, and surface as PostedConfirmFailed.
         let action = decide_and_run(
             &dummy_client(),
             dir.path(),
@@ -311,7 +252,6 @@ mod tests {
             }
             other => panic!("expected PostedConfirmFailed, got {other:?}"),
         }
-        // Record should remain so the next cycle can retry.
         assert!(
             checkin_state::read_last_dispatched(dir.path())
                 .unwrap()

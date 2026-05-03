@@ -1,22 +1,10 @@
-# hostSpec - identity carrier for every host.
-#
-# Framework-level options only - scope/role/profile/hardware concerns
-# live elsewhere:
-# - `nixfleet.<scope>.*` options for contract impls come from
-#   `flake.scopes.*` (this repo's `impls/`).
-# - Service options, role bundles, hardware, and `fleet.*` options
-#   come from the consuming fleet.
-#
-# Posture flags (`isImpermanent`, `isServer`, `isMinimal`) that lived
-# here in earlier revisions have been removed — their roles are played
-# by per-scope `enable` options set in fleet-side role bundles.
+# hostSpec — identity carrier for every host.
 {
   config,
   lib,
   ...
 }: {
   options.hostSpec = {
-    # --- Identity ---
     hostName = lib.mkOption {
       type = lib.types.str;
       description = "The hostname of the host";
@@ -45,7 +33,6 @@
       '';
     };
 
-    # --- Locale / keyboard ---
     timeZone = lib.mkOption {
       type = lib.types.str;
       default = "UTC";
@@ -62,7 +49,6 @@
       description = "XKB keyboard layout";
     };
 
-    # --- Access ---
     rootHashedPasswordFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -80,21 +66,18 @@
       '';
     };
 
-    # --- Networking ---
     networking = lib.mkOption {
       default = {};
       type = lib.types.attrsOf lib.types.anything;
       description = "An attribute set of networking information (e.g. `interface` hint for DHCP).";
     };
 
-    # --- Secrets backend hint (backend-agnostic) ---
     secretsPath = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Hint for secrets repo path. Framework-agnostic - no agenix coupling.";
     };
 
-    # --- Platform ---
     isDarwin = lib.mkOption {
       type = lib.types.bool;
       default = false;

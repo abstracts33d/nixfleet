@@ -1,6 +1,4 @@
-# Two fleet inputs declaring the same channel name: mergeFleets must throw.
-# Channels are strict-merged (unlike rolloutPolicies, which follow later-wins
-# per RFC-0001 §5).
+# Channels strict-merge; rolloutPolicies follow later-wins.
 {mergeFleets, ...}: let
   stub = import ../fixtures/_stub-configuration.nix {};
   fleetWithChannel = hostName: freshness: {

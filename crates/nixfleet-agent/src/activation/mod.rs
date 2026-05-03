@@ -1,46 +1,6 @@
-//! Agent-side activation: install + boot the closure the CP issued.
-//!
-//! Three checks around the platform's switch primitive make the
-//! agent the last line of defense against a misbehaving substituter
-//! or tampered CP:
-//!
-//! 1. **Pre-realise** (`nix-store --realise`) — forces substituter
-//!    fetch + signature validation before we commit to switching.
-//! 2. **Switch** — `ActivationBackend::fire_switch` dispatches to the
-//!    cfg-selected `LinuxBackend` or `DarwinBackend` impl.
-//! 3. **Post-verify** — `/run/current-system` basename must match
-//!    the expected closure_hash; mismatch → local rollback.
-//!
-//! Together these close: "the agent either confirms the *exact*
-//! closure the CP told it about, or rolls back" — without trusting
-//! the substituter or the CP. CP-side magic rollback (deadline →
-//! 410) is independent and additive.
-//!
-//! ## Module layout
-//!
-//! - [`backend`] — `ActivationBackend` trait + cfg-selected
-//!   `LinuxBackend`/`DarwinBackend` re-exports + `DEFAULT_BACKEND`.
-//! - [`outcome`] — `ActivationOutcome` / `RollbackOutcome` enums +
-//!   poll-budget constants.
-//! - [`pipeline`] — `activate_with()`, the platform-agnostic
-//!   activate path (realise → set-profile → fire → poll → self-correct).
-//! - [`rollback`] — `rollback_with()`, the rollback counterpart.
-//! - [`realise`] — `nix-store --realise` wrapper + signature-error
-//!   heuristic.
-//! - [`verify_poll`] — `/run/current-system` poll loop + outcome.
-//! - [`profile`] — profile-flip helpers (self-correction, target
-//!   resolution).
-//! - [`linux`] / [`darwin`] — platform-specific backend impls.
-//!
-//! Production callers use the parameterless façades
-//! (`activate(target)`, `rollback()`) which resolve to
-//! `DEFAULT_BACKEND` at call time. Issue #67's pluggable backend
-//! extension (SystemManager, microVM) lands by adding a third
-//! unit-struct that implements the same trait.
-//!
-//! `setsid` + a detached child is what makes darwin activation
-//! survive the agent's own SIGTERM during plist reload (`nohup`
-//! doesn't work in launchd's no-controlling-tty context).
+//! Agent-side activation: pre-realise (force fetch + sig verify) → switch via
+//! the platform `ActivationBackend` → post-verify `/run/current-system` against
+//! the expected closure or rollback. CP-side magic-rollback is independent.
 
 use anyhow::Result;
 use nixfleet_proto::agent_wire::EvaluatedTarget;
@@ -69,26 +29,17 @@ pub use pipeline::activate_with;
 pub use realise::RealiseError;
 pub use rollback_mod::rollback_with;
 
-/// Activate via realise → set-profile → fire-and-forget switch →
-/// poll → self-correct. Single attempt per call; retry comes from
-/// the agent's main poll loop (in-call retry would trip the CP's
-/// confirm deadline because each attempt is gated by `POLL_BUDGET`).
-///
-/// Façade over `activate_with(&DEFAULT_BACKEND, target)`.
+/// Single attempt per call; retry is the main poll loop's job (in-call retry
+/// would trip the CP confirm deadline since each attempt eats `POLL_BUDGET`).
 pub async fn activate(target: &EvaluatedTarget) -> Result<ActivationOutcome> {
     activate_with(&DEFAULT_BACKEND, target).await
 }
 
-/// Façade over `rollback_with(&DEFAULT_BACKEND)`. Caller must invoke
-/// exactly once per failed activation — running twice rolls back
-/// twice.
+/// Caller must invoke exactly once per failed activation.
 pub async fn rollback() -> Result<RollbackOutcome> {
     rollback_with(&DEFAULT_BACKEND).await
 }
 
-/// `Acknowledged` (204): done. `Cancelled` (410): CP says the
-/// rollout was cancelled or deadline expired — agent rolls back.
-/// `Other`: logged; the CP's rollback timer catches deadline expiry.
 pub async fn confirm_target(
     client: &reqwest::Client,
     cp_url: &str,
@@ -141,11 +92,6 @@ pub async fn confirm_target(
 
 #[cfg(test)]
 mod tests {
-    //! Pure-logic tests for path-comparison + variant shape +
-    //! cfg-selected backend behaviour. Realise/switch path itself
-    //! is covered by the microvm harness — unit-level mocking of
-    //! `Command` is more friction than payoff.
-
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
@@ -159,9 +105,6 @@ mod tests {
 
     use nixfleet_proto::agent_wire::EvaluatedTarget;
 
-    /// Stand-in for `read_current_system_basename` that takes the
-    /// (already-resolved) symlink target as a path and returns the
-    /// basename.
     fn basename_of(target: &Path) -> Result<String> {
         target
             .file_name()
@@ -305,10 +248,7 @@ mod tests {
 
     #[test]
     fn switch_failed_phase_strings_are_stable() {
-        // Phase strings are part of the wire (passed up to CP via
-        // ReportEvent::ActivationFailed); locking them here ensures
-        // any rename surfaces as a test failure rather than silently
-        // changing the report contract.
+        // LOADBEARING: phase strings are wire contract — rename breaks CP correlation.
         for phase in &[
             "nix-env-set",
             "systemd-run-fire",
@@ -414,13 +354,6 @@ mod tests {
         assert!(looks_like_signature_error(s));
     }
 
-    /// Sanity check: a non-platform `ActivationBackend` impl can be
-    /// constructed and substituted into `is_switch_in_progress` /
-    /// `read_unit_exit_code` without depending on `/run/nixos/...`
-    /// or `systemctl`. The fake's behaviour is what the harness
-    /// will rely on once #67's other backends (system-manager,
-    /// microvm) land — wiring them is then "implement the trait,
-    /// no caller-side change".
     struct FakeBackend {
         switch_in_progress: bool,
         unit_exit_code: Option<i32>,

@@ -1,5 +1,4 @@
-//! Authentication subsystem — mTLS peer-cert binding (`auth_cn`) and
-//! enrollment-token issuance / cert minting (`issuance`).
+//! Auth: mTLS peer-cert binding and enrollment cert issuance.
 
 pub mod auth_cn;
 pub mod issuance;

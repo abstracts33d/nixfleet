@@ -1,34 +1,8 @@
-//! Typed state-machine enums for CP persistence rows.
-//!
-//! Mirrors the proto-side `compliance::GateMode` pattern: a single
-//! Rust enum, with `as_db_str` / `from_db_str` accessors for the
-//! SQLite boundary. The SQL CHECK constraints + column types stay
-//! `TEXT`; the canonical literals are emitted from this module so
-//! every call site reads the same source of truth.
-//!
-//! Keeping the enum in a sibling module to `db.rs` avoids pulling
-//! a domain-specific type into the proto crate (it's CP-private
-//! the agent never sees `host_dispatch_state.state` strings) while
-//! still letting `db.rs`, `rollback_timer.rs`, and any future SQL
-//! call sites share the same compile-time-checked variant names.
+//! Typed enums for CP persistence rows; canonical SQL literals via `as_db_str`/`from_db_str`.
 
 use anyhow::{anyhow, Result};
 
-/// Per-host activation lifecycle. Persisted as TEXT in
-/// `host_dispatch_state.state` with a CHECK constraint over the
-/// canonical literals returned by [`PendingConfirmState::as_db_str`].
-///
-/// Lifecycle:
-/// - [`Pending`](Self::Pending): row created by the dispatch loop;
-///   the agent has been told to activate but has not yet confirmed.
-/// - [`Confirmed`](Self::Confirmed): the agent posted
-///   `/v1/agent/confirm` (or the orphan-recovery path inserted a
-///   synthetic row directly in this state).
-/// - [`RolledBack`](Self::RolledBack): the magic-rollback timer
-///   tripped — `confirm_deadline` passed without confirmation —
-///   or the report handler closed the rollback-and-halt loop.
-/// - [`Cancelled`](Self::Cancelled): operator-driven cancellation
-///   path (reserved; no caller emits this yet).
+/// Per-host activation lifecycle persisted in `host_dispatch_state.state`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PendingConfirmState {
     Pending,
@@ -38,8 +12,6 @@ pub enum PendingConfirmState {
 }
 
 impl PendingConfirmState {
-    /// Canonical SQLite literal. Matches the CHECK constraint in
-    /// the schema's`host_dispatch_state.state` column.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             PendingConfirmState::Pending => "pending",
@@ -49,9 +21,7 @@ impl PendingConfirmState {
         }
     }
 
-    /// Parse a TEXT column value back into the typed variant.
-    /// Returns an error on unknown strings so a future schema
-    /// drift surfaces loudly rather than silently mis-classifying.
+    /// Errors loudly on unknown strings to surface schema drift.
     pub fn from_db_str(s: &str) -> Result<Self> {
         match s {
             "pending" => Ok(PendingConfirmState::Pending),
@@ -63,13 +33,7 @@ impl PendingConfirmState {
     }
 }
 
-/// Terminal classification stamped on `dispatch_history.terminal_state`
-/// when a host's dispatch reaches the end of its lifecycle. Distinct
-/// from [`PendingConfirmState`]: operational state has both pre-
-/// terminal (Pending/Confirmed) and terminal (RolledBack/Cancelled)
-/// values, while audit only records what terminal a dispatch
-/// eventually reached. Confirmed rows that the reconciler later
-/// converges land here as `Converged`.
+/// Terminal class on `dispatch_history.terminal_state`; distinct from operational state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TerminalState {
     Converged,
@@ -78,8 +42,6 @@ pub enum TerminalState {
 }
 
 impl TerminalState {
-    /// Canonical SQLite literal. Matches the CHECK constraint in
-    /// the schema's`dispatch_history.terminal_state`.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             TerminalState::Converged => "converged",
@@ -89,25 +51,12 @@ impl TerminalState {
     }
 }
 
-/// Per-host rollout state machine. Re-exported from
-/// [`nixfleet_proto`] so the CP and the reconciler share a single
-/// source of truth for the variant set + literals; the SQL
-/// CHECK constraint on `host_rollout_state.host_state` is bridged to
-/// this enum by the `host_rollout_state_check_matches_enum` test in
-/// `observed_projection.rs`.
 pub use nixfleet_proto::HostRolloutState;
 
-/// Side-channel mutation of `host_rollout_state.last_healthy_since`
-/// passed alongside a state transition. Kept off the state-machine
-/// enum because the marker is orthogonal to `host_state` — entering
-/// Healthy stamps it, but every other transition leaves it alone
-/// unless explicitly cleared.
+/// Side-channel mutation of `last_healthy_since`; orthogonal to state transitions.
 #[derive(Debug, Clone, Copy)]
 pub enum HealthyMarker {
-    /// Stamp `last_healthy_since` with the given timestamp. Used when
-    /// transitioning into Healthy.
     Set(chrono::DateTime<chrono::Utc>),
-    /// Leave the column as-is. Default for non-Healthy transitions.
     Untouched,
 }
 
@@ -130,22 +79,14 @@ mod tests {
     #[test]
     fn unknown_strings_error() {
         assert!(PendingConfirmState::from_db_str("").is_err());
-        assert!(PendingConfirmState::from_db_str("Pending").is_err()); // case-sensitive
+        assert!(PendingConfirmState::from_db_str("Pending").is_err());
         assert!(PendingConfirmState::from_db_str("rolledback").is_err());
     }
 
     #[test]
     fn terminal_state_literals_match_check_constraint() {
-        // Bridge to the schema'sCHECK constraint on
-        // dispatch_history.terminal_state. Hard-coded so a future
-        // rename catches the drift.
         assert_eq!(TerminalState::Converged.as_db_str(), "converged");
         assert_eq!(TerminalState::RolledBack.as_db_str(), "rolled-back");
         assert_eq!(TerminalState::Cancelled.as_db_str(), "cancelled");
     }
-
-    // HostRolloutState round-trip + unknown-string tests live with
-    // the canonical enum in `nixfleet-proto`. The SQL/enum bridge
-    // (`host_rollout_state_check_matches_enum`) stays here in CP
-    // since it parses the local `migrations/V001__schema.sql` file.
 }

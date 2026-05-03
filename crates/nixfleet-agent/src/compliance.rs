@@ -1,15 +1,5 @@
-//! Runtime compliance gate.
-//!
-//! After fire-and-forget activation, before posting confirm: trigger
-//! the evidence collector and verify it produced fresh evidence
-//! against the new closure. Without this gate the rollout engine
-//! could promote a non-compliant host on yesterday's PASS data.
-//!
-//! Same freshness-verify-after-async-trigger pattern as activation:
-//! don't trust the async trigger fired, verify the post-condition.
-//!
-//! Fleets without `nixfleet-compliance` deployed have no collector
-//! unit; the gate detects this and skips cleanly (debug log).
+//! Runtime compliance gate: trigger collector + verify fresh evidence
+//! before confirm, so rollouts don't promote on stale PASS data.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -19,19 +9,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-/// Matches `compliance.evidence.collector.outputDir` in
-/// nixfleet-compliance.
 pub const DEFAULT_EVIDENCE_PATH: &str = "/var/lib/nixfleet-compliance/evidence.json";
 
 pub const COLLECTOR_UNIT: &str = "compliance-evidence-collector.service";
 
-/// Generous: the collector typically completes in <2s on lab; the
-/// budget covers hosts with many probes or slow disks.
 pub const COLLECTOR_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// "Evidence collected within N seconds of activation_completed_at"
-/// — agent and collector share a kernel, so this isn't strictly
-/// clock skew, but the slack absorbs runtime noise.
+/// Slack for collector-vs-activation timestamps; absorbs runtime noise.
 pub const TIMESTAMP_SLACK_SECS: i64 = 60;
 
 pub use nixfleet_proto::compliance::GateMode;
@@ -46,8 +30,7 @@ pub struct ComplianceEvidence {
     pub overall: String,
 }
 
-/// `framework_articles` is `{nis2: ["21(b)"], iso27001: ["A.8.15"]}`
-/// on the wire; callers flatten to `framework:article` strings.
+/// `framework_articles` is `{nis2: [...], iso27001: [...]}` on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlEvidence {
     pub control: String,
@@ -60,24 +43,16 @@ pub struct ControlEvidence {
 
 #[derive(Debug, Clone)]
 pub enum GateOutcome {
-    /// All controls compliant on fresh evidence. Confirm.
     Pass {
         evidence: ComplianceEvidence,
     },
-    /// At least one control non-compliant on fresh evidence. Agent
-    /// posts one `ComplianceFailure` per failing control; CP decides
-    /// whether to block confirm.
     Failures {
         evidence: ComplianceEvidence,
         failures: Vec<ControlEvidence>,
     },
-    /// Collector not installed; non-compliance fleets are valid.
     Skipped {
         reason: String,
     },
-    /// Collector failed/timed out, or evidence stale relative to
-    /// `activation_completed_at`. Agent posts `RuntimeGateError`
-    /// and refuses confirm; magic-rollback fires on the deadline.
     GateError {
         reason: String,
         collector_exit_code: Option<i32>,
@@ -85,12 +60,7 @@ pub enum GateOutcome {
     },
 }
 
-/// Resolution:
-/// - explicit `Disabled` → `Disabled`
-/// - `Permissive`/`Enforce` + collector present → that mode
-/// - `Permissive`/`Enforce` + collector absent → `Disabled` + warn
-///   (operator misconfigured: measurement requested but no collector)
-/// - `None` (auto) → `Permissive` if present, `Disabled` if absent
+/// `None` means auto: Permissive if collector present, Disabled if not.
 pub async fn resolve_mode(input: Option<GateMode>) -> GateMode {
     let collector_present = collector_unit_present().await;
     match input {
@@ -116,24 +86,8 @@ pub async fn resolve_mode(input: Option<GateMode>) -> GateMode {
     }
 }
 
-/// Run the runtime compliance gate.
-///
-/// Caller is expected to have resolved the mode via `resolve_mode`
-/// before invoking. `Disabled` short-circuits to `Skipped` — caller
-/// can pass it through unchanged. The gate's main work runs only
-/// for `Permissive` and `Enforce`; the difference between those
-/// two is interpreted by the caller (whether `GateError` blocks
-/// confirm), not by the gate body.
-///
-/// Sequence:
-/// 1. If `Disabled`: return `Skipped` immediately. No state changes,
-///   no events, no journal warnings.
-/// 2. Trigger `systemctl start --wait <unit>` with bounded timeout.
-///   The collector unit's presence was confirmed by `resolve_mode`
-///   so this is expected to find the unit.
-/// 3. Read evidence.json.
-/// 4. Verify timestamp >= `activation_completed_at - SLACK`.
-/// 5. Classify into Pass / Failures based on `controls[*].status`.
+/// `Disabled` short-circuits to `Skipped`; caller decides whether `GateError`
+/// blocks confirm (the gate body itself does not gate).
 pub async fn run_runtime_gate(
     activation_completed_at: DateTime<Utc>,
     evidence_path: &Path,
@@ -191,7 +145,7 @@ pub async fn run_runtime_gate(
         }
     };
 
-    // Freshness: evidence must be collected ≥ activation - slack.
+    // LOADBEARING: evidence must be >= activation-slack — stale PASS would let rollouts promote on old data.
     let min_acceptable =
         activation_completed_at - chrono::Duration::seconds(TIMESTAMP_SLACK_SECS);
     if evidence.timestamp < min_acceptable {
@@ -222,7 +176,6 @@ pub async fn run_runtime_gate(
     }
 }
 
-/// Detect whether the collector unit exists on this host.
 async fn collector_unit_present() -> bool {
     Command::new("systemctl")
         .arg("cat")
@@ -242,8 +195,7 @@ enum TriggerError {
     Spawn(anyhow::Error),
 }
 
-/// `--wait` blocks until the oneshot unit exits. Wall-clock timeout
-/// protects against a stuck probe.
+/// Wall-clock timeout guards against a stuck probe.
 async fn trigger_collector_with_timeout(
     timeout: Duration,
 ) -> std::result::Result<(), TriggerError> {
@@ -273,9 +225,7 @@ async fn read_evidence(path: &Path) -> Result<ComplianceEvidence> {
     Ok(parsed)
 }
 
-/// Flatten `framework_articles` (an attrset on the wire) into a
-/// `vec!["framework:article", ...]` for `ReportEvent::ComplianceFailure`.
-/// Defensive against the field being null / non-attrset.
+/// Flatten `{nis2: [...]}` to `vec!["nis2:art", ...]`; tolerates non-attrsets.
 pub fn flatten_framework_articles(value: &serde_json::Value) -> Vec<String> {
     let Some(obj) = value.as_object() else {
         return Vec::new();
@@ -295,8 +245,7 @@ pub fn flatten_framework_articles(value: &serde_json::Value) -> Vec<String> {
     out
 }
 
-/// Bounds wire payload size. Operators have the full `evidence.json`
-/// on-host for triage; the wire copy is a hint, not source of truth.
+/// Bounds wire payload size; full evidence.json stays on-host.
 pub fn truncate_evidence_snippet(checks: &serde_json::Value) -> serde_json::Value {
     let serialized = serde_json::to_string(checks)
         .expect("serde_json::to_string on a serde_json::Value is infallible");
@@ -310,7 +259,6 @@ pub fn truncate_evidence_snippet(checks: &serde_json::Value) -> serde_json::Valu
     })
 }
 
-/// Default evidence path as a `PathBuf` for use in main.rs.
 pub fn default_evidence_path() -> PathBuf {
     PathBuf::from(DEFAULT_EVIDENCE_PATH)
 }
@@ -362,16 +310,9 @@ mod tests {
         assert!(out["_preview_"].as_str().unwrap().len() <= 900);
     }
 
-    // GateMode parsing tests live in `nixfleet-proto::compliance::tests`
-    // (single source of truth). The agent re-exports the type and inherits
-    // the parsing behaviour by definition.
-
     #[tokio::test]
     async fn run_runtime_gate_disabled_short_circuits_without_io() {
-        // Passing a non-existent path proves the function never tries
-        // to read it when the mode is Disabled — the caller's
-        // resolve_mode decision is honoured even if a stale evidence
-        // file exists on disk.
+        // Non-existent path: Disabled must skip I/O entirely.
         let bogus = std::path::PathBuf::from("/nonexistent/evidence.json");
         let now = chrono::Utc::now();
         let outcome = run_runtime_gate(now, &bogus, GateMode::Disabled).await;
@@ -383,9 +324,6 @@ mod tests {
 
     #[tokio::test]
     async fn evidence_parses_real_envelope() {
-        // The shape probe-runner.sh writes (host, timestamp,
-        // controls, overall). Static fixture so this test doesn't
-        // depend on a running collector.
         let raw = r#"{
           "host": "lab",
           "timestamp": "2026-04-29T11:57:38Z",

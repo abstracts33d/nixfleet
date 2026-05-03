@@ -1,8 +1,4 @@
-//! `/v1/agent/checkin` + `/v1/agent/report` integration test.
-//!
-//! Spins up an in-process server with mTLS, sends a checkin from a
-//! client cert with CN=test-host, asserts the body shape comes through
-//! and CN-vs-hostname mismatch is rejected.
+//! Integration tests for `/v1/agent/checkin` + `/v1/agent/report`.
 
 mod common;
 
@@ -129,7 +125,6 @@ async fn checkin_rejects_cn_hostname_mismatch() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
-    // Cert CN is "test-host"; body claims to be "ohm". CP rejects.
     let req = CheckinRequest {
         hostname: "ohm".to_string(),
         agent_version: "0.2.0".to_string(),

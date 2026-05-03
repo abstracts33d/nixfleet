@@ -1,22 +1,10 @@
-//! Per-checkin host-state hygiene that runs alongside dispatch:
-//! the RFC-0002 §5.1 rollback-and-halt signal emission and the
-//! "left Healthy" soak-marker sweep.
-//!
-//! Both touch `host_rollout_state` from the checkin path but do
-//! not gate dispatch — dispatch decisions live in the sibling
-//! `dispatch_target` module.
+//! Per-checkin host-state hygiene running alongside dispatch.
 
 use nixfleet_proto::agent_wire::CheckinRequest;
 
 use super::super::state::AppState;
 
-/// RFC-0002 §5.1: when the host is `Failed` on a rollout whose
-/// channel uses `on_health_failure = "rollback-and-halt"`, ship a
-/// `RollbackSignal` so the agent re-activates its prior generation.
-/// Idempotent at the protocol level — the signal keeps emitting
-/// while the host's state stays Failed; once the agent's
-/// `RollbackTriggered` post flips state to `Reverted`, this returns
-/// None.
+/// Emit `RollbackSignal` for hosts in `Failed` under `rollback-and-halt`.
 pub(super) async fn rollback_signal_for_checkin(
     state: &AppState,
     req: &CheckinRequest,
@@ -45,19 +33,6 @@ pub(super) async fn rollback_signal_for_checkin(
     Some(signal)
 }
 
-/// Pure decision: does the host's policy + failed-rollout list
-/// produce a `RollbackSignal`? Extracted for unit-testability —
-/// `rollback_signal_for_checkin` only adds the AppState plumbing
-/// + journal logging on top.
-///
-/// Returns Some when:
-/// - The host is declared in `fleet.hosts`,
-/// - Its channel's rollout policy carries `RollbackAndHalt`,
-/// - The host has at least one Failed rollout.
-///
-/// Multiple Failed rollouts for one host is degenerate; the first
-/// is picked deterministically (caller's `failed_rollouts` ordering
-/// is preserved by SQL `DISTINCT` over the indexed scan).
 fn compute_rollback_signal(
     fleet: &nixfleet_proto::FleetResolved,
     hostname: &str,
@@ -80,14 +55,8 @@ fn compute_rollback_signal(
     })
 }
 
-/// Per-checkin "left Healthy" sweep. Compares the reported
-/// `current_generation.closure_hash` against each rollout the host
-/// is currently recorded as Healthy in; on mismatch, clears the
-/// Healthy marker so the soak timer restarts on the next confirm.
-/// Best-effort: errors log + return without affecting dispatch —
-/// the reconciler re-derives on its next tick. Runs before
-/// `dispatch_target_for_checkin` so soak-state hygiene is in place
-/// before any new target is issued.
+/// Clear Healthy marker when the host's reported closure no longer matches.
+// LOADBEARING: must run before dispatch_target_for_checkin so soak-state hygiene is in place.
 pub(super) async fn clear_left_healthy_for_checkin(state: &AppState, req: &CheckinRequest) {
     let Some(db) = state.db.as_ref() else {
         return;
@@ -139,9 +108,6 @@ mod tests {
     use super::super::tests::fleet_with_host;
     use super::*;
 
-    /// Override the rollout policy on `fleet_with_host`'s default
-    /// fleet so the `rollback_signal` tests can flip Halt ↔
-    /// RollbackAndHalt without re-deriving the whole fixture.
     fn with_policy(
         mut fleet: nixfleet_proto::FleetResolved,
         policy: nixfleet_proto::OnHealthFailure,
@@ -172,8 +138,6 @@ mod tests {
 
     #[test]
     fn compute_rollback_signal_returns_none_under_halt() {
-        // Policy-driven gate: pure `halt` never auto-rolls-back even
-        // when the host has Failed rollouts.
         let fleet = with_policy(
             fleet_with_host("test-host", Some("system-r1")),
             nixfleet_proto::OnHealthFailure::Halt,
@@ -184,10 +148,6 @@ mod tests {
 
     #[test]
     fn compute_rollback_signal_returns_none_when_no_failed_rollouts() {
-        // Steady-state host: no Failed rows → no signal even under
-        // rollback-and-halt. The signal stops emitting once the
-        // agent's RollbackTriggered post flips state to Reverted
-        // (db query no longer returns the row).
         let fleet = with_policy(
             fleet_with_host("test-host", Some("system-r1")),
             nixfleet_proto::OnHealthFailure::RollbackAndHalt,
@@ -197,8 +157,6 @@ mod tests {
 
     #[test]
     fn compute_rollback_signal_returns_none_when_host_unknown() {
-        // Host not in fleet (e.g. just-removed): no signal — same
-        // posture as the dispatch path.
         let fleet = with_policy(
             fleet_with_host("test-host", Some("system-r1")),
             nixfleet_proto::OnHealthFailure::RollbackAndHalt,

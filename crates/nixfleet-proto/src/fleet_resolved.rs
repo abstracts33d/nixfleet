@@ -1,8 +1,5 @@
-//! `fleet.resolved.json` — CONTRACTS.md §I #1,
-//!
-//! Produced by CI invoking the Nix evaluator. Consumed by the
-//! control plane and, on the fallback direct-fetch path, by agents.
-//! Byte-identical JCS canonical bytes across Nix and Rust.
+//! `fleet.resolved.json`. Produced by CI's Nix eval, consumed by the CP
+//! and (fallback path) agents. Byte-identical JCS bytes across Nix + Rust.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -41,26 +38,16 @@ pub struct Host {
 pub struct Channel {
     pub rollout_policy: String,
     pub reconcile_interval_minutes: u32,
-    /// Minutes a signed `fleet.resolved` is accepted by consumers after
-    /// `meta.signedAt`. Matches `lib/mk-fleet.nix`'s declarative unit (the
-    /// sibling `*_interval_minutes` fields make this pattern explicit
-    /// there; the name here predates that convention and is kept for
-    /// wire-compat — convert via [`Channel::freshness_window_duration`]).
-    ///
-    /// `lib/mk-fleet.nix` enforces `freshness_window ≥ 2 × signing_interval_minutes`
-    /// at eval time, so a value of `0` cannot reach the wire.
+    /// MINUTES (despite missing `_minutes` suffix — kept for wire-compat).
+    /// Convert via [`Channel::freshness_window_duration`].
     pub freshness_window: u32,
     pub signing_interval_minutes: u32,
     pub compliance: Compliance,
 }
 
 impl Channel {
-    /// Returns `freshness_window` as a [`std::time::Duration`].
-    ///
-    /// The underlying field carries MINUTES (see the field doc); passing
-    /// it directly to `Duration::from_secs` would silently shrink the
-    /// window by 60×. Call this helper at the seam between proto and any
-    /// `Duration`-consuming API (`verify_artifact`, tick handlers, …).
+    /// `freshness_window` is MINUTES; this helper avoids the
+    /// `Duration::from_secs(raw)` 60× landmine.
     pub fn freshness_window_duration(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.freshness_window as u64 * 60)
     }
@@ -70,13 +57,7 @@ impl Channel {
 #[serde(rename_all = "camelCase")]
 pub struct Compliance {
     pub frameworks: Vec<String>,
-    /// Tri-state policy mode (`"disabled"` / `"permissive"` /
-    /// `"enforce"`) shared by the static gate (mk-fleet eval) and
-    /// the runtime gate (`nixfleet-agent::compliance`). Default
-    /// `"enforce"` matches the prior `strict = true` semantics
-    /// fleets that didn't opt out of compliance keep being gated.
-    /// ( . The legacy `strict: bool` field was
-    /// removed once the unified vocabulary stabilised.)
+    /// `disabled` / `permissive` / `enforce`. Default `enforce`.
     pub mode: String,
 }
 
@@ -90,19 +71,13 @@ pub struct RolloutPolicy {
     pub on_health_failure: OnHealthFailure,
 }
 
-/// Recovery action when a host fails its health gate during a
-/// rollout ( / §3.3). `mk-fleet` constrains the wire
-/// values to `"halt" | "rollback-and-halt"`; the typed wrapper
-/// catches typos at compile time across the reconciler's match
-/// sites. Wire JSON stays kebab-case via `rename_all`.
+/// Recovery action when a host fails its health gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OnHealthFailure {
-    /// Stop advancing the rollout. The failed host stays in
-    /// `Failed`; operator intervention required.
+    /// Stop advancing; failed host stays Failed pending operator action.
     Halt,
-    /// Roll the failed host back to its previous closure, then
-    /// halt as above.
+    /// Roll the failed host back to its previous closure, then halt.
     RollbackAndHalt,
 }
 
@@ -141,14 +116,7 @@ pub struct Selector {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthGate {
-    // The Nix evaluator emits `"healthGate": {}` when no inner
-    // constraints are set, NOT
-    // `{"complianceProbes": null, "systemdFailedUnits": null}`.
-    // Round-trip must preserve the empty-object shape, so these two
-    // fields skip on `None` — the only Options in the crate with this
-    // posture. All other `Option` fields (closureHash, pubkey,
-    // signedAt, ciCommit, selector.channel, maxInFlight*) DO serialize
-    // `None` as explicit `null`, matching the Nix evaluator's output.
+    // GOTCHA: Nix emits `"healthGate": {}` when no inner constraints set; skip-on-None preserves that empty-object shape (other Option fields here serialize None as null).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub systemd_failed_units: Option<SystemdFailedUnits>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,13 +170,7 @@ pub struct Meta {
     #[serde(default)]
     pub ci_commit: Option<String>,
 
-    // `signatureAlgorithm` per CONTRACTS.md §I / §II.
-    // Optional on the wire: absent ≡ "ed25519" (backward-compat default).
-    // Explicit strings round-trip as themselves. Unlike other Option
-    // fields in this crate, this one uses `skip_serializing_if` — the
-    // absent/default distinction is load-bearing for backward compat
-    // with legacy fleet.resolved artifacts that never emitted this
-    // field at all.
+    // GOTCHA: absent ≡ ed25519 (back-compat); legacy artifacts never emitted this field, so absent-vs-null distinction matters — `skip_serializing_if` required.
     #[serde(
         default,
         rename = "signatureAlgorithm",

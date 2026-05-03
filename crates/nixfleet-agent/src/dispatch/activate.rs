@@ -1,10 +1,4 @@
-//! Dispatch entry: freshness gate, manifest gate, then `activate()`,
-//! then route the result to the matching `DispatchHandler`.
-//!
-//! `process_dispatch_target` is the only `pub(crate)` symbol other
-//! than the trait/ctx pair in `handler.rs`. `ActivationSpawnErrorHandler`
-//! lives here because it's the catch-all when `activate()` itself
-//! couldn't even spawn (state unknown — no rollback).
+//! Dispatch entry: freshness gate → manifest gate → activate → route outcome.
 
 use std::sync::Arc;
 
@@ -86,11 +80,7 @@ pub(crate) async fn process_dispatch_target(
         FreshnessCheck::Fresh => {}
     }
 
-    // Manifest gate (RFC-0002 §4.4 / RFC-0003 §4.1): the agent MUST
-    // fetch + verify the rollout manifest from the CP, recompute its
-    // content hash, and assert (hostname, wave_index) ∈ host_set
-    // before consuming any other field of `target`. Failure on any
-    // step is hard refuse-to-act with a signed event.
+    // LOADBEARING: verify manifest + membership BEFORE consuming any target field — refuse-to-act.
     if let Some(rollout_id) = target.rollout_id.as_deref() {
         let cache = nixfleet_agent::manifest_cache::ManifestCache::new(
             &args.state_dir,
@@ -125,8 +115,7 @@ pub(crate) async fn process_dispatch_target(
         );
     }
 
-    // Best-effort. Failure means the next regular checkin
-    // re-dispatches instead of boot-recovery confirming.
+    // GOTCHA: write_last_dispatched failure only loses boot-recovery path — next-checkin re-dispatches.
     let dispatch_record = nixfleet_agent::checkin_state::LastDispatchRecord {
         closure_hash: target.closure_hash.clone(),
         channel_ref: target.channel_ref.clone(),
@@ -157,11 +146,6 @@ pub(crate) async fn process_dispatch_target(
     handle_activation_outcome(outcome, &ctx, client).await;
 }
 
-/// Dispatch on the result of `activation::activate`. Each failure
-/// arm constructs the matching `DispatchHandler` impl and calls
-/// `.handle(&ctx)`; the success arm runs the runtime compliance
-/// gate + confirm path. Telemetry-only failures are logged, never
-/// propagated.
 async fn handle_activation_outcome<R: Reporter>(
     outcome: anyhow::Result<nixfleet_agent::activation::ActivationOutcome>,
     ctx: &DispatchCtx<'_, R>,
@@ -198,10 +182,7 @@ async fn handle_activation_outcome<R: Reporter>(
     }
 }
 
-/// Spawn / I/O error inside `activate`. State is unknown (could have
-/// failed before realise even started) so we don't roll back. Posts
-/// an unsigned `Other` event — the wire variant carries no signature
-/// field, hence `ctx.args` / `ctx.evidence_signer` are unused here.
+/// State unknown (may have failed pre-realise) so no rollback; posts unsigned `Other`.
 pub(crate) struct ActivationSpawnErrorHandler {
     pub err: anyhow::Error,
 }

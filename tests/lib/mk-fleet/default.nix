@@ -1,8 +1,3 @@
-# tests/lib/mk-fleet/default.nix
-#
-# Eval-only tests for lib/mk-fleet.nix. No VM, no build — pure evaluation.
-# Each .nix file under ./fixtures/ is a positive scenario (must eval clean).
-# Each .nix file under ./negative/ is expected to `throw` a specific error.
 {
   lib,
   impl ? import ../../../lib/mk-fleet.nix {inherit lib;},

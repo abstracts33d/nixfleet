@@ -1,23 +1,4 @@
-# tests/harness/nodes/agent.nix
-#
-# Smoke / fleet-N stub agent. At boot, curl the CP's static-fixture
-# JSON over mTLS and log meta.signedAt via systemd. A successful fetch
-# is recorded as a `harness-agent-ok` journal line that the scenario
-# testScript greps for.
-#
-# Why this stub stays after `services.nixfleet-agent` landed: pairs
-# with cp.nix's `GET /` static-fixture serving, which the real CP
-# does not expose. Real-binary smoke is already covered end-to-end
-# by the boot-recovery / teardown / secret-hygiene scenarios; this
-# node + cp.nix exist to keep the fleet-N (2 / 5 / 10) substrate
-# scaling tests cheap (no full agent binary per VM, no reqwest /
-# rustls per VM), and to assert the harness's mTLS plumbing in
-# isolation from the real protocol surface.
-#
-# This is the *smoke* path — it deliberately does not exercise signature
-# verification. The signed-roundtrip scenario (nodes/agent-verify.nix)
-# covers the p256/ed25519 verify path via the `nixfleet-verify-artifact`
-# CLI.
+# Smoke-path stub: logs signedAt only; verify lives in agent-verify.nix.
 {
   lib,
   pkgs,
@@ -30,21 +11,13 @@
 }: {
   microvm = harnessMicrovmDefaults;
 
-  # Harness microvms run behind qemu user-net (isolated NAT, no inbound
-  # routable from outside), and harness-agent is an outbound-only
-  # oneshot client. The default NixOS firewall service can spend 3+
-  # minutes starting under heavy concurrent fleet-N boot, blocking
-  # multi-user.target and the agent oneshot. Disabling it removes the
-  # bottleneck without losing real defense-in-depth — production hosts
-  # still get the firewall via the non-harness modules.
+  # See agent-real.nix for rationale on these networking knobs.
   networking.firewall.enable = false;
-
-  # See ./agent-real.nix for the rationale; same systemd-networkd
-  # config so curl gets a default route + IP rather than ENETUNREACH.
   networking.useNetworkd = lib.mkDefault true;
   systemd.network.networks."10-vm-net" = {
     matchConfig.Name = "en* eth*";
     networkConfig.DHCP = "yes";
+    # FOOTGUN: RequiredForOnline=routable; degraded fires before DHCP, masking failures.
     linkConfig.RequiredForOnline = "routable";
   };
 
@@ -62,29 +35,14 @@
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      # The harness scenario greps the host-VM journal for
-      # microvm@<agent>.service, which only surfaces lines that reach
-      # the guest's /dev/console. systemd units log to journald by
-      # default, so without explicit forwarding the guest's journal
-      # stays invisible from the host. journal+console routes both.
+      # journal+console routes the guest log to the host journal so
+      # the scenario testScript can grep microvm@<agent>.service.
       StandardOutput = "journal+console";
       StandardError = "journal+console";
-      # Block until the guest has a default route. systemd's
-      # `network-online.target` and networkd's
-      # `RequiredForOnline=routable` both fire prematurely under
-      # qemu user-net + microvm.nix, so the curl below would get
-      # ENETUNREACH otherwise. See agent-real.nix for the full
-      # rationale.
       ExecStartPre = "${pkgs.bash}/bin/bash -c 'for i in $(seq 1 60); do ${pkgs.iproute2}/bin/ip route show default | grep -q . && exit 0; sleep 1; done; echo \"harness-agent: no default route after 60s\" >&2; exit 1'";
-      # The `harness-agent-ok` marker is what the scenario greps on.
-      # Emit it only when both the curl and the jq parse succeed.
       ExecStart = pkgs.writeShellScript "harness-agent-fetch" ''
         set -euo pipefail
 
-        # URL uses the hostname `cp` so curl's SNI + cert check matches
-        # the CP's server cert (CN=cp, issued by mkTlsCerts). --resolve
-        # maps that hostname to the qemu user-net gateway IP, which
-        # from inside a microVM is the host VM (where the CP stub runs).
         url="https://cp:${toString controlPlanePort}/"
         resp=$(mktemp)
         trap 'rm -f "$resp"' EXIT
@@ -105,16 +63,9 @@
         signed_at=$(jq -r '.meta.signedAt // "null"' < "$resp")
         algo=$(jq -r '.meta.signatureAlgorithm // "null"' < "$resp")
 
-        # Belt-and-suspenders: also write directly to /dev/console so
-        # the marker reaches the host journal even if journald forwarding
-        # is ever disabled in the guest.
         msg="harness-agent-ok: signedAt=$signed_at signatureAlgorithm=$algo"
         echo "$msg" >&2
         echo "$msg" > /dev/console || true
-
-        # Smoke-path stub: just logs signedAt + signatureAlgorithm. The
-        # verify call site lives in nodes/agent-verify.nix, which invokes
-        # the `nixfleet-verify-artifact` CLI against the signed fixture.
       '';
       Restart = "on-failure";
       RestartSec = 5;

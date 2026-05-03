@@ -1,13 +1,4 @@
-//! `/v1/agent/confirm` integration tests.
-//!
-//! Coverage:
-//! - happy path: operational row in 'pending', agent posts matching
-//!   confirm, gets 204, row's state flips to 'confirmed'.
-//! - 410 Gone: agent posts confirm for a rollout the host isn't
-//!   currently dispatched to (cancelled, rolled-back, or never
-//!   dispatched).
-//! - 403: cert CN doesn't match body hostname.
-//! - 503: server has no DB configured.
+//! Integration tests for `/v1/agent/confirm`.
 
 mod common;
 
@@ -41,9 +32,6 @@ fn write_phase2_input_stubs(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf, PathBu
     (artifact, signature, trust, observed)
 }
 
-/// Spawn the server with a tempfile-backed SQLite DB. Returns the
-/// JoinHandle + the DB path so the test can also open the DB
-/// directly to assert post-confirm state.
 async fn spawn_server_with_db_at_port(
     args_dir: &TempDir,
     db_path: Option<PathBuf>,
@@ -82,7 +70,6 @@ async fn confirm_happy_path_marks_row_confirmed() {
         mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
 
-    // Pre-populate an operational dispatch row via direct DB access.
     {
         let db = Db::open(&db_path).unwrap();
         db.migrate().unwrap();
@@ -132,7 +119,6 @@ async fn confirm_happy_path_marks_row_confirmed() {
         .unwrap();
     assert_eq!(resp.status(), 204, "expected 204 No Content");
 
-    // Verify the row was marked confirmed via direct DB access.
     let db = Db::open(&db_path).unwrap();
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let state: String = conn
@@ -143,7 +129,7 @@ async fn confirm_happy_path_marks_row_confirmed() {
         )
         .unwrap();
     assert_eq!(state, "confirmed");
-    drop(db); // suppress unused-warning while keeping the open for symmetry
+    drop(db);
 
     handle.abort();
 }
@@ -157,7 +143,6 @@ async fn confirm_returns_410_when_no_pending_row() {
         mint_ca_and_certs(&dir, "test-host");
     let db_path = dir.path().join("state.db");
 
-    // DB is initialised but has no pending row for this rollout.
     {
         let db = Db::open(&db_path).unwrap();
         db.migrate().unwrap();
@@ -224,7 +209,6 @@ async fn confirm_rejects_cn_hostname_mismatch() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
-    // Cert CN is "test-host"; body claims hostname "ohm".
     let req = ConfirmRequest {
         hostname: "ohm".to_string(),
         rollout: "any".to_string(),
@@ -258,7 +242,7 @@ async fn confirm_returns_503_without_db() {
     let port = pick_free_port().await;
     let handle = spawn_server_with_db_at_port(
         &dir,
-        None, // no DB
+        None,
         server_cert,
         server_key,
         Some(ca.clone()),

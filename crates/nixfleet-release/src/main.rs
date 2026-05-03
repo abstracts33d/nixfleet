@@ -1,18 +1,5 @@
-//! `nixfleet-release` — produces `releases/fleet.resolved.json{,.sig}`
-//! by orchestrating build → inject closureHash → stamp meta →
-//! canonicalize → sign → write → (optional) git commit + push.
-//!
-//! See `lib.rs` for the orchestration spec and the hook contract
-//! (`$NIXFLEET_HOST`, `$NIXFLEET_PATH`, `$NIXFLEET_CLOSURE_HASH` for
-//! `--push-cmd`; `$NIXFLEET_INPUT`, `$NIXFLEET_OUTPUT` for
-//! `--sign-cmd`).
-//!
-//! Exit codes:
-//! 0 — release produced (or `NoChange` when reuse_unchanged_signature
-//! is set and inputs haven't moved)
-//! 1 — config / build / nix eval failure
-//! 2 — push or sign hook failed
-//! 3 — smoke verify failed
+//! `nixfleet-release` binary. Exit: 0 ok / NoChange, 1 config-or-build,
+//! 2 push-or-sign-hook, 3 smoke-verify.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,110 +10,72 @@ use nixfleet_release::{GitPushTarget, HostsSpec, ReleaseConfig, RunOutcome};
 #[derive(Parser, Debug)]
 #[command(
     name = "nixfleet-release",
-    about = "Produce a signed fleet.resolved.json release (CONTRACTS §I #1)"
+    about = "Produce a signed fleet.resolved.json release"
 )]
 struct Cli {
-    /// Hosts to release. `auto` (default) = every
-    /// `nixosConfigurations.*`. `auto:exclude=foo,bar` = auto minus
-    /// the listed names. Or a comma-separated explicit list.
+    /// `auto` | `auto:exclude=foo,bar` | comma-separated explicit list.
     #[arg(long, default_value = "auto")]
     hosts: String,
 
-    /// Path to the consumer flake. Defaults to cwd.
     #[arg(long, default_value = ".")]
     build_flake: PathBuf,
 
-    /// Attribute path yielding the FleetResolved-shaped JSON.
     #[arg(long, default_value = ".#fleet.resolved")]
     fleet_resolved_attr: String,
 
-    /// Optional shell command run once per built closure. Receives
-    /// env: NIXFLEET_HOST, NIXFLEET_PATH, NIXFLEET_CLOSURE_HASH.
-    /// Examples (pick whichever matches your cache):
-    /// `attic push <cache> "$NIXFLEET_PATH"`
-    /// `nix copy --to s3://... "$NIXFLEET_PATH"`
-    /// `nix copy --to ssh://... "$NIXFLEET_PATH"`
-    /// (or any other command that publishes the closure).
+    /// Env: NIXFLEET_HOST, NIXFLEET_PATH, NIXFLEET_CLOSURE_HASH.
     #[arg(long, env = "NIXFLEET_PUSH_CMD")]
     push_cmd: Option<String>,
 
-    /// Required. Shell command that signs the canonical bytes.
-    /// Receives env: NIXFLEET_INPUT (file path with canonical
-    /// bytes), NIXFLEET_OUTPUT (file path the hook MUST write the
-    /// raw signature to). Typical: `tpm-sign "$NIXFLEET_INPUT" >
-    /// "$NIXFLEET_OUTPUT"`.
+    /// Required. Env: NIXFLEET_INPUT (canonical bytes), NIXFLEET_OUTPUT
+    /// (where the hook writes the raw signature).
     #[arg(long, env = "NIXFLEET_SIGN_CMD")]
     sign_cmd: String,
 
-    /// Stamped into `meta.signatureAlgorithm`. Must match the
-    /// algorithm of the key the sign hook uses. One of `ed25519`,
-    /// `ecdsa-p256`.
+    /// `ed25519` | `ecdsa-p256`.
     #[arg(long, default_value = "ed25519", env = "NIXFLEET_SIGNATURE_ALGORITHM")]
     signature_algorithm: String,
 
-    /// Output directory for the release files. Created if missing.
     #[arg(long, default_value = "releases")]
     release_dir: PathBuf,
 
-    /// Filename of the artifact. Signature is `<name>.sig`.
+    /// Signature is `<name>.sig`.
     #[arg(long, default_value = "fleet.resolved.json")]
     artifact_name: String,
 
-    /// Stage + commit the release files when they change.
     #[arg(long)]
     git_commit: bool,
 
-    /// Push HEAD to a remote/branch after committing. Format
-    /// `<remote>:<branch>`, e.g. `origin:main`. Implies
-    /// `--git-commit`.
+    /// `<remote>:<branch>`. Implies `--git-commit`.
     #[arg(long, value_name = "REMOTE:BRANCH")]
     git_push: Option<String>,
 
-    /// Commit message template. Substitutions: `{sha}`,
-    /// `{sha:0:8}`, `{ts}`.
+    /// Substitutions: `{sha}`, `{sha:0:8}`, `{ts}`.
     #[arg(
         long,
         default_value = "chore(ci): release {sha:0:8} [skip ci]"
     )]
     commit_template: String,
 
-    /// Sets `git config user.name` before committing. Use when the
-    /// runner has no committer identity configured.
     #[arg(long, env = "NIXFLEET_GIT_USER_NAME")]
     git_user_name: Option<String>,
 
-    /// Sets `git config user.email` before committing.
     #[arg(long, env = "NIXFLEET_GIT_USER_EMAIL")]
     git_user_email: Option<String>,
 
-    /// Smoke-verify the (artifact, signature) pair before
-    /// publishing. Catches "we just signed bytes the verifier
-    /// rejects." Structural only — re-canonicalize round-trip +
-    /// schema parse + non-zero signature length. Default on.
+    /// Structural smoke verify; default on.
     #[arg(long = "smoke-verify", default_value_t = true, action = clap::ArgAction::Set)]
     smoke_verify: bool,
 
-    /// When the existing release file's closureHashes match the
-    /// just-built ones, reuse its `meta.signedAt` instead of
-    /// stamping a new one. Produces byte-stable releases on no-op
-    /// runs (no new commit, no new signature).
+    /// Reuse `meta.signedAt` when closureHashes match.
     #[arg(long)]
     reuse_unchanged_signature: bool,
 
-    /// Gap C: flake attribute that yields the operator's
-    /// revocation list (JSON array of `{hostname, notBefore,
-    /// reason?, revokedBy?}`). When set, the release pipeline
-    /// signs `revocations.json` alongside `fleet.resolved.json`
-    /// using the same `--sign-cmd` hook + same trust class. When
-    /// unset, no revocations artifact is produced. Operators who
-    /// haven't migrated to the signed-revocations workflow leave
-    /// this unset and continue to use direct `cert_revocations`
-    /// CLI writes (legacy path).
+    /// Flake attr yielding the revocations list. Unset → no artifact.
     #[arg(long)]
     revocations_attr: Option<String>,
 
-    /// Log format. `pretty` (default) for humans, `json` for CI
-    /// log scrapers.
+    /// `pretty` | `json`.
     #[arg(long, default_value = "pretty")]
     log_format: String,
 }
@@ -227,7 +176,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
-            // Classify by message keyword for the CI alerting hook.
+            // Classify by message keyword for CI alerting.
             let msg = format!("{err:#}");
             let exit = if msg.contains("smoke verify") {
                 3

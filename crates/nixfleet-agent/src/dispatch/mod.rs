@@ -1,14 +1,5 @@
-//! Dispatch path: `process_dispatch_target` + the `DispatchHandler`
-//! family. Lives as a binary-local module (`mod dispatch;` in
-//! main.rs) because handlers depend on `super::Args` (the
-//! clap-parsed agent CLI struct) for state-dir + compliance-mode.
-//! Side-effects route through `&impl Reporter`, so handlers are
-//! unit-testable with a capturing fake — see this module's tests.
-//!
-//! Adding a 7th failure variant is a one-file change: declare a
-//! new handler struct in its own submodule, impl `DispatchHandler`,
-//! route the matching `ActivationOutcome` arm in
-//! `activate::handle_activation_outcome`.
+//! Dispatch path: `process_dispatch_target` + the `DispatchHandler` family.
+//! Side-effects route through `&impl Reporter` for unit-testability.
 
 mod activate;
 mod compliance;
@@ -24,12 +15,6 @@ pub(crate) use rollback::handle_cp_rollback_signal;
 
 #[cfg(test)]
 mod tests {
-    //! Per-variant unit tests for the dispatch handlers via a
-    //! capturing `Reporter`. The handlers' branch logic + payload
-    //! shape are covered here without ever talking to a real CP.
-    //! End-to-end behavior (real activation, real switch poll) is
-    //! exercised by the microvm harness on the lab.
-
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
@@ -41,9 +26,6 @@ mod tests {
     use super::realise_failed::{ClosureSignatureMismatchHandler, RealiseFailedHandler};
     use crate::Args;
 
-    /// Records every `post_report` call. Cheaply Clone-able (the
-    /// inner Mutex is shared via Arc) so tests can hold one reference
-    /// while the dispatch tree holds another.
     #[derive(Default)]
     struct FakeReporter {
         calls: Mutex<Vec<(Option<String>, ReportEvent)>>,
@@ -109,12 +91,6 @@ mod tests {
         }
     }
 
-    /// `ClosureSignatureMismatchHandler` posts exactly one
-    /// `ClosureSignatureMismatch` event with the supplied closure
-    /// hash + stderr, and does NOT trigger a rollback (no rollback()
-    /// shell-out, no follow-up `RollbackTriggered` event). The
-    /// stderr is captured verbatim on the wire (truncation already
-    /// happened upstream in `realise()`).
     #[tokio::test]
     async fn closure_signature_mismatch_handler_posts_signed_event_and_does_not_attempt_rollback() {
         let fake = FakeReporter::new();
@@ -150,9 +126,6 @@ mod tests {
         }
     }
 
-    /// `RealiseFailedHandler` produces exactly one `RealiseFailed`
-    /// event with the failure reason, no rollback, no follow-up
-    /// activation events.
     #[tokio::test]
     async fn realise_failed_handler_posts_one_event_no_rollback() {
         let fake = FakeReporter::new();

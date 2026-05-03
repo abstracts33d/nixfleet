@@ -1,41 +1,9 @@
 #![allow(clippy::doc_lazy_continuation)]
-//! Producer for `releases/fleet.resolved.json` — the artifact defined
-//! in `docs/CONTRACTS.md §I #1` and ` `.
-//!
-//! The orchestration pipeline:
-//!
-//! 1. Enumerate hosts (default: every `nixosConfigurations.*` AND
-//!    every `darwinConfigurations.*` in the consumer flake). Each
-//!    host carries a [`HostKind`] discriminator that decides the
-//!    attr path passed to `nix build`.
-//! 2. Build each host's `config.system.build.toplevel`. nix-darwin
-//!    exposes the same attr path as NixOS, so the inner accessor
-//!    is shared; only the outer prefix
-//!    (`nixosConfigurations` / `darwinConfigurations`) differs.
-//!    Cross-platform builds rely on operator-configured remote
-//!    builders (`nix.buildMachines`) — the framework is
-//!    backend-agnostic and never ssh's directly.
-//! 3. (optional) Run a per-host `--push-cmd` to upload the closure to
-//!   the fleet's binary cache. Implementation-agnostic — the hook
-//!   receives the store path in `$NIXFLEET_PATH`.
-//! 4. Evaluate `.#fleet.resolved` and parse via `nixfleet_proto`.
-//! 5. Inject each built host's `closureHash = basename(toplevel)`.
-//! 6. Stamp `meta.{signedAt, ciCommit, signatureAlgorithm}`.
-//! 7. Canonicalize via `nixfleet_canonicalize::canonicalize` (the
-//!   single implementation per CONTRACTS §III).
-//! 8. Hand the canonical bytes to a `--sign-cmd` hook via tempfiles
-//!   (`$NIXFLEET_INPUT` for canonical bytes, `$NIXFLEET_OUTPUT`
-//!   where the hook MUST write the raw signature).
-//! 9. Smoke-verify the produced (artifact, signature) pair through
-//!   `nixfleet_reconciler::verify_artifact` — catches "we just
-//!   signed something the verifier rejects." Structural-only by
-//!   default; full signature check when a public key is supplied.
-//! 10. Atomic-write the release dir.
-//! 11. (optional) `git commit` + `git push`.
-//!
-//! The hook contract (env-var names, exit-code semantics, file vs
-//! stdin) is part of the producer side of CONTRACTS §I #1 — don't
-//! change without an §VIII amendment.
+//! Producer for `releases/fleet.resolved.json` and signed sidecars.
+//! Pipeline: enumerate hosts → build → push → eval → inject closureHashes
+//! → stamp meta → canonicalize → sign → smoke-verify → atomic write
+//! → optional git commit/push. Hook contract (env vars, exit codes)
+//! lives at the binary surface.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -55,27 +23,20 @@ pub use git::render_commit_message;
 use git::{git_commit_release, git_head_sha, git_push_release};
 use sign::{sign, smoke_verify, write_release};
 
-/// Hosts to release. Resolved against the consumer's flake at
-/// runtime — `Auto` queries both `nixosConfigurations` and
-/// `darwinConfigurations`.
+/// Hosts to release. Resolved against the consumer's flake at runtime.
 #[derive(Debug, Clone)]
 pub enum HostsSpec {
     /// Union of `nixosConfigurations.*` and `darwinConfigurations.*`.
     Auto,
-    /// Same as `Auto`, minus the listed names.
+    /// `Auto` minus the listed names.
     AutoExclude(Vec<String>),
-    /// Explicit list. Order preserved. Each name must exist in
-    /// exactly one of `nixosConfigurations` or `darwinConfigurations`;
-    /// names appearing in both error out at classify time
-    /// (intentional — the operator should disambiguate).
+    /// Explicit list (order preserved). Names appearing in both
+    /// `nixosConfigurations` and `darwinConfigurations` error out
+    /// at classify time — operator must disambiguate.
     Explicit(Vec<String>),
 }
 
-/// Which `*Configurations` attrset a host lives in. Drives the
-/// `nix build` attr path the release pipeline emits — nix-darwin's
-/// `darwinConfigurations.<h>.config.system.build.toplevel` is the
-/// canonical accessor, identical in shape to the NixOS one but
-/// reachable from a different prefix.
+/// Which `*Configurations` attrset a host lives in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostKind {
     Nixos,
@@ -83,7 +44,6 @@ pub enum HostKind {
 }
 
 impl HostKind {
-    /// The flake-attr prefix used by `nix build` / `nix eval`.
     pub fn attr_prefix(self) -> &'static str {
         match self {
             HostKind::Nixos => "nixosConfigurations",
@@ -92,38 +52,19 @@ impl HostKind {
     }
 }
 
-/// Configuration assembled from CLI flags. The library entry point
-/// `run(&config)` consumes this.
-///
-/// Speculative knobs deliberately not present (each landed during
-/// design, removed during the no-untested-code pass — re-add with
-/// tests when a real fleet exercises them):
-/// - `jobs > 1`: parallel `nix build` orchestration via
-///   `std::thread::spawn`. Single-host build is fast enough on
-///   today's fleets; concurrency is tricky and was never run with
-///   N > 1.
-/// - `smoke_verify_pubkey`: full-signature smoke verify with an
-///   operator-supplied pubkey. Structural smoke verify (canonicalize
-///   round-trip + schema parse) covers the framework's invariants;
-///   full-sig is an operator-workflow concern and re-adds a wrapper
-///   around `verify_artifact` that needs its own test surface.
+/// CLI-assembled config consumed by `run`.
 #[derive(Debug, Clone)]
 pub struct ReleaseConfig {
-    /// Path passed to `nix build` / `nix eval`. Defaults to `.`.
     pub flake_dir: PathBuf,
-    /// Attribute path (relative to `flake_dir`) yielding the
-    /// `FleetResolved`-shaped JSON. Default `.#fleet.resolved`.
+    /// Default `.#fleet.resolved`.
     pub fleet_resolved_attr: String,
     pub hosts: HostsSpec,
-    /// Shell command run once per built closure. Receives env
-    /// `NIXFLEET_HOST`, `NIXFLEET_PATH`, `NIXFLEET_CLOSURE_HASH`.
+    /// Env: `NIXFLEET_HOST`, `NIXFLEET_PATH`, `NIXFLEET_CLOSURE_HASH`.
     pub push_cmd: Option<String>,
-    /// Shell command that signs canonical bytes. Receives env
-    /// `NIXFLEET_INPUT` (file path with canonical bytes) and
-    /// `NIXFLEET_OUTPUT` (file path where the hook writes the raw
-    /// signature). Required.
+    /// Env: `NIXFLEET_INPUT` (canonical bytes), `NIXFLEET_OUTPUT`
+    /// (where hook writes raw signature). Required.
     pub sign_cmd: String,
-    /// One of `ed25519` / `ecdsa-p256`. Stamped into `meta`.
+    /// `ed25519` | `ecdsa-p256`.
     pub signature_algorithm: String,
     pub release_dir: PathBuf,
     pub artifact_name: String,
@@ -132,27 +73,15 @@ pub struct ReleaseConfig {
     pub commit_template: String,
     pub git_user_name: Option<String>,
     pub git_user_email: Option<String>,
-    /// Toggle the structural smoke verify (canonicalize round-trip
-    /// + schema parse + non-zero signature length). Default on; off
-    ///   for offline test scenarios where the just-produced bytes
-    ///   don't matter.
+    /// Structural smoke verify: canonicalize round-trip + schema parse
+    /// + non-zero sig length. Default on.
     pub smoke_verify: bool,
-    /// When set and the existing release file's closureHashes match
-    /// the just-built hashes, reuse its `signedAt` instead of
-    /// stamping a new one. Produces byte-stable releases on no-op
-    /// runs.
+    /// Reuse `signedAt` when closureHashes match; produces byte-stable
+    /// releases on no-op runs.
     pub reuse_unchanged_signature: bool,
-    /// Gap C: operator-declared revocations. When `Some`, the
-    /// release pipeline evaluates this flake attribute (which
-    /// must yield a JSON list of `{hostname, notBefore, reason?,
-    /// revokedBy?}` entries — empty list is fine), wraps it in a
-    /// `Revocations` envelope with the same `meta.signedAt` /
-    /// `meta.ciCommit` stamping as `fleet.resolved`, canonicalises,
-    /// signs via the same `sign_cmd` hook, and writes
-    /// `revocations.json` + `revocations.json.sig` alongside
-    /// `fleet.resolved.json` in the release dir. When `None`, no
-    /// revocations artifact is produced and the CP runs without
-    /// the revocations poll source.
+    /// Flake attr yielding revocations list. When set, the pipeline
+    /// signs `revocations.json` alongside `fleet.resolved.json` via
+    /// the same `sign_cmd`. When `None`, no revocations artifact.
     pub revocations_attr: Option<String>,
 }
 
@@ -162,23 +91,17 @@ pub struct GitPushTarget {
     pub branch: String,
 }
 
-/// Outcome surfaced to the caller (and reflected in the binary's
-/// exit code).
 #[derive(Debug)]
 pub enum RunOutcome {
-    /// Release was newly produced. `commit_sha` is `Some` when
-    /// `--git-commit` was set and a commit landed.
+    /// `commit_sha` is `Some` when `--git-commit` was set and a commit landed.
     Released {
         commit_sha: Option<String>,
         hosts: Vec<String>,
     },
-    /// Closure hashes unchanged; no signature regenerated.
-    /// Only reachable with `reuse_unchanged_signature = true`.
+    /// Closure hashes unchanged; only reachable with `reuse_unchanged_signature`.
     NoChange,
 }
 
-/// Library entry point. Pure orchestration: every IO / shell-out
-/// is owned by helpers in this module so tests can substitute.
 pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
     validate_config(config)?;
 
@@ -188,7 +111,6 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
         "release pipeline start",
     );
 
-    // ── 1. Enumerate ────────────────────────────────────────────
     let hosts = enumerate_hosts(config)?;
     if hosts.is_empty() {
         bail!("no hosts to release — empty enumeration");
@@ -196,11 +118,9 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
     let host_names: Vec<&str> = hosts.iter().map(|(n, _)| n.as_str()).collect();
     tracing::info!(count = hosts.len(), hosts = ?host_names, "enumerated");
 
-    // ── 2. Build ────────────────────────────────────────────────
     let built = build_hosts(config, &hosts)?;
     tracing::info!(built = built.len(), total = hosts.len(), "build done");
 
-    // ── 3. Push ─────────────────────────────────────────────────
     if let Some(cmd) = &config.push_cmd {
         for (host, path) in built.iter() {
             let hash = closure_hash(path);
@@ -208,17 +128,14 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
         }
     }
 
-    // ── 4. Eval fleet.resolved ──────────────────────────────────
     let mut resolved = eval_fleet_resolved(config)?;
 
-    // ── 5. Inject closureHashes ─────────────────────────────────
     let hashes: BTreeMap<String, String> = built
         .iter()
         .map(|(h, p)| (h.clone(), closure_hash(p)))
         .collect();
     inject_closure_hashes(&mut resolved, &hashes);
 
-    // ── 5a. Idempotency short-circuit ───────────────────────────
     let release_path = config.release_dir.join(&config.artifact_name);
     let signature_path = config.release_dir.join(format!("{}.sig", config.artifact_name));
     let preserved_signed_at: Option<DateTime<Utc>> = if config.reuse_unchanged_signature {
@@ -227,36 +144,28 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
         None
     };
 
-    // ── 6. Stamp meta ───────────────────────────────────────────
     let signed_at = preserved_signed_at.unwrap_or_else(Utc::now);
     let ci_commit = git_head_sha(&config.flake_dir).ok();
     stamp_meta(&mut resolved, signed_at, ci_commit.clone(), &config.signature_algorithm);
 
-    // ── 7. Canonicalize ─────────────────────────────────────────
     let canonical = canonicalize_resolved(&resolved)?;
 
-    // ── 8. Sign ─────────────────────────────────────────────────
-    // Skip signing when reuse_unchanged_signature triggered the
-    // short-circuit AND the existing signature file is intact.
+    // Skip signing when reuse_unchanged_signature short-circuit fired
+    // and the existing signature file is intact.
     let sig_bytes = if preserved_signed_at.is_some() && signature_path.exists() {
         std::fs::read(&signature_path).context("read existing signature")?
     } else {
         sign(&config.sign_cmd, canonical.as_bytes())?
     };
 
-    // ── 9. Smoke verify ─────────────────────────────────────────
     if config.smoke_verify {
         smoke_verify(canonical.as_bytes(), &sig_bytes)?;
     }
 
-    // ── 10. Write release dir ───────────────────────────────────
     write_release(&config.release_dir, &config.artifact_name, canonical.as_bytes(), &sig_bytes)?;
 
-    // ── 10a. Revocations artifact . Optional. ────────────
-    // Same canonicalize + sign path as fleet.resolved; the artifact
-    // must exist (even empty) for CP-rebuild recovery semantics to
-    // hold — otherwise an operator who has never declared a
-    // revocation has no signed file to prime cert_revocations from.
+    // Revocations artifact: empty list still produces the file so
+    // CP-rebuild recovery has something to prime cert_revocations from.
     let mut revocations_paths: Vec<PathBuf> = Vec::new();
     if let Some(attr) = &config.revocations_attr {
         let entries = eval_revocations(config, attr)?;
@@ -278,9 +187,8 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
             .release_dir
             .join("revocations.json.sig");
         let revs_path = config.release_dir.join("revocations.json");
-        // Reuse-unchanged short-circuit: if the existing canonical
-        // bytes match what we'd write, reuse the signature on disk
-        // (idempotent, byte-stable). Otherwise sign anew.
+        // Reuse-unchanged short-circuit: existing canonical bytes match
+        // → reuse on-disk signature (idempotent, byte-stable).
         let revs_sig_bytes = if revs_path.exists()
             && revs_sig_path.exists()
             && std::fs::read(&revs_path).ok().as_deref() == Some(revs_canonical.as_bytes())
@@ -304,13 +212,8 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
         );
     }
 
-    // ── 10b. Rollout manifests ──────────────────────────────────
-    // One signed manifest per channel, projected from the just-signed
-    // fleet.resolved. Same canonicalize + sign hook. Each manifest's
-    // fleetResolvedHash binds it cryptographically to this snapshot
-    // (RFC-0002 §4.4); without that binding a key-rotation overlap
-    // window could otherwise let an attacker pair a manifest from
-    // snapshot X with the resolved.json from snapshot Y.
+    // One signed manifest per channel. fleetResolvedHash binds each
+    // to this snapshot, blocking mix-and-match across rotations.
     let mut manifest_paths: Vec<PathBuf> = Vec::new();
     let fleet_resolved_hash = sha256_hex(canonical.as_bytes());
     let rollouts_dir = config.release_dir.join("rollouts");
@@ -324,7 +227,7 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
             &config.signature_algorithm,
         )? {
             Some(m) => m,
-            None => continue, // channel has no host with a closureHash
+            None => continue,
         };
 
         let manifest_json = serde_json::to_string(&manifest)
@@ -338,10 +241,8 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
         let manifest_path = rollouts_dir.join(&artifact_name);
         let sig_path = rollouts_dir.join(format!("{artifact_name}.sig"));
 
-        // Reuse-unchanged short-circuit: rolloutId is the content
-        // hash, so byte-identical canonical bytes IS byte-identical
-        // path. If both files exist with matching canonical bytes,
-        // reuse the on-disk signature instead of re-invoking the hook.
+        // rolloutId IS the content hash, so byte-identical bytes ⇒
+        // identical path. Reuse on-disk signature when bytes match.
         let sig_bytes = if manifest_path.exists()
             && sig_path.exists()
             && std::fs::read(&manifest_path).ok().as_deref() == Some(manifest_canonical.as_bytes())
@@ -369,7 +270,6 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
         );
     }
 
-    // ── 11. Git commit + push ───────────────────────────────────
     let mut commit_sha = None;
     if config.git_commit {
         let mut release_files = vec![release_path.clone(), signature_path.clone()];
@@ -400,8 +300,6 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
     })
 }
 
-// ─────────────────────────── validation ───────────────────────────
-
 fn validate_config(c: &ReleaseConfig) -> Result<()> {
     match c.signature_algorithm.as_str() {
         "ed25519" | "ecdsa-p256" => {}
@@ -416,15 +314,8 @@ fn validate_config(c: &ReleaseConfig) -> Result<()> {
     Ok(())
 }
 
-// ─────────────────────────── enumerate ────────────────────────────
-
-/// Returns `(host, kind)` pairs ordered as: all NixOS hosts (sorted),
-/// then all Darwin hosts (sorted). `HostsSpec::Explicit` preserves
-/// caller order but classifies each name by probe.
-///
-/// Missing attrsets (e.g. a flake with no `darwinConfigurations`)
-/// are treated as empty, not errors. The release pipeline runs
-/// against fleets with one or both kinds.
+/// `(host, kind)` pairs: NixOS sorted, then Darwin sorted; `Explicit`
+/// preserves caller order. Missing attrsets are empty, not errors.
 fn enumerate_hosts(config: &ReleaseConfig) -> Result<Vec<(String, HostKind)>> {
     let mut nixos = list_attr_optional(&config.flake_dir, "nixosConfigurations")?;
     nixos.sort();
@@ -472,11 +363,6 @@ fn enumerate_hosts(config: &ReleaseConfig) -> Result<Vec<(String, HostKind)>> {
     })
 }
 
-/// Evaluate the operator's revocations declaration. The attr must
-/// produce a JSON array of `{hostname, notBefore, reason?,
-/// revokedBy?}` objects. An empty array is valid and means "no
-/// revocations on file" — the artifact still gets produced so a
-/// CP-rebuild has something to verify + replay (even if empty).
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -502,12 +388,8 @@ fn eval_revocations(config: &ReleaseConfig, attr: &str) -> Result<Vec<Revocation
         .with_context(|| format!("parse revocations from `nix eval .#{attr}`"))
 }
 
-/// Enumerate attribute names under `<flake>#<attr_path>`, treating a
-/// missing attrset as empty. Used for `darwinConfigurations` /
-/// `nixosConfigurations` enumeration where a fleet may legitimately
-/// declare only one. The "missing attribute" stderr from `nix eval`
-/// is matched against a small set of stable phrasings; any other
-/// failure surfaces as `Err`.
+/// Enumerate attribute names; missing attrset → empty. "Missing
+/// attribute" matches a small set of stable nix-eval phrasings.
 fn list_attr_optional(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix")
         .args([
@@ -523,10 +405,7 @@ fn list_attr_optional(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> 
         .with_context(|| format!("invoke `nix eval .#{attr_path}`"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Stable phrasings nix uses for "this attribute doesn't
-        // exist on the flake" — verified against nix 2.18-2.30 in
-        // unit tests below. Anything else (eval error, IO error,
-        // permissions) propagates.
+        // Stable phrasings for "attr doesn't exist on the flake".
         let lowered = stderr.to_lowercase();
         let is_missing = [
             "does not provide attribute",
@@ -550,22 +429,10 @@ fn list_attr_optional(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> 
     Ok(names)
 }
 
-// ─────────────────────────── build ────────────────────────────────
-
-/// Sequential build. Each host's `<prefix>.<host>.config.system.build.
-/// toplevel` is built and the resulting store path is captured;
-/// `<prefix>` is `nixosConfigurations` for [`HostKind::Nixos`] and
-/// `darwinConfigurations` for [`HostKind::Darwin`]. Failures abort
-/// the run before any push.
-///
-/// Cross-platform builds (linux CI building a darwin host, or the
-/// reverse) are handled by `nix`'s remote-builder mechanism via the
-/// operator's `nix.buildMachines` / `extra-platforms` config —
-/// invisible to this code path.
-///
-/// Parallel builds (`--jobs > 1`) were dropped during the
-/// no-untested-code pass — re-add with tests when a real fleet
-/// needs them.
+/// Sequential build of each host's
+/// `<prefix>.<host>.config.system.build.toplevel`. Failures abort
+/// the run before any push. Cross-platform builds rely on the
+/// operator's `nix.buildMachines` config.
 fn build_hosts(
     config: &ReleaseConfig,
     hosts: &[(String, HostKind)],
@@ -616,8 +483,6 @@ fn closure_hash(path: &Path) -> String {
         .to_string()
 }
 
-// ─────────────────────────── push hook ────────────────────────────
-
 fn push_one(cmd: &str, host: &str, path: &Path, closure_hash: &str) -> Result<()> {
     tracing::info!(host = %host, "push hook");
     let status = Command::new("sh")
@@ -637,8 +502,6 @@ fn push_one(cmd: &str, host: &str, path: &Path, closure_hash: &str) -> Result<()
     }
     Ok(())
 }
-
-// ─────────────────────────── eval + mutate ────────────────────────
 
 pub(crate) fn eval_fleet_resolved(config: &ReleaseConfig) -> Result<FleetResolved> {
     let output = Command::new("nix")
@@ -668,9 +531,7 @@ pub(crate) fn eval_fleet_resolved(config: &ReleaseConfig) -> Result<FleetResolve
     Ok(resolved)
 }
 
-/// Mutates `resolved` to set `hosts[h].closureHash` from the map.
-/// Hosts in `hashes` that don't exist in `resolved.hosts` are
-/// silently skipped (matches the legacy jq behaviour).
+/// Sets `hosts[h].closureHash`. Unknown hosts in `hashes` are silently skipped.
 pub fn inject_closure_hashes(
     resolved: &mut FleetResolved,
     hashes: &BTreeMap<String, String>,
@@ -682,7 +543,6 @@ pub fn inject_closure_hashes(
     }
 }
 
-/// Mutates `resolved.meta` with the three signing fields.
 pub fn stamp_meta(
     resolved: &mut FleetResolved,
     signed_at: DateTime<Utc>,
@@ -700,12 +560,7 @@ pub fn canonicalize_resolved(resolved: &FleetResolved) -> Result<String> {
     nixfleet_canonicalize::canonicalize(&raw).context("canonicalize fleet.resolved")
 }
 
-// ─────────────────────────── idempotency ──────────────────────────
-
-/// If an existing release file already encodes the same set of
-/// closure hashes (and host topology) as the currently-injected
-/// `resolved`, return its `meta.signedAt` so the caller can reuse
-/// it. Otherwise `None`.
+/// Returns existing `meta.signedAt` when on-disk closure hashes match.
 fn load_existing_signed_at_if_unchanged(
     release_path: &Path,
     resolved: &FleetResolved,
@@ -735,8 +590,6 @@ fn load_existing_signed_at_if_unchanged(
         Ok(None)
     }
 }
-
-// ─────────────────────────── tests ────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -881,7 +734,7 @@ mod tests {
                 system: "x86_64-linux".into(),
                 tags: vec![],
                 channel: "stable".into(),
-                closure_hash: None, // no declaration → skipped
+                closure_hash: None,
                 pubkey: None,
             },
         );
@@ -958,18 +811,13 @@ mod tests {
         let m = project_manifest(&r, "stable", "feedface", ts, Some("def45678"), "ed25519")
             .unwrap()
             .expect("non-empty manifest");
-        // sorted: agent-01 before agent-02
         assert_eq!(m.host_set[0].hostname, "agent-01");
         assert_eq!(m.host_set[1].hostname, "agent-02");
-        // agent-no-closure skipped — only 2 entries
         assert_eq!(m.host_set.len(), 2);
-        // wave_index from waves["stable"]
         assert_eq!(m.host_set[0].wave_index, 0);
         assert_eq!(m.host_set[1].wave_index, 1);
-        // per-host target_closure preserved
         assert_eq!(m.host_set[0].target_closure, "aaaa-host-a");
         assert_eq!(m.host_set[1].target_closure, "aaaa-host-b");
-        // anchor + display_name + meta
         assert_eq!(m.fleet_resolved_hash, "feedface");
         assert_eq!(m.display_name, "stable@def45678");
         assert_eq!(m.channel_ref, "def45678");
@@ -979,10 +827,7 @@ mod tests {
 
     #[test]
     fn project_manifest_returns_none_when_no_host_has_closure_hash() {
-        // dummy_resolved's hosts have closure_hash: None
         let r = dummy_resolved();
-        // dummy_resolved has no rollout_policies → project errors;
-        // give it a policy first.
         let mut r = r;
         r.rollout_policies.insert(
             "default".to_string(),
@@ -1061,10 +906,6 @@ mod tests {
 
     #[test]
     fn host_kind_attr_prefix_matches_flake_convention() {
-        // Wire shape: the framework must emit `nixosConfigurations.<h>`
-        // for linux hosts and `darwinConfigurations.<h>` for darwin
-        // hosts. Locked here so a rename surfaces as a test failure
-        // rather than a silent build path change.
         assert_eq!(HostKind::Nixos.attr_prefix(), "nixosConfigurations");
         assert_eq!(HostKind::Darwin.attr_prefix(), "darwinConfigurations");
     }

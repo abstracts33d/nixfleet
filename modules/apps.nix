@@ -11,12 +11,6 @@
       meta.description = description;
     };
   in {
-    # devShell is defined in agent-package.nix (crane-based)
-
-    # Deployment is now standard: nixos-anywhere, nixos-rebuild, darwin-rebuild.
-    # Removed: install, build-switch, docs, launch-vm, rollback, spawn-qemu, spawn-utm (ADR-004).
-    # VM lifecycle apps (build-vm, start-vm, stop-vm, clean-vm, test-vm) from mkVmApps.
-
     apps = {
       "validate" = mkScript "validate" "Single entry point for the whole test suite (format + eval + hosts + VM + Rust + clippy)" ''
         set -uo pipefail

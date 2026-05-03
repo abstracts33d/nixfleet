@@ -1,8 +1,4 @@
-//! Every 30s, scan `host_dispatch_state` for past-deadline rows
-//! still `'pending'` and transition them to `'rolled-back'`. The
-//! audit `dispatch_history` row is stamped terminal in the same
-//! tick. CP + agent halves work independently — CP marks state
-//! regardless of whether the agent's local rollback succeeded.
+//! 30s sweep: past-deadline pending rows → 'rolled-back' + audit terminal stamp.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,5 +85,4 @@ mod tests {
         assert!(expired.is_empty());
     }
 
-    // Round-trip integration test lives in db/host_dispatch_state.rs::tests.
 }

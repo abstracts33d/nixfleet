@@ -42,8 +42,7 @@
       url = "github:astro/microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # Required by modules/impls/persistence/impermanence.nix. Inert
-    # for fleets that do not import that impl scope.
+    # GOTCHA: impermanence input is inert unless the impermanence impl scope is imported.
     impermanence.url = "github:nix-community/impermanence";
     crane.url = "github:ipetkov/crane";
   };

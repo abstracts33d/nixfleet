@@ -1,6 +1,4 @@
-//! Sign-hook + smoke-verify + atomic release-dir write. Extracted
-//! from `lib.rs` to keep the orchestrator slim. The hook contract
-//! (env vars, exit codes, file vs stdin) is part of CONTRACTS §I #1.
+//! Sign-hook + smoke-verify + atomic release-dir write.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -16,7 +14,7 @@ pub(crate) fn sign(cmd: &str, canonical: &[u8]) -> Result<Vec<u8>> {
     let output = NamedTempFile::new().context("create tempfile for signature")?;
 
     std::fs::write(input.path(), canonical).context("write canonical bytes to tempfile")?;
-    // Pre-create output as empty so the hook only needs to overwrite it.
+    // Pre-create empty so the hook only needs to overwrite.
     std::fs::write(output.path(), b"").ok();
 
     tracing::info!("sign hook");
@@ -43,11 +41,8 @@ pub(crate) fn sign(cmd: &str, canonical: &[u8]) -> Result<Vec<u8>> {
     Ok(sig)
 }
 
-/// Structural smoke verify: parse canonical bytes back into
-/// `FleetResolved`, canonicalize again, require byte-stable
-/// round-trip. Catches schema drift, JCS bugs, zero-byte signatures.
-/// Cryptographic verification with a real pubkey is not done here —
-/// `nixfleet-verify-artifact` covers that surface post-release.
+/// Structural smoke verify: byte-stable canonicalize round-trip + schema
+/// parse + non-zero sig. No cryptographic verification.
 pub(crate) fn smoke_verify(canonical: &[u8], signature: &[u8]) -> Result<()> {
     let parsed: FleetResolved = serde_json::from_slice(canonical)
         .context("smoke verify: canonical bytes don't parse as FleetResolved")?;

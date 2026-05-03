@@ -1,25 +1,18 @@
-//! macOS / nix-darwin impl. `pending_generation` is unconditionally
-//! `Ok(None)`: `darwin-rebuild switch` activates in-process with no
-//! kernel reboot, so the "booted vs activated" delta on Linux
-//! doesn't exist here.
+//! macOS / nix-darwin impl: `pending_generation` is always `Ok(None)` —
+//! darwin-rebuild activates in-process with no booted-vs-activated delta.
 
 use std::mem::MaybeUninit;
 
 use anyhow::Result;
 use nixfleet_proto::agent_wire::PendingGeneration;
 
-/// `kern.boottime` via sysctl, formatted `<sec>.<usec>`. Stable for
-/// the boot session and changes across reboots — same semantics as
-/// Linux's per-boot UUID. (`IOPlatformUUID` is a HARDWARE id that
-/// doesn't rotate on reboot; wrong primitive.)
+/// `kern.boottime` formatted `<sec>.<usec>`: per-boot identity, not hardware UUID.
 pub fn boot_id() -> Result<String> {
     let name = std::ffi::CString::new("kern.boottime").expect("static CStr");
     let mut tv: MaybeUninit<libc::timeval> = MaybeUninit::uninit();
     let mut size = std::mem::size_of::<libc::timeval>();
-    // SAFETY: sysctlbyname is async-signal-safe; we pass a valid mut
-    // pointer to a stack-allocated `timeval` and the matching size.
-    // The kernel initialises the buffer on success; we gate
-    // `assume_init` on rc == 0.
+    // SAFETY: sysctlbyname is async-signal-safe; valid mut pointer + matching size.
+    // We gate `assume_init` on rc == 0.
     let rc = unsafe {
         libc::sysctlbyname(
             name.as_ptr(),

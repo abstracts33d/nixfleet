@@ -1,11 +1,4 @@
-//! Dispatch decision: route hosts to their CI-evaluated target.
-//! Pure (no I/O, clock injected); caller handles DB side effects.
-//!
-//! 3-way compare: host's current generation, host's declared target,
-//! and whether a `host_dispatch_state` row is in flight. The
-//! reconciler emits the richer `Action` stream (waves, soaking,
-//! halts) for observability; per-host dispatch is a direct
-//! comparison.
+//! Dispatch decision: pure 3-way compare of current/declared/in-flight; caller handles DB.
 
 use chrono::{DateTime, Utc};
 
@@ -16,19 +9,16 @@ use nixfleet_proto::{
 
 const CONFIRM_ENDPOINT: &str = "/v1/agent/confirm";
 
-/// `PartialEq` is intentionally NOT derived: `EvaluatedTarget`
-/// doesn't implement it, and `evaluated_at` equality wouldn't be
-/// meaningful. Tests pattern-match directly.
 #[derive(Debug, Clone)]
 pub enum Decision {
     Converged,
     /// Not in `fleet.resolved.hosts`.
     Unmanaged,
-    /// Listed but no `closureHash` (CI didn't produce one).
+    /// Listed but no `closureHash`.
     NoDeclaration,
-    /// Operational dispatch already in flight; don't re-dispatch.
+    /// Operational dispatch already in flight.
     InFlight,
-    /// Last fetch failed; hold rather than blast another target.
+    /// Last fetch failed; hold rather than dispatch.
     HoldAfterFailure,
     Dispatch {
         target: EvaluatedTarget,
@@ -37,13 +27,7 @@ pub enum Decision {
     },
 }
 
-/// Pure: caller passes `pending_for_host` (DB query result),
-/// `confirm_window_secs` (CP-side constant), and `fleet_resolved_hash`
-/// (the SHA-256 of the canonical bytes of `fleet`, computed once by
-/// the channel-refs poll and stashed in AppState). The hash anchors
-/// the rolloutId derivation to the same signed snapshot the producer
-/// projected from — a different snapshot at the same channel ref
-/// would produce a different rolloutId, by design.
+/// `fleet_resolved_hash` anchors rolloutId derivation to the verified snapshot's canonical bytes.
 pub fn decide_target(
     hostname: &str,
     request: &CheckinRequest,
@@ -80,20 +64,13 @@ pub fn decide_target(
         }
     }
 
-    // RolloutId is the content hash of the projected RolloutManifest
-    // for this host's channel — same projection the producer (and
-    // any auditor) recompute. Drift here breaks the wire promise that
-    // every advertised rolloutId resolves to a manifest CI signed.
+    // Drift breaks the wire promise that every advertised rolloutId resolves to a CI-signed manifest.
     let rollout_id = match nixfleet_reconciler::compute_rollout_id_for_channel(
         fleet,
         fleet_resolved_hash,
         &host.channel,
     ) {
         Ok(Some(id)) => id,
-        // Channel has no host with a declared closure — same shape as
-        // the legacy NoDeclaration path. Should not normally fire here
-        // (we already short-circuited on host.closure_hash above), but
-        // belt-and-braces.
         Ok(None) => return Decision::NoDeclaration,
         Err(err) => {
             tracing::error!(
@@ -112,9 +89,7 @@ pub fn decide_target(
             .map(|i| i as u32)
     });
 
-    // Relay so the agent runs a defense-in-depth freshness check.
-    // Optional for forward-compat with older agent schemas; absent
-    // fields fail open on the agent side.
+    // Optional fields fail open on agents that pre-date them.
     let signed_at = fleet.meta.signed_at;
     let freshness_window_secs = fleet
         .channels
@@ -134,12 +109,6 @@ pub fn decide_target(
             }),
             signed_at,
             freshness_window_secs,
-            // — relay the channel's compliance mode so the
-            // agent's runtime gate honours fleet-wide policy
-            // pushes without needing per-host CLI flags. `None` only
-            // on degenerate fleet-snapshot state where the channel
-            // lookup itself misses; the wire field stays Optional
-            // for backward compat with agents that pre-date it.
             compliance_mode: fleet
                 .channels
                 .get(&host.channel)
@@ -160,10 +129,6 @@ mod tests {
     };
     use std::collections::HashMap;
 
-    /// Fixed test hash — actual content irrelevant for unit tests; the
-    /// production CP computes this from the canonical bytes of the
-    /// verified fleet. Tests use a stable string so assertions on
-    /// rolloutId equality work without caring about the hash itself.
     const TEST_FLEET_HASH: &str =
         "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -381,21 +346,13 @@ mod tests {
             panic!("expected Dispatch, got {:?}", d);
         };
         assert_eq!(target.closure_hash, "declared-system");
-        // rolloutId is now a 64-char hex content hash (sha256 over the
-        // canonical bytes of the projected RolloutManifest). Exact
-        // value depends on every field of the manifest projection;
-        // we assert shape, not value.
         assert_eq!(rollout_id.len(), 64);
         assert!(rollout_id
             .chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-        // channel_ref still mirrors the rolloutId on the wire (it's
-        // the identifier the agent sends back on confirm).
         assert_eq!(target.channel_ref, rollout_id);
         assert_eq!(target.evaluated_at, now());
         assert_eq!(target.rollout_id.as_deref(), Some(rollout_id.as_str()));
-        // No waves declared in fleet_with → both Decision and target
-        // surface `wave_index = None`.
         assert_eq!(wave_index, None);
         assert_eq!(target.wave_index, None);
         let activate = target.activate.expect("activate block populated");
@@ -405,7 +362,6 @@ mod tests {
 
     #[test]
     fn dispatch_surfaces_wave_index_when_waves_declared() {
-        // Channel has a 2-wave plan; the host is in wave 1 (index).
         let mut fleet = fleet_with("test-host", host(Some("declared-system")));
         fleet.waves.insert(
             "stable".to_string(),
@@ -442,10 +398,6 @@ mod tests {
 
     #[test]
     fn dispatch_yields_distinct_rollout_ids_for_distinct_snapshots() {
-        // Two manifests projected from snapshots at different fleet
-        // hashes produce different rolloutIds (the fleetResolvedHash
-        // is part of the canonical surface). Validates the anchor
-        // is load-bearing in dispatch's id derivation.
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
         let d1 = decide_target(
@@ -478,7 +430,6 @@ mod tests {
 
     #[test]
     fn dispatch_threads_confirm_window_into_activate_block() {
-        // Different confirm-window must propagate to the wire.
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", Some(FetchResult::Ok));
         let d = decide_target(
@@ -499,7 +450,6 @@ mod tests {
 
     #[test]
     fn dispatch_when_no_fetch_outcome_yet() {
-        // Brand-new agent, never fetched anything — should still dispatch.
         let fleet = fleet_with("test-host", host(Some("declared-system")));
         let req = checkin("running-system", None);
         let d = decide_target(

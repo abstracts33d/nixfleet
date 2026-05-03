@@ -1,6 +1,4 @@
-//! Main activate pipeline: realise → set-profile → fire (backend) →
-//! poll → self-correct. Single attempt per call; retry comes from
-//! the agent's main poll loop.
+//! Main activate pipeline: realise → set-profile → fire → poll → self-correct.
 
 use anyhow::{Context, Result};
 use nixfleet_proto::agent_wire::EvaluatedTarget;
@@ -12,9 +10,7 @@ use super::profile::self_correct_profile;
 use super::realise::{realise, RealiseError};
 use super::verify_poll::{read_current_system_basename, PollOutcome, VerifyPoll};
 
-/// Generic-over-backend form. Production calls `activate(target)`
-/// (the façade in `mod.rs`); tests inject a fake to assert
-/// per-platform behaviour without shelling out.
+/// Tests inject a fake backend; production calls the `activate(target)` façade.
 pub async fn activate_with<B: ActivationBackend>(
     backend: &B,
     target: &EvaluatedTarget,
@@ -25,10 +21,7 @@ pub async fn activate_with<B: ActivationBackend>(
         "agent: activating target",
     );
 
-    // Step 0: bow out if another switch-to-configuration is in
-    // flight (operator manual run, sibling Ansible play, etc.) —
-    // racing on the same lock produces interleaved logs + spurious
-    // SwitchFailed timeouts even when the other switch succeeds.
+    // GOTCHA: racing an in-flight switch yields spurious SwitchFailed timeouts even on success.
     if backend.is_switch_in_progress().await {
         tracing::info!(
             target_closure = %target.closure_hash,
@@ -39,9 +32,7 @@ pub async fn activate_with<B: ActivationBackend>(
         });
     }
 
-    // Step 1: realise. Forces fetch + sig verify explicitly; we assert
-    // the realised path matches the requested one to catch symlink /
-    // substitution-redirect surprises.
+    // LOADBEARING: realise forces fetch + sig verify; path-equality catches symlink/redirect surprises.
     let store_path = format!("/nix/store/{}", target.closure_hash);
     let realised = match realise(&store_path).await {
         Ok(p) => p,
@@ -82,10 +73,7 @@ pub async fn activate_with<B: ActivationBackend>(
         });
     }
 
-    // Step 2: set the system profile FIRST so the bootloader follows
-    // the new closure even if the switch process dies mid-run. The
-    // activation script also sets the profile, but doing it here
-    // closes the crash window between fire and script-profile-bump.
+    // LOADBEARING: set profile BEFORE fire — bootloader must follow even if switch dies mid-run.
     let set_status = Command::new("nix-env")
         .arg("--profile")
         .arg("/nix/var/nix/profiles/system")
@@ -107,12 +95,7 @@ pub async fn activate_with<B: ActivationBackend>(
         });
     }
 
-    // Capture pre-switch basename so the post-fire poll can
-    // distinguish "still pre-flip, switch is slow" (basename ==
-    // previous) from "flipped to a third path we never asked for"
-    // (basename ∉ {expected, previous}). Read failure here aborts
-    // before we fire — without a baseline we can't validate the
-    // post-state.
+    // LOADBEARING: pre-switch basename feeds flip-to-unexpected detection — abort if read fails.
     let previous_basename = match read_current_system_basename().await {
         Ok(b) => b,
         Err(err) => {
@@ -127,17 +110,11 @@ pub async fn activate_with<B: ActivationBackend>(
         }
     };
 
-    // Step 3: fire (backend-dispatched fire-and-forget). See
-    // `LinuxBackend::fire_switch` / `DarwinBackend::fire_switch`
-    // for the per-platform detail.
     if let Some(outcome) = backend.fire_switch(target, &store_path).await? {
         return Ok(outcome);
     }
 
-    // Step 4: poll. If the agent gets killed mid-poll (new closure
-    // stops nixfleet-agent.service), `nixfleet-switch.service`
-    // continues independently and the post-switch agent's
-    // boot-recovery path posts the retroactive confirm.
+    // GOTCHA: SIGTERM mid-poll is OK — detached switch unit lands, boot-recovery confirms retroactively.
     let expected = &target.closure_hash;
     match VerifyPoll::new(expected)
         .with_previous(&previous_basename)
@@ -145,11 +122,7 @@ pub async fn activate_with<B: ActivationBackend>(
         .await
     {
         PollOutcome::Settled => {
-            // Step 5: profile self-correction. Defends against the
-            // activation script (or a concurrent nix-env) re-pointing
-            // `/nix/var/nix/profiles/system` after our Step 2 set —
-            // current-system would match but the bootloader pointer
-            // would be off, surprising us on next reboot.
+            // GOTCHA: activation script may re-point profile after our set — self-correct or boot pointer drifts.
             if let Err(err) = self_correct_profile(&store_path).await {
                 tracing::warn!(
                     error = %err,
@@ -163,8 +136,6 @@ pub async fn activate_with<B: ActivationBackend>(
             Ok(ActivationOutcome::FiredAndPolled)
         }
         PollOutcome::Timeout { last_observed } => {
-            // Best-effort triage: unit may still be running (large
-            // download); ExecMainStatus inconclusive in that case.
             let exit_code = backend.read_unit_exit_code("nixfleet-switch.service").await;
             tracing::error!(
                 target_closure = %expected,

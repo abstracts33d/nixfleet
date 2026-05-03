@@ -1,17 +1,3 @@
-# Deterministic signed-fixture derivation for the microvm harness.
-#
-# Produces an ed25519-signed `fleet.resolved` artifact + matching
-# `test-trust.json` (per docs/trust-root-flow.md §3.4) at build time.
-# Output: canonical.json, canonical.json.sig, test-trust.json,
-# verify-pubkey.b64.
-#
-# Determinism. Every byte in the output is a pure function of this
-# file's inputs: hand-authored fleet declaration below, hardcoded
-# `meta.{signedAt, ciCommit, signatureAlgorithm}`, and a 32-byte
-# ed25519 seed derived from `seedSalt`. Signing path (canonicalize →
-# sign) is factored into ./sign-bytes.nix so future signed sidecars
-# (revocations.json, signed probe outputs) reuse the same key + verify
-# under the same trust file.
 {
   lib,
   pkgs,
@@ -21,25 +7,14 @@
   freshnessWindowMinutes ? 86400,
   seedSalt ? "nixfleet-harness-test-seed-2026",
   derivationName ? "nixfleet-harness-signed-fixture",
-  # Per-host closureHash overrides. Default empty → mk-fleet's
-  # `closureHash = null` semantics (the production release pipeline
-  # injects real values from `system.build.toplevel`). Pass
-  # `{ "agent-01" = "..."; }` to make the agent's reported
-  # closure_hash match for convergence-dependent scenarios (e.g.
-  # the teardown's soak-state attestation recovery proof).
   hostClosureHashes ? {},
-  # Override `rolloutPolicies.all-at-once.onHealthFailure`. Default
-  # `"halt"` matches the v0.2 production posture; the rollback-policy
-  # harness scenario passes `"rollback-and-halt"` to exercise the
-  # RFC-0002 §5.1 path end-to-end.
   onHealthFailure ? "halt",
 }: let
   fixedSignedAt = signedAt;
   fixedCiCommit = "0000000000000000000000000000000000000000";
   fixedAlgorithm = "ed25519";
 
-  # Stub nixosConfiguration: satisfies mkFleet's invariant that each
-  # host carries `config.system.build.toplevel`.
+  # LOADBEARING: mkFleet requires each host to carry config.system.build.toplevel.
   stubConfiguration = {
     config.system.build.toplevel = {
       outPath = "/nix/store/0000000000000000000000000000000000000000-stub";
@@ -50,9 +25,6 @@
   mkFleetImpl = import mkFleetPath {inherit lib;};
   inherit (mkFleetImpl) mkFleet withSignature;
 
-  # Hand-authored fleet declaration. Two hosts, one channel, one
-  # rollout policy. Deliberately minimal so any verify failure is
-  # wire-up, not fleet-shape.
   fleetInput = {
     hosts = {
       agent-01 = {
@@ -129,21 +101,13 @@
     name = "${derivationName}-signed";
     jsonContent = builtins.toJSON stamped;
   };
-  # `now` for verify-artifact / agent-verify consumers: signedAt + 1h.
-  # All harness signedAt values land at `T00:00:00Z`, so a literal
-  # string replace is correct + assertion-checked. Anything else
-  # would need a chrono-style parser, which Nix lacks; if a future
-  # fixture overrides signedAt with non-midnight, this assert fires
-  # rather than silently producing the wrong now.
+  # FOOTGUN: signedAt+1h via literal string replace (Nix lacks chrono parser); asserts midnight suffix to avoid silent wrong now.
   signedAtMidnightSuffix = "T00:00:00Z";
   signedAtPlusHourSuffix = "T01:00:00Z";
   now = assert lib.hasSuffix signedAtMidnightSuffix signedAt;
     lib.removeSuffix signedAtMidnightSuffix signedAt + signedAtPlusHourSuffix;
 in
   pkgs.runCommand derivationName {
-    # Expose the build-time stamps so consumers can derive a `now`
-    # value for verify-artifact / agent-verify without coupling-by-
-    # comment to the literal in this file.
     passthru = {inherit signedAt now;};
   } ''
     set -euo pipefail

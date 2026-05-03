@@ -1,5 +1,4 @@
-//! Cross-module test fixtures. `pub(crate)` so each `db/*.rs::tests`
-//! can pull from one place without duplicating boilerplate.
+//! Cross-module test fixtures.
 
 use chrono::{DateTime, Utc};
 
@@ -14,10 +13,6 @@ pub(crate) fn fresh_db() -> Db {
     db
 }
 
-/// Shorthand for the legacy "record host as Healthy with marker
-/// stamp" call, expressed via the new typed transition. Reduces
-/// churn in the broader test corpus and keeps each assertion
-/// focused on its scenario.
 pub(crate) fn mark_healthy(db: &Db, host: &str, rollout: &str, now: DateTime<Utc>) {
     db.rollout_state()
         .transition_host_state(
@@ -30,9 +25,6 @@ pub(crate) fn mark_healthy(db: &Db, host: &str, rollout: &str, now: DateTime<Utc
         .unwrap();
 }
 
-/// Build a `DispatchInsert` with the common shape used across the
-/// test module (rollout_id reused as channel_ref, mirroring how
-/// `dispatch_target.rs` populates the row).
 pub(crate) fn dispatch_insert<'a>(
     host: &'a str,
     rollout: &'a str,

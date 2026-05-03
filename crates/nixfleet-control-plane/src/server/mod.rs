@@ -1,24 +1,4 @@
-//! Long-running TLS server.
-//!
-//! axum router + axum-server TLS listener + internal reconcile loop
-//! + Forgejo poll. The slim entry point — `serve ` and
-//!   `build_router ` — is what `main.rs` calls; everything else lives
-//!   in the submodules:
-//!
-//! - `state` — shared `AppState`, `ServeArgs`, helper types,
-//!   constants
-//! - `middleware` — `require_cn` (mTLS gate) + protocol-version
-//!   middleware
-//! - `routes` — noun-based route handlers (`enrollment`, `reports`,
-//!   `rollouts`, `status`, `health`)
-//! - `checkin_pipeline` — the multi-stage `/v1/agent/checkin` and
-//!   `/v1/agent/confirm` decision pipeline
-//! - `reconcile` — background reconcile loop (verifies the
-//!   build-time artifact every 30s, projects checkins → reconciler
-//!   actions, writes the fleet snapshot under a freshness gate)
-//!
-//! Originally this was one 1450-LOC file; split here for readability
-//! and to keep each piece focused.
+//! Long-running TLS server: router + listener + reconcile loop + polls.
 
 mod checkin_pipeline;
 mod middleware;
@@ -45,33 +25,13 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::auth_cn::MtlsAcceptor;
 use crate::TickInputs;
 
-/// Total budget for the post-listener-drain task gather phase.
-/// 30s is the SystemD default for `TimeoutStopSec=`; staying under it
-/// means systemd's `kill --kill -TERM` doesn't escalate to SIGKILL
-/// before `serve()` finishes draining.
+/// 30s = systemd `TimeoutStopSec=` default; stay under to avoid SIGKILL.
 const TASK_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
 
-/// Within `TASK_SHUTDOWN_DEADLINE`, give axum-server `n - 5s` to drain
-/// in-flight HTTP requests. The remaining 5s is for the post-listener
-/// background-task gather. Both are heuristic; the listener drain
-/// dominates real shutdowns.
+/// Listener drain budget; remaining 5s of `TASK_SHUTDOWN_DEADLINE` is for background drain.
 const HTTP_DRAIN_DEADLINE: Duration = Duration::from_secs(25);
 
-/// Build the axum router.
-///
-/// Layout:
-/// - `/healthz` lives outside the `/v1` namespace so the operator's
-///   status probe always replies regardless of protocol-version
-///   drift.
-/// - `/v1/enroll` lives on an **anonymous** sub-router — fresh hosts
-///   bootstrap here without a client cert (it's how they get one).
-///   Body-level token signature is the only auth.
-/// - Every other `/v1/*` route lives on an **authenticated**
-///   sub-router. The `require_cn_layer` middleware rejects anonymous
-///   connections with 401 before any handler runs. Adding a new
-///   `/v1/foo` route to this sub-router automatically inherits auth.
-///
-/// Both sub-routers go through the protocol-version middleware.
+/// `/healthz` outside `/v1`; `/v1/enroll` is anonymous; all other `/v1/*` require mTLS.
 fn build_router(state: Arc<AppState>) -> Router {
     let strict = state.strict;
     let auth_state = state.clone();
@@ -112,8 +72,6 @@ fn build_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Thin adapter so the router only sees a free function. Forwards to
-/// the protocol-version middleware in [`middleware`].
 async fn version_layer(
     strict: bool,
     req: HttpRequest<Body>,
@@ -122,14 +80,7 @@ async fn version_layer(
     middleware::protocol_version_middleware(strict, req, next).await
 }
 
-/// Serve until interrupted. Builds the TLS config, opens the DB,
-/// primes the verified-fleet snapshot from Forgejo (when configured),
-/// starts the reconcile loop + the Forgejo poll task, binds the
-/// listener, runs forever.
 pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
-    // Strict mode: refuse to start when any security-fallback flag is
-    // unset. Operator opts in via `--strict` / `NIXFLEET_CP_STRICT=1`.
-    // Default off for v0.2 — see #70 for the rationale.
     if args.strict {
         let mut missing: Vec<&str> = Vec::new();
         if args.client_ca.is_none() {
@@ -147,7 +98,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
-    // Open + migrate SQLite if a path is configured.
     let db = if let Some(path) = &args.db_path {
         let db = crate::db::Db::open(path)?;
         db.migrate()?;
@@ -180,14 +130,9 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     let state = Arc::new(app_state);
 
-    // Root cancellation token. Every background loop selects against
-    // this; SIGTERM cancels it after the HTTP drain completes. The
-    // tasks log a "task X shut down" line on cancel, retained in the
-    // Vec<JoinHandle> below so the shutdown phase can `join` them.
     let cancel = CancellationToken::new();
     let mut bg_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-    // Magic-rollback timer + hourly prune sweep .
     if let Some(db_arc) = db.clone() {
         bg_handles.push(crate::timers::rollback_timer::spawn(
             cancel.clone(),
@@ -200,13 +145,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         ));
     }
 
-    // — hydrate the in-memory `host_reports` ring from
-    // SQLite at startup. Without this, the wave-staging gate
-    // silently unlocks any held wave promotion across CP restart
-    // until each agent re-fires its compliance gate. The DB write
-    // happens write-through in the report handler, so as long as
-    // SQLite has the rows, the in-memory ring buffer can be
-    // reconstructed.
+    // Hydrate the host_reports ring at boot so wave-gate state survives CP restart.
     if let Some(db_arc) = db.clone() {
         match db_arc.reports().host_reports_known_hostnames() {
             Ok(hostnames) => {
@@ -275,29 +214,13 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
-    // Seed issuance config.
     *state.issuance_paths.write().await = IssuancePaths {
         fleet_ca_cert: args.fleet_ca_cert.clone(),
         fleet_ca_key: args.fleet_ca_key.clone(),
         audit_log: args.audit_log_path.clone(),
     };
 
-    // Pre-listener Forgejo prime: fetch the freshest signed artifact
-    // from the operator's repo and seed `verified_fleet` BEFORE the
-    // listener accepts the first checkin. Without this, dispatch
-    // falls back to the compile-time `--artifact` path, which is
-    // always an *older* release than what's on Forgejo (CI commits
-    // the [skip ci] release commit AFTER building the closure — every
-    // closure's bundled artifact is the previous release). Lab caught
-    // this empirically during the GitOps validation pass: agents
-    // checked in immediately on CP boot, before the periodic poll's
-    // first tick, and dispatch issued stair-stepping-backwards
-    // targets.
-    //
-    // Skip silently when no channel-refs source is configured or the
-    // fetch fails — the reconcile loop's existing build-time prime is
-    // the correct fallback. Cap with a short timeout so a wedged
-    // upstream can't block CP boot indefinitely.
+    // Pre-listener prime: bundled artifact is always older than upstream (CI commits release after build).
     if let Some(channel_refs_source) = args.channel_refs.as_ref() {
         match tokio::time::timeout(
             Duration::from_secs(20),
@@ -306,10 +229,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .await
         {
             Ok(Ok((fleet, fleet_hash))) => {
-                // Host-count log line: ADR-012 documents the
-                // Mutex<Connection> SQLite bound at ~150 hosts;
-                // emitting the count at startup lets operators see
-                // the curve in the journal without parsing the DB.
                 let host_count = fleet.hosts.len();
                 *state.verified_fleet.write().await =
                     Some(crate::server::VerifiedFleetSnapshot {
@@ -334,7 +253,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
-    // Reconcile loop runs concurrently with the listener.
     let tick_inputs = TickInputs {
         artifact_path: args.artifact_path.clone(),
         signature_path: args.signature_path.clone(),
@@ -349,10 +267,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tick_inputs,
     ));
 
-    // Channel-refs poll: refresh `verified_fleet` + `channel_refs_cache`
-    // from the configured upstream URLs (closes the GitOps loop). Both
-    // shared locks live on `AppState` as `Arc<RwLock<...>>`; the poll
-    // task writes through them directly without a mirror task.
     if let Some(channel_refs_source) = args.channel_refs.clone() {
         bg_handles.push(crate::polling::channel_refs_poll::spawn(
             cancel.clone(),
@@ -362,9 +276,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         ));
     }
 
-    // Revocations poll : refresh `cert_revocations` from a
-    // signed sidecar artifact every 60s. Requires a configured DB
-    // (the replay target); a None DB silently disables the poll.
     if let (Some(revocations_source), Some(db)) = (args.revocations.clone(), state.db.clone()) {
         bg_handles.push(crate::polling::revocations_poll::spawn(
             cancel.clone(),
@@ -379,9 +290,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         crate::tls::build_server_config(&args.tls_cert, &args.tls_key, args.client_ca.as_deref())?;
     let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls_config));
 
-    // Wrap RustlsAcceptor in MtlsAcceptor so peer certs are
-    // extracted after the handshake and injected into request
-    // extensions. Handlers use `require_cn` to read them.
     let rustls_acceptor = axum_server::tls_rustls::RustlsAcceptor::new(rustls_config);
     let mtls_acceptor = MtlsAcceptor::new(rustls_acceptor);
 
@@ -396,10 +304,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     tracing::info!(listen = %args.listen, %mode, "control plane listening");
 
-    // axum-server Handle drives the listener-drain phase. ctrl_c
-    // (SIGTERM under nix) signals graceful_shutdown, which stops
-    // accepting new connections and lets in-flight requests complete
-    // before returning from .serve().await.
     let server_handle = axum_server::Handle::new();
     let signal_handle = server_handle.clone();
     let signal_cancel = cancel.clone();
@@ -409,9 +313,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             return;
         }
         tracing::info!(target: "shutdown", "graceful shutdown initiated");
-        // Drain in-flight HTTP first; once the listener is closed we
-        // cancel the background loops so they finish their current
-        // tick (DB writes complete) and exit.
         signal_handle.graceful_shutdown(Some(HTTP_DRAIN_DEADLINE));
         signal_cancel.cancel();
     });
@@ -422,9 +323,6 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .serve(app.into_make_service())
         .await?;
 
-    // Listener has drained. Cancel background tasks (idempotent — the
-    // ctrl_c handler may have fired already) and gather them under a
-    // bounded budget so a stuck task can't wedge the shutdown.
     cancel.cancel();
     if let Err(err) = drain_background_tasks(bg_handles).await {
         tracing::warn!(error = %err, "background task drain incomplete");
@@ -432,9 +330,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Wait for every spawned background task to complete after cancel
-/// has fired. Any task that doesn't return within [`TASK_SHUTDOWN_DEADLINE`]
-/// is logged + abandoned (the JoinHandle is dropped, forcing abort).
+/// Tasks past `TASK_SHUTDOWN_DEADLINE` are abandoned (handles dropped → abort).
 async fn drain_background_tasks(
     handles: Vec<tokio::task::JoinHandle<()>>,
 ) -> anyhow::Result<()> {
@@ -496,7 +392,6 @@ mod strict_mode_tests {
 
     #[tokio::test]
     async fn strict_bails_when_revocations_unset() {
-        // client_ca provided, but no revocations → strict still bails.
         let err = serve(minimal_serve_args(true, Some(PathBuf::from("/dev/null"))))
             .await
             .unwrap_err();
@@ -509,10 +404,6 @@ mod strict_mode_tests {
 
     #[tokio::test]
     async fn non_strict_does_not_bail_at_startup() {
-        // strict=false, client_ca=None → must NOT bail with the
-        // strict-mode error. Will still error later (the TLS cert at
-        // /dev/null isn't a real cert), but that error is downstream
-        // of the strict check we're testing.
         let err = serve(minimal_serve_args(false, None)).await.unwrap_err();
         let msg = format!("{err}");
         assert!(
@@ -524,18 +415,9 @@ mod strict_mode_tests {
 
 #[cfg(test)]
 mod shutdown_tests {
-    //! Unit tests for the graceful-shutdown plumbing in serve().
-    //! Full serve() integration is covered by the existing
-    //! tests/healthz.rs etc. (each spawns serve() then aborts the
-    //! handle — the abort path is unchanged by these changes); these
-    //! tests exercise the building blocks directly.
-
     use super::*;
     use std::time::Duration;
 
-    /// drain_background_tasks returns Ok when every task completes
-    /// before the deadline. Tasks that exit on cancel.cancelled() are
-    /// the standard shape for our background loops.
     #[tokio::test]
     async fn drain_returns_ok_when_tasks_exit_promptly() {
         let cancel = CancellationToken::new();
@@ -554,21 +436,15 @@ mod shutdown_tests {
             .expect("tasks should drain cleanly");
     }
 
-    /// drain_background_tasks bails when at least one task ignores the
-    /// cancel signal and runs past the deadline. The deadline constant
-    /// is 30s in production; the test uses tokio's pause/advance to
-    /// fast-forward without real wall-clock waiting.
     #[tokio::test(start_paused = true)]
     async fn drain_bails_when_task_ignores_cancel() {
         let cancel = CancellationToken::new();
-        // Task that ignores cancel and just sleeps past the deadline.
         let stuck = tokio::spawn(async {
             tokio::time::sleep(TASK_SHUTDOWN_DEADLINE + Duration::from_secs(60)).await;
         });
         let handles = vec![stuck];
 
         cancel.cancel();
-        // Advance past TASK_SHUTDOWN_DEADLINE so the timeout fires.
         let drain = tokio::spawn(async move { drain_background_tasks(handles).await });
         tokio::time::advance(TASK_SHUTDOWN_DEADLINE + Duration::from_secs(1)).await;
         let err = drain.await.unwrap().unwrap_err();
@@ -578,10 +454,6 @@ mod shutdown_tests {
         );
     }
 
-    /// Minimal sanity check that the cancel-token + select-arm pattern
-    /// in our spawn_* helpers actually exits when cancel fires. Spawns
-    /// a tokio::select loop with a long ticker and a cancel arm; the
-    /// task must exit on cancel even though the ticker hasn't fired.
     #[tokio::test(start_paused = true)]
     async fn cancel_token_unblocks_select_loop() {
         let cancel = CancellationToken::new();
@@ -597,11 +469,8 @@ mod shutdown_tests {
             }
         });
 
-        // Give the spawned task one tick to enter its select loop.
         tokio::task::yield_now().await;
         cancel.cancel();
-        // Bound the wait — if the cancel-arm doesn't unblock, the
-        // task will sit on the 1h ticker and the test will hang.
         tokio::time::timeout(Duration::from_secs(5), handle)
             .await
             .expect("task should exit on cancel within 5s")

@@ -1,32 +1,4 @@
-//! Integration test for the ADR-011 boot-recovery PostedConfirm
-//! branch.
-//!
-//! The unit tests in `recovery::tests` exercise the decision logic
-//! against a dummy reqwest client that hits an unreachable port —
-//! they prove `decide_and_run` returns the right `RecoveryAction`
-//! variants but don't prove the wire round-trip works end-to-end.
-//!
-//! This test stands up a wiremock server, points the agent's
-//! recovery hook at it with a plain HTTP client (no mTLS in the
-//! test environment), pre-populates the state-dir with a
-//! `last_dispatched` record matching the `current_closure` fed to
-//! recovery, and asserts:
-//!
-//! - The recovery posts /v1/agent/confirm exactly once.
-//! - The body shape matches the persisted `LastDispatchRecord`.
-//! - On 204 Acknowledged, the state-dir ends up with
-//!   `last_confirmed_at` written + `last_dispatched` cleared.
-//! - On 410 Gone with a failing rollback (the unit-test reality —
-//!   no `/nix/var/nix/profiles/system` to flip), the state-dir's
-//!   `last_dispatched` is PRESERVED for next-boot retry. Clearing
-//!   on rollback failure would create invisible split-brain (CP
-//!   rolled back, host still on the new closure, agent forgot a
-//!   target ever existed). Rollback success path (record cleared)
-//!   is covered by harness-level scenarios.
-//!
-//! Wiremock supports plain HTTP only by default, which is fine for
-//! the recovery contract — what we're proving is the agent-side
-//! recovery flow's wire shape, not the TLS handshake.
+//! End-to-end boot-recovery wire test against a wiremock CP.
 
 use chrono::Utc;
 use nixfleet_agent::checkin_state::{
@@ -79,12 +51,10 @@ async fn posted_confirm_acknowledged_clears_dispatch_writes_confirmed() {
     .await
     .expect("recovery returned Ok");
 
-    // last_dispatched cleared.
     assert!(
         read_last_dispatched(dir.path()).unwrap().is_none(),
         "Acknowledged confirm must clear last_dispatched",
     );
-    // last_confirmed_at written matching the recovered closure.
     let confirmed = read_last_confirmed(dir.path(), closure, Utc::now())
         .unwrap()
         .expect("last_confirmed_at populated post-recovery");
@@ -109,15 +79,7 @@ async fn posted_confirm_410_with_failing_rollback_preserves_dispatch() {
         .mount(&server)
         .await;
 
-    // run_boot_recovery on Cancelled invokes activation::rollback() —
-    // which in a unit-test environment fails because there's no
-    // `/nix/var/nix/profiles/system` to flip. Recovery still returns
-    // Ok (rollback failure is tracing-only). The contract under
-    // failed rollback: KEEP last_dispatched so the next-boot recovery
-    // retries. Clearing on failure would silently split-brain (CP
-    // rolled back, host still on new closure, agent forgot a target
-    // ever existed). Rollback-success → record-cleared is covered by
-    // harness scenarios.
+    // LOADBEARING: failed rollback must KEEP last_dispatched — clearing on failure splits brain.
     run_boot_recovery(
         &plain_client(),
         dir.path(),
@@ -133,7 +95,6 @@ async fn posted_confirm_410_with_failing_rollback_preserves_dispatch() {
         "410 Cancelled with failing rollback must PRESERVE last_dispatched \
          (next-boot retry signal); clearing here would split-brain",
     );
-    // last_confirmed_at NOT written (rollback path doesn't confirm).
     assert!(
         read_last_confirmed(dir.path(), closure, Utc::now())
             .unwrap()
@@ -144,10 +105,6 @@ async fn posted_confirm_410_with_failing_rollback_preserves_dispatch() {
 
 #[tokio::test]
 async fn confirm_request_body_carries_dispatched_record_fields() {
-    // Stronger assertion than just "POST happened" — verify the
-    // request body's fields match what we persisted, so a future
-    // refactor that drops a field at the synthetic-target stage
-    // surfaces here.
     let dir = TempDir::new().unwrap();
     let closure = "ghi-nixos-system-shape-check";
     let rec = record(closure);
@@ -184,13 +141,12 @@ async fn confirm_request_body_carries_dispatched_record_fields() {
 #[tokio::test]
 async fn no_record_skips_post_entirely() {
     let dir = TempDir::new().unwrap();
-    // Empty state-dir — no last_dispatched.
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/agent/confirm"))
         .respond_with(ResponseTemplate::new(204))
-        .expect(0) // MUST NOT be called
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -204,7 +160,5 @@ async fn no_record_skips_post_entirely() {
     .await
     .expect("recovery Ok");
 
-    // drop(server) at end of scope verifies the .expect(0) — the
-    // Mock asserts on drop that the expected call count was met.
     let _ = checkin_state::clear_last_dispatched(dir.path());
 }

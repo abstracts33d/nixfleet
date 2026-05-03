@@ -1,16 +1,4 @@
-//! SQLite persistence (rusqlite + refinery, WAL + FK).
-//!
-//! A single `Mutex<Connection>` is sufficient for fleet sizes ≤ 150
-//! hosts (ADR-012); the migration trigger and pool target are
-//! documented there. Schema lives under `migrations/`; `migrate()` is
-//! idempotent + version-tracked. Mutex poisoning surfaces as anyhow
-//! errors.
-//!
-//! Per-table operations live in submodules and are reached via
-//! accessors on [`Db`]: `tokens()`, `host_dispatch_state()`,
-//! `dispatch_history()`, `rollout_state()`, `reports()`,
-//! `revocations()`. Each submodule's file header names the recovery
-//! class (soft vs hard) per ARCHITECTURE.md §6 Phase 10.
+//! SQLite persistence: rusqlite + refinery, WAL + FK, single `Mutex<Connection>`.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -36,7 +24,6 @@ mod embedded {
     embed_migrations!("migrations");
 }
 
-/// SQLite-backed CP persistence.
 pub struct Db {
     conn: Mutex<Connection>,
 }
@@ -48,9 +35,7 @@ impl std::fmt::Debug for Db {
 }
 
 impl Db {
-    /// Open (or create) the SQLite database at `path`. Creates parent
-    /// directories as needed. Enables WAL + FK on the connection
-    /// before any migrations run.
+    /// Creates parent dirs; enables WAL + FK before migrations.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -61,8 +46,6 @@ impl Db {
         let conn =
             Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
 
-        // WAL improves concurrent read performance; FK enforces
-        // referential integrity that the schema declares.
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .context("set sqlite pragmas")?;
 
@@ -71,7 +54,6 @@ impl Db {
         })
     }
 
-    /// Open a fresh in-memory database. Used by tests.
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("open sqlite :memory:")?;
@@ -85,8 +67,7 @@ impl Db {
         lock_conn(&self.conn)
     }
 
-    /// Run all pending migrations. Idempotent under refinery —
-    /// previously-applied migrations are skipped.
+    /// Idempotent.
     pub fn migrate(&self) -> Result<()> {
         let mut guard = self.conn()?;
         embedded::migrations::runner()
@@ -95,43 +76,33 @@ impl Db {
         Ok(())
     }
 
-    /// `token_replay` accessor (soft state).
     pub fn tokens(&self) -> tokens::Tokens<'_> {
         tokens::Tokens { conn: &self.conn }
     }
 
-    /// `host_dispatch_state` accessor (soft state). One operational
-    /// row per host; the joined `active_rollouts_snapshot`
-    /// projection lives here too.
     pub fn host_dispatch_state(&self) -> host_dispatch_state::HostDispatchState<'_> {
         host_dispatch_state::HostDispatchState { conn: &self.conn }
     }
 
-    /// `dispatch_history` accessor (soft state). Append-only audit
-    /// log paired with `host_dispatch_state`; retention-pruned.
     pub fn dispatch_history(&self) -> dispatch_history::DispatchHistory<'_> {
         dispatch_history::DispatchHistory { conn: &self.conn }
     }
 
-    /// `host_rollout_state` accessor (soft state).
     pub fn rollout_state(&self) -> rollout_state::RolloutState<'_> {
         rollout_state::RolloutState { conn: &self.conn }
     }
 
-    /// `host_reports` accessor (soft state).
     pub fn reports(&self) -> reports::Reports<'_> {
         reports::Reports { conn: &self.conn }
     }
 
-    /// `cert_revocations` accessor (hard state — see ARCHITECTURE.md
-    /// §6 Phase 10).
+    /// Hard state.
     pub fn revocations(&self) -> revocations::Revocations<'_> {
         revocations::Revocations { conn: &self.conn }
     }
 }
 
-/// Lock the shared connection mutex, surfacing poisoning as an
-/// `anyhow` error rather than a panic.
+/// Surfaces mutex poisoning as anyhow rather than panic.
 pub(crate) fn lock_conn(mu: &Mutex<Connection>) -> Result<MutexGuard<'_, Connection>> {
     mu.lock()
         .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))
@@ -144,11 +115,6 @@ pub(crate) mod test_helpers;
 mod tests {
     use super::*;
 
-    /// V001 baseline: applying the consolidated schema produces every
-    /// expected table and none of the retired legacy ones
-    /// (pending_confirms, schema_placeholder). Future schema changes
-    /// (V002 onward) add their own per-migration test next to this
-    /// one to form the migration-equivalence tier.
     #[test]
     fn v001_produces_consolidated_schema() {
         let db = Db::open_in_memory().unwrap();
@@ -183,10 +149,6 @@ mod tests {
     }
 
 
-    /// Helper: query the column names of `table` in declaration order.
-    /// Available for the next per-migration test (the
-    /// migration-equivalence tier) — first migration past V001 should
-    /// add a test here that uses both helpers.
     #[allow(dead_code)]
     fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
         conn.prepare(&format!("PRAGMA table_info({table})"))
@@ -197,8 +159,6 @@ mod tests {
             .unwrap()
     }
 
-    /// Helper: assert that a table exists in the connected schema.
-    /// See `columns_of` for kept-for-future rationale.
     #[allow(dead_code)]
     fn assert_table_exists(conn: &Connection, table: &str) {
         let n: i64 = conn

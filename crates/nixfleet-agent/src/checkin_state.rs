@@ -1,12 +1,4 @@
 //! Persistence + shared closure-hash helpers for the checkin body.
-//!
-//! Platform-specific introspection (`boot_id`, `pending_generation`)
-//! lives behind the `HostFacts` trait in `crate::host_facts`. This
-//! module owns:
-//!
-//! - the `/run/current-system` reader (works the same on Linux and
-//!   nix-darwin), and
-//! - the on-disk persistence of last-confirm + last-dispatch state.
 
 use std::path::Path;
 #[cfg(test)]
@@ -16,32 +8,24 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
-/// Two-line plaintext: `<closure_hash>\n<rfc3339-timestamp>\n`.
-/// closure_hash binds the timestamp to its generation — agent
-/// rollback suppresses the timestamp on next checkin. CP repopulates
-/// `host_rollout_state.last_healthy_since` from this attestation
-/// after a rebuild, clamped to `min(now, attested)`.
+/// `<closure_hash>\n<rfc3339-timestamp>\n`; closure_hash binds the timestamp to
+/// its generation so rollback suppresses it on the next checkin.
 pub const LAST_CONFIRM_FILENAME: &str = "last_confirmed_at";
 
-/// JSON [`LastDispatchRecord`] (atomic tempfile + rename). Written
-/// after dispatch, BEFORE activate. Read at agent startup to detect
-/// "killed mid-self-switch but the new closure is now live" — agent
-/// posts the retroactive confirm instead of waiting for re-dispatch.
+/// Written after dispatch, BEFORE activate; read at startup to retroactively
+/// confirm a self-killed mid-switch.
 pub const LAST_DISPATCH_FILENAME: &str = "last_dispatched";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct LastDispatchRecord {
     pub closure_hash: String,
     pub channel_ref: String,
-    /// None for legacy/synthetic targets (CP also re-derives it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_id: Option<String>,
     pub dispatched_at: DateTime<Utc>,
 }
 
-/// Atomic tempfile + rename. Best-effort: failures non-fatal — worst
-/// case the boot-recovery path can't retroactively confirm and the
-/// next checkin re-dispatches (one cycle slower).
+/// Atomic tempfile + rename; failures fall back to next-checkin re-dispatch.
 pub fn write_last_dispatched(state_dir: &Path, record: &LastDispatchRecord) -> Result<()> {
     std::fs::create_dir_all(state_dir)
         .with_context(|| format!("create state dir {}", state_dir.display()))?;
@@ -60,8 +44,7 @@ pub fn write_last_dispatched(state_dir: &Path, record: &LastDispatchRecord) -> R
     Ok(())
 }
 
-/// `Ok(None)` for both absent and malformed (next checkin
-/// re-dispatches). Errors only on FS I/O failures.
+/// `Ok(None)` for both absent and malformed; `Err` only on FS I/O failures.
 pub fn read_last_dispatched(state_dir: &Path) -> Result<Option<LastDispatchRecord>> {
     let path = state_dir.join(LAST_DISPATCH_FILENAME);
     let raw = match std::fs::read_to_string(&path) {
@@ -75,7 +58,7 @@ pub fn read_last_dispatched(state_dir: &Path) -> Result<Option<LastDispatchRecor
     }
 }
 
-/// Idempotent — absent file returns `Ok`.
+/// Idempotent: absent file returns `Ok`.
 pub fn clear_last_dispatched(state_dir: &Path) -> Result<()> {
     let path = state_dir.join(LAST_DISPATCH_FILENAME);
     match std::fs::remove_file(&path) {
@@ -85,31 +68,16 @@ pub fn clear_last_dispatched(state_dir: &Path) -> Result<()> {
     }
 }
 
-/// closure_hash on the wire is the FULL `/nix/store` basename, not
-/// the 32-char hash prefix — `dispatch::decide_target` does string
-/// equality, mismatch causes infinite re-dispatch.
+// FOOTGUN: closure_hash is the FULL store basename, not the 32-char hash — wire-equality trap.
 const CURRENT_SYSTEM: &str = "/run/current-system";
 
-/// Works on both NixOS and nix-darwin (both materialise the symlink).
 pub fn current_closure_hash() -> Result<String> {
     let target = std::fs::read_link(CURRENT_SYSTEM)
         .with_context(|| format!("readlink {CURRENT_SYSTEM}"))?;
     Ok(closure_hash_from_path(&target))
 }
 
-/// Extract the closure-hash identifier from a `/nix/store/<basename>`
-/// path. Returns the full basename (e.g.
-/// `2zlnf66xlf35xwm7150kx05q93cwp8jk-nixos-system-lab-…`), NOT the
-/// 32-char hash prefix. The basename is the wire identifier shared
-/// across the proto: `EvaluatedTarget.closure_hash` (CP → agent),
-/// `fleet.resolved.hosts[h].closureHash` (CI → CP), and
-/// `CheckinRequest.current_generation.closure_hash` (agent → CP)
-/// all carry it in the same shape. `dispatch::decide_target` does
-/// string-equality between them; any normalisation drift here
-/// means converged hosts look diverged forever.
-///
-/// Falls back to the full path string if the shape doesn't match,
-/// so the field is always populated.
+/// FOOTGUN: returns full basename, NOT 32-char prefix — byte-equality required across CP/CI/agent.
 pub(crate) fn closure_hash_from_path(p: &Path) -> String {
     let s = p.to_string_lossy();
     s.rsplit('/')
@@ -122,8 +90,7 @@ pub fn uptime_secs(started_at: Instant) -> u64 {
     started_at.elapsed().as_secs()
 }
 
-/// Atomic tempfile + rename. Best-effort: failures non-fatal — soak
-/// attestation is recovery hygiene, not the activation contract.
+/// Atomic tempfile + rename; failures are non-fatal.
 pub fn write_last_confirmed(state_dir: &Path, closure_hash: &str, at: DateTime<Utc>) -> Result<()> {
     std::fs::create_dir_all(state_dir)
         .with_context(|| format!("create state dir {}", state_dir.display()))?;
@@ -142,9 +109,7 @@ pub fn write_last_confirmed(state_dir: &Path, closure_hash: &str, at: DateTime<U
     Ok(())
 }
 
-/// `None` when: file absent (first boot), recorded closure differs
-/// from current (rolled back), file malformed, or timestamp is
-/// future-dated (clock skew/tamper — CP clamps anyway).
+/// `None` when absent, mismatched closure, malformed, or future-dated.
 pub fn read_last_confirmed(
     state_dir: &Path,
     current_closure: &str,
@@ -265,21 +230,16 @@ mod write_read_tests {
     fn last_dispatched_malformed_returns_none() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join(LAST_DISPATCH_FILENAME), "{not-json").unwrap();
-        // Caller treats malformed identically to absent — next checkin
-        // re-dispatches.
         assert!(read_last_dispatched(dir.path()).unwrap().is_none());
     }
 
     #[test]
     fn clear_last_dispatched_is_idempotent() {
         let dir = TempDir::new().unwrap();
-        // Absent file: ok.
         clear_last_dispatched(dir.path()).unwrap();
-        // Present file: ok + removed.
         write_last_dispatched(dir.path(), &sample_dispatch()).unwrap();
         clear_last_dispatched(dir.path()).unwrap();
         assert!(read_last_dispatched(dir.path()).unwrap().is_none());
-        // Calling again on absent: still ok.
         clear_last_dispatched(dir.path()).unwrap();
     }
 }
@@ -290,13 +250,6 @@ mod tests {
 
     #[test]
     fn closure_hash_is_full_basename_not_hash_prefix() {
-        // Regression: agent used to strip after the first '-' and
-        // report just the 32-char hash. CP populates
-        // `fleet.resolved.hosts[h].closureHash` with the FULL
-        // basename, so the dispatch comparison was string-not-equal
-        // even on converged hosts → infinite re-dispatch loop on
-        // every checkin (caught on lab when id=14 dispatched the
-        // same target the agent had just confirmed in id=13).
         let p: PathBuf =
             "/nix/store/2zlnf66xlf35xwm7150kx05q93cwp8jk-nixos-system-lab-20260427-0810_5176864f_turbo-otter"
                 .into();
@@ -306,7 +259,6 @@ mod tests {
             "2zlnf66xlf35xwm7150kx05q93cwp8jk-nixos-system-lab-20260427-0810_5176864f_turbo-otter",
             "closure_hash must be the full /nix/store basename — same shape the CP declares",
         );
-        // Sanity: prefix-only would have been this 32-char string.
         assert_ne!(got, "2zlnf66xlf35xwm7150kx05q93cwp8jk");
     }
 

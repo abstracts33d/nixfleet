@@ -1,7 +1,3 @@
-# NixOS module for hosting microVMs as first-class fleet members.
-# Provides bridge networking, DHCP, and NAT infrastructure.
-# MicroVMs are defined via the upstream microvm.vms option.
-# Auto-included by mkHost (disabled by default).
 {
   config,
   lib,
@@ -49,7 +45,6 @@ in {
 
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
-      # Bridge interface
       systemd.network = {
         enable = true;
         netdevs."10-${cfg.bridge.name}" = {
@@ -67,18 +62,15 @@ in {
         };
       };
 
-      # IP forwarding for NAT
       boot.kernel.sysctl = {
         "net.ipv4.ip_forward" = 1;
       };
 
-      # NAT for microVM bridge subnet
       networking.nat = {
         enable = true;
         internalInterfaces = [cfg.bridge.name];
       };
 
-      # DHCP server on bridge
       services.dnsmasq = lib.mkIf cfg.dhcp.enable {
         enable = true;
         settings = {
@@ -92,8 +84,6 @@ in {
       };
     })
 
-    # Persistence: contribute microVM registry dir to the framework
-    # persistence list. The active implementation reads the list.
     (lib.mkIf cfg.enable {
       nixfleet.persistence.directories = ["/var/lib/microvms"];
     })

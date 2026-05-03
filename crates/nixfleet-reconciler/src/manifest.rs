@@ -1,29 +1,12 @@
-//! Pure projection: `fleet.resolved.json` + `(channel, fleet_resolved_hash,
-//! signed_at, ci_commit, signature_algorithm)` → `RolloutManifest`.
-//!
-//! Used by `nixfleet-release` to produce signed manifests at CI time
-//! and by the CP to recompute the *expected* rolloutId for any given
-//! channel against its currently-verified fleet snapshot. Both paths
-//! share this one function so they can't drift — the CP advertises a
-//! rolloutId iff it can be re-derived deterministically from the same
-//! signed snapshot the producer projected from.
+//! Pure projection: fleet.resolved + channel context → RolloutManifest.
+//! Producer (nixfleet-release) and CP (re-derivation) share this fn.
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::{FleetResolved, HostWave, Meta, RolloutManifest};
 
-/// CP-side: compute the `rolloutId` the CP should advertise to agents
-/// for a host on `channel`. Wraps `project_manifest` + `compute_rollout_id`
-/// with the inputs read from the currently-verified `FleetResolved` and
-/// its content hash.
-///
-/// Returns `Ok(None)` when the channel has no host with a declared
-/// closure (matches `Decision::NoDeclaration` semantics).
-///
-/// Both nixfleet-release (producer) and the CP (re-derivation for
-/// dispatch + recovery sites) converge on this exact projection:
-/// drift would break the wire promise "the rolloutId I advertise is
-/// the content hash of a manifest CI actually signed."
+/// CP-side rolloutId for a host on `channel`. `Ok(None)` when the channel
+/// has no host with a declared closure.
 pub fn compute_rollout_id_for_channel(
     fleet: &FleetResolved,
     fleet_resolved_hash: &str,
@@ -55,17 +38,9 @@ pub fn compute_rollout_id_for_channel(
     Ok(Some(id))
 }
 
-/// Project a single channel out of `fleet.resolved` into a
-/// `RolloutManifest`.
-///
-/// Returns `Ok(None)` when no host on this channel has a `closureHash`
-/// declared (degenerate channel — nothing to dispatch). Mirrors the
-/// `Decision::NoDeclaration` semantics in dispatch: a host without a
-/// closure isn't a member of any rollout.
-///
-/// `host_set` is sorted by hostname for canonical-byte stability.
-/// All other inputs are read straight from `fleet`; the manifest is
-/// a pure projection.
+/// Project one channel out of fleet.resolved. `Ok(None)` when no host on
+/// the channel has a `closureHash`. `host_set` sorted for canonical-byte
+/// stability.
 pub fn project_manifest(
     fleet: &FleetResolved,
     channel: &str,

@@ -1,4 +1,3 @@
-# TPM keyslot scope — option declarations.
 {lib, ...}: {
   options.nixfleet.keyslots.tpm = {
     enable = lib.mkEnableOption "TPM2-backed signing keyslot provisioned at first boot";

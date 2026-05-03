@@ -1,27 +1,17 @@
-//! Per-checkin dispatch decision: query the in-flight operational
-//! row, consult the wave-staging gate, ask `dispatch::decide_target`
-//! for a target, and if the answer is Dispatch, UPSERT the
-//! `host_dispatch_state` row + append to `dispatch_history` as the
-//! idempotency anchor. Helpers staging per-channel host snapshots
-//! for the gate live alongside.
+//! Per-checkin dispatch: gate, decide, persist operational + audit rows.
 
 use chrono::{DateTime, Utc};
 use nixfleet_proto::agent_wire::CheckinRequest;
 
 use super::super::state::AppState;
 
-/// Per-checkin dispatch decision. Failures log + return None: a
-/// transient DB hiccup or missing fleet snapshot must not surface as
-/// HTTP 500 to the agent (it retries every 60s).
+/// Failures log + return None; transient errors must not surface as 500 to the agent.
 pub(super) async fn dispatch_target_for_checkin(
     state: &AppState,
     req: &CheckinRequest,
     now: DateTime<Utc>,
 ) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
     let db = state.db.as_ref()?;
-    // Atomic snapshot read: the (fleet, fleet_resolved_hash) pair
-    // comes out of one RwLock guard so dispatch can never see a
-    // torn snapshot (RFC-0002 §4.4 anchor consistency).
     let snap = state.verified_fleet.read().await.clone()?;
     let fleet = snap.fleet;
     let fleet_resolved_hash = snap.fleet_resolved_hash;
@@ -59,10 +49,7 @@ pub(super) async fn dispatch_target_for_checkin(
             rollout_id,
             wave_index,
         } => {
-            // Channel must be persisted explicitly. The host's
-            // declared channel is the source of truth; rollout ids
-            // no longer encode it (content-addressed manifests use
-            // sha256 hex).
+            // Persist channel explicitly: content-addressed rolloutIds don't encode it.
             let channel = fleet
                 .hosts
                 .get(&req.hostname)
@@ -91,9 +78,7 @@ pub(super) async fn dispatch_target_for_checkin(
     }
 }
 
-/// Snapshot per-host (records, current rollout, wave index) for every
-/// host on the given channel. Owned data so the gate iterator has
-/// stable lifetimes after the locks drop.
+/// Owned per-host snapshot so gate iterator outlives the lock guards.
 pub(super) async fn stage_channel_hosts(
     state: &AppState,
     fleet: &nixfleet_proto::FleetResolved,
@@ -138,11 +123,8 @@ pub(super) fn wave_index_for(
     })
 }
 
-/// Persist the operational + audit rows for a freshly-dispatched
-/// target. Returns the target on success, None if the DB write fails
-/// (the row is the idempotency anchor — without it the next checkin
-/// would re-dispatch, breaking the contract).
-#[allow(clippy::too_many_arguments)] // 1:1 dispatch-row shape; pulled apart for clarity at the call site.
+/// Returns None on DB failure: the row is the idempotency anchor.
+#[allow(clippy::too_many_arguments)]
 fn record_dispatched_target(
     db: &crate::db::Db,
     hostname: &str,

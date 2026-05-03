@@ -1,6 +1,4 @@
 //! Round-trip tests for TrustConfig + KeySlot.
-//!
-//! Shape authoritative per docs/trust-root-flow.md §3.4 + §7.4.
 
 use nixfleet_proto::{KeySlot, TrustConfig, TrustedPubkey};
 
@@ -30,9 +28,6 @@ fn trust_config_roundtrips_minimum_shape() {
 
 #[test]
 fn trust_config_omitted_cache_keys_defaults_to_empty() {
-    // The framework must accept trust.json files that don't list
-    // any cache keys (fleets with no shared cache, or fleets that
-    // distribute cache trust through another channel).
     let json = r#"{
         "schemaVersion": 1,
         "ciReleaseKey": { "current": null, "previous": null, "rejectBefore": null }
@@ -43,10 +38,7 @@ fn trust_config_omitted_cache_keys_defaults_to_empty() {
 
 #[test]
 fn trust_config_accepts_opaque_cache_key_strings() {
-    // The proto stores the key strings unparsed and forwards them to
-    // nix's `trusted-public-keys`. Nix accepts both stock
-    // `<name>:<base64>` and attic's `attic:<host>:<base64>` formats
-    // interchangeably, so the proto doesn't need to discriminate.
+    // Proto stores key strings unparsed and forwards opaquely to nix.
     let json = r#"{
         "schemaVersion": 1,
         "ciReleaseKey": { "current": null, "previous": null, "rejectBefore": null },
@@ -99,15 +91,8 @@ fn trust_config_rejects_missing_schema_version() {
     assert!(err.to_string().contains("schemaVersion"), "got: {err}");
 }
 
-/// Exercises the exact JSON shape the Nix scope modules emit when an
-/// operator pins an org root key. `modules/contracts/trust.nix` stores the key
-/// as a bare string; `modules/scopes/nixfleet/_trust-json.nix` promotes
-/// it into the `{algorithm: "ed25519", public: <str>}` struct proto
-/// expects (CONTRACTS §II #3 — org root key is always ed25519).
-///
-/// Without the promotion, binaries would fail to deserialize trust.json
-/// on any host that sets orgRootKey. Pins the emission shape against
-/// regression.
+/// Pins the JSON shape Nix scope modules emit when an operator sets
+/// an org root key — the bare-string → struct promotion.
 #[test]
 fn trust_config_parses_populated_org_root_key_matching_nix_emission() {
     let json = r#"{

@@ -1,30 +1,5 @@
-//! Wave-staging compliance gate integration test.
-//!
-//! Drives the full chain end-to-end:
-//! - signed `fleet.resolved.json` with `hosts.lab` on a channel
-//!   declaring `compliance.mode`,
-//! - posts a real `ComplianceFailure` event with a JCS-canonical
-//!   ed25519 signature against the host's SSH pubkey,
-//! - verifies the CP's `/v1/agent/checkin` returns `target: null`
-//!   under enforce mode (wave gate blocks) and a populated target
-//!   under permissive mode (advisory only).
-//!
-//! Mirrors `dispatch.rs`'s harness shape — duplication over
-//! abstraction because cargo integration tests can't share a
-//! `mod common`.
-//!
-//! Closes the validation gap flagged in the cycle review: unit
-//! tests cover `wave_gate::evaluate_channel_gate` and
-//! `evidence_verify::verify_event` independently; this test wires
-//! both into the live HTTP path with mTLS.
-//!
-//! NOTE on lab-relevance: the lab fleet today ships
-//! `hosts.lab.pubkey = null` (host enrolled but pubkey not yet
-//! stamped); under that config every event surfaces with
-//! `signature_status = NoPubkey`, which the gate counts as
-//! outstanding (mTLS-bound trust). This test exercises the
-//! `Verified` path explicitly so we know the auditor chain is
-//! wired correctly the day a fleet operator stamps a pubkey.
+//! Wave-staging compliance gate end-to-end: signed fleet + signed event over mTLS,
+//! enforce-mode blocks (target=null), permissive-mode advisory (target populated).
 
 mod common;
 
@@ -53,10 +28,6 @@ const DECLARED_CLOSURE: &str = "decl0001-nixos-system-test-host-26.05";
 const CURRENT_CLOSURE: &str = "curr0001-nixos-system-test-host-26.05";
 const CI_COMMIT: &str = "abc12345deadbeefcafebabe";
 
-/// Generate an ed25519 keypair and the matching `ssh-ed25519
-/// AAAAC3...` OpenSSH pubkey string. Used both for stamping
-/// `fleet.resolved.hosts.<host>.pubkey` and for signing test event
-/// payloads.
 fn fresh_host_keypair() -> (SigningKey, String) {
     let mut seed = [0u8; 32];
     OsRng.fill_bytes(&mut seed);
@@ -70,10 +41,6 @@ fn fresh_host_keypair() -> (SigningKey, String) {
     (sk, openssh)
 }
 
-/// Build a signed fleet.resolved.json declaring one host on one
-/// channel with the requested compliance.mode + the host's SSH
-/// pubkey stamped (so verification reaches `Verified` rather than
-/// `NoPubkey`).
 fn write_signed_fleet(
     dir: &TempDir,
     compliance_mode: &str,
@@ -201,9 +168,6 @@ fn checkin_request(current: &str) -> CheckinRequest {
     }
 }
 
-/// Mirror of the agent's `evidence_signer::ComplianceFailureSignedPayload`.
-/// Inlined here so the integration test doesn't import the agent crate
-/// (it doesn't need anything else from it).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ComplianceFailureSignedPayload<'a> {
@@ -216,9 +180,6 @@ struct ComplianceFailureSignedPayload<'a> {
     evidence_snippet_sha256: String,
 }
 
-/// Build + sign a `ComplianceFailure` ReportRequest the way the
-/// real agent does. Returns the request body the test posts to
-/// `/v1/agent/report`.
 fn build_signed_compliance_failure(
     sk: &SigningKey,
     rollout: &str,
@@ -226,7 +187,6 @@ fn build_signed_compliance_failure(
 ) -> ReportRequest {
     let articles: Vec<String> = vec!["nis2:21(b)".to_string()];
     let snippet = serde_json::json!({"compliant": false, "rule": "AL-03"});
-    // Reproduce the agent's snippet hash via the shared helper.
     let snippet_sha = nixfleet_canonicalize::sha256_jcs_hex(&snippet).unwrap();
     let evidence_collected_at = Utc::now();
     let payload = ComplianceFailureSignedPayload {
@@ -259,7 +219,6 @@ fn build_signed_compliance_failure(
     }
 }
 
-/// Helper: post a checkin and return the parsed CheckinResponse.
 async fn post_checkin(
     client: &reqwest::Client,
     port: u16,
@@ -303,8 +262,6 @@ async fn enforce_mode_blocks_dispatch_after_signed_compliance_failure() {
     .await;
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
-    // 1. Initial checkin: host on CURRENT_CLOSURE, fleet declares
-    //    DECLARED_CLOSURE → would dispatch under normal flow.
     let checkin_diverged = checkin_request(CURRENT_CLOSURE);
     let resp1 = post_checkin(&client, port, &checkin_diverged).await;
     assert!(
@@ -317,9 +274,6 @@ async fn enforce_mode_blocks_dispatch_after_signed_compliance_failure() {
         .and_then(|t| t.rollout_id.clone())
         .expect("dispatch carries rollout_id");
 
-    // 2. Agent posts a signed ComplianceFailure for the dispatched
-    //    rollout (simulating: host activated but the gate found a
-    //    failing control post-activation).
     let report = build_signed_compliance_failure(&host_sk, &dispatched_rollout, "auditLogging");
     let report_resp: ReportResponse = client
         .post(format!("https://localhost:{port}/v1/agent/report"))
@@ -336,13 +290,7 @@ async fn enforce_mode_blocks_dispatch_after_signed_compliance_failure() {
         report_resp.event_id
     );
 
-    // 3. Next checkin from the same host. Even though the host is
-    //    still diverged (CURRENT_CLOSURE != DECLARED_CLOSURE),
-    //    enforce-mode wave gate must block dispatch because the
-    //    host has an outstanding signature-verified ComplianceFailure
-    //    event for the current rollout. CheckinResponse.target = None.
-    //    Use a checkin that echoes the rollout id so the wave gate's
-    //    "host is on this rollout" lookup succeeds.
+    // GOTCHA: must echo rollout_id so wave gate's "host is on this rollout" lookup hits.
     let mut checkin_after_failure = checkin_request(CURRENT_CLOSURE);
     checkin_after_failure.last_evaluated_target =
         Some(nixfleet_proto::agent_wire::EvaluatedTarget {
@@ -366,19 +314,9 @@ async fn enforce_mode_blocks_dispatch_after_signed_compliance_failure() {
     handle.abort();
 }
 
-/// Acceptance criterion: the wave gate must remain
-/// blocked across a CP restart. Mechanism — at boot, the CP
-/// hydrates the in-memory ring buffer from the persisted
-/// `host_reports` table; the gate's projection sources its
-/// outstanding-event counts from that ring (and from the SQL
-/// projection). If hydration silently breaks (e.g. a future
-/// serde migration leaves rows unparseable, hydration fires
-/// per-row warnings, the ring stays empty), gate decisions
-/// would unlock on every restart.
-///
-/// This test posts a signed `ComplianceFailure`, kills the CP,
-/// spawns a fresh server pointed at the same DB, and asserts
-/// the next checkin still returns `target: None`.
+/// LOADBEARING: gate must stay blocked across CP restart — boot-hydration of the
+/// in-memory ring from `host_reports` is silent-fail-prone (serde drift would empty
+/// the ring and unlock dispatch).
 #[tokio::test]
 async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
     install_crypto_provider_once();
@@ -393,7 +331,6 @@ async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
     let port = pick_free_port().await;
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
-    // ── First CP process ─────────────────────────────────────
     let handle1 = spawn_with_signed_fleet(
         &dir,
         artifact.clone(),
@@ -407,7 +344,6 @@ async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
     )
     .await;
 
-    // 1. Initial checkin dispatches.
     let resp1 = post_checkin(&client, port, &checkin_request(CURRENT_CLOSURE)).await;
     let dispatched_rollout = resp1
         .target
@@ -415,9 +351,7 @@ async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
         .and_then(|t| t.rollout_id.clone())
         .expect("first checkin dispatches");
 
-    // 2. Post a signature-verified ComplianceFailure for the
-    //    dispatched rollout. This MUST hit the SQLite host_reports
-    //    table (otherwise the second CP can't see it).
+    // LOADBEARING: must persist to SQLite host_reports so the second CP can rehydrate it.
     let report = build_signed_compliance_failure(&host_sk, &dispatched_rollout, "auditLogging");
     let report_resp: ReportResponse = client
         .post(format!("https://localhost:{port}/v1/agent/report"))
@@ -430,8 +364,6 @@ async fn enforce_mode_still_blocks_dispatch_after_cp_restart() {
         .unwrap();
     assert!(report_resp.event_id.starts_with("evt-"));
 
-    // 3. Confirm gate blocks under the live CP (sanity check that
-    //    we haven't broken the steady-state behaviour).
     let mut checkin_after_failure = checkin_request(CURRENT_CLOSURE);
     checkin_after_failure.last_evaluated_target =
         Some(nixfleet_proto::agent_wire::EvaluatedTarget {

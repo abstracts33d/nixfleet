@@ -1,8 +1,6 @@
-//! Rollback pipeline: nix-env --rollback → discover target → fire
-//! (backend) → poll. Bypasses `nixos-rebuild` because
-//! `nixos-rebuild-ng --rollback` tries to evaluate
-//! `<nixpkgs/nixos>` even on rollback, which fails in the agent's
-//! NIX_PATH-less sandbox.
+//! Rollback pipeline: nix-env --rollback → discover target → fire → poll.
+//! Bypasses `nixos-rebuild --rollback` which evaluates `<nixpkgs/nixos>`
+//! even on rollback and fails in the agent's NIX_PATH-less sandbox.
 
 use anyhow::{Context, Result};
 use tokio::process::Command;
@@ -12,12 +10,9 @@ use super::outcome::RollbackOutcome;
 use super::profile::resolve_profile_target;
 use super::verify_poll::{PollOutcome, VerifyPoll};
 
-/// Generic-over-backend form. Production calls `rollback()` (the
-/// façade in `mod.rs`); tests inject a fake.
 pub async fn rollback_with<B: ActivationBackend>(backend: &B) -> Result<RollbackOutcome> {
     tracing::warn!("agent: triggering local rollback (fire-and-forget via systemd-run)");
 
-    // Step 1: profile flip — synchronous symlink re-target.
     let env_status = Command::new("nix-env")
         .arg("--profile")
         .arg("/nix/var/nix/profiles/system")
@@ -36,8 +31,7 @@ pub async fn rollback_with<B: ActivationBackend>(backend: &B) -> Result<Rollback
         });
     }
 
-    // Step 2: discover the rolled-back target so we can poll for it
-    // (stronger contract than "any change").
+    // Discover the rolled-back target so we poll for it specifically.
     let target_basename = match resolve_profile_target() {
         Ok(b) => b,
         Err(err) => {
@@ -56,16 +50,12 @@ pub async fn rollback_with<B: ActivationBackend>(backend: &B) -> Result<Rollback
         "agent: rollback target discovered; firing detached switch",
     );
 
-    // Step 3: fire rollback (backend-dispatched).
     if let Some(failure) = backend.fire_rollback(&target_basename).await? {
         return Ok(failure);
     }
 
-    // Step 4: poll for the rolled-back target. `previous_basename`
-    // stays None — rollback has no meaningful "expected pre-state"
-    // reference (the pre-rollback basename is the failed generation
-    // we're abandoning), so flip-to-unexpected detection is disabled
-    // and any non-match collapses into the timeout branch.
+    // `previous_basename` stays None: the failed gen we're abandoning is not
+    // a meaningful pre-state, so any non-match collapses into the timeout branch.
     match VerifyPoll::new(&target_basename).until_settled().await {
         PollOutcome::Settled => {
             tracing::info!(
@@ -88,7 +78,6 @@ pub async fn rollback_with<B: ActivationBackend>(backend: &B) -> Result<Rollback
             })
         }
         PollOutcome::FlippedToUnexpected { .. } => {
-            // Unreachable: only emitted when previous_basename is Some.
             unreachable!(
                 "FlippedToUnexpected requires Some(previous_basename); rollback leaves it None"
             )

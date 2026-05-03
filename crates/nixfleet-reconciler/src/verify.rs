@@ -1,4 +1,4 @@
-//! step 0 — fetch + verify + freshness-gate.
+//! Sidecar fetch + verify + freshness-gate.
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -10,11 +10,8 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use thiserror::Error;
 
-/// A signed sidecar artifact verified through the shared
-/// canonicalize → signature-verify → freshness-gate pipeline.
-/// Every signed artifact under `ciReleaseKey` (CONTRACTS.md §I)
-/// implements this trait — the `verify_signed_sidecar` generic
-/// works against any of them.
+/// Signed sidecar under `ciReleaseKey`. Drives the shared
+/// canonicalize → verify → freshness-gate pipeline.
 pub trait SignedSidecar {
     fn schema_version(&self) -> u32;
     fn signed_at(&self) -> Option<DateTime<Utc>>;
@@ -47,7 +44,6 @@ impl SignedSidecar for RolloutManifest {
     }
 }
 
-/// Accepted `schemaVersion` for this consumer.
 const ACCEPTED_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Error)]
@@ -70,8 +66,8 @@ pub enum VerifyError {
 
     #[error(
         "future-dated artifact: signedAt={signed_at} is more than {slack_secs}s ahead of now={now} \
-         (clock skew tolerance is {slack_secs}s; an artifact further in the future suggests \
-         pre-signing — possible CI key compromise. Rotate via reject_before)"
+         (clock skew tolerance is {slack_secs}s; pre-signing suggests CI key compromise — \
+         rotate via reject_before)"
     )]
     FutureDated {
         signed_at: DateTime<Utc>,
@@ -80,7 +76,7 @@ pub enum VerifyError {
     },
 
     #[error(
-        "artifact signed at {signed_at} is older than reject_before {reject_before} (compromise switch, CONTRACTS.md §II #1)"
+        "artifact signed at {signed_at} is older than reject_before {reject_before} (compromise switch)"
     )]
     RejectedBeforeTimestamp {
         signed_at: DateTime<Utc>,
@@ -103,25 +99,10 @@ pub enum VerifyError {
     NoTrustRoots,
 }
 
-/// Verify any signed sidecar artifact (`fleet.resolved.json`,
-/// `revocations.json`, `releases/rollouts/<rolloutId>.json`).
-///
-/// Generic over the parsed payload type — every signed artifact
-/// under `ciReleaseKey` (CONTRACTS.md §I) goes through the same
-/// canonicalize → signature-verify → schema-gate → freshness-gate
-/// pipeline. Rule-of-three consolidation: the per-artifact wrappers
-/// `verify_artifact`, `verify_revocations`, `verify_rollout_manifest`
-/// delegate here.
-///
-/// `trusted_keys` supports the rotation grace window — current +
-/// previous keys are both valid for up to 30 days. Tries in
-/// declaration order; first match wins. Entries with unsupported
-/// algorithms are skipped silently for forward-compat.
-///
-/// `reject_before`: compromise kill-switch. `meta.signedAt < ts`
-/// is rejected regardless of which key matched. Strict `<` — exact
-/// equality is accepted. Fires before the freshness check so
-/// alerts can distinguish incident response from routine staleness.
+/// Verify any signed sidecar (fleet.resolved / revocations / rollout
+/// manifest). `trusted_keys` tried in declaration order, first match
+/// wins; unsupported algorithms skipped silently for forward-compat.
+/// `reject_before` is strict `<` — equality accepted.
 pub fn verify_signed_sidecar<T: SignedSidecar + DeserializeOwned>(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -135,11 +116,7 @@ pub fn verify_signed_sidecar<T: SignedSidecar + DeserializeOwned>(
     finish_sidecar_verification(&canonical, now, freshness_window, reject_before)
 }
 
-/// Thin wrapper around `verify_signed_sidecar` for `FleetResolved`.
-/// Kept as a named entry point because every existing caller (CP
-/// boot, channel-refs poll, agent direct-fetch fallback) reads
-/// better at the call site as `verify_artifact(...)` than as
-/// `verify_signed_sidecar::<FleetResolved>(...)`.
+/// Thin `FleetResolved` wrapper around `verify_signed_sidecar`.
 pub fn verify_artifact(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -158,8 +135,7 @@ pub fn verify_artifact(
     )
 }
 
-/// `verify_strict` rejects malleable signatures — required for
-/// root-of-trust keys.
+/// Uses `verify_strict` to reject malleable signatures.
 fn verify_ed25519(
     canonical_bytes: &[u8],
     signature: &[u8],
@@ -195,10 +171,8 @@ fn verify_ed25519(
         .map_err(|_| VerifyError::BadSignature)
 }
 
-/// Pubkey: 64 bytes `X || Y` (SEC1 uncompressed minus `0x04` tag),
-/// base64. Sig: 64 bytes `R || S` raw. Low-s malleability rejected
-/// (canonical p256 has `s <= n/2`; `normalize_s().is_some()` ⇒
-/// reject) — same hardening posture as ed25519 `verify_strict`.
+/// Pubkey: 64-byte X||Y base64. Sig: 64-byte R||S. Normalises high-s
+/// to low-s before verifying (TPM2_Sign emits ~50% high-s).
 fn verify_ecdsa_p256(
     canonical_bytes: &[u8],
     signature: &[u8],
@@ -225,7 +199,7 @@ fn verify_ecdsa_p256(
         });
     }
 
-    // Re-tag as 65-byte SEC1 uncompressed (0x04 || X || Y).
+    // 0x04 || X || Y SEC1 uncompressed.
     let mut tagged = [0u8; 65];
     tagged[0] = 0x04;
     tagged[1..].copy_from_slice(&public_bytes);
@@ -241,20 +215,6 @@ fn verify_ecdsa_p256(
     })?;
 
     let sig = P256Signature::from_slice(signature).map_err(|_| VerifyError::BadSignature)?;
-
-    // Normalise to low-s before verifying. ECDSA signatures are
-    // malleable — both `(r, s)` and `(r, n-s)` are valid for the
-    // same message — and TPM2_Sign does not normalise on its own
-    // (the underlying random `k` produces ~50% high-s outputs). The
-    // earlier strict-rejection posture (Bitcoin-style) bit a real
-    // CI run on lab where the TPM emitted a high-s signature: the
-    // body was canonical, the trust pubkey matched, yet verify
-    // returned BadSignature. Strict low-s isn't load-bearing for
-    // our wire — these artifacts are signed by a single TPM, fetched
-    // once, verified once, never re-emitted; there is no third-party
-    // consumer that might mis-treat the alternate form. Normalise
-    // both forms to the canonical low-s representation before
-    // ECDSA-verifying.
     let sig = sig.normalize_s().unwrap_or(sig);
 
     verifying_key
@@ -262,9 +222,6 @@ fn verify_ecdsa_p256(
         .map_err(|_| VerifyError::BadSignature)
 }
 
-/// Verify a signed `revocations.json` artifact. Same trust class
-/// as [`verify_artifact`] — both signed by `ciReleaseKey` — so the
-/// shared `verify_signed_sidecar` pipeline applies unchanged.
 pub fn verify_revocations(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -283,14 +240,8 @@ pub fn verify_revocations(
     )
 }
 
-/// Verify a signed `releases/rollouts/<rolloutId>.json` artifact.
-/// Same trust class as `fleet.resolved.json` and `revocations.json`.
-///
-/// Callers that received a `rolloutId` advertised by the CP should
-/// additionally call [`compute_rollout_id`] on the verified manifest
-/// and assert the result equals the advertised id — that's the
-/// content-address check that closes RFC-0002 §4.4's threat model.
-/// Kept as a separate step so the verify path itself stays generic.
+/// Verify a signed rollout manifest. Callers MUST also call
+/// [`compute_rollout_id`] and assert it equals the advertised id.
 pub fn verify_rollout_manifest(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -309,13 +260,7 @@ pub fn verify_rollout_manifest(
     )
 }
 
-/// Compute the SHA-256 hex of the JCS-canonical bytes of any
-/// serialisable value. The shared primitive behind every
-/// content-address derivation in the system: rolloutId,
-/// fleet_resolved_hash, future per-host or Merkle-projected hashes.
-///
-/// Errors only on serde or canonicalize failure — both indicate a
-/// malformed input the caller should refuse to act on.
+/// SHA-256 hex of JCS-canonical bytes of any serialisable value.
 pub fn compute_canonical_hash<T: serde::Serialize>(value: &T) -> Result<String, VerifyError> {
     let raw = serde_json::to_string(value)?;
     let canonical =
@@ -324,12 +269,7 @@ pub fn compute_canonical_hash<T: serde::Serialize>(value: &T) -> Result<String, 
     Ok(hex_lowercase(&digest))
 }
 
-/// Compute a `RolloutManifest`'s rolloutId — `sha256(canonical(m))`,
-/// hex lowercase. Producer-side use: `nixfleet-release` derives the
-/// filename `releases/rollouts/<rolloutId>.json` from this. Consumer
-/// side: every recipient (CP on advertise, agent on first-fetch,
-/// auditor offline) recomputes and asserts equality against the id
-/// it was told to fetch.
+/// `sha256(canonical(m))` hex lowercase.
 pub fn compute_rollout_id(manifest: &RolloutManifest) -> Result<String, VerifyError> {
     compute_canonical_hash(manifest)
 }
@@ -344,8 +284,7 @@ fn hex_lowercase(bytes: &[u8]) -> String {
     out
 }
 
-/// Shared parse → canonicalize → sig-verify. Returns canonical
-/// bytes; caller does type-specific schema-gate + freshness.
+/// Parse → canonicalize → sig-verify. Returns canonical bytes.
 fn verify_signature_against_trust_roots(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -392,30 +331,10 @@ fn verify_signature_against_trust_roots(
     Err(VerifyError::BadSignature)
 }
 
-/// Generic schema-gate + reject-before + freshness check.
-/// Two freshness checks, applied in order:
-///
-/// 1. **Past bound** (existing): reject if `now - signed_at > window
-///    + CLOCK_SKEW_SLACK_SECS`. Catches a stale fleet.resolved being
-///    served past its declared validity.
-///
-/// 2. **Future bound** (added 2026-05-02): reject if `signed_at - now
-///    > CLOCK_SKEW_SLACK_SECS`. Catches a future-dated artifact —
-///    benign clock skew is bounded by the slack constant; anything
-///    beyond suggests the signer is producing artifacts targeted at
-///    a future window. With a CI key compromise, future-dating is
-///    the natural way to mint long-lived rogue artifacts that
-///    survive short reject_before rotations. Pre-fix, the past-only
-///    check accepted any future-dated artifact indefinitely
-///    (verified live 2026-05-02 with `--now=signed_at - 2 days` →
-///    exit 0).
-///
-/// `reject_before` is checked before either freshness bound so alerts
-/// can distinguish "key compromised, rotate via reject_before" from
-/// "CI is behind" / "operator's clock is wrong".
-///
-/// Applies `CLOCK_SKEW_SLACK_SECS` uniformly to every sidecar — same
-/// trust root, same fetch path, same clock-drift surface, same slack.
+/// Schema gate + `reject_before` + bidirectional freshness check
+/// (past + future bound, both with `CLOCK_SKEW_SLACK_SECS` slack).
+/// `reject_before` runs first so alerts can distinguish compromise
+/// from staleness.
 fn finish_sidecar_verification<T: SignedSidecar + DeserializeOwned>(
     canonical: &str,
     now: DateTime<Utc>,

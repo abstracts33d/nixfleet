@@ -1,6 +1,4 @@
-//! Success path: run runtime gate → confirm with the CP → persist
-//! `last_confirmed_at` + clear `last_dispatched`. CP-410 (cancelled /
-//! deadline-expired rollout) triggers a local rollback.
+//! Success path: runtime gate → confirm → persist; CP-410 triggers rollback.
 
 use nixfleet_proto::agent_wire::{EvaluatedTarget, ReportEvent};
 
@@ -11,9 +9,6 @@ use crate::Args;
 use super::compliance::{process_gate_outcome, run_runtime_gate};
 use super::handler::{try_sign, DispatchCtx};
 
-/// Switch fired and polled successfully → run the runtime compliance
-/// gate, then either confirm with the CP or roll back depending on
-/// the gate outcome.
 pub(super) async fn handle_fired_and_polled<R: Reporter>(
     ctx: &DispatchCtx<'_, R>,
     client_handle: &reqwest::Client,
@@ -29,19 +24,13 @@ pub(super) async fn handle_fired_and_polled<R: Reporter>(
     confirm_and_finalize(ctx, client_handle).await;
 }
 
-/// Confirm with the CP and persist the post-confirm bookkeeping.
-/// CP-410 (cancelled / deadline-expired rollout) triggers a rollback.
 async fn confirm_and_finalize<R: Reporter>(
     ctx: &DispatchCtx<'_, R>,
     client_handle: &reqwest::Client,
 ) {
     let boot_id = nixfleet_agent::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
     let rollout = &ctx.target.channel_ref;
-    // RFC-0003 §4.1: report the actual wave the agent activated in,
-    // not a placeholder. CP populates `wave_index` at dispatch time
-    // (control-plane/src/dispatch.rs); a None comes from older CPs
-    // or channels with no wave plan, in which case 0 is the right
-    // fallback (the dispatch already treats those as a single wave).
+    // wave_index None → 0: older CPs / no-wave channels treat as single wave.
     let wave: u32 = ctx.target.wave_index.unwrap_or(0);
     match nixfleet_agent::activation::confirm_target(
         client_handle,
@@ -98,10 +87,7 @@ async fn handle_cp_cancellation<R: Reporter>(rollout: &str, ctx: &DispatchCtx<'_
     }
 }
 
-/// Best-effort: failure to persist doesn't roll back the activation.
-/// `last_confirmed_at` feeds the CP's soak attestation on next checkin;
-/// `last_dispatched` is cleared so a future agent restart's boot-recovery
-/// path doesn't try to re-confirm an already-confirmed generation.
+/// Persist failure is non-fatal; no rollback.
 fn persist_confirmed_state(target: &EvaluatedTarget, args: &Args) {
     if let Err(err) = nixfleet_agent::checkin_state::write_last_confirmed(
         &args.state_dir,

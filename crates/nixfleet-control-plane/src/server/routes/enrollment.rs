@@ -1,5 +1,4 @@
-//! Cert-issuance handlers: `/v1/enroll` (bootstrap) and
-//! `/v1/agent/renew` (already-authenticated rotation).
+//! Cert-issuance handlers for enroll and renew.
 
 use std::sync::Arc;
 
@@ -12,16 +11,7 @@ use rcgen::PublicKeyData;
 use super::super::middleware::AuthenticatedCn;
 use super::super::state::AppState;
 
-/// `POST /v1/enroll` — bootstrap a new fleet host.
-///
-/// No mTLS required (this is the path before the host has a cert).
-/// Authentication is via the bootstrap-token signature against the
-/// org root key in trust.json. Order of checks matches :
-/// 1. Replay defense
-/// 2. Expiry
-/// 3. Signature against `orgRootKey.{current,previous}`
-/// 4. Hostname binding (claim ↔ CSR CN)
-/// 5. Pubkey-fingerprint binding (SHA-256 of CSR pubkey DER)
+/// `POST /v1/enroll` — bootstrap a new fleet host (no mTLS; auth via bootstrap-token signature).
 pub(in crate::server) async fn enroll(
     State(state): State<Arc<AppState>>,
     Json(req): Json<EnrollRequest>,
@@ -35,7 +25,6 @@ pub(in crate::server) async fn enroll(
         StatusCode::SERVICE_UNAVAILABLE
     })?;
 
-    // 1. Replay defense.
     match db.tokens().token_seen(&req.token.claims.nonce) {
         Ok(true) => {
             tracing::warn!(nonce = %req.token.claims.nonce, "enroll: token replay rejected");
@@ -48,7 +37,6 @@ pub(in crate::server) async fn enroll(
         }
     }
 
-    // 2. Expiry.
     if now < req.token.claims.issued_at || now >= req.token.claims.expires_at {
         tracing::warn!(
             hostname = %req.token.claims.hostname,
@@ -57,8 +45,7 @@ pub(in crate::server) async fn enroll(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // 3. Signature against orgRootKey. Re-read trust.json each
-    // enroll so operator key rotations propagate without restart.
+    // LOADBEARING: re-read trust.json per enroll so operator key rotations propagate without restart.
     let trust_path = state
         .issuance_paths
         .read()
@@ -121,7 +108,6 @@ pub(in crate::server) async fn enroll(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // 4. Hostname / 5. pubkey-fingerprint validation against CSR.
     let csr_params =
         rcgen::CertificateSigningRequestParams::from_pem(&req.csr_pem).map_err(|err| {
             tracing::warn!(error = %err, "enroll: parse CSR PEM");
@@ -157,16 +143,7 @@ pub(in crate::server) async fn enroll(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // All checks passed — atomically commit the nonce. The plain
-    // `INSERT` (no `OR IGNORE`) returns `AlreadyRecorded` on PK
-    // conflict, which closes the TOCTOU race between the early
-    // `token_seen()` check above and this point. Two concurrent
-    // /v1/enroll requests for the same nonce will both pass
-    // `token_seen()`; only one will reach `Recorded` here. The
-    // other gets 409 CONFLICT and never mints a cert. Genuine
-    // DB failures (disk full, schema drift) return 500 instead of
-    // silently proceeding (the old behaviour) so an unrecorded
-    // nonce can never reach the cert-issuance path.
+    // LOADBEARING: plain INSERT closes the TOCTOU between token_seen() and cert issuance via PK conflict.
     match db
         .tokens()
         .record_token_nonce(&req.token.claims.nonce, &req.token.claims.hostname)
@@ -185,7 +162,6 @@ pub(in crate::server) async fn enroll(
         }
     }
 
-    // Issue the cert.
     let paths = state.issuance_paths.read().await.clone();
     let (ca_cert, ca_key, audit_log_path) = match (&paths.fleet_ca_cert, &paths.fleet_ca_key) {
         (Some(c), Some(k)) => (c.clone(), k.clone(), paths.audit_log.clone()),
@@ -231,9 +207,7 @@ pub(in crate::server) async fn enroll(
     }))
 }
 
-/// `POST /v1/agent/renew` — issue a fresh cert for an authenticated
-/// agent. mTLS-required; the verified CN is stamped onto the new
-/// cert via `issuance::issue_cert`.
+/// `POST /v1/agent/renew` — mTLS-required; verified CN is stamped onto the new cert.
 pub(in crate::server) async fn renew(
     State(state): State<Arc<AppState>>,
     Extension(cn): Extension<AuthenticatedCn>,

@@ -17,69 +17,39 @@ pub(super) const NEXT_CHECKIN_SECS: u32 = 60;
 
 pub(super) const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Must remain ≥ agent poll-budget + slack: a deadline shorter than
-/// the agent's fire-and-forget poll window triggers magic-rollback
-/// while the agent is still polling, cascading into a 410 + local
-/// rollback chain. 360s = 300s poll budget + 60s slack for
-/// clock skew + closure download tail latency.
+/// Must exceed agent poll budget (~300s) plus slack to avoid magic-rollback / agent-poll races.
 pub const DEFAULT_CONFIRM_DEADLINE_SECS: i64 = 360;
 
-/// `Default` is provided so tests can use struct-update syntax
-/// (`ServeArgs { listen, tls_cert, ..., ..Default::default() }`)
-/// without rewriting every literal each time a field is added.
-/// Production code never calls `Default::default()` — clap parsing
-/// in `main.rs` populates every field. The defaults here are
-/// deliberately bogus (empty PathBufs, loopback `127.0.0.1:0`) so
-/// any prod path that accidentally relied on Default surfaces at
-/// the first IO call rather than silently mis-binding.
+/// `Default` defaults are bogus on purpose: prod paths that miss clap parsing fail at first IO.
 #[derive(Debug, Clone)]
 pub struct ServeArgs {
     pub listen: SocketAddr,
     pub tls_cert: PathBuf,
     pub tls_key: PathBuf,
     pub client_ca: Option<PathBuf>,
-    /// Used by issuance to chain new agent certs. Often the same
-    /// path as `client_ca`.
+    /// Often the same path as `client_ca`.
     pub fleet_ca_cert: Option<PathBuf>,
     pub fleet_ca_key: Option<PathBuf>,
     pub audit_log_path: Option<PathBuf>,
     pub artifact_path: PathBuf,
     pub signature_path: PathBuf,
     pub trust_path: PathBuf,
-    /// File-backed observed-state fallback. The in-memory projection
-    /// from check-ins is preferred; this is used only when no agents
-    /// have checked in AND `channel_refs` is None.
+    /// File-backed fallback used only when no agents checked in AND `channel_refs` is None.
     pub observed_path: PathBuf,
     pub freshness_window: Duration,
     pub confirm_deadline_secs: i64,
-    /// GitOps fleet snapshot. None → CP relies on the file-backed
-    /// `--artifact` path alone. Source-agnostic (Forgejo raw, GitHub
-    /// raw, GitLab raw, plain HTTP).
+    /// `None` → file-backed `--artifact` only.
     pub channel_refs: Option<crate::polling::channel_refs_poll::ChannelRefsSource>,
-    /// GitOps revocations sidecar. None → operators continue with
-    /// direct DB writes (legacy path).
     pub revocations: Option<crate::polling::revocations_poll::RevocationsSource>,
-    /// None → in-memory state only.
+    /// `None` → in-memory state only.
     pub db_path: Option<PathBuf>,
-    /// Base URL of a nix binary cache the CP proxies
-    /// `/v1/agent/closure/<hash>` to. None → endpoint returns 501.
+    /// `None` → `/v1/agent/closure/<hash>` returns 501.
     pub closure_upstream: Option<String>,
-    /// Directory containing pre-signed `<rolloutId>.{json,sig}` pairs
-    /// produced by nixfleet-release. None → manifest distribution
-    /// falls back to `rollouts_source` HTTP fetch; if both are None,
-    /// `GET /v1/rollouts/<id>` returns 503.
+    /// Pre-signed `<rolloutId>.{json,sig}` pairs; falls back to `rollouts_source`, then 503.
     pub rollouts_dir: Option<PathBuf>,
-    /// HTTP-fetched rollout manifests source. None → fall back to
-    /// `rollouts_dir`. Useful for fleets where the manifests can't
-    /// live in `inputs.self` at closure-build time (the typical case
-    /// since `nixfleet-release` writes them after building closures).
+    /// HTTP-fetched manifests; required when `nixfleet-release` writes manifests post-build.
     pub rollouts_source: Option<crate::rollouts_source::RolloutsSource>,
-    /// When true, refuse to start if any of the security-flag
-    /// fallbacks would silently degrade the deployment posture
-    /// (`--client-ca` unset, revocations source unset, protocol
-    /// header missing on a request). Default `false` for v0.2 to
-    /// preserve current behaviour; intended for production lab.
-    /// See `docs/CONTRACTS.md §II` for the rationale.
+    /// Refuse to start when any security-fallback flag is unset.
     pub strict: bool,
 }
 
@@ -116,12 +86,7 @@ pub struct HostCheckinRecord {
     pub checkin: CheckinRequest,
 }
 
-/// `signature_status` is the evidence-verify verdict for events
-/// that carry a host-key-bound signature. The full set is enumerated
-/// in `report_handler::compute_signature_status`. None for variants
-/// that intentionally don't sign (pre-fire announcements, enrollment
-/// failures, trust-root parse errors, the `Other` catch-all) or for
-/// events posted before the field was added.
+/// `signature_status` `None` for variants that don't sign or events predating the field.
 #[derive(Debug, Clone)]
 pub struct ReportRecord {
     pub event_id: String,
@@ -130,13 +95,7 @@ pub struct ReportRecord {
     pub signature_status: Option<nixfleet_reconciler::evidence::SignatureStatus>,
 }
 
-/// Atomically-updated pair: the verified fleet bytes and the
-/// SHA-256 of their canonical (JCS) bytes. Held together under one
-/// RwLock so readers can never see a fresh `fleet` paired with a
-/// stale `fleet_resolved_hash` — that mismatch would corrupt the
-/// rolloutId anchor at the heart of RFC-0002 §4.4. Cheap to clone:
-/// `fleet` is `Arc`-wrapped, `fleet_resolved_hash` is a short hex
-/// string.
+/// `(fleet, hash)` pair under one lock prevents readers seeing fresh fleet with stale hash.
 #[derive(Clone, Debug)]
 pub struct VerifiedFleetSnapshot {
     pub fleet: Arc<FleetResolved>,
@@ -156,11 +115,6 @@ pub struct IssuancePaths {
     pub audit_log: Option<PathBuf>,
 }
 
-/// `db` is Optional so file-backed deploys + tests can run without
-/// SQLite. `verified_fleet` and `channel_refs_cache` are
-/// `Arc<RwLock<_>>` so the poll task writes through them directly
-/// without a mirror task; the reconcile loop's freshness gate
-/// preserves the upstream-fresh snapshot.
 pub struct AppState {
     pub last_tick_at: RwLock<Option<DateTime<Utc>>>,
     pub host_checkins: RwLock<HashMap<String, HostCheckinRecord>>,
@@ -169,23 +123,10 @@ pub struct AppState {
     pub issuance_paths: RwLock<IssuancePaths>,
     pub db: Option<Arc<crate::db::Db>>,
     pub closure_upstream: Option<ClosureUpstream>,
-    /// The verified fleet bytes plus their canonical SHA-256, held
-    /// together so readers see a consistent (fleet, fleet_resolved_hash)
-    /// pair under a single RwLock. Previously these were two separate
-    /// RwLocks updated in sequence — a reader between the two writes
-    /// could see a fresh `verified_fleet` paired with a stale
-    /// `fleet_resolved_hash`, corrupting the rolloutId anchor
-    /// (RFC-0002 §4.4). Now atomically updated as a single struct.
     pub verified_fleet: Arc<RwLock<Option<VerifiedFleetSnapshot>>>,
     pub confirm_deadline_secs: i64,
-    /// Filesystem path to the directory holding pre-signed rollout
-    /// manifests. `GET /v1/rollouts/<rolloutId>` looks here first.
     pub rollouts_dir: Option<PathBuf>,
-    /// HTTP-fetched rollout manifests source. Used when `rollouts_dir`
-    /// is None or the requested manifest is missing on disk.
     pub rollouts_source: Option<crate::rollouts_source::RolloutsSource>,
-    /// Mirror of `ServeArgs::strict`; read by `protocol_version_middleware`
-    /// to reject requests missing `X-Nixfleet-Protocol`.
     pub strict: bool,
 }
 
