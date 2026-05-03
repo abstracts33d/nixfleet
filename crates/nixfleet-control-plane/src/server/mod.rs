@@ -36,7 +36,12 @@ fn build_router(state: Arc<AppState>) -> Router {
     let strict = state.strict;
     let auth_state = state.clone();
 
-    let anonymous_v1 = Router::new().route("/v1/enroll", post(routes::enrollment::enroll));
+    let anonymous_v1 = Router::new()
+        .route("/v1/enroll", post(routes::enrollment::enroll))
+        .route(
+            "/v1/agent/bootstrap-report",
+            post(routes::bootstrap_report::bootstrap_report),
+        );
 
     let authenticated_v1 = Router::new()
         .route("/v1/whoami", get(routes::status::whoami))

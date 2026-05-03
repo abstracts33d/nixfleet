@@ -73,8 +73,26 @@ async fn main() -> anyhow::Result<()> {
     let started_at = Instant::now();
 
     let evidence_signer = load_evidence_signer(&args.ssh_host_key_file);
-    parse_trust_file(&args.trust_file)?;
-    maybe_run_first_boot_enrollment(&args).await?;
+    if let Err(err) = parse_trust_file(&args.trust_file) {
+        report_pre_cert_failure(
+            &args,
+            nixfleet_proto::agent_wire::ReportEvent::TrustError {
+                reason: format!("{err:#}"),
+            },
+        )
+        .await;
+        return Err(err);
+    }
+    if let Err(err) = maybe_run_first_boot_enrollment(&args).await {
+        report_pre_cert_failure(
+            &args,
+            nixfleet_proto::agent_wire::ReportEvent::EnrollmentFailed {
+                reason: format!("{err:#}"),
+            },
+        )
+        .await;
+        return Err(err);
+    }
 
     let client = comms::build_client(
         args.ca_cert.as_deref(),
@@ -148,6 +166,46 @@ fn load_evidence_signer(
         }
     };
     std::sync::Arc::new(signer)
+}
+
+/// Best-effort POST of a pre-cert failure event over the bootstrap-token
+/// path. The agent is already exiting; this is purely about leaving an
+/// operator-visible breadcrumb on the CP. Skips when the bootstrap token
+/// or CA cert paths aren't configured (no plausible auth route from
+/// here).
+async fn report_pre_cert_failure(
+    args: &Args,
+    event: nixfleet_proto::agent_wire::ReportEvent,
+) {
+    let Some(token_file) = args.bootstrap_token_file.as_deref() else {
+        return;
+    };
+    let bootstrap_client = match comms::build_client(args.ca_cert.as_deref(), None, None) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::warn!(
+                error = %format!("{err:#}"),
+                "pre-cert failure event: build_client failed; skipping bootstrap-report",
+            );
+            return;
+        }
+    };
+    if let Err(err) = nixfleet_agent::enrollment::post_bootstrap_event(
+        &bootstrap_client,
+        &args.control_plane_url,
+        AGENT_VERSION,
+        token_file,
+        event,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %format!("{err:#}"),
+            "pre-cert failure event: bootstrap-report POST failed; CP has no signal of this failure",
+        );
+    } else {
+        tracing::info!("pre-cert failure event: bootstrap-report posted");
+    }
 }
 
 async fn maybe_run_first_boot_enrollment(args: &Args) -> anyhow::Result<()> {

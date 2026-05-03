@@ -1,0 +1,204 @@
+//! `POST /v1/agent/bootstrap-report` — anonymous, bootstrap-token-authed
+//! event channel for failure modes the agent hits before it has a client
+//! cert (parse_trust_file failure, enroll failure). Validates the same
+//! orgRootKey signature as `/v1/enroll` but does NOT consume the nonce —
+//! the agent must still be able to enroll on the next attempt.
+//!
+//! Allowlist on event variants: only `TrustError` and `EnrollmentFailed`
+//! make sense pre-cert. Everything else is rejected with 422 so this
+//! endpoint can't be repurposed to backdoor regular reports without mTLS.
+
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::Json;
+use chrono::Utc;
+use nixfleet_proto::agent_wire::{ReportEvent, ReportRequest};
+use nixfleet_proto::enroll_wire::BootstrapEventRequest;
+
+use super::super::state::{AppState, ReportRecord, REPORT_RING_CAP};
+
+pub(in crate::server) async fn bootstrap_report(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BootstrapEventRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let now = Utc::now();
+
+    // Validity window — same shape as /v1/enroll.
+    if now < req.token.claims.issued_at || now >= req.token.claims.expires_at {
+        tracing::warn!(
+            hostname = %req.token.claims.hostname,
+            "bootstrap-report: token outside validity window"
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    verify_token_against_trust(&state, &req).await?;
+
+    // Decode + allowlist the event variant. Only pre-cert failure modes
+    // are accepted via this anonymous path; everything else routes
+    // through mTLS-authed /v1/agent/report.
+    let event: ReportEvent = match serde_json::from_value(req.event.clone()) {
+        Ok(e) => e,
+        Err(err) => {
+            tracing::warn!(
+                hostname = %req.token.claims.hostname,
+                error = %err,
+                "bootstrap-report: event payload not a recognised ReportEvent"
+            );
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+    if !matches!(
+        event,
+        ReportEvent::TrustError { .. } | ReportEvent::EnrollmentFailed { .. }
+    ) {
+        tracing::warn!(
+            hostname = %req.token.claims.hostname,
+            event = %discriminator(&event),
+            "bootstrap-report: event variant not on the pre-cert allowlist"
+        );
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let event_id = format!(
+        "evt-{}-{}",
+        Utc::now().timestamp_millis(),
+        rand_suffix(8)
+    );
+    let received_at = Utc::now();
+    let event_str = discriminator(&event);
+
+    tracing::warn!(
+        target: "bootstrap-report",
+        hostname = %req.token.claims.hostname,
+        event = %event_str,
+        agent_version = %req.agent_version,
+        event_id = %event_id,
+        "bootstrap-report received (pre-cert failure)"
+    );
+
+    let report_request = ReportRequest {
+        hostname: req.token.claims.hostname.clone(),
+        agent_version: req.agent_version.clone(),
+        occurred_at: req.occurred_at,
+        rollout: None,
+        event,
+    };
+    let record = ReportRecord {
+        event_id: event_id.clone(),
+        received_at,
+        report: report_request.clone(),
+        // Bootstrap-token auth carries no per-event signature; mark None
+        // so the wave-promotion gate's `counts_for_gate()` filter treats
+        // this consistently with mTLS-authed unsigned events.
+        signature_status: None,
+    };
+
+    if let Some(db) = state.db.as_ref() {
+        if let Ok(report_json) = serde_json::to_string(&report_request) {
+            if let Err(err) = db
+                .reports()
+                .record_host_report(&crate::db::HostReportInsert {
+                    hostname: &req.token.claims.hostname,
+                    event_id: &event_id,
+                    received_at,
+                    event_kind: &event_str,
+                    rollout: None,
+                    signature_status: None,
+                    report_json: &report_json,
+                })
+            {
+                tracing::warn!(
+                    target: "bootstrap-report",
+                    error = %err,
+                    "bootstrap-report SQLite write failed; in-memory ring buffer still updated",
+                );
+            }
+        }
+    }
+
+    let mut reports = state.host_reports.write().await;
+    let buf = reports
+        .entry(req.token.claims.hostname.clone())
+        .or_default();
+    if buf.len() >= REPORT_RING_CAP {
+        buf.pop_front();
+    }
+    buf.push_back(record);
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn verify_token_against_trust(
+    state: &AppState,
+    req: &BootstrapEventRequest,
+) -> Result<(), StatusCode> {
+    use base64::Engine;
+
+    let trust_path = state
+        .issuance_paths
+        .read()
+        .await
+        .fleet_ca_cert
+        .as_ref()
+        .and_then(|p| p.parent())
+        .map(|d| d.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("/etc/nixfleet/cp"))
+        .join("trust.json");
+    let trust_raw = std::fs::read_to_string(&trust_path).map_err(|err| {
+        tracing::error!(error = %err, path = %trust_path.display(), "bootstrap-report: read trust.json");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let trust: nixfleet_proto::TrustConfig = serde_json::from_str(&trust_raw).map_err(|err| {
+        tracing::error!(error = %err, "bootstrap-report: parse trust.json");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let org_root = trust.org_root_key.as_ref().ok_or_else(|| {
+        tracing::error!(
+            "bootstrap-report: trust.json has no orgRootKey — refusing token"
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let candidates = org_root.active_keys();
+    if candidates.is_empty() {
+        tracing::error!("bootstrap-report: orgRootKey has no current/previous keys");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    for pubkey in &candidates {
+        if pubkey.algorithm != "ed25519" {
+            continue;
+        }
+        let pubkey_bytes = match base64::engine::general_purpose::STANDARD.decode(&pubkey.public) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if crate::auth::issuance::verify_token_signature(&req.token, &pubkey_bytes).is_ok() {
+            return Ok(());
+        }
+    }
+
+    tracing::warn!(
+        hostname = %req.token.claims.hostname,
+        "bootstrap-report: token signature did not verify against any orgRootKey candidate"
+    );
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+fn discriminator(event: &ReportEvent) -> String {
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|v| v.get("event").and_then(|e| e.as_str()).map(String::from))
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
+
+fn rand_suffix(n: usize) -> String {
+    use rand::Rng;
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..n)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect()
+}

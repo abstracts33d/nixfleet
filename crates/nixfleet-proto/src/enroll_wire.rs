@@ -57,3 +57,23 @@ pub struct RenewResponse {
     pub cert_pem: String,
     pub not_after: DateTime<Utc>,
 }
+
+/// `POST /v1/agent/bootstrap-report` — anonymous, bootstrap-token-authed
+/// event channel for failure modes the agent hits before it has a
+/// client cert. CP validates the token signature against orgRootKey
+/// (same path as `/v1/enroll`) but does NOT consume the nonce — the
+/// agent should still be able to enroll on the next attempt with the
+/// same token after the operator fixes whatever broke. Only specific
+/// `ReportEvent` variants (`EnrollmentFailed`, `TrustError`) are
+/// accepted; everything else is 422.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapEventRequest {
+    pub token: BootstrapToken,
+    pub agent_version: String,
+    pub occurred_at: DateTime<Utc>,
+    /// Carried opaquely; CP unwraps the discriminator to enforce the
+    /// pre-cert-only allowlist and routes into the same per-host report
+    /// store as mTLS-authed reports.
+    pub event: serde_json::Value,
+}
