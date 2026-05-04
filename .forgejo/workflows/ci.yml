@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Format check
+    runs-on: native
+    steps:
+      - uses: actions/checkout@v4
+      - run: nix fmt -- --ci
+
+  validate:
+    name: validate --rust (small tier)
+    runs-on: native
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: nix run .#validate -- --rust
+        env:
+          NIX_CONFIG: "warn-dirty = false"
