@@ -7,6 +7,7 @@ pub mod compliance;
 pub mod enroll_wire;
 pub mod evidence_signing;
 pub mod fleet_resolved;
+pub mod fleet_view;
 pub mod host_rollout_state;
 pub mod revocations;
 pub mod rollout_manifest;
@@ -17,6 +18,7 @@ pub use fleet_resolved::{
     HealthGate, Host, Meta, OnHealthFailure, PolicyWave, RolloutPolicy, Selector,
     SystemdFailedUnits, Wave,
 };
+pub use fleet_view::{HostStatusEntry, HostsResponse};
 pub use host_rollout_state::HostRolloutState;
 pub use revocations::{RevocationEntry, Revocations};
 pub use rollout_manifest::{HostWave, RolloutBudget, RolloutManifest};

@@ -9,6 +9,7 @@ pub mod polling;
 pub mod rollouts_source;
 pub mod server;
 pub mod state;
+pub mod state_view;
 pub mod timers;
 pub mod tls;
 

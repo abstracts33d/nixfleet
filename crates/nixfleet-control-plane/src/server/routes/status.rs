@@ -8,10 +8,12 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
 use chrono::Utc;
+use nixfleet_proto::HostsResponse;
 use serde::Serialize;
 
 use super::super::middleware::AuthenticatedCn;
 use super::super::state::AppState;
+use crate::state_view::{fleet_state_view, StateViewError};
 
 #[derive(Debug, Serialize)]
 pub(in crate::server) struct WhoamiResponse {
@@ -58,129 +60,14 @@ pub(in crate::server) async fn channel_status(
     }))
 }
 
-#[derive(Debug, Serialize)]
-pub(in crate::server) struct HostsResponse {
-    hosts: Vec<HostStatusEntry>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::server) struct HostStatusEntry {
-    hostname: String,
-    channel: String,
-    declared_closure_hash: Option<String>,
-    current_closure_hash: Option<String>,
-    pending_closure_hash: Option<String>,
-    last_checkin_at: Option<String>,
-    last_rollout_id: Option<String>,
-    converged: bool,
-    outstanding_compliance_failures: usize,
-    outstanding_runtime_gate_errors: usize,
-    verified_event_count: usize,
-    /// Reported by the agent at every checkin. Surfaces crash-loops that
-    /// don't show up as offline (rapid restart, low value despite recent
-    /// `last_checkin_at`).
-    last_uptime_secs: Option<u64>,
-}
-
 /// `GET /v1/hosts` — joins verified fleet declarations with per-host checkins and report buffers.
 pub(in crate::server) async fn hosts_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<HostsResponse>, StatusCode> {
-    let fleet = state
-        .verified_fleet
-        .read()
-        .await
-        .clone()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?
-        .fleet;
-    let checkins = state.host_checkins.read().await;
-    let reports = state.host_reports.read().await;
-
-    let mut entries: Vec<HostStatusEntry> = fleet
-        .hosts
-        .iter()
-        .map(|(hostname, host_decl)| {
-            let checkin = checkins.get(hostname);
-            let last_checkin_at = checkin.map(|c| c.last_checkin.to_rfc3339());
-            let current = checkin.map(|c| c.checkin.current_generation.closure_hash.clone());
-            let pending = checkin.and_then(|c| {
-                c.checkin
-                    .pending_generation
-                    .as_ref()
-                    .map(|p| p.closure_hash.clone())
-            });
-            let last_rollout_id = checkin.and_then(|c| {
-                c.checkin
-                    .last_evaluated_target
-                    .as_ref()
-                    .map(|t| t.rollout_id.clone())
-            });
-            let converged = match (&host_decl.closure_hash, &current) {
-                (Some(declared), Some(running)) => declared == running,
-                _ => false,
-            };
-
-            // GOTCHA: resolution-by-replacement — events from older rollouts are considered resolved.
-            let host_buf = reports.get(hostname);
-            let cur_rollout = last_rollout_id.as_deref();
-            let mut compliance_failures = 0usize;
-            let mut runtime_gate_errors = 0usize;
-            let mut verified_count = 0usize;
-            if let Some(buf) = host_buf {
-                use nixfleet_proto::agent_wire::ReportEvent;
-                for record in buf.iter() {
-                    let is_compliance =
-                        matches!(record.report.event, ReportEvent::ComplianceFailure { .. });
-                    let is_runtime_gate =
-                        matches!(record.report.event, ReportEvent::RuntimeGateError { .. });
-                    if !is_compliance && !is_runtime_gate {
-                        continue;
-                    }
-                    let event_rollout = record.report.rollout.as_deref();
-                    let outstanding = !matches!(
-                        (cur_rollout, event_rollout),
-                        (Some(cur), Some(ev_r)) if cur != ev_r
-                    );
-                    if !outstanding {
-                        continue;
-                    }
-                    if is_compliance {
-                        compliance_failures += 1;
-                    }
-                    if is_runtime_gate {
-                        runtime_gate_errors += 1;
-                    }
-                    if matches!(
-                        record.signature_status,
-                        Some(nixfleet_reconciler::evidence::SignatureStatus::Verified)
-                    ) {
-                        verified_count += 1;
-                    }
-                }
-            }
-
-            let last_uptime_secs = checkin.and_then(|c| c.checkin.uptime_secs);
-
-            HostStatusEntry {
-                hostname: hostname.clone(),
-                channel: host_decl.channel.clone(),
-                declared_closure_hash: host_decl.closure_hash.clone(),
-                current_closure_hash: current,
-                pending_closure_hash: pending,
-                last_checkin_at,
-                last_rollout_id,
-                converged,
-                outstanding_compliance_failures: compliance_failures,
-                outstanding_runtime_gate_errors: runtime_gate_errors,
-                verified_event_count: verified_count,
-                last_uptime_secs,
-            }
-        })
-        .collect();
-    entries.sort_by(|a, b| a.hostname.cmp(&b.hostname));
-
-    Ok(Json(HostsResponse { hosts: entries }))
+    let hosts = fleet_state_view(&state).await.map_err(|e| match e {
+        StateViewError::FleetNotPrimed => StatusCode::SERVICE_UNAVAILABLE,
+    })?;
+    Ok(Json(HostsResponse { hosts }))
 }
 
 /// `GET /v1/agent/closure/{hash}` — narinfo proxy fallback; 501 when no upstream configured.
