@@ -263,6 +263,14 @@ pub fn verify_rollout_manifest(
 }
 
 /// SHA-256 hex of JCS-canonical bytes of any serialisable value.
+///
+/// FOOTGUN: this is the **producer** path — caller has the parsed struct
+/// and wants the canonical-hash of what they would emit. **Verifiers must
+/// not use this**; re-serializing a parsed struct silently drops fields
+/// the consumer's proto doesn't know about, breaking content-addressing
+/// across schema versions even when the change is "additive" per
+/// CONTRACTS §V Pattern A. Use [`canonical_hash_from_bytes`] for verify
+/// paths that have the original received bytes.
 pub fn compute_canonical_hash<T: serde::Serialize>(value: &T) -> Result<String, VerifyError> {
     let raw = serde_json::to_string(value)?;
     let canonical =
@@ -271,9 +279,34 @@ pub fn compute_canonical_hash<T: serde::Serialize>(value: &T) -> Result<String, 
     Ok(hex_lowercase(&digest))
 }
 
-/// `sha256(canonical(m))` hex lowercase.
+/// SHA-256 hex of JCS-canonical bytes, computed from raw input bytes.
+/// `canonicalize` is idempotent on canonical input; running it here is
+/// a defensive normaliser against transport-layer alterations
+/// (whitespace, BOM, etc.). Critically, no parse step — fields the
+/// caller's proto doesn't know about are preserved in the canonical
+/// bytes. This is the verify-side function: same hash as the producer
+/// computed regardless of any additive proto drift between them.
+pub fn canonical_hash_from_bytes(bytes: &[u8]) -> Result<String, VerifyError> {
+    let s = std::str::from_utf8(bytes).map_err(|err| {
+        VerifyError::Canonicalize(anyhow::anyhow!("input not valid UTF-8: {err}"))
+    })?;
+    let canonical =
+        nixfleet_canonicalize::canonicalize(s).map_err(VerifyError::Canonicalize)?;
+    let digest = Sha256::digest(canonical.as_bytes());
+    Ok(hex_lowercase(&digest))
+}
+
+/// Producer-side rolloutId. See [`compute_canonical_hash`] caveat.
 pub fn compute_rollout_id(manifest: &RolloutManifest) -> Result<String, VerifyError> {
     compute_canonical_hash(manifest)
+}
+
+/// Verify-side rolloutId — hashes the received manifest bytes.
+/// Cross-version safe: an older verifier's proto missing fields the
+/// producer added still computes the same hash because parsing is not
+/// in the path.
+pub fn rollout_id_from_bytes(bytes: &[u8]) -> Result<String, VerifyError> {
+    canonical_hash_from_bytes(bytes)
 }
 
 fn hex_lowercase(bytes: &[u8]) -> String {

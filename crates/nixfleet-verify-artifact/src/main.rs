@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use nixfleet_proto::TrustConfig;
 use nixfleet_reconciler::evidence::{verify_canonical_payload, SignatureStatus};
-use nixfleet_reconciler::{compute_rollout_id, verify_artifact, verify_rollout_manifest};
+use nixfleet_reconciler::{verify_artifact, verify_rollout_manifest};
 
 #[derive(Parser, Debug)]
 #[command(name = "nixfleet-verify-artifact", version)]
@@ -147,10 +147,15 @@ fn run_rollout_manifest(
         }
     };
 
-    let recomputed = match compute_rollout_id(&manifest) {
+    // LOADBEARING: hash the bytes the auditor was handed, NOT a re-serialised
+    // parse. An auditor running an older nixfleet build (proto missing
+    // fields the producer added) would otherwise compute a different hash
+    // and reject perfectly-signed manifests. CONTRACTS §V Pattern A's
+    // additive-evolution guarantee depends on this property.
+    let recomputed = match nixfleet_reconciler::rollout_id_from_bytes(&manifest_bytes) {
         Ok(s) => s,
         Err(err) => {
-            eprintln!("compute_rollout_id failed: {err}");
+            eprintln!("rollout_id_from_bytes failed: {err}");
             return ExitCode::from(1);
         }
     };

@@ -168,9 +168,13 @@ async fn poll_once(
     )
     .map_err(|e| anyhow::anyhow!("verify_artifact (channel-refs poll): {e:?}"))?;
 
-    // Anchors every downstream rolloutId derivation; byte-stable JCS round-trip.
-    let fleet_resolved_hash = nixfleet_reconciler::compute_canonical_hash(&fleet_resolved)
-        .map_err(|e| anyhow::anyhow!("compute_canonical_hash: {e:?}"))?;
+    // Anchors every downstream rolloutId derivation. Hash the received
+    // artifact bytes (NOT a re-serialised parsed struct) so additive
+    // schema changes the CP's proto doesn't yet know about don't shift
+    // the anchor relative to what CI signed. Same load-bearing reason
+    // as the rollouts route's verify_content_address.
+    let fleet_resolved_hash = nixfleet_reconciler::canonical_hash_from_bytes(&artifact_bytes)
+        .map_err(|e| anyhow::anyhow!("canonical_hash_from_bytes (fleet.resolved): {e:?}"))?;
 
     // Single signing rev: every channel maps to the same CI commit.
     let ci_commit = fleet_resolved

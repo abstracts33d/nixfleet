@@ -1127,3 +1127,68 @@ fn verify_rollout_manifest_reject_before_rejects_pre_compromise() {
         "reject_before must apply to rollout manifest; got {err:?}"
     );
 }
+
+#[test]
+fn rollout_id_from_bytes_is_cross_version_stable_across_additive_changes() {
+    // Regression for the agent-bricking failure where an older agent's
+    // RolloutManifest proto missed a field the producer added (the
+    // disruption_budgets snapshot) and therefore re-serialised to a
+    // smaller canonical payload, producing a different sha256 from
+    // the producer's advertised rolloutId.
+    //
+    // The fix: verifiers MUST hash the bytes they received, never a
+    // re-serialised parsed struct. We simulate the cross-version case
+    // by handing both functions a JSON object with a forward-compatible
+    // "futureField" the proto's RolloutManifest doesn't know about.
+    use nixfleet_reconciler::{
+        canonical_hash_from_bytes, compute_rollout_id, rollout_id_from_bytes,
+    };
+
+    // Producer-canonical bytes including a hypothetical future additive field.
+    let producer_bytes = canonicalize(
+        r#"{
+            "schemaVersion": 1,
+            "displayName": "stable@deadbeef",
+            "channel": "stable",
+            "channelRef": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            "fleetResolvedHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "hostSet": [],
+            "healthGate": {},
+            "complianceFrameworks": [],
+            "disruptionBudgets": [],
+            "futureField": {"v0_3_property": "value"},
+            "meta": {
+                "schemaVersion": 1,
+                "signedAt": "2026-04-30T12:00:00Z",
+                "ciCommit": "deadbeef",
+                "signatureAlgorithm": "ed25519"
+            }
+        }"#,
+    )
+    .expect("canonicalize")
+    .into_bytes();
+
+    let from_bytes = rollout_id_from_bytes(&producer_bytes).expect("from_bytes");
+
+    // Round-trip via parsed struct (the LOSSY path the agent used to take).
+    let parsed: nixfleet_proto::RolloutManifest =
+        serde_json::from_slice(&producer_bytes).expect("parse");
+    let from_struct = compute_rollout_id(&parsed).expect("from_struct");
+
+    assert_ne!(
+        from_bytes, from_struct,
+        "Sanity check: round-tripping a manifest with unknown fields through \
+         the typed proto LOSES those fields, producing a different hash. \
+         If this assertion ever fails it means RolloutManifest gained a \
+         catch-all map and the regression's premise no longer holds.",
+    );
+
+    // The producer would also have computed the bytes-hash. Verify the
+    // hash that the verifier computes from raw bytes matches the canonical
+    // bytes (it's a tautology — that's exactly the property we want).
+    let recomputed = canonical_hash_from_bytes(&producer_bytes).expect("recompute");
+    assert_eq!(
+        from_bytes, recomputed,
+        "rollout_id_from_bytes is a thin alias for canonical_hash_from_bytes",
+    );
+}

@@ -26,8 +26,9 @@ pub(super) fn spawn_reconcile_loop(
                     now: Utc::now(),
                     ..inputs.clone()
                 };
-                if let Some(fleet) = verify_fleet_only(&prime_inputs) {
-                    let fleet_hash = nixfleet_reconciler::compute_canonical_hash(&fleet).ok();
+                if let Some((fleet, artifact_bytes)) = verify_fleet_only(&prime_inputs) {
+                    let fleet_hash =
+                        nixfleet_reconciler::canonical_hash_from_bytes(&artifact_bytes).ok();
                     if let Some(h) = fleet_hash {
                         *state.verified_fleet.write().await =
                             Some(crate::server::VerifiedFleetSnapshot {
@@ -156,7 +157,7 @@ pub(super) fn spawn_reconcile_loop(
             // LOADBEARING: single write-lock atomic swap — dispatch readers
             // can never see a half-built snapshot. Compare signed_at (not
             // wall clock) so an out-of-order tick doesn't downgrade fresh state.
-            if let Some(fleet) = verified_fleet {
+            if let Some((fleet, artifact_bytes)) = verified_fleet {
                 let mut guard = state.verified_fleet.write().await;
                 let should_overwrite = match guard.as_ref() {
                     None => true,
@@ -168,7 +169,8 @@ pub(super) fn spawn_reconcile_loop(
                     }
                 };
                 if should_overwrite {
-                    if let Ok(h) = nixfleet_reconciler::compute_canonical_hash(&fleet) {
+                    if let Ok(h) = nixfleet_reconciler::canonical_hash_from_bytes(&artifact_bytes)
+                    {
                         *guard = Some(crate::server::VerifiedFleetSnapshot {
                             fleet: Arc::new(fleet),
                             fleet_resolved_hash: h,
@@ -360,7 +362,10 @@ fn run_tick_with_projection(
     compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
     last_deferrals: HashMap<String, nixfleet_reconciler::observed::DeferralRecord>,
     rollout_budgets: &HashMap<String, Vec<nixfleet_proto::RolloutBudget>>,
-) -> (anyhow::Result<crate::TickOutput>, Option<FleetResolved>) {
+) -> (
+    anyhow::Result<crate::TickOutput>,
+    Option<(FleetResolved, Vec<u8>)>,
+) {
     // LOADBEARING: prefer the live verified-fleet snapshot (kept fresh by
     // the channel-refs polling loop) over re-reading the static artifact
     // baked into the CP closure at build time. The polling layer already
@@ -393,6 +398,8 @@ fn run_tick_with_projection(
             rollout_budgets,
         );
         let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
+        // Snapshot already verified — no fresh bytes; caller's None case
+        // preserves the live snapshot's existing fleet_resolved_hash.
         return (
             Ok(crate::TickOutput {
                 now: inputs.now,
@@ -403,7 +410,7 @@ fn run_tick_with_projection(
                     actions,
                 })),
             }),
-            Some(fleet),
+            None,
         );
     }
 
@@ -465,7 +472,7 @@ fn run_tick_with_projection(
                     observed,
                     actions,
                 })),
-                Some(fleet),
+                Some((fleet, artifact.clone())),
             )
         }
         Err(err) => (
@@ -532,12 +539,15 @@ async fn load_rollout_budgets(
 }
 
 /// `None` on verify failure → caller preserves prior snapshot.
-pub(super) fn verify_fleet_only(inputs: &TickInputs) -> Option<FleetResolved> {
+/// Returns (parsed_fleet, raw_artifact_bytes) so callers can compute
+/// `fleet_resolved_hash` from the received bytes (cross-version-stable),
+/// not from a re-serialised parsed struct.
+pub(super) fn verify_fleet_only(inputs: &TickInputs) -> Option<(FleetResolved, Vec<u8>)> {
     let artifact = std::fs::read(&inputs.artifact_path).ok()?;
     let signature = std::fs::read(&inputs.signature_path).ok()?;
     let (trusted_keys, reject_before) =
         crate::polling::signed_fetch::read_trust_roots(&inputs.trust_path).ok()?;
-    nixfleet_reconciler::verify_artifact(
+    let fleet = nixfleet_reconciler::verify_artifact(
         &artifact,
         &signature,
         &trusted_keys,
@@ -545,5 +555,6 @@ pub(super) fn verify_fleet_only(inputs: &TickInputs) -> Option<FleetResolved> {
         inputs.freshness_window,
         reject_before,
     )
-    .ok()
+    .ok()?;
+    Some((fleet, artifact))
 }

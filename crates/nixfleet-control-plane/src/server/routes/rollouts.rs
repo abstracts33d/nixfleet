@@ -62,29 +62,16 @@ fn try_load_from_dir(dir: &FsPath, rollout_id: &str) -> Result<Option<ManifestPa
     Ok(Some((manifest_bytes, sig_bytes)))
 }
 
-/// LOADBEARING: filename IS the sha256; mismatch means corruption or wrong-bytes-for-id.
+/// LOADBEARING: filename IS the sha256; mismatch means corruption or
+/// wrong-bytes-for-id. Hashes received bytes directly — never re-serialises
+/// a parsed struct (would silently drop fields the CP's proto doesn't know
+/// about, breaking content-addressing across additive schema changes).
 fn verify_content_address(manifest_bytes: &[u8], rollout_id: &str) -> Result<(), StatusCode> {
-    let canonical = std::str::from_utf8(manifest_bytes).map_err(|_| {
-        tracing::warn!(
-            rollout_id = %rollout_id,
-            "rollouts handler: manifest bytes are not valid UTF-8",
-        );
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let parsed: nixfleet_proto::RolloutManifest =
-        serde_json::from_str(canonical).map_err(|err| {
-            tracing::warn!(
-                rollout_id = %rollout_id,
-                error = %err,
-                "rollouts handler: manifest does not parse",
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let recomputed = nixfleet_reconciler::compute_rollout_id(&parsed).map_err(|err| {
+    let recomputed = nixfleet_reconciler::rollout_id_from_bytes(manifest_bytes).map_err(|err| {
         tracing::warn!(
             rollout_id = %rollout_id,
             error = ?err,
-            "rollouts handler: recompute_rollout_id failed",
+            "rollouts handler: rollout_id_from_bytes failed",
         );
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

@@ -18,6 +18,7 @@ pub use reconcile::{predecessor_channel_blocking, reconcile, topological_channel
 pub use rollout_state::RolloutState;
 pub use manifest::{compute_rollout_id_for_channel, project_manifest};
 pub use verify::{
-    compute_canonical_hash, compute_rollout_id, verify_artifact, verify_revocations,
-    verify_rollout_manifest, verify_signed_sidecar, SignedSidecar, VerifyError,
+    canonical_hash_from_bytes, compute_canonical_hash, compute_rollout_id,
+    rollout_id_from_bytes, verify_artifact, verify_revocations, verify_rollout_manifest,
+    verify_signed_sidecar, SignedSidecar, VerifyError,
 };

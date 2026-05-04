@@ -1,9 +1,14 @@
 //! `releases/rollouts/<rolloutId>.json` — signed per-channel rollout manifest.
 //!
 //! LOADBEARING: rolloutId is the SHA-256 of canonical bytes (not a label).
-//! Verifiers MUST canonicalize, recompute the hash, and assert it matches
-//! before consuming any other field — `display_name` is decorative and any
-//! edit changes the hash, so tampered manifests fail this check.
+//! Verifiers MUST canonicalize the **received bytes** and assert the hash
+//! matches the advertised rolloutId before consuming any other field. They
+//! MUST NOT re-serialise a parsed `RolloutManifest` and hash that — re-
+//! serialisation drops fields the verifier's proto doesn't know about,
+//! breaking content-addressing across additive schema changes (see
+//! `nixfleet_reconciler::verify::rollout_id_from_bytes`). `display_name`
+//! is decorative and any edit changes the hash, so tampered manifests fail
+//! this check.
 
 use serde::{Deserialize, Serialize};
 

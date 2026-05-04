@@ -138,10 +138,10 @@ The CP enforces nothing here — operators that violate the invariant get the ch
 1. JCS bytes match the canonicalized payload.
 2. Signature verifies against the pinned `nixfleet.trust.ciReleaseKey`.
 3. `(now − meta.signedAt) ≤ channel.freshnessWindow` (units: minutes; same gate as `fleet.resolved.json`).
-4. Recomputed `sha256(canonical(manifest))` equals the `rolloutId` the recipient was told to fetch (rejects content-mismatched manifests).
+4. Recomputed `sha256(canonical(received_bytes))` equals the `rolloutId` the recipient was told to fetch (rejects content-mismatched manifests). **The hash MUST be computed over the received bytes, not over a re-serialised parsed struct** — re-serialisation drops fields the verifier's proto doesn't know about, breaking content-addressing across additive schema changes and contradicting Pattern A's additive-evolution guarantee. The reconciler's `rollout_id_from_bytes` helper exists for this; producer-side `compute_rollout_id` (which has no received bytes, only the freshly-built struct) is the only legitimate caller of the parsed-struct path.
 5. `meta.schemaVersion` is within the consumer's accepted range.
 6. (Agent only) `(hostname, wave_index)` ∈ `manifest.host_set`.
-7. (CP only, on adoption) `manifest.fleetResolvedHash` matches the hash of the `fleet.resolved.json` the CP currently holds verified — refuses adoption otherwise.
+7. (CP only, on adoption) `manifest.fleetResolvedHash` matches the hash of the `fleet.resolved.json` the CP currently holds verified — refuses adoption otherwise. Same rule: hash the received bytes, not the parsed struct.
 
 **Producer pipeline (`nixfleet-release`).** Same orchestrator as `fleet.resolved.json` — after the resolved snapshot is signed, iterate `fleet.channels`, project each channel into a `RolloutManifest` (sorted `host_set`, target closure, wave layout, health gate, compliance frameworks, `fleetResolvedHash`), canonicalize, sign via the same `--sign-cmd` hook, write `releases/rollouts/<rolloutId>.{json,sig}`. The producer hook contract from §I #1 (`NIXFLEET_INPUT` / `NIXFLEET_OUTPUT` env vars) applies unchanged — one signing seam, three artifact types.
 

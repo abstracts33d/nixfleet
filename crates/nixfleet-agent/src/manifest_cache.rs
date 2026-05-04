@@ -88,9 +88,15 @@ impl ManifestCache {
         )
         .map_err(|err| ManifestError::VerifyFailed(format!("{err:?}")))?;
 
-        let recomputed = nixfleet_reconciler::compute_rollout_id(&manifest)
-            .map_err(|err| ManifestError::Mismatch(format!("compute_rollout_id: {err:?}")))?;
-        // LOADBEARING: advertised rolloutId must equal sha256 of canonicalized manifest — content-addressed pin.
+        // LOADBEARING: hash the bytes we received, NOT a re-serialised parsed
+        // struct. The agent's RolloutManifest proto may lag the producer's
+        // when the schema is in mid-cutover (CONTRACTS §V Pattern A says
+        // additive changes are safe — but only if the verify path is
+        // byte-faithful). Re-serialising drops fields the agent's struct
+        // doesn't know about, producing a different canonical hash and
+        // bricking auto-upgrade across schema versions.
+        let recomputed = nixfleet_reconciler::rollout_id_from_bytes(manifest_bytes)
+            .map_err(|err| ManifestError::Mismatch(format!("rollout_id_from_bytes: {err:?}")))?;
         if recomputed != advertised_rollout_id {
             return Err(ManifestError::Mismatch(format!(
                 "advertised rolloutId {advertised} ≠ recomputed sha256 {recomputed}",
