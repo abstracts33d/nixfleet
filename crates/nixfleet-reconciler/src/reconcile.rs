@@ -47,13 +47,32 @@ pub fn predecessor_channel_blocking(
         .iter()
         .filter(|e| e.after == channel)
         .find_map(|e| {
-            let active_in_db = observed.active_rollouts.iter().any(|r| {
-                if r.channel != e.before {
-                    return false;
-                }
-                rollout_is_active_for_ordering(r)
-            });
-            let predecessor_active = active_in_db || emitted_opens_in_tick.contains(&e.before);
+            // Source-of-truth precedence:
+            //   1. If a rollout for `e.before` exists in the DB-derived
+            //      active_rollouts view, ITS state wins. A converged
+            //      rollout (all hosts Converged) means the predecessor
+            //      is done even though we may have just iterated past
+            //      it in this tick.
+            //   2. Only when no DB rollout exists do we consult the
+            //      in-tick `emitted_opens` set — that path captures
+            //      a fresh CP where the predecessor is being recorded
+            //      RIGHT NOW (no host_dispatch_state row yet).
+            //
+            // Without this precedence, an in-tick re-record of an
+            // already-converged predecessor would re-mark it as a
+            // blocker via emitted_opens, holding the successor
+            // forever. Saw this on lab post-deploy when the polling
+            // layer iterated `edge` (recording idempotent on already-
+            // present row), inserted into emitted_opens, then blocked
+            // `stable` even though `edge` was visibly converged.
+            let db_rollout = observed
+                .active_rollouts
+                .iter()
+                .find(|r| r.channel == e.before);
+            let predecessor_active = match db_rollout {
+                Some(r) => rollout_is_active_for_ordering(r),
+                None => emitted_opens_in_tick.contains(&e.before),
+            };
             if predecessor_active {
                 Some(e.before.clone())
             } else {
