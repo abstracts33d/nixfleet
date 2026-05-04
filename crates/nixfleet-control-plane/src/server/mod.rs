@@ -56,6 +56,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/agent/renew", post(routes::enrollment::renew))
         .route("/v1/channels/{name}", get(routes::status::channel_status))
         .route("/v1/hosts", get(routes::status::hosts_status))
+        .route("/metrics", get(routes::metrics::metrics_handler))
         .route("/v1/rollouts", get(routes::rollouts::list_active))
         .route("/v1/deferrals", get(routes::deferrals::list))
         .route("/v1/rollouts/{rolloutId}", get(routes::rollouts::manifest))
@@ -297,6 +298,11 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             revocations_source,
         ));
     }
+
+    // Install Prometheus recorder before any request handler can call
+    // gauge!/counter! macros. Idempotent — first install wins per process.
+    crate::metrics::install_recorder();
+    crate::metrics::record_build_info(env!("CARGO_PKG_VERSION"), option_env!("GIT_COMMIT"));
 
     let app = build_router(state);
 

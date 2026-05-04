@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod db;
 pub mod dispatch;
+pub mod metrics;
 pub mod observed_projection;
 pub mod polling;
 pub mod rollouts_source;

@@ -91,6 +91,13 @@ refinery = { version = "0.8", features = ["rusqlite"] }
 # Already in the workspace lockfile via agent + cli prod deps and this
 # crate's dev-deps.
 rand = "0.8"
+# Prometheus metrics surface — `/metrics` endpoint scraped by the lab
+# Prometheus job (modules/infra/monitoring-prometheus.nix). The recorder
+# is process-global; we mount the render endpoint on the existing axum
+# router so it shares mTLS with /v1/hosts. `default-features = false`
+# drops the bundled HTTP listener (we don't need a second server).
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
