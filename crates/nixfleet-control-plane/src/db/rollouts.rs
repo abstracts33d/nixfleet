@@ -97,6 +97,35 @@ impl Rollouts<'_> {
         Ok(parsed)
     }
 
+    /// Monotonic wave-index advance. The `WHERE current_wave < ?2` guard
+    /// ensures concurrent reconciler ticks can't race a rollout backwards;
+    /// the second update is a no-op (returns 0).
+    pub fn set_current_wave(&self, rollout_id: &str, wave: u32) -> Result<usize> {
+        let guard = super::lock_conn(self.conn)?;
+        let n = guard
+            .execute(
+                "UPDATE rollouts
+                 SET current_wave = ?2
+                 WHERE rollout_id = ?1 AND current_wave < ?2",
+                params![rollout_id, wave as i64],
+            )
+            .context("set_current_wave")?;
+        Ok(n)
+    }
+
+    pub fn current_wave(&self, rollout_id: &str) -> Result<Option<u32>> {
+        let guard = super::lock_conn(self.conn)?;
+        let n = guard
+            .query_row(
+                "SELECT current_wave FROM rollouts WHERE rollout_id = ?1",
+                params![rollout_id],
+                |row| row.get::<_, i64>(0).map(|w| w as u32),
+            )
+            .optional()
+            .context("query rollouts.current_wave")?;
+        Ok(n)
+    }
+
     /// Used by `active_rollouts_snapshot` to filter out superseded rollouts
     /// without joining (snapshot is grouped by rollout_id; this returns the
     /// set of superseded ids to exclude).
@@ -109,6 +138,40 @@ impl Rollouts<'_> {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+
+    /// Used by `GET /v1/rollouts` to enumerate active rollouts directly from
+    /// the table — bypasses the agent-breadcrumb (`lastRolloutId`) discovery
+    /// path that goes silent for converged-at-dispatch hosts (the agent
+    /// never confirms there, so the breadcrumb stays at whatever it last
+    /// truly confirmed).
+    pub fn list_active(&self) -> Result<Vec<ActiveRollout>> {
+        let guard = super::lock_conn(self.conn)?;
+        let mut stmt = guard.prepare(
+            "SELECT rollout_id, channel, current_wave, created_at
+             FROM rollouts
+             WHERE superseded_at IS NULL
+             ORDER BY created_at DESC, rollout_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ActiveRollout {
+                    rollout_id: row.get(0)?,
+                    channel: row.get(1)?,
+                    current_wave: row.get::<_, i64>(2)? as u32,
+                    created_at: row.get::<_, String>(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRollout {
+    pub rollout_id: String,
+    pub channel: String,
+    pub current_wave: u32,
+    pub created_at: String,
 }
 
 #[cfg(test)]
@@ -214,6 +277,49 @@ mod tests {
         let mut ids = db.rollouts().superseded_rollout_ids().unwrap();
         ids.sort();
         assert_eq!(ids, vec!["r1".to_string()]);
+    }
+
+    #[test]
+    fn list_active_returns_only_non_superseded_with_channel_and_wave() {
+        let db = fresh_db();
+        db.rollouts()
+            .record_active_rollout("r1", "stable")
+            .unwrap();
+        db.rollouts()
+            .record_active_rollout("r2", "edge-slow")
+            .unwrap();
+        // Supersede r1 with a new stable rollout r3.
+        db.rollouts()
+            .record_active_rollout("r3", "stable")
+            .unwrap();
+        // Advance r3 to wave 1 (stable's promotion).
+        db.rollouts().set_current_wave("r3", 1).unwrap();
+
+        let mut rows = db.rollouts().list_active().unwrap();
+        rows.sort_by(|a, b| a.rollout_id.cmp(&b.rollout_id));
+        assert_eq!(rows.len(), 2, "list_active excludes superseded r1");
+        let r2 = rows.iter().find(|r| r.rollout_id == "r2").unwrap();
+        assert_eq!(r2.channel, "edge-slow");
+        assert_eq!(r2.current_wave, 0);
+        let r3 = rows.iter().find(|r| r.rollout_id == "r3").unwrap();
+        assert_eq!(r3.channel, "stable");
+        assert_eq!(r3.current_wave, 1);
+    }
+
+    #[test]
+    fn set_current_wave_is_monotonic_no_op_on_backwards() {
+        let db = fresh_db();
+        db.rollouts()
+            .record_active_rollout("r1", "stable")
+            .unwrap();
+        assert_eq!(db.rollouts().current_wave("r1").unwrap(), Some(0));
+        let n = db.rollouts().set_current_wave("r1", 1).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(db.rollouts().current_wave("r1").unwrap(), Some(1));
+        // Backwards is no-op.
+        let n = db.rollouts().set_current_wave("r1", 0).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(db.rollouts().current_wave("r1").unwrap(), Some(1));
     }
 
     /// LOADBEARING regression: rebuild scenario. After a rebuild the table

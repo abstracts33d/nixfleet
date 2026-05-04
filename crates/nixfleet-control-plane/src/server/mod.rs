@@ -55,6 +55,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/agent/renew", post(routes::enrollment::renew))
         .route("/v1/channels/{name}", get(routes::status::channel_status))
         .route("/v1/hosts", get(routes::status::hosts_status))
+        .route("/v1/rollouts", get(routes::rollouts::list_active))
         .route("/v1/rollouts/{rolloutId}", get(routes::rollouts::manifest))
         .route(
             "/v1/rollouts/{rolloutId}/sig",

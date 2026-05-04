@@ -125,11 +125,18 @@ pub(super) fn spawn_reconcile_loop(
                 now,
                 ..inputs.clone()
             };
+            // Snapshot the live verified-fleet cache once. Reconciler prefers
+            // it over the static artifact so fleet.nix changes (rolloutPolicies,
+            // selector tweaks, channel metadata) apply on the next polling
+            // tick instead of waiting for lab to rebuild and re-link the
+            // baked-in artifact path.
+            let live_fleet = state.verified_fleet.read().await.clone();
             let (result, verified_fleet) = if checkins.is_empty() && channel_refs.is_empty() {
                 (tick(&inputs_now), verify_fleet_only(&inputs_now))
             } else {
                 run_tick_with_projection(
                     &inputs_now,
+                    live_fleet.as_ref(),
                     &checkins,
                     &channel_refs,
                     &rollouts,
@@ -263,6 +270,40 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                     }
                 }
             }
+            Action::PromoteWave { rollout, new_wave } => {
+                // LOADBEARING: persists the advance so subsequent ticks see
+                // the new wave through `RolloutDbSnapshot.current_wave`.
+                // Without this the projection layer always reports
+                // current_wave=0 → multi-wave channels can never reach the
+                // ConvergeRollout terminal branch.
+                let wave: u32 = (*new_wave).try_into().unwrap_or(u32::MAX);
+                match db.rollouts().set_current_wave(rollout, wave) {
+                    Ok(0) => {
+                        tracing::debug!(
+                            target: "promote",
+                            rollout = %rollout,
+                            new_wave = new_wave,
+                            "promote: wave advance no-op (already at or beyond)",
+                        );
+                    }
+                    Ok(_) => {
+                        tracing::info!(
+                            target: "promote",
+                            rollout = %rollout,
+                            new_wave = new_wave,
+                            "promote: rollout advanced to next wave",
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            rollout = %rollout,
+                            new_wave = new_wave,
+                            error = %err,
+                            "promote: set_current_wave failed",
+                        );
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -271,11 +312,58 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
 /// Returns `(tick_output, fleet)`; fleet `None` on verify failure so caller preserves prior snapshot.
 fn run_tick_with_projection(
     inputs: &TickInputs,
+    live_fleet: Option<&crate::server::VerifiedFleetSnapshot>,
     checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
     rollouts: &[crate::db::RolloutDbSnapshot],
     compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
 ) -> (anyhow::Result<crate::TickOutput>, Option<FleetResolved>) {
+    // LOADBEARING: prefer the live verified-fleet snapshot (kept fresh by
+    // the channel-refs polling loop) over re-reading the static artifact
+    // baked into the CP closure at build time. The polling layer already
+    // verified the signature when populating the cache; re-verifying here
+    // would double-pay verification cost without changing the outcome,
+    // and using the static artifact pins reconciler decisions to whatever
+    // fleet.resolved was bundled in the running closure — meaning fleet.nix
+    // metadata changes (rolloutPolicies, selectors, channel intervals)
+    // wouldn't apply until lab rebuilds onto a fresher closure.
+    if let Some(snapshot) = live_fleet {
+        let fleet = (*snapshot.fleet).clone();
+        let signed_at = match fleet.meta.signed_at {
+            Some(ts) => ts,
+            None => {
+                return (
+                    Err(anyhow::anyhow!(
+                        "verified artifact lacks meta.signedAt despite §4 contract — verify layer bug",
+                    )),
+                    None,
+                );
+            }
+        };
+        let ci_commit = fleet.meta.ci_commit.clone();
+        let observed = crate::observed_projection::project(
+            checkins,
+            channel_refs,
+            rollouts,
+            compliance_failures_by_rollout,
+        );
+        let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
+        return (
+            Ok(crate::TickOutput {
+                now: inputs.now,
+                verify: crate::VerifyOutcome::Ok(Box::new(crate::VerifyOk {
+                    signed_at,
+                    ci_commit,
+                    observed,
+                    actions,
+                })),
+            }),
+            Some(fleet),
+        );
+    }
+
+    // Fallback: no live snapshot yet (first boot, polling hasn't primed).
+    // Read + verify the static artifact baked into the closure.
     use anyhow::Context;
     let artifact = match std::fs::read(&inputs.artifact_path)
         .with_context(|| format!("read artifact {}", inputs.artifact_path.display()))

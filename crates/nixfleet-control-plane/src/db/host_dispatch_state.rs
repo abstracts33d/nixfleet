@@ -35,6 +35,10 @@ pub struct RolloutDbSnapshot {
     pub host_states: HashMap<String, String>,
     /// Excludes hosts not currently Healthy.
     pub last_healthy_since: HashMap<String, DateTime<Utc>>,
+    /// Persisted wave index from the rollouts table; advanced by `apply_actions`
+    /// when `Action::PromoteWave` fires. Defaults to 0 for rollouts not yet
+    /// in the rollouts table (transitional, single-tick window).
+    pub current_wave: u32,
 }
 
 /// `(hostname, rollout_id, wave, target_closure_hash)` for rows with a passed deadline.
@@ -230,11 +234,14 @@ impl HostDispatchState<'_> {
             "SELECT hds.rollout_id, hds.channel, hds.hostname,
                     hds.target_closure_hash, hds.target_channel_ref,
                     hds.state,
-                    hrs.host_state, hrs.last_healthy_since
+                    hrs.host_state, hrs.last_healthy_since,
+                    COALESCE(r.current_wave, 0) AS current_wave
              FROM host_dispatch_state hds
              LEFT JOIN host_rollout_state hrs
                     ON hrs.rollout_id = hds.rollout_id
                    AND hrs.hostname = hds.hostname
+             LEFT JOIN rollouts r
+                    ON r.rollout_id = hds.rollout_id
              WHERE hds.state IN (?1, ?2)
              ORDER BY hds.rollout_id, hds.hostname",
         )?;
@@ -254,6 +261,7 @@ impl HostDispatchState<'_> {
                         row.get::<_, String>(5)?,
                         row.get::<_, Option<String>>(6)?,
                         row.get::<_, Option<String>>(7)?,
+                        row.get::<_, i64>(8)?,
                     ))
                 },
             )?
@@ -269,6 +277,7 @@ impl HostDispatchState<'_> {
             op_state,
             hrs_state,
             hrs_ts,
+            current_wave,
         ) in rows
         {
             let host_state = match hrs_state {
@@ -297,6 +306,7 @@ impl HostDispatchState<'_> {
                     target_channel_ref: target_ref.clone(),
                     host_states: HashMap::new(),
                     last_healthy_since: HashMap::new(),
+                    current_wave: current_wave as u32,
                 });
             entry.host_states.insert(hostname.clone(), host_state);
             if let Some(ts) = hrs_ts {

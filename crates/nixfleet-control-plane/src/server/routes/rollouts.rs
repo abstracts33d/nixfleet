@@ -172,6 +172,39 @@ pub(in crate::server) async fn signature(
     Ok((StatusCode::OK, headers, Bytes::from(sig_bytes)))
 }
 
+/// `GET /v1/rollouts` — enumerate active (non-superseded) rollouts directly
+/// from the rollouts table. Operators (status renderers) use this instead
+/// of inferring from per-host `lastRolloutId` breadcrumbs, which only update
+/// on real agent confirms — converged-at-dispatch hosts never confirm so
+/// their breadcrumb stays at whatever they last truly confirmed.
+pub(in crate::server) async fn list_active(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let db = state.db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let rows = db.rollouts().list_active().map_err(|err| {
+        tracing::warn!(error = %err, "list_active rollouts query failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let rollouts: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "rolloutId": r.rollout_id,
+                "channel": r.channel,
+                "currentWave": r.current_wave,
+                "createdAt": r.created_at,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({ "rollouts": rollouts }).to_string();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    Ok((StatusCode::OK, headers, body))
+}
+
 /// `GET /v1/rollouts/{rolloutId}/lifecycle` — supersession state for the
 /// rollout, sourced solely from the rollouts table. Returns 404 for any
 /// rid not tracked there.

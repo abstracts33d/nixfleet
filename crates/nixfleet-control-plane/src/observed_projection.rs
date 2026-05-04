@@ -32,7 +32,7 @@ pub fn project(
             channel: snap.channel.clone(),
             target_ref: snap.target_channel_ref.clone(),
             state: RolloutState::Executing,
-            current_wave: 0,
+            current_wave: snap.current_wave as usize,
             // Unknown SQL strings fall back to Failed; Queued would re-dispatch every tick.
             host_states: snap
                 .host_states
@@ -154,6 +154,7 @@ mod tests {
             target_channel_ref: "stable@deadbeef".to_string(),
             host_states,
             last_healthy_since: HashMap::new(),
+            current_wave: 0,
         };
         let observed = project(
             &HashMap::new(),
@@ -178,6 +179,7 @@ mod tests {
             target_channel_ref: "stable@deadbeef".to_string(),
             host_states,
             last_healthy_since: HashMap::new(),
+            current_wave: 0,
         };
         let observed = project(
             &HashMap::new(),
@@ -207,6 +209,7 @@ mod tests {
             target_channel_ref: "stable@abc12345".to_string(),
             host_states,
             last_healthy_since: last_healthy,
+            current_wave: 0,
         };
         let observed = project(
             &HashMap::new(),
