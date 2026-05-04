@@ -173,18 +173,11 @@ pub(in crate::server) async fn signature(
 }
 
 /// `GET /v1/rollouts/{rolloutId}/lifecycle` — supersession state for the
-/// rollout. Distinct from the signed manifest endpoint because we can't
-/// inject server-derived metadata into the signed bytes.
+/// rollout, sourced solely from the rollouts table. Returns 404 for any
+/// rid not tracked there.
 ///
-/// Resolution order:
-/// 1. Look up the rid in the rollouts table → return its row directly.
-/// 2. If absent, parse the manifest's channel and query the table's active
-///    rollout for that channel. If a different rid is active, treat the
-///    requested rid as implicitly superseded (handles ancient rids that
-///    pre-date the rollouts table or were lost on rebuild).
-/// 3. Otherwise: not in table, no other active rollout known → report as
-///    active. The render path will display it; if it's truly stale, the
-///    next channel-refs poll fixes the table.
+/// Distinct from the signed manifest endpoint because we can't inject
+/// server-derived metadata into the signed bytes.
 pub(in crate::server) async fn lifecycle(
     State(state): State<Arc<AppState>>,
     Path(rollout_id): Path<String>,
@@ -193,65 +186,21 @@ pub(in crate::server) async fn lifecycle(
         return Err(StatusCode::BAD_REQUEST);
     }
     let db = state.db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let body = lifecycle_body(&state, db, &rollout_id).await?;
+    let status = db.rollouts().supersede_status(&rollout_id).map_err(|err| {
+        tracing::warn!(error = %err, rollout = %rollout_id, "lifecycle: supersede_status query failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let status = status.ok_or(StatusCode::NOT_FOUND)?;
+    let body = serde_json::json!({
+        "rolloutId": rollout_id,
+        "supersededAt": status.superseded_at.map(|t| t.to_rfc3339()),
+        "supersededBy": status.superseded_by,
+    })
+    .to_string();
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
     Ok((StatusCode::OK, headers, body))
-}
-
-async fn lifecycle_body(
-    state: &AppState,
-    db: &crate::db::Db,
-    rollout_id: &str,
-) -> Result<String, StatusCode> {
-    // 1. Direct lookup.
-    if let Some(status) = db.rollouts().supersede_status(rollout_id).map_err(|err| {
-        tracing::warn!(error = %err, rollout = %rollout_id, "lifecycle: supersede_status query failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })? {
-        return Ok(serde_json::json!({
-            "rolloutId": rollout_id,
-            "supersededAt": status.superseded_at.map(|t| t.to_rfc3339()),
-            "supersededBy": status.superseded_by,
-        })
-        .to_string());
-    }
-
-    // 2. Implicit supersession via manifest channel + active-for-channel.
-    let (manifest_bytes, _sig) = load_pair(state, rollout_id).await?;
-    let channel = serde_json::from_slice::<serde_json::Value>(&manifest_bytes)
-        .ok()
-        .and_then(|v| v.get("channel").and_then(|c| c.as_str()).map(String::from));
-    let body = match channel {
-        Some(channel) => {
-            let active = db
-                .rollouts()
-                .active_rollout_for_channel(&channel)
-                .map_err(|err| {
-                    tracing::warn!(error = %err, channel = %channel, "lifecycle: active_rollout_for_channel failed");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-            match active {
-                Some(active_rid) if active_rid != rollout_id => serde_json::json!({
-                    "rolloutId": rollout_id,
-                    "supersededAt": chrono::Utc::now().to_rfc3339(),
-                    "supersededBy": active_rid,
-                }),
-                _ => serde_json::json!({
-                    "rolloutId": rollout_id,
-                    "supersededAt": null,
-                    "supersededBy": null,
-                }),
-            }
-        }
-        None => serde_json::json!({
-            "rolloutId": rollout_id,
-            "supersededAt": null,
-            "supersededBy": null,
-        }),
-    };
-    Ok(body.to_string())
 }

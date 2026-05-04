@@ -19,13 +19,6 @@ pub struct SupersedeStatus {
 }
 
 impl SupersedeStatus {
-    pub fn active() -> Self {
-        Self {
-            superseded_at: None,
-            superseded_by: None,
-        }
-    }
-
     pub fn is_superseded(&self) -> bool {
         self.superseded_at.is_some()
     }
@@ -67,10 +60,9 @@ impl Rollouts<'_> {
         Ok(())
     }
 
-    /// `Ok(None)` when the rollout isn't tracked. Callers wanting an
-    /// implicit fallback (ancient rollouts that pre-date the rollouts
-    /// table or were lost on rebuild) should also consult
-    /// [`active_rollout_for_channel`].
+    /// `Ok(None)` when the rollout isn't tracked. Lifecycle endpoint
+    /// returns 404 in that case — callers don't fabricate supersession
+    /// state for unknown rids (no historical reconstruction).
     pub fn supersede_status(&self, rollout_id: &str) -> Result<Option<SupersedeStatus>> {
         let guard = super::lock_conn(self.conn)?;
         let row = guard
@@ -103,25 +95,6 @@ impl Rollouts<'_> {
             })
             .transpose()?;
         Ok(parsed)
-    }
-
-    /// Returns the active rollout_id for a channel, if one exists in the
-    /// table. Used by the implicit-supersession fallback in /v1/rollouts/<rid>:
-    /// if `rid` isn't tracked but a different rid IS active for the same
-    /// channel, treat `rid` as implicitly superseded.
-    pub fn active_rollout_for_channel(&self, channel: &str) -> Result<Option<String>> {
-        let guard = super::lock_conn(self.conn)?;
-        let id = guard
-            .query_row(
-                "SELECT rollout_id FROM rollouts
-                 WHERE channel = ?1 AND superseded_at IS NULL
-                 LIMIT 1",
-                params![channel],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .context("query rollouts active_for_channel")?;
-        Ok(id)
     }
 
     /// Used by `active_rollouts_snapshot` to filter out superseded rollouts
@@ -157,10 +130,6 @@ mod tests {
         let status = db.rollouts().supersede_status("r1").unwrap();
         let s = status.expect("rollout present");
         assert!(!s.is_superseded(), "first rollout on a channel must be active");
-        assert_eq!(
-            db.rollouts().active_rollout_for_channel("stable").unwrap(),
-            Some("r1".to_string()),
-        );
     }
 
     #[test]
@@ -179,11 +148,6 @@ mod tests {
 
         let r2 = db.rollouts().supersede_status("r2").unwrap().unwrap();
         assert!(!r2.is_superseded());
-
-        assert_eq!(
-            db.rollouts().active_rollout_for_channel("stable").unwrap(),
-            Some("r2".to_string()),
-        );
     }
 
     #[test]
@@ -254,27 +218,24 @@ mod tests {
 
     /// LOADBEARING regression: rebuild scenario. After a rebuild the table
     /// starts empty; the polling tick must populate it idempotently for
-    /// each channel's current rid, with stale rids that NEVER appear in the
-    /// table being treated as implicitly superseded by the channel-active
-    /// lookup at query time.
+    /// each channel's current rid. Stale rids that NEVER re-enter the table
+    /// stay absent — the lifecycle endpoint returns 404 for them and
+    /// render.sh skips, no fabricated supersession state.
     #[test]
     fn rebuild_recovery_repopulates_via_repeated_record_calls() {
         let db = fresh_db();
-        // Simulate a channel-refs polling tick after rebuild.
         db.rollouts()
             .record_active_rollout("r-current", "stable")
             .unwrap();
-        // Idempotent repeats (subsequent ticks find the same current rid).
         db.rollouts()
             .record_active_rollout("r-current", "stable")
             .unwrap();
-        assert_eq!(
-            db.rollouts().active_rollout_for_channel("stable").unwrap(),
-            Some("r-current".to_string()),
-        );
-        // r-old never re-entered the table; lookup returns None and the
-        // caller derives "implicitly superseded" by checking
-        // active_rollout_for_channel != r-old.
+        let s = db
+            .rollouts()
+            .supersede_status("r-current")
+            .unwrap()
+            .expect("current rid present after polling tick");
+        assert!(!s.is_superseded());
         assert!(db.rollouts().supersede_status("r-old").unwrap().is_none());
     }
 }
