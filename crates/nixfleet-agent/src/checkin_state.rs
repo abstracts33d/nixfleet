@@ -190,6 +190,35 @@ pub fn write_last_confirmed(state_dir: &Path, closure_hash: &str, at: DateTime<U
     Ok(())
 }
 
+/// LOADBEARING: the three persistence steps a successful confirm must do, in
+/// the same order, from BOTH dispatch (`dispatch/confirm.rs`) and boot-recovery
+/// (`recovery.rs`). Splitting them across two call sites previously caused the
+/// boot-recovery path to skip `write_last_target`, which silently broke the
+/// CP's `outstanding-failure` filter and `active-rollouts` panel for every
+/// host that confirmed via the recovery path.
+///
+/// Each step is best-effort — failures are logged but never propagated; the
+/// next checkin re-converges. `clear_last_dispatched` runs last so a partial
+/// crash leaves the dispatch record around for retry.
+pub fn record_confirm_success(state_dir: &Path, target: &EvaluatedTarget, at: DateTime<Utc>) {
+    if let Err(err) = write_last_confirmed(state_dir, &target.closure_hash, at) {
+        tracing::warn!(
+            error = %err,
+            state_dir = %state_dir.display(),
+            "write_last_confirmed failed; soak attestation will be missing on next checkin",
+        );
+    }
+    if let Err(err) = write_last_target(state_dir, target) {
+        tracing::warn!(
+            error = %err,
+            "write_last_target failed; checkin will report no last_evaluated_target until next confirm",
+        );
+    }
+    if let Err(err) = clear_last_dispatched(state_dir) {
+        tracing::warn!(error = %err, "clear_last_dispatched failed (non-fatal)");
+    }
+}
+
 /// `None` when absent, mismatched closure, malformed, or future-dated.
 pub fn read_last_confirmed(
     state_dir: &Path,
@@ -386,6 +415,37 @@ mod write_read_tests {
         clear_last_dispatched(dir.path()).unwrap();
         assert!(read_last_dispatched(dir.path()).unwrap().is_none());
         clear_last_dispatched(dir.path()).unwrap();
+    }
+
+    /// Regression: boot-recovery's confirm-success path used to skip
+    /// `write_last_target`, which silently broke the CP's outstanding-failure
+    /// filter and active-rollouts panel. Both call sites (dispatch + recovery)
+    /// now go through `record_confirm_success`; this test pins all three side
+    /// effects so adding a fourth state file forces a test update.
+    #[test]
+    fn record_confirm_success_writes_all_three_files_and_clears_dispatch() {
+        let dir = TempDir::new().unwrap();
+        write_last_dispatched(dir.path(), &sample_dispatch()).unwrap();
+        let target = sample_target();
+        let now = Utc::now();
+
+        record_confirm_success(dir.path(), &target, now);
+
+        let confirmed = read_last_confirmed(dir.path(), &target.closure_hash, now)
+            .unwrap()
+            .expect("last_confirmed must exist after record_confirm_success");
+        assert_eq!(confirmed.timestamp(), now.timestamp());
+
+        let recorded_target = read_last_target(dir.path())
+            .unwrap()
+            .expect("last_target must exist after record_confirm_success");
+        assert_eq!(recorded_target.closure_hash, target.closure_hash);
+        assert_eq!(recorded_target.rollout_id, target.rollout_id);
+
+        assert!(
+            read_last_dispatched(dir.path()).unwrap().is_none(),
+            "last_dispatched must be cleared after successful confirm",
+        );
     }
 }
 

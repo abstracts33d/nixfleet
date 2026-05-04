@@ -1,10 +1,8 @@
 //! Success path: runtime gate → confirm → persist; CP-410 triggers rollback.
 
-use nixfleet_proto::agent_wire::{EvaluatedTarget, ReportEvent};
+use nixfleet_proto::agent_wire::ReportEvent;
 
 use nixfleet_agent::comms::Reporter;
-
-use crate::Args;
 
 use super::compliance::{process_gate_outcome, run_runtime_gate};
 use nixfleet_agent::evidence_signer::try_sign;
@@ -48,7 +46,11 @@ async fn confirm_and_finalize<R: Reporter>(
             handle_cp_cancellation(rollout, ctx).await;
         }
         Ok(nixfleet_agent::comms::ConfirmOutcome::Acknowledged) => {
-            persist_confirmed_state(ctx.target, ctx.args);
+            nixfleet_agent::checkin_state::record_confirm_success(
+                &ctx.args.state_dir,
+                ctx.target,
+                chrono::Utc::now(),
+            );
         }
         Ok(nixfleet_agent::comms::ConfirmOutcome::Other) => {}
         Err(err) => tracing::warn!(error = %err, "confirm post failed"),
@@ -88,30 +90,3 @@ async fn handle_cp_cancellation<R: Reporter>(rollout: &str, ctx: &DispatchCtx<'_
     }
 }
 
-/// Persist failure is non-fatal; no rollback.
-fn persist_confirmed_state(target: &EvaluatedTarget, args: &Args) {
-    if let Err(err) = nixfleet_agent::checkin_state::write_last_confirmed(
-        &args.state_dir,
-        &target.closure_hash,
-        chrono::Utc::now(),
-    ) {
-        tracing::warn!(
-            error = %err,
-            state_dir = %args.state_dir.display(),
-            "write_last_confirmed failed; soak attestation will be missing on next checkin",
-        );
-    }
-    // LOADBEARING: outlives `clear_last_dispatched`. The CP's
-    // outstanding-failure filter and active-rollouts panel both key off the
-    // checkin's `last_evaluated_target.rollout_id`; without this breadcrumb
-    // every event ever recorded looks "outstanding" forever.
-    if let Err(err) = nixfleet_agent::checkin_state::write_last_target(&args.state_dir, target) {
-        tracing::warn!(
-            error = %err,
-            "write_last_target failed; checkin will report no last_evaluated_target until next confirm",
-        );
-    }
-    if let Err(err) = nixfleet_agent::checkin_state::clear_last_dispatched(&args.state_dir) {
-        tracing::warn!(error = %err, "clear_last_dispatched failed (non-fatal)");
-    }
-}

@@ -167,30 +167,11 @@ async fn decide_and_run<R: Reporter>(
         Ok(outcome) => {
             match outcome {
                 comms::ConfirmOutcome::Acknowledged => {
-                    if let Err(err) = checkin_state::write_last_confirmed(
+                    checkin_state::record_confirm_success(
                         state_dir,
-                        &dispatched.closure_hash,
+                        &synthetic_target,
                         chrono::Utc::now(),
-                    ) {
-                        tracing::warn!(
-                            error = %err,
-                            "boot-recovery: write_last_confirmed failed (non-fatal)",
-                        );
-                    }
-                    // LOADBEARING: must mirror dispatch/confirm.rs:persist_confirmed_state.
-                    // Without this, the active-rollouts panel + outstanding-failure
-                    // filter on the CP both stay broken: hosts confirming via the
-                    // boot-recovery path (the dominant case when the agent unit
-                    // restarts mid-switch) would never write last_target, so every
-                    // subsequent checkin carries last_evaluated_target=None.
-                    if let Err(err) = checkin_state::write_last_target(state_dir, &synthetic_target)
-                    {
-                        tracing::warn!(
-                            error = %err,
-                            "boot-recovery: write_last_target failed (non-fatal)",
-                        );
-                    }
-                    let _ = checkin_state::clear_last_dispatched(state_dir);
+                    );
                 }
                 comms::ConfirmOutcome::Cancelled => {
                     // LOADBEARING: rollback failure must NOT clear last_dispatched (clearing splits brain).
