@@ -117,16 +117,7 @@ async fn apply_verified_refs(
     drop(guard);
 
     if let Some(db) = db {
-        for (channel, rid) in &channel_rollouts {
-            if let Err(err) = db.rollouts().record_active_rollout(rid, channel) {
-                tracing::warn!(
-                    channel = %channel,
-                    rollout = %rid,
-                    error = %err,
-                    "channel-refs poll: record_active_rollout failed (non-fatal)",
-                );
-            }
-        }
+        record_rollouts_gated_by_channel_edges(db, verified_fleet, &channel_rollouts).await;
     }
 
     tracing::info!(
@@ -192,4 +183,109 @@ async fn poll_once(
         refs.insert(name.clone(), ci_commit.clone());
     }
     Ok((refs, fleet_resolved, fleet_resolved_hash))
+}
+
+/// Gate `record_active_rollout` writes by `channelEdges`. The DB rollouts
+/// table is the source of truth for /v1/rollouts and the reconciler's
+/// `Observed.active_rollouts`; recording an entry for a channel whose
+/// predecessor hasn't converged would defeat the channelEdges contract
+/// at the storage layer (the reconciler's `RolloutDeferred` is journal-
+/// only and doesn't touch the DB).
+///
+/// Iteration order is the same topological sort the reconciler uses, with
+/// an in-poll `emitted_opens` set so a `before` channel recorded earlier
+/// in this poll is seen as active by `after`'s predecessor check. This
+/// mirrors the reconcile loop's invariants — the two layers stay
+/// architecturally aligned.
+async fn record_rollouts_gated_by_channel_edges(
+    db: &crate::db::Db,
+    verified_fleet: &RwLock<Option<crate::server::VerifiedFleetSnapshot>>,
+    channel_rollouts: &[(String, String)],
+) {
+    let fleet_snap = match verified_fleet.read().await.clone() {
+        Some(s) => s,
+        None => return,
+    };
+    let fleet = &fleet_snap.fleet;
+
+    // Build the same `Observed.active_rollouts` view the reconciler sees,
+    // so `predecessor_channel_blocking` resolves identically.
+    let raw = match db.host_dispatch_state().active_rollouts_snapshot() {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(error = %err, "channel-refs poll: active_rollouts_snapshot failed; recording rollouts without channelEdges gate (non-fatal)");
+            Vec::new()
+        }
+    };
+    let superseded: std::collections::HashSet<String> = db
+        .rollouts()
+        .superseded_rollout_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let active_rollouts: Vec<nixfleet_reconciler::observed::Rollout> = raw
+        .into_iter()
+        .filter(|r| !superseded.contains(&r.rollout_id))
+        .map(|snap| nixfleet_reconciler::observed::Rollout {
+            id: snap.rollout_id,
+            channel: snap.channel,
+            target_ref: snap.target_channel_ref,
+            state: nixfleet_reconciler::RolloutState::Executing,
+            current_wave: snap.current_wave as usize,
+            host_states: snap
+                .host_states
+                .iter()
+                .filter_map(|(h, s)| {
+                    nixfleet_reconciler::HostRolloutState::from_db_str(s)
+                        .ok()
+                        .map(|st| (h.clone(), st))
+                })
+                .collect(),
+            last_healthy_since: snap.last_healthy_since,
+            budgets: vec![],
+        })
+        .collect();
+
+    let pseudo_observed = nixfleet_reconciler::observed::Observed {
+        channel_refs: HashMap::new(),
+        last_rolled_refs: HashMap::new(),
+        host_state: HashMap::new(),
+        active_rollouts,
+        compliance_failures_by_rollout: HashMap::new(),
+        last_deferrals: HashMap::new(),
+    };
+
+    let channel_names: Vec<String> = channel_rollouts.iter().map(|(c, _)| c.clone()).collect();
+    let order = nixfleet_reconciler::topological_channel_order(fleet, &channel_names);
+
+    let mut emitted_opens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for channel in order {
+        let Some((_, rid)) = channel_rollouts.iter().find(|(c, _)| c == &channel) else {
+            continue;
+        };
+        if let Some(blocker) = nixfleet_reconciler::predecessor_channel_blocking(
+            fleet,
+            &pseudo_observed,
+            &emitted_opens,
+            &channel,
+        ) {
+            tracing::info!(
+                channel = %channel,
+                rollout = %rid,
+                blocked_by = %blocker,
+                "channel-refs poll: skip record_active_rollout — channelEdges holds until predecessor converges",
+            );
+            continue;
+        }
+        if let Err(err) = db.rollouts().record_active_rollout(rid, &channel) {
+            tracing::warn!(
+                channel = %channel,
+                rollout = %rid,
+                error = %err,
+                "channel-refs poll: record_active_rollout failed (non-fatal)",
+            );
+        } else {
+            emitted_opens.insert(channel);
+        }
+    }
 }

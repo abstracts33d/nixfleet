@@ -9,17 +9,29 @@ use chrono::{DateTime, Utc};
 use nixfleet_proto::FleetResolved;
 
 /// Predecessor channel that has not converged its most-recent rollout, if any.
-/// "Active" includes both rollouts already recorded in
-/// `observed.active_rollouts` AND rollouts the current reconcile tick has
-/// already decided to open (`emitted_opens_in_tick`). Without the in-tick
-/// view, the first tick after a CP rebuild — where `active_rollouts` starts
-/// empty — would let every channel pass its predecessor check
-/// simultaneously, defeating `channelEdges` ordering.
 ///
-/// Channels with no rollout history are treated as open (proceed) — edges
-/// constrain ordering between *active* rollouts, not "must have at least
-/// one rollout ever". A `Halted` predecessor still appears in
-/// `active_rollouts` and so blocks `after` until the operator resolves it.
+/// "Predecessor active" is true iff EITHER:
+/// - a rollout on `e.before` exists in `observed.active_rollouts` AND that
+///   rollout has at least one host in a non-terminal state (anything except
+///   `Soaked` / `Converged`), OR
+/// - the current reconcile tick has decided to open `e.before` for the
+///   first time (`emitted_opens_in_tick`).
+///
+/// A rollout whose every host has reached `Converged` is treated as done
+/// for ordering purposes — its successor unblocks even though the rollout
+/// row stays in the DB until superseded by the next release. A `Halted`
+/// rollout remains active (Halted hosts are non-terminal in the lifecycle
+/// sense) so its successor stays blocked until the operator resolves it.
+///
+/// Empty `host_states` (a freshly-recorded rollout that has not yet
+/// dispatched any host) is also treated as active — the rollout has work
+/// to do, just hasn't started. This catches the converged-at-dispatch
+/// case after the FIRST tick: dispatch records `Converged` immediately,
+/// so the second tick onwards correctly unblocks the successor.
+///
+/// Without the in-tick view, the first tick after a CP rebuild — where
+/// `active_rollouts` starts empty — would let every channel pass its
+/// predecessor check simultaneously, defeating `channelEdges` ordering.
 ///
 /// Public so the CP can compute "currently held channels" live for the
 /// dashboard. Pass an empty set for `emitted_opens_in_tick` outside the
@@ -35,11 +47,13 @@ pub fn predecessor_channel_blocking(
         .iter()
         .filter(|e| e.after == channel)
         .find_map(|e| {
-            let predecessor_active = observed
-                .active_rollouts
-                .iter()
-                .any(|r| r.channel == e.before)
-                || emitted_opens_in_tick.contains(&e.before);
+            let active_in_db = observed.active_rollouts.iter().any(|r| {
+                if r.channel != e.before {
+                    return false;
+                }
+                rollout_is_active_for_ordering(r)
+            });
+            let predecessor_active = active_in_db || emitted_opens_in_tick.contains(&e.before);
             if predecessor_active {
                 Some(e.before.clone())
             } else {
@@ -48,27 +62,48 @@ pub fn predecessor_channel_blocking(
         })
 }
 
-/// Topological order of `observed.channel_refs` keys with respect to
-/// `fleet.channel_edges`. Predecessors first; ties broken alphabetically
-/// for tick-to-tick determinism. Edges referencing channels not present
-/// in `channel_refs` are ignored (they can't gate this tick).
+/// True if the rollout still has work outstanding from the perspective of
+/// `channelEdges` ordering. Empty host_states = newly-recorded, no dispatch
+/// yet — counts as active (work pending). All-Converged = done — counts as
+/// inactive (successor may proceed). Anything else = at least one host
+/// non-terminal — active.
+fn rollout_is_active_for_ordering(r: &crate::observed::Rollout) -> bool {
+    use crate::host_state::HostRolloutState;
+    if r.host_states.is_empty() {
+        return true;
+    }
+    !r.host_states
+        .values()
+        .all(|s| matches!(s, HostRolloutState::Converged))
+}
+
+/// Topological order of `channels` with respect to `fleet.channel_edges`.
+/// Predecessors first; ties broken alphabetically for tick-to-tick
+/// determinism. Edges referencing channels not in the input set are
+/// ignored (they can't gate this tick / poll). Channels in `channels`
+/// not appearing in any edge are ordered alphabetically among themselves.
 ///
-/// LOADBEARING: the reconcile loop iterates this order so the in-tick
-/// `emitted_opens` set sees an OpenRollout for `before` before checking
-/// `after`'s predecessor gate. mkFleet validates `channelEdges` is a
-/// DAG, so cycle handling here is defensive only.
-fn topological_channel_order(
+/// LOADBEARING: the reconcile loop and the polling layer both iterate
+/// this order so the in-tick `emitted_opens` set sees a `before` channel
+/// recorded before checking the `after` channel's predecessor gate.
+/// mkFleet validates `channelEdges` is a DAG, so cycle handling here is
+/// defensive only.
+pub fn topological_channel_order(
     fleet: &FleetResolved,
-    channel_refs: &HashMap<String, String>,
+    channels: &[String],
 ) -> Vec<String> {
+    let channel_set: std::collections::HashSet<&str> =
+        channels.iter().map(|s| s.as_str()).collect();
     let mut in_degree: HashMap<String, usize> = HashMap::new();
     let mut successors: HashMap<String, Vec<String>> = HashMap::new();
-    for ch in channel_refs.keys() {
+    for ch in channels {
         in_degree.insert(ch.clone(), 0);
         successors.insert(ch.clone(), Vec::new());
     }
     for edge in &fleet.channel_edges {
-        if !channel_refs.contains_key(&edge.before) || !channel_refs.contains_key(&edge.after) {
+        if !channel_set.contains(edge.before.as_str())
+            || !channel_set.contains(edge.after.as_str())
+        {
             continue;
         }
         successors
@@ -83,7 +118,7 @@ fn topological_channel_order(
         .map(|(k, _)| k.clone())
         .collect();
     frontier.sort();
-    let mut order: Vec<String> = Vec::with_capacity(channel_refs.len());
+    let mut order: Vec<String> = Vec::with_capacity(channels.len());
     while let Some(node) = frontier.first().cloned() {
         frontier.remove(0);
         order.push(node.clone());
@@ -106,9 +141,9 @@ fn topological_channel_order(
     // Cycle defensive: any channel not yet ordered (cycle, mkFleet bug)
     // gets appended in alphabetical order so the tick still makes
     // progress instead of dropping channels silently.
-    let mut leftover: Vec<String> = channel_refs
-        .keys()
-        .filter(|k| !order.iter().any(|o| o == *k))
+    let mut leftover: Vec<String> = channels
+        .iter()
+        .filter(|k| !order.contains(k))
         .cloned()
         .collect();
     leftover.sort();
@@ -123,7 +158,8 @@ pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>)
     // Open rollouts for channels whose ref changed, in topological order
     // so a `before` channel's OpenRollout is seen by `after`'s predecessor
     // check within the same tick.
-    for channel in topological_channel_order(fleet, &observed.channel_refs) {
+    let channel_names: Vec<String> = observed.channel_refs.keys().cloned().collect();
+    for channel in topological_channel_order(fleet, &channel_names) {
         let current_ref = match observed.channel_refs.get(&channel) {
             Some(r) => r,
             None => continue,
@@ -249,6 +285,79 @@ mod channel_edge_tests {
             budgets: vec![],
         });
         o
+    }
+
+    #[test]
+    fn converged_predecessor_does_not_block_successor() {
+        // The semantic property channelEdges enforces: ordering between
+        // *active* rollouts. Once a predecessor's rollout is fully
+        // converged (every host in host_states is Converged), it stops
+        // counting as a blocker even though the rollout row remains in
+        // the DB until superseded.
+        let fleet = fleet_with_channel_edges(vec![ChannelEdge {
+            before: "db".into(),
+            after: "app".into(),
+            reason: None,
+        }]);
+        let mut observed = Observed::default();
+        observed.channel_refs.insert("app".into(), "ref-app-1".into());
+        observed.active_rollouts.push(Rollout {
+            id: "db-rollout".into(),
+            channel: "db".into(),
+            target_ref: "ref-db-converged".into(),
+            state: RolloutState::Executing,
+            current_wave: 0,
+            host_states: HashMap::from([
+                ("db1".to_string(), HostRolloutState::Converged),
+                ("db2".to_string(), HostRolloutState::Converged),
+            ]),
+            last_healthy_since: HashMap::new(),
+            budgets: vec![],
+        });
+        let actions = reconcile(&fleet, &observed, chrono::Utc::now());
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::OpenRollout { channel, .. } if channel == "app")),
+            "app must open once db's rollout is fully converged: {actions:?}",
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, Action::RolloutDeferred { channel, .. } if channel == "app")),
+            "no deferral expected when predecessor is converged: {actions:?}",
+        );
+    }
+
+    #[test]
+    fn partially_converged_predecessor_still_blocks_successor() {
+        // Until ALL hosts in the predecessor reach Converged, the
+        // predecessor is still active and blocks its successor.
+        let fleet = fleet_with_channel_edges(vec![ChannelEdge {
+            before: "db".into(),
+            after: "app".into(),
+            reason: None,
+        }]);
+        let mut observed = Observed::default();
+        observed.channel_refs.insert("app".into(), "ref-app-1".into());
+        observed.active_rollouts.push(Rollout {
+            id: "db-rollout".into(),
+            channel: "db".into(),
+            target_ref: "ref-db".into(),
+            state: RolloutState::Executing,
+            current_wave: 0,
+            host_states: HashMap::from([
+                ("db1".to_string(), HostRolloutState::Converged),
+                ("db2".to_string(), HostRolloutState::Healthy),
+            ]),
+            last_healthy_since: HashMap::new(),
+            budgets: vec![],
+        });
+        let actions = reconcile(&fleet, &observed, chrono::Utc::now());
+        let blocked = actions.iter().any(
+            |a| matches!(a, Action::RolloutDeferred { channel, blocked_by, .. } if channel == "app" && blocked_by == "db"),
+        );
+        assert!(blocked, "any non-Converged host keeps the predecessor active: {actions:?}");
     }
 
     #[test]

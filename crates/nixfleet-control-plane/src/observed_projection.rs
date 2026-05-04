@@ -67,9 +67,21 @@ pub fn project(
         })
         .collect();
 
+    // last_rolled_refs reflects "what rollout(s) the CP has already
+    // recorded for each channel". Source: the rollouts table snapshot,
+    // mapping channel → target_channel_ref. Without this, the reconciler
+    // re-emits OpenRollout every tick because the channel_refs ↔ last_rolled_refs
+    // equality check never matches. Empty hashmap was a load-bearing
+    // bug — populating it makes the OpenRollout action fire once per
+    // ref change, not once per tick.
+    let mut last_rolled_refs: HashMap<String, String> = HashMap::new();
+    for snap in rollouts {
+        last_rolled_refs.insert(snap.channel.clone(), snap.target_channel_ref.clone());
+    }
+
     Observed {
         channel_refs: channel_refs.clone(),
-        last_rolled_refs: HashMap::new(),
+        last_rolled_refs,
         host_state,
         active_rollouts,
         compliance_failures_by_rollout,
