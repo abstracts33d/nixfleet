@@ -86,6 +86,24 @@ pub(super) fn spawn_reconcile_loop(
                 None => Vec::new(),
             };
 
+            // Drop rollouts the rollouts table marks superseded — advancing
+            // a superseded rollout is wasted work (replacement already
+            // covers the same hosts) and surfaces ghosts in the panel.
+            let rollouts = match state.db.as_deref().map(|db| db.rollouts().superseded_rollout_ids()) {
+                Some(Ok(ids)) => {
+                    let dead: std::collections::HashSet<String> = ids.into_iter().collect();
+                    rollouts
+                        .into_iter()
+                        .filter(|r| !dead.contains(&r.rollout_id))
+                        .collect()
+                }
+                Some(Err(err)) => {
+                    tracing::warn!(error = %err, "reconcile: superseded_rollout_ids failed; not filtering");
+                    rollouts
+                }
+                None => rollouts,
+            };
+
             let compliance_failures_by_rollout = match state
                 .db
                 .as_deref()

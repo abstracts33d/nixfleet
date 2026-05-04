@@ -30,10 +30,6 @@ pub(super) async fn dispatch_target_for_checkin(
         }
     };
 
-    if super::wave_gate::wave_gate_blocks_dispatch(state, req, &fleet).await {
-        return None;
-    }
-
     let decision = crate::dispatch::decide_target(
         &req.hostname,
         req,
@@ -49,6 +45,12 @@ pub(super) async fn dispatch_target_for_checkin(
             rollout_id,
             wave_index,
         } => {
+            // Wave gate only blocks fresh dispatches — converged-at-dispatch
+            // is informational bookkeeping and must not be gated (the host
+            // is already running the target).
+            if super::wave_gate::wave_gate_blocks_dispatch(state, req, &fleet).await {
+                return None;
+            }
             // Persist channel explicitly: content-addressed rolloutIds don't encode it.
             let channel = fleet
                 .hosts
@@ -66,6 +68,21 @@ pub(super) async fn dispatch_target_for_checkin(
                 now,
             )
         }
+        crate::dispatch::Decision::Converged => {
+            // Host is already running the declared target. Materialize the
+            // rollout-layer rows so the reconciler sees this host as Soaked
+            // for the current rollout (fixes the convergence-stamping panel
+            // and stops the active-rollouts panel showing ghosts).
+            //
+            // This is the only path where we INSERT host_dispatch_state +
+            // host_rollout_state for a host without ever sending it a target.
+            // The agent never sees a confirm — the breadcrumb on its
+            // checkin still references the LAST rollout it actually
+            // confirmed, but the CP's view of "this host is on rollout R"
+            // is now authoritative via these rows.
+            record_converged_at_dispatch(db, req, &fleet, &fleet_resolved_hash, now);
+            None
+        }
         other => {
             tracing::debug!(
                 target: "dispatch",
@@ -76,6 +93,92 @@ pub(super) async fn dispatch_target_for_checkin(
             None
         }
     }
+}
+
+/// LOADBEARING: each row materialization is best-effort + idempotent.
+/// Failures here only delay reconciler convergence — they don't break the
+/// agent (which got `Decision::Converged` and has nothing to confirm anyway).
+fn record_converged_at_dispatch(
+    db: &crate::db::Db,
+    req: &CheckinRequest,
+    fleet: &nixfleet_proto::FleetResolved,
+    fleet_resolved_hash: &str,
+    now: DateTime<Utc>,
+) {
+    let host_decl = match fleet.hosts.get(&req.hostname) {
+        Some(h) => h,
+        None => return,
+    };
+    let target_closure = match host_decl.closure_hash.as_ref() {
+        Some(h) => h,
+        None => return,
+    };
+    let rollout_id = match nixfleet_reconciler::compute_rollout_id_for_channel(
+        fleet,
+        fleet_resolved_hash,
+        &host_decl.channel,
+    ) {
+        Ok(Some(id)) => id,
+        _ => return,
+    };
+    let wave = wave_index_for(fleet, &host_decl.channel, &req.hostname).unwrap_or(0);
+    let target_channel_ref = rollout_id.clone();
+
+    if let Err(err) = db
+        .rollouts()
+        .record_active_rollout(&rollout_id, &host_decl.channel)
+    {
+        tracing::warn!(
+            rollout = %rollout_id,
+            channel = %host_decl.channel,
+            error = %err,
+            "converged-at-dispatch: record_active_rollout failed (non-fatal)",
+        );
+    }
+
+    if let Err(err) = db.host_dispatch_state().record_confirmed_dispatch(
+        &req.hostname,
+        &rollout_id,
+        &host_decl.channel,
+        wave,
+        target_closure,
+        &target_channel_ref,
+        now,
+    ) {
+        tracing::warn!(
+            hostname = %req.hostname,
+            rollout = %rollout_id,
+            error = %err,
+            "converged-at-dispatch: record_confirmed_dispatch failed",
+        );
+        return;
+    }
+
+    // host_rollout_state directly to Converged — host has been running this
+    // closure stably for some time; the soak window is conceptually already
+    // satisfied. transition_host_state with expected_from=None upserts.
+    if let Err(err) = db.rollout_state().transition_host_state(
+        &req.hostname,
+        &rollout_id,
+        crate::state::HostRolloutState::Converged,
+        crate::state::HealthyMarker::Set(now),
+        None,
+    ) {
+        tracing::warn!(
+            hostname = %req.hostname,
+            rollout = %rollout_id,
+            error = %err,
+            "converged-at-dispatch: host_rollout_state transition failed",
+        );
+    }
+
+    tracing::info!(
+        target: "dispatch",
+        hostname = %req.hostname,
+        rollout = %rollout_id,
+        target_closure = %target_closure,
+        "dispatch: host converged-at-dispatch (rollout-layer state materialized)",
+    );
 }
 
 /// Owned per-host snapshot so gate iterator outlives the lock guards.
@@ -136,6 +239,17 @@ fn record_dispatched_target(
     now: DateTime<Utc>,
 ) -> Option<nixfleet_proto::agent_wire::EvaluatedTarget> {
     let confirm_deadline = now + chrono::Duration::seconds(state.confirm_deadline_secs);
+    // Defensive: ensure the rollouts table reflects this rid as active for
+    // the channel even if the polling tick hasn't recorded it yet (first
+    // dispatch can race the polling loop on startup).
+    if let Err(err) = db.rollouts().record_active_rollout(rollout_id, channel) {
+        tracing::warn!(
+            rollout = %rollout_id,
+            channel = %channel,
+            error = %err,
+            "dispatch: record_active_rollout failed (non-fatal)",
+        );
+    }
     match db
         .host_dispatch_state()
         .record_dispatch(&crate::db::DispatchInsert {

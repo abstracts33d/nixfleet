@@ -36,6 +36,7 @@ pub fn spawn(
     cancel: tokio_util::sync::CancellationToken,
     cache: Arc<RwLock<ChannelRefsCache>>,
     verified_fleet: Arc<RwLock<Option<crate::server::VerifiedFleetSnapshot>>>,
+    db: Option<Arc<crate::db::Db>>,
     config: ChannelRefsSource,
 ) -> tokio::task::JoinHandle<()> {
     SignedArtifactPoller {
@@ -45,25 +46,61 @@ pub fn spawn(
     .spawn(cancel, move |client| {
         let cache = Arc::clone(&cache);
         let verified_fleet = Arc::clone(&verified_fleet);
+        let db = db.clone();
         let config = config.clone();
         async move {
             let (refs, fleet, fleet_hash) = poll_once(&client, &config).await?;
-            apply_verified_refs(&cache, &verified_fleet, refs, fleet, fleet_hash).await;
+            apply_verified_refs(&cache, &verified_fleet, db.as_deref(), refs, fleet, fleet_hash).await;
             Ok(())
         }
     })
 }
 
-/// (fleet, fleet_resolved_hash) under one RwLock so readers never see a torn snapshot.
+/// (fleet, fleet_resolved_hash) under one RwLock so readers never see a torn
+/// snapshot. After committing the snapshot, record each channel's current
+/// rollout_id in the rollouts table (LOADBEARING for rebuild recovery —
+/// this is the path that repopulates rollouts soft state without needing
+/// any host to check in first).
 async fn apply_verified_refs(
     cache: &RwLock<ChannelRefsCache>,
     verified_fleet: &RwLock<Option<crate::server::VerifiedFleetSnapshot>>,
+    db: Option<&crate::db::Db>,
     refs: HashMap<String, String>,
     fleet: nixfleet_proto::FleetResolved,
     fleet_hash: String,
 ) {
     let new_signed_at = fleet.meta.signed_at;
     let new_ci_commit = fleet.meta.ci_commit.clone();
+
+    // Compute current rollout_id per channel against the same snapshot bytes
+    // we're about to publish, BEFORE moving fleet into the Arc. Channels
+    // with no host having a closure declaration return Ok(None) — skip.
+    let channel_rollouts: Vec<(String, String)> = if db.is_some() {
+        fleet
+            .channels
+            .keys()
+            .filter_map(|channel| {
+                match nixfleet_reconciler::compute_rollout_id_for_channel(
+                    &fleet,
+                    &fleet_hash,
+                    channel,
+                ) {
+                    Ok(Some(rid)) => Some((channel.clone(), rid)),
+                    Ok(None) => None,
+                    Err(err) => {
+                        tracing::warn!(
+                            channel = %channel,
+                            error = %err,
+                            "channel-refs poll: compute_rollout_id_for_channel failed; skipping",
+                        );
+                        None
+                    }
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     {
         let mut guard = verified_fleet.write().await;
@@ -79,11 +116,25 @@ async fn apply_verified_refs(
     guard.last_refreshed_at = Some(chrono::Utc::now());
     drop(guard);
 
+    if let Some(db) = db {
+        for (channel, rid) in &channel_rollouts {
+            if let Err(err) = db.rollouts().record_active_rollout(rid, channel) {
+                tracing::warn!(
+                    channel = %channel,
+                    rollout = %rid,
+                    error = %err,
+                    "channel-refs poll: record_active_rollout failed (non-fatal)",
+                );
+            }
+        }
+    }
+
     tracing::info!(
         count = refs.len(),
         changed = changed,
         signed_at = ?new_signed_at,
         ci_commit = ?new_ci_commit,
+        active_rollouts_recorded = channel_rollouts.len(),
         "channel-refs poll: verified-fleet snapshot refreshed",
     );
 }

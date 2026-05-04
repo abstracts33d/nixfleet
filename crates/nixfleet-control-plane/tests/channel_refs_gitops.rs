@@ -176,6 +176,7 @@ async fn poll_refreshes_verified_fleet_snapshot() {
         CancellationToken::new(),
         cache.clone(),
         verified_fleet.clone(),
+        None,
         cfg,
     );
 
@@ -274,6 +275,7 @@ async fn poll_retains_snapshot_on_verify_failure() {
         CancellationToken::new(),
         cache.clone(),
         verified_fleet.clone(),
+        None,
         cfg,
     );
 

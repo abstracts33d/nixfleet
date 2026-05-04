@@ -10,6 +10,7 @@ pub mod host_dispatch_state;
 pub mod reports;
 pub mod revocations;
 pub mod rollout_state;
+pub mod rollouts;
 pub mod tokens;
 
 pub use dispatch_history::DispatchHistoryRow;
@@ -100,6 +101,10 @@ impl Db {
     pub fn revocations(&self) -> revocations::Revocations<'_> {
         revocations::Revocations { conn: &self.conn }
     }
+
+    pub fn rollouts(&self) -> rollouts::Rollouts<'_> {
+        rollouts::Rollouts { conn: &self.conn }
+    }
 }
 
 /// Surfaces mutex poisoning as anyhow rather than panic.
@@ -116,7 +121,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v001_produces_consolidated_schema() {
+    fn migrations_produce_consolidated_schema() {
         let db = Db::open_in_memory().unwrap();
         db.migrate().unwrap();
         let conn = db.conn().unwrap();
@@ -134,16 +139,17 @@ mod tests {
             "dispatch_history",
             "host_rollout_state",
             "host_reports",
+            "rollouts",
         ] {
             assert!(
                 names.contains(&expected.to_string()),
-                "V001 must create {expected}; got {names:?}",
+                "migrations must create {expected}; got {names:?}",
             );
         }
         for legacy in &["pending_confirms", "schema_placeholder"] {
             assert!(
                 !names.contains(&legacy.to_string()),
-                "V001 must not carry legacy table {legacy}",
+                "migrations must not carry legacy table {legacy}",
             );
         }
     }

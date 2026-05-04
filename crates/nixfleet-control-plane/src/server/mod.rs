@@ -60,6 +60,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/v1/rollouts/{rolloutId}/sig",
             get(routes::rollouts::signature),
         )
+        .route(
+            "/v1/rollouts/{rolloutId}/lifecycle",
+            get(routes::rollouts::lifecycle),
+        )
         .layer(axum::middleware::from_fn(move |req, next| {
             let s = auth_state.clone();
             async move { middleware::require_cn_layer(s, req, next).await }
@@ -277,6 +281,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             cancel.clone(),
             state.channel_refs_cache.clone(),
             state.verified_fleet.clone(),
+            state.db.clone(),
             channel_refs_source,
         ));
     }
