@@ -30,6 +30,33 @@ pub(super) async fn dispatch_target_for_checkin(
         }
     };
 
+    // Look up the rollout's persisted `current_wave` so decide_target's
+    // wave-promotion gate can compare against the host's wave_index.
+    // Computed from the same fleet snapshot the decision will use, so
+    // the rolloutId resolved here matches the one inside decide_target.
+    let current_wave: Option<u32> = if let Some(host) = fleet.hosts.get(&req.hostname) {
+        match nixfleet_reconciler::compute_rollout_id_for_channel(
+            &fleet,
+            &fleet_resolved_hash,
+            &host.channel,
+        ) {
+            Ok(Some(rid)) => match db.rollouts().current_wave(&rid) {
+                Ok(w) => w,
+                Err(err) => {
+                    tracing::warn!(
+                        rollout = %rid,
+                        error = %err,
+                        "dispatch: rollouts.current_wave read failed; gate-blocking is unreachable, defaulting to 0",
+                    );
+                    Some(0)
+                }
+            },
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let decision = crate::dispatch::decide_target(
         &req.hostname,
         req,
@@ -38,6 +65,7 @@ pub(super) async fn dispatch_target_for_checkin(
         pending_for_host,
         now,
         state.confirm_deadline_secs as u32,
+        current_wave,
     );
     match decision {
         crate::dispatch::Decision::Dispatch {
@@ -81,6 +109,15 @@ pub(super) async fn dispatch_target_for_checkin(
             // confirmed, but the CP's view of "this host is on rollout R"
             // is now authoritative via these rows.
             record_converged_at_dispatch(db, req, &fleet, &fleet_resolved_hash, now);
+            None
+        }
+        crate::dispatch::Decision::WaveNotReached => {
+            tracing::debug!(
+                target: "dispatch",
+                hostname = %req.hostname,
+                current_wave = ?current_wave,
+                "dispatch: wave-promotion gate held target — host's wave hasn't been promoted yet",
+            );
             None
         }
         other => {
