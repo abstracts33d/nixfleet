@@ -89,9 +89,15 @@ pub(in crate::server) async fn list(
         if has_active {
             continue;
         }
+        // Empty in-tick set: this is a live snapshot read, not a reconcile
+        // tick. Domain truth is "what's blocked given the persisted active
+        // rollouts"; in-tick OpenRollouts are not yet authoritative until
+        // the next reconcile tick records them.
+        let no_in_tick_opens = std::collections::HashSet::new();
         if let Some(blocker) = nixfleet_reconciler::predecessor_channel_blocking(
             fleet,
             &observed,
+            &no_in_tick_opens,
             channel,
         ) {
             let reason = fleet

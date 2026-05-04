@@ -1,5 +1,7 @@
 //! Top-level `reconcile` orchestration.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::observed::DeferralRecord;
 use crate::rollout_state::{self, RolloutState};
 use crate::{Action, Observed};
@@ -7,16 +9,25 @@ use chrono::{DateTime, Utc};
 use nixfleet_proto::FleetResolved;
 
 /// Predecessor channel that has not converged its most-recent rollout, if any.
+/// "Active" includes both rollouts already recorded in
+/// `observed.active_rollouts` AND rollouts the current reconcile tick has
+/// already decided to open (`emitted_opens_in_tick`). Without the in-tick
+/// view, the first tick after a CP rebuild — where `active_rollouts` starts
+/// empty — would let every channel pass its predecessor check
+/// simultaneously, defeating `channelEdges` ordering.
+///
 /// Channels with no rollout history are treated as open (proceed) — edges
-/// constrain ordering between *active* rollouts, not "must have at least one
-/// rollout ever". `Observed.active_rollouts` carries every non-terminal
-/// rollout; absence is the gate.
+/// constrain ordering between *active* rollouts, not "must have at least
+/// one rollout ever". A `Halted` predecessor still appears in
+/// `active_rollouts` and so blocks `after` until the operator resolves it.
 ///
 /// Public so the CP can compute "currently held channels" live for the
-/// dashboard, distinct from the debounce-map state used for journal de-dup.
+/// dashboard. Pass an empty set for `emitted_opens_in_tick` outside the
+/// reconcile loop — only the loop has in-tick state to consult.
 pub fn predecessor_channel_blocking(
     fleet: &FleetResolved,
     observed: &Observed,
+    emitted_opens_in_tick: &HashSet<String>,
     channel: &str,
 ) -> Option<String> {
     fleet
@@ -27,7 +38,8 @@ pub fn predecessor_channel_blocking(
             let predecessor_active = observed
                 .active_rollouts
                 .iter()
-                .any(|r| r.channel == e.before);
+                .any(|r| r.channel == e.before)
+                || emitted_opens_in_tick.contains(&e.before);
             if predecessor_active {
                 Some(e.before.clone())
             } else {
@@ -36,28 +48,105 @@ pub fn predecessor_channel_blocking(
         })
 }
 
+/// Topological order of `observed.channel_refs` keys with respect to
+/// `fleet.channel_edges`. Predecessors first; ties broken alphabetically
+/// for tick-to-tick determinism. Edges referencing channels not present
+/// in `channel_refs` are ignored (they can't gate this tick).
+///
+/// LOADBEARING: the reconcile loop iterates this order so the in-tick
+/// `emitted_opens` set sees an OpenRollout for `before` before checking
+/// `after`'s predecessor gate. mkFleet validates `channelEdges` is a
+/// DAG, so cycle handling here is defensive only.
+fn topological_channel_order(
+    fleet: &FleetResolved,
+    channel_refs: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    let mut successors: HashMap<String, Vec<String>> = HashMap::new();
+    for ch in channel_refs.keys() {
+        in_degree.insert(ch.clone(), 0);
+        successors.insert(ch.clone(), Vec::new());
+    }
+    for edge in &fleet.channel_edges {
+        if !channel_refs.contains_key(&edge.before) || !channel_refs.contains_key(&edge.after) {
+            continue;
+        }
+        successors
+            .entry(edge.before.clone())
+            .or_default()
+            .push(edge.after.clone());
+        *in_degree.entry(edge.after.clone()).or_insert(0) += 1;
+    }
+    let mut frontier: Vec<String> = in_degree
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(k, _)| k.clone())
+        .collect();
+    frontier.sort();
+    let mut order: Vec<String> = Vec::with_capacity(channel_refs.len());
+    while let Some(node) = frontier.first().cloned() {
+        frontier.remove(0);
+        order.push(node.clone());
+        if let Some(succs) = successors.get(&node) {
+            let mut newly_zero: Vec<String> = Vec::new();
+            for s in succs {
+                if let Some(d) = in_degree.get_mut(s) {
+                    *d -= 1;
+                    if *d == 0 {
+                        newly_zero.push(s.clone());
+                    }
+                }
+            }
+            newly_zero.sort();
+            frontier.extend(newly_zero);
+            frontier.sort();
+            frontier.dedup();
+        }
+    }
+    // Cycle defensive: any channel not yet ordered (cycle, mkFleet bug)
+    // gets appended in alphabetical order so the tick still makes
+    // progress instead of dropping channels silently.
+    let mut leftover: Vec<String> = channel_refs
+        .keys()
+        .filter(|k| !order.iter().any(|o| o == *k))
+        .cloned()
+        .collect();
+    leftover.sort();
+    order.extend(leftover);
+    order
+}
+
 pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>) -> Vec<Action> {
     let mut actions = Vec::new();
+    let mut emitted_opens: HashSet<String> = HashSet::new();
 
-    // Open rollouts for channels whose ref changed.
-    for (channel, current_ref) in &observed.channel_refs {
-        if observed.last_rolled_refs.get(channel) == Some(current_ref) {
+    // Open rollouts for channels whose ref changed, in topological order
+    // so a `before` channel's OpenRollout is seen by `after`'s predecessor
+    // check within the same tick.
+    for channel in topological_channel_order(fleet, &observed.channel_refs) {
+        let current_ref = match observed.channel_refs.get(&channel) {
+            Some(r) => r,
+            None => continue,
+        };
+        if observed.last_rolled_refs.get(&channel) == Some(current_ref) {
             continue;
         }
         let has_active = observed.active_rollouts.iter().any(|r| {
-            &r.channel == channel
+            r.channel == channel
                 && matches!(r.state, RolloutState::Executing | RolloutState::Planning)
         });
-        if has_active || !fleet.channels.contains_key(channel) {
+        if has_active || !fleet.channels.contains_key(&channel) {
             continue;
         }
-        if let Some(blocker) = predecessor_channel_blocking(fleet, observed, channel) {
+        if let Some(blocker) =
+            predecessor_channel_blocking(fleet, observed, &emitted_opens, &channel)
+        {
             // Debounce: only emit when (target_ref, blocked_by) would change.
             let proposed = DeferralRecord {
                 target_ref: current_ref.clone(),
                 blocked_by: blocker.clone(),
             };
-            if observed.last_deferrals.get(channel) != Some(&proposed) {
+            if observed.last_deferrals.get(&channel) != Some(&proposed) {
                 actions.push(Action::RolloutDeferred {
                     channel: channel.clone(),
                     target_ref: current_ref.clone(),
@@ -73,6 +162,7 @@ pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>)
             channel: channel.clone(),
             target_ref: current_ref.clone(),
         });
+        emitted_opens.insert(channel);
     }
 
     // Advance each Executing rollout. Channel-removed rollouts emit a
@@ -159,6 +249,43 @@ mod channel_edge_tests {
             budgets: vec![],
         });
         o
+    }
+
+    #[test]
+    fn fresh_tick_with_edge_holds_after_channel_until_before_opens_first() {
+        // Regression: pre-fix, both channels opened in the same tick on a
+        // fresh CP because predecessor_channel_blocking only saw
+        // active_rollouts (empty post-DB-wipe). The fix iterates channels
+        // in topological order and tracks emitted_opens within the tick.
+        let fleet = fleet_with_channel_edges(vec![ChannelEdge {
+            before: "db".into(),
+            after: "app".into(),
+            reason: Some("schema-migration".into()),
+        }]);
+        let mut observed = Observed::default();
+        // Both channels have a fresh ref; no active_rollouts (post-wipe).
+        observed.channel_refs.insert("db".into(), "ref-db-1".into());
+        observed.channel_refs.insert("app".into(), "ref-app-1".into());
+
+        let actions = reconcile(&fleet, &observed, chrono::Utc::now());
+
+        let opens: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::OpenRollout { channel, .. } => Some(channel.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            opens,
+            vec!["db"],
+            "exactly one OpenRollout — for `db` (the predecessor) — must be emitted; got {actions:?}",
+        );
+        let deferred = actions.iter().any(|a| matches!(a, Action::RolloutDeferred { channel, blocked_by, .. } if channel == "app" && blocked_by == "db"));
+        assert!(
+            deferred,
+            "app must be deferred with blocked_by=db within the same tick: {actions:?}",
+        );
     }
 
     #[test]
