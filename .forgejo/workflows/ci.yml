@@ -41,6 +41,16 @@ jobs:
       - run: nix run .#validate -- --rust
         env:
           NIX_CONFIG: "warn-dirty = false"
+          # Redirect cargo's target dir to /tmp (exec-clean tmpfs).
+          # Lab's runner uses systemd DynamicUser with an idmapped
+          # StateDirectory bind mount, which systemd hardens with
+          # `noexec`. cargo build scripts and test binaries land in
+          # `target/` and need to exec — without this redirect the
+          # rust steps fail with `(never executed) Permission denied
+          # (os error 13)`. /tmp is a per-runner-instance tmpfs, so
+          # the cache survives across jobs while staying exec-clean.
+          # Per-job-name suffix avoids contention when capacity > 1.
+          CARGO_TARGET_DIR: /tmp/cargo-target-${{ github.job }}
 
   nightly:
     # Full tier — scheduled nightly + manual dispatch. Adds every
@@ -58,3 +68,5 @@ jobs:
       - run: nix run .#validate -- --all
         env:
           NIX_CONFIG: "warn-dirty = false"
+          # See validate job for rationale.
+          CARGO_TARGET_DIR: /tmp/cargo-target-${{ github.job }}
