@@ -11,7 +11,10 @@ use nixfleet_proto::FleetResolved;
 /// constrain ordering between *active* rollouts, not "must have at least one
 /// rollout ever". `Observed.active_rollouts` carries every non-terminal
 /// rollout; absence is the gate.
-fn predecessor_channel_blocking(
+///
+/// Public so the CP can compute "currently held channels" live for the
+/// dashboard, distinct from the debounce-map state used for journal de-dup.
+pub fn predecessor_channel_blocking(
     fleet: &FleetResolved,
     observed: &Observed,
     channel: &str,

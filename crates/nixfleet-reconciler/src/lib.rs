@@ -14,7 +14,7 @@ pub use action::Action;
 pub use host_state::HostRolloutState;
 pub use nixfleet_proto::FleetResolved;
 pub use observed::{HostState, Observed, Rollout};
-pub use reconcile::reconcile;
+pub use reconcile::{predecessor_channel_blocking, reconcile};
 pub use rollout_state::RolloutState;
 pub use manifest::{compute_rollout_id_for_channel, project_manifest};
 pub use verify::{

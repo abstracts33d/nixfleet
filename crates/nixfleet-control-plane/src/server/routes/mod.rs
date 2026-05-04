@@ -1,6 +1,7 @@
 //! Noun-based HTTP route modules.
 
 pub(in crate::server) mod bootstrap_report;
+pub(in crate::server) mod deferrals;
 pub(in crate::server) mod enrollment;
 pub(in crate::server) mod health;
 pub(in crate::server) mod reports;
