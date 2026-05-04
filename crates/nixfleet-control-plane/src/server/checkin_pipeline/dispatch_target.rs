@@ -124,6 +124,8 @@ fn record_converged_at_dispatch(
     let wave = wave_index_for(fleet, &host_decl.channel, &req.hostname).unwrap_or(0);
     let target_channel_ref = rollout_id.clone();
 
+    // record_active_rollout is idempotent — safe to call every checkin.
+    // (Channel-refs poll also calls it; both converge to the same row.)
     if let Err(err) = db
         .rollouts()
         .record_active_rollout(&rollout_id, &host_decl.channel)
@@ -136,27 +138,63 @@ fn record_converged_at_dispatch(
         );
     }
 
-    if let Err(err) = db.host_dispatch_state().record_confirmed_dispatch(
-        &req.hostname,
-        &rollout_id,
-        &host_decl.channel,
-        wave,
-        target_closure,
-        &target_channel_ref,
-        now,
-    ) {
-        tracing::warn!(
-            hostname = %req.hostname,
-            rollout = %rollout_id,
-            error = %err,
-            "converged-at-dispatch: record_confirmed_dispatch failed",
-        );
+    // LOADBEARING: dispatch_history insert is APPEND-ONLY (autoincrement id,
+    // no UNIQUE constraint). Three states to disambiguate:
+    //
+    //   1. Host is already Converged for this rollout → nothing to do.
+    //      Both rows already exist; advancing them again would leak a
+    //      duplicate dispatch_history row on every checkin (~5 hosts × 2
+    //      rollouts × 30s = unbounded growth).
+    //   2. Host has a host_rollout_state row but it's NOT Converged
+    //      (typically Healthy, set by recover_soak_state_from_attestation
+    //      earlier in the same checkin). Both rows already exist — only
+    //      the state transition needs to advance to Converged.
+    //   3. No host_rollout_state row at all → full materialisation
+    //      (host_dispatch_state + dispatch_history + host_rollout_state).
+    let existing_state = match db.rollout_state().host_state(&req.hostname, &rollout_id) {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::warn!(
+                hostname = %req.hostname,
+                rollout = %rollout_id,
+                error = %err,
+                "converged-at-dispatch: host_state probe failed (non-fatal; will re-attempt materialization)",
+            );
+            None
+        }
+    };
+
+    if existing_state.as_deref() == Some("Converged") {
         return;
     }
 
-    // host_rollout_state directly to Converged — host has been running this
-    // closure stably for some time; the soak window is conceptually already
-    // satisfied. transition_host_state with expected_from=None upserts.
+    // Case 3: no row → full materialisation. record_confirmed_dispatch
+    // inserts both host_dispatch_state and dispatch_history in one txn.
+    if existing_state.is_none() {
+        if let Err(err) = db.host_dispatch_state().record_confirmed_dispatch(
+            &req.hostname,
+            &rollout_id,
+            &host_decl.channel,
+            wave,
+            target_closure,
+            &target_channel_ref,
+            now,
+        ) {
+            tracing::warn!(
+                hostname = %req.hostname,
+                rollout = %rollout_id,
+                error = %err,
+                "converged-at-dispatch: record_confirmed_dispatch failed",
+            );
+            return;
+        }
+    }
+
+    // Case 2 + 3: advance state to Converged. expected_from=None is an
+    // unconditional UPSERT so both "row didn't exist (just inserted)" and
+    // "row in Healthy" reach Converged in one statement. Soak is bypassed:
+    // the host has been running this closure stably for some time, so
+    // there's no transient state to ride out.
     if let Err(err) = db.rollout_state().transition_host_state(
         &req.hostname,
         &rollout_id,
