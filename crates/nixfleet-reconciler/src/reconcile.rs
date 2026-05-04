@@ -8,103 +8,6 @@ use crate::{Action, Observed};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::FleetResolved;
 
-/// Predecessor channel that has not converged its most-recent rollout, if any.
-///
-/// "Predecessor active" is true iff EITHER:
-/// - a rollout on `e.before` exists in `observed.active_rollouts` AND that
-///   rollout has at least one host in a non-terminal state (anything except
-///   `Soaked` / `Converged`), OR
-/// - the current reconcile tick has decided to open `e.before` for the
-///   first time (`emitted_opens_in_tick`).
-///
-/// A rollout whose every host has reached `Converged` is treated as done
-/// for ordering purposes — its successor unblocks even though the rollout
-/// row stays in the DB until superseded by the next release. A `Halted`
-/// rollout remains active (Halted hosts are non-terminal in the lifecycle
-/// sense) so its successor stays blocked until the operator resolves it.
-///
-/// Empty `host_states` (a freshly-recorded rollout that has not yet
-/// dispatched any host) is also treated as active — the rollout has work
-/// to do, just hasn't started. This catches the converged-at-dispatch
-/// case after the FIRST tick: dispatch records `Converged` immediately,
-/// so the second tick onwards correctly unblocks the successor.
-///
-/// Without the in-tick view, the first tick after a CP rebuild — where
-/// `active_rollouts` starts empty — would let every channel pass its
-/// predecessor check simultaneously, defeating `channelEdges` ordering.
-///
-/// Public so the CP can compute "currently held channels" live for the
-/// dashboard. Pass an empty set for `emitted_opens_in_tick` outside the
-/// reconcile loop — only the loop has in-tick state to consult.
-pub fn predecessor_channel_blocking(
-    fleet: &FleetResolved,
-    observed: &Observed,
-    emitted_opens_in_tick: &HashSet<String>,
-    channel: &str,
-) -> Option<String> {
-    fleet
-        .channel_edges
-        .iter()
-        .filter(|e| e.after == channel)
-        .find_map(|e| {
-            // Source-of-truth precedence:
-            //   1. If a rollout for `e.before` exists in the DB-derived
-            //      active_rollouts view, ITS state wins. A converged
-            //      rollout (all hosts Converged) means the predecessor
-            //      is done even though we may have just iterated past
-            //      it in this tick.
-            //   2. Only when no DB rollout exists do we consult the
-            //      in-tick `emitted_opens` set — that path captures
-            //      a fresh CP where the predecessor is being recorded
-            //      RIGHT NOW (no host_dispatch_state row yet).
-            //
-            // Without this precedence, an in-tick re-record of an
-            // already-converged predecessor would re-mark it as a
-            // blocker via emitted_opens, holding the successor
-            // forever. Saw this on lab post-deploy when the polling
-            // layer iterated `edge` (recording idempotent on already-
-            // present row), inserted into emitted_opens, then blocked
-            // `stable` even though `edge` was visibly converged.
-            let db_rollout = observed
-                .active_rollouts
-                .iter()
-                .find(|r| r.channel == e.before);
-            let predecessor_active = match db_rollout {
-                Some(r) => rollout_is_active_for_ordering(r),
-                None => emitted_opens_in_tick.contains(&e.before),
-            };
-            if predecessor_active {
-                Some(e.before.clone())
-            } else {
-                None
-            }
-        })
-}
-
-/// True if the rollout still has work outstanding from the perspective of
-/// `channelEdges` ordering. Empty host_states = newly-recorded, no dispatch
-/// yet — counts as active (work pending).
-///
-/// `Soaked` and `Converged` both count as terminal-for-ordering: the host
-/// has cleared its soak window and the rollout is at-or-past wave-staging
-/// completion. Treating only `Converged` as terminal would block the
-/// successor channel during the gap between SoakHost transitions and the
-/// next reconcile tick's `ConvergeRollout` action — small in practice but
-/// adds latency and is semantically wrong (a Soaked host has finished its
-/// observable activation).
-///
-/// `Failed` / `Reverted` are NOT terminal-for-ordering: the predecessor is
-/// in trouble, operator action is needed, and the successor must wait.
-fn rollout_is_active_for_ordering(r: &crate::observed::Rollout) -> bool {
-    use crate::host_state::HostRolloutState;
-    if r.host_states.is_empty() {
-        return true;
-    }
-    !r.host_states
-        .values()
-        .all(|s| matches!(s, HostRolloutState::Soaked | HostRolloutState::Converged))
-}
-
 /// Topological order of `channels` with respect to `fleet.channel_edges`.
 /// Predecessors first; ties broken alphabetically for tick-to-tick
 /// determinism. Edges referencing channels not in the input set are
@@ -202,9 +105,13 @@ pub fn reconcile(fleet: &FleetResolved, observed: &Observed, now: DateTime<Utc>)
         if has_active || !fleet.channels.contains_key(&channel) {
             continue;
         }
-        if let Some(blocker) =
-            predecessor_channel_blocking(fleet, observed, &emitted_opens, &channel)
-        {
+        if let Some(blocker) = crate::gates::channel_edges::check_for_channel(
+            fleet,
+            observed,
+            &emitted_opens,
+            &channel,
+            false, // reconciler context: emitted_opens is the in-tick signal
+        ) {
             // Debounce: only emit when (target_ref, blocked_by) would change.
             let proposed = DeferralRecord {
                 target_ref: current_ref.clone(),

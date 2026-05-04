@@ -1,5 +1,6 @@
 //! `/v1/agent/checkin` and `/v1/agent/confirm` handlers.
 
+mod dispatch_observed;
 mod dispatch_target;
 mod recovery;
 mod rollback_signal;

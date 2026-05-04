@@ -308,11 +308,12 @@ async fn record_rollouts_gated_by_channel_edges(
         let Some((_, rid)) = channel_rollouts.iter().find(|(c, _)| c == &channel) else {
             continue;
         };
-        if let Some(blocker) = nixfleet_reconciler::predecessor_channel_blocking(
+        if let Some(blocker) = nixfleet_reconciler::gates::channel_edges::check_for_channel(
             fleet,
             &pseudo_observed,
             &emitted_opens,
             &channel,
+            false, // polling iterates topo + emitted_opens; non-conservative is correct
         ) {
             tracing::info!(
                 channel = %channel,

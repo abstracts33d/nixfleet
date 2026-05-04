@@ -148,11 +148,12 @@ pub(in crate::server) async fn list(
         // rollouts"; in-tick OpenRollouts are not yet authoritative until
         // the next reconcile tick records them.
         let no_in_tick_opens = std::collections::HashSet::new();
-        if let Some(blocker) = nixfleet_reconciler::predecessor_channel_blocking(
+        if let Some(blocker) = nixfleet_reconciler::gates::channel_edges::check_for_channel(
             fleet,
             &observed,
             &no_in_tick_opens,
             channel,
+            false, // /v1/deferrals reflects persisted state, not in-tick conservative speculation
         ) {
             let reason = fleet
                 .channel_edges
