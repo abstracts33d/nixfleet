@@ -34,7 +34,29 @@ pub(in crate::server) async fn bootstrap_report(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    verify_token_against_trust(&state, &req).await?;
+    let trust_path = crate::auth::issuance::trust_json_path(
+        state
+            .issuance_paths
+            .read()
+            .await
+            .fleet_ca_cert
+            .as_deref(),
+    );
+    crate::auth::issuance::verify_bootstrap_token_against_trust(&trust_path, &req.token).map_err(
+        |err| match err {
+            crate::auth::issuance::TrustVerifyError::SignatureMismatch => {
+                tracing::warn!(
+                    hostname = %req.token.claims.hostname,
+                    "bootstrap-report: {err}",
+                );
+                StatusCode::UNAUTHORIZED
+            }
+            other => {
+                tracing::error!(error = %other, "bootstrap-report: trust verification failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        },
+    )?;
 
     // Decode + allowlist the event variant. Only pre-cert failure modes
     // are accepted via this anonymous path; everything else routes
@@ -129,62 +151,6 @@ pub(in crate::server) async fn bootstrap_report(
     buf.push_back(record);
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-async fn verify_token_against_trust(
-    state: &AppState,
-    req: &BootstrapEventRequest,
-) -> Result<(), StatusCode> {
-    use base64::Engine;
-
-    let trust_path = state
-        .issuance_paths
-        .read()
-        .await
-        .fleet_ca_cert
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|d| d.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("/etc/nixfleet/cp"))
-        .join("trust.json");
-    let trust_raw = std::fs::read_to_string(&trust_path).map_err(|err| {
-        tracing::error!(error = %err, path = %trust_path.display(), "bootstrap-report: read trust.json");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let trust: nixfleet_proto::TrustConfig = serde_json::from_str(&trust_raw).map_err(|err| {
-        tracing::error!(error = %err, "bootstrap-report: parse trust.json");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let org_root = trust.org_root_key.as_ref().ok_or_else(|| {
-        tracing::error!(
-            "bootstrap-report: trust.json has no orgRootKey — refusing token"
-        );
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let candidates = org_root.active_keys();
-    if candidates.is_empty() {
-        tracing::error!("bootstrap-report: orgRootKey has no current/previous keys");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    for pubkey in &candidates {
-        if pubkey.algorithm != "ed25519" {
-            continue;
-        }
-        let pubkey_bytes = match base64::engine::general_purpose::STANDARD.decode(&pubkey.public) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        if crate::auth::issuance::verify_token_signature(&req.token, &pubkey_bytes).is_ok() {
-            return Ok(());
-        }
-    }
-
-    tracing::warn!(
-        hostname = %req.token.claims.hostname,
-        "bootstrap-report: token signature did not verify against any orgRootKey candidate"
-    );
-    Err(StatusCode::UNAUTHORIZED)
 }
 
 fn discriminator(event: &ReportEvent) -> String {

@@ -1,6 +1,6 @@
 //! Cert issuance for `/v1/enroll` and `/v1/agent/renew`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
@@ -20,6 +20,101 @@ pub const AGENT_CERT_VALIDITY: Duration = Duration::from_secs(30 * 24 * 60 * 60)
 pub enum AuditContext {
     Enroll { token_nonce: String },
     Renew { previous_cert_serial: String },
+}
+
+/// LOADBEARING: trust.json is sibling to fleet_ca_cert. Falls back to
+/// `/etc/nixfleet/cp/trust.json` when the cert path is unset (test/dev).
+pub fn trust_json_path(fleet_ca_cert: Option<&Path>) -> PathBuf {
+    fleet_ca_cert
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/etc/nixfleet/cp"))
+        .join("trust.json")
+}
+
+/// Verifying a bootstrap-token signature involves: read trust.json, parse
+/// TrustConfig, walk current+previous orgRootKey candidates, and try ed25519
+/// verification against each. Splitting the stages into separate error
+/// variants lets axum handlers log + map to StatusCodes correctly without
+/// duplicating the candidate loop in every handler.
+#[derive(Debug)]
+pub enum TrustVerifyError {
+    TrustFileRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    TrustFileParse {
+        source: serde_json::Error,
+    },
+    NoOrgRootKey,
+    NoActiveKeys,
+    /// No current/previous orgRootKey candidate verified the signature.
+    SignatureMismatch,
+}
+
+impl std::fmt::Display for TrustVerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TrustFileRead { path, source } => {
+                write!(f, "read trust.json at {}: {source}", path.display())
+            }
+            Self::TrustFileParse { source } => write!(f, "parse trust.json: {source}"),
+            Self::NoOrgRootKey => write!(
+                f,
+                "trust.json has no orgRootKey — set nixfleet.trust.orgRootKey.current"
+            ),
+            Self::NoActiveKeys => write!(f, "orgRootKey has no current/previous keys"),
+            Self::SignatureMismatch => write!(
+                f,
+                "token signature did not verify against any orgRootKey candidate"
+            ),
+        }
+    }
+}
+
+/// Loads trust.json fresh on every call so operator key rotations propagate
+/// without restart. ed25519-only — non-ed25519 candidates and base64-decode
+/// failures are logged and skipped, never fatal.
+pub fn verify_bootstrap_token_against_trust(
+    trust_path: &Path,
+    token: &BootstrapToken,
+) -> Result<(), TrustVerifyError> {
+    let trust_raw =
+        std::fs::read_to_string(trust_path).map_err(|source| TrustVerifyError::TrustFileRead {
+            path: trust_path.to_path_buf(),
+            source,
+        })?;
+    let trust: nixfleet_proto::TrustConfig = serde_json::from_str(&trust_raw)
+        .map_err(|source| TrustVerifyError::TrustFileParse { source })?;
+    let org_root = trust
+        .org_root_key
+        .as_ref()
+        .ok_or(TrustVerifyError::NoOrgRootKey)?;
+    let candidates = org_root.active_keys();
+    if candidates.is_empty() {
+        return Err(TrustVerifyError::NoActiveKeys);
+    }
+
+    for pubkey in &candidates {
+        if pubkey.algorithm != "ed25519" {
+            tracing::warn!(
+                algorithm = %pubkey.algorithm,
+                "skipping non-ed25519 orgRootKey candidate (only ed25519 supported)",
+            );
+            continue;
+        }
+        let pubkey_bytes = match base64::engine::general_purpose::STANDARD.decode(&pubkey.public) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::warn!(error = %err, "orgRootKey base64 decode failed; skipping candidate");
+                continue;
+            }
+        };
+        if verify_token_signature(token, &pubkey_bytes).is_ok() {
+            return Ok(());
+        }
+    }
+    Err(TrustVerifyError::SignatureMismatch)
 }
 
 /// Cryptographic signature only; caller handles replay/hostname/fingerprint/expiry.

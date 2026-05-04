@@ -16,8 +16,6 @@ pub(in crate::server) async fn enroll(
     State(state): State<Arc<AppState>>,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, StatusCode> {
-    use base64::Engine;
-
     let now = chrono::Utc::now();
 
     let db = state.db.as_ref().ok_or_else(|| {
@@ -46,67 +44,30 @@ pub(in crate::server) async fn enroll(
     }
 
     // LOADBEARING: re-read trust.json per enroll so operator key rotations propagate without restart.
-    let trust_path = state
-        .issuance_paths
-        .read()
-        .await
-        .fleet_ca_cert
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|d| d.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("/etc/nixfleet/cp"))
-        .join("trust.json");
-    let trust_raw = std::fs::read_to_string(&trust_path).map_err(|err| {
-        tracing::error!(error = %err, path = %trust_path.display(), "enroll: read trust.json");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let trust: nixfleet_proto::TrustConfig = serde_json::from_str(&trust_raw).map_err(|err| {
-        tracing::error!(error = %err, "enroll: parse trust.json");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    let org_root = trust.org_root_key.as_ref().ok_or_else(|| {
-        tracing::error!(
-            "enroll: trust.json has no orgRootKey — refusing to accept any token. \
-             Set nixfleet.trust.orgRootKey.current in fleet.nix and rebuild."
-        );
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let candidates = org_root.active_keys();
-    if candidates.is_empty() {
-        tracing::error!("enroll: orgRootKey has no current/previous keys");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    let mut sig_ok = false;
-    for pubkey in &candidates {
-        if pubkey.algorithm != "ed25519" {
-            tracing::warn!(
-                algorithm = %pubkey.algorithm,
-                "enroll: skipping non-ed25519 orgRootKey candidate (only ed25519 supported)"
-            );
-            continue;
-        }
-        let pubkey_bytes = match base64::engine::general_purpose::STANDARD.decode(&pubkey.public) {
-            Ok(b) => b,
-            Err(err) => {
-                tracing::warn!(error = %err, "enroll: orgRootKey base64 decode");
-                continue;
+    let trust_path = crate::auth::issuance::trust_json_path(
+        state
+            .issuance_paths
+            .read()
+            .await
+            .fleet_ca_cert
+            .as_deref(),
+    );
+    crate::auth::issuance::verify_bootstrap_token_against_trust(&trust_path, &req.token).map_err(
+        |err| match err {
+            crate::auth::issuance::TrustVerifyError::SignatureMismatch => {
+                tracing::warn!(
+                    hostname = %req.token.claims.hostname,
+                    nonce = %req.token.claims.nonce,
+                    "enroll: {err}",
+                );
+                StatusCode::UNAUTHORIZED
             }
-        };
-        if crate::auth::issuance::verify_token_signature(&req.token, &pubkey_bytes).is_ok() {
-            sig_ok = true;
-            break;
-        }
-    }
-    if !sig_ok {
-        tracing::warn!(
-            hostname = %req.token.claims.hostname,
-            nonce = %req.token.claims.nonce,
-            "enroll: token signature did not verify against any orgRootKey candidate"
-        );
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+            other => {
+                tracing::error!(error = %other, "enroll: trust verification failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        },
+    )?;
 
     let csr_params =
         rcgen::CertificateSigningRequestParams::from_pem(&req.csr_pem).map_err(|err| {
