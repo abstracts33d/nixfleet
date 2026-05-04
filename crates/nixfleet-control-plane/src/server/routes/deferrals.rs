@@ -35,7 +35,7 @@ pub(in crate::server) async fn list(
 
     let channel_refs = state.channel_refs_cache.read().await.refs.clone();
     let checkins = state.host_checkins.read().await.clone();
-    let rollouts = match state
+    let dispatch_snapshot = match state
         .db
         .as_deref()
         .map(|db| db.host_dispatch_state().active_rollouts_snapshot())
@@ -47,32 +47,63 @@ pub(in crate::server) async fn list(
         }
         None => Vec::new(),
     };
-    // Filter superseded rollouts so a stale entry doesn't mark the
-    // predecessor channel as still active. Mirrors the reconcile-loop's
-    // pre-tick filtering.
-    let rollouts = match state.db.as_deref().map(|db| db.rollouts().superseded_rollout_ids()) {
-        Some(Ok(ids)) => {
-            let dead: std::collections::HashSet<String> = ids.into_iter().collect();
-            rollouts
-                .into_iter()
-                .filter(|r| !dead.contains(&r.rollout_id))
-                .collect()
-        }
-        _ => rollouts,
-    };
+    let superseded: std::collections::HashSet<String> = state
+        .db
+        .as_deref()
+        .map(|db| db.rollouts().superseded_rollout_ids())
+        .and_then(|r| r.ok())
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let dispatch_snapshot: Vec<_> = dispatch_snapshot
+        .into_iter()
+        .filter(|r| !superseded.contains(&r.rollout_id))
+        .collect();
 
-    // last_deferrals + rollout_budgets aren't consulted here on purpose —
-    // the panel needs domain truth (channelEdges ∩ active_rollouts), not
-    // the debounce-map snapshot or per-rollout budget membership. The
-    // empty maps we pass to project() reflect that.
     let observed = observed_projection::project(
         &checkins,
         &channel_refs,
-        &rollouts,
+        &dispatch_snapshot,
         HashMap::new(),
         HashMap::new(),
         &HashMap::new(),
     );
+
+    // Augment with rollouts that exist in the rollouts table but have no
+    // host_dispatch_state rows yet — newly-recorded rollouts the polling
+    // layer just opened, where no agent has checked in to receive a
+    // dispatch. predecessor_channel_blocking's "empty host_states ⇒
+    // active for ordering" rule handles these correctly. Without this,
+    // /v1/deferrals' view of "predecessor active" lags the polling
+    // layer's view by up to one agent-checkin interval.
+    let mut observed = observed;
+    if let Some(db) = state.db.as_deref() {
+        if let Ok(table_rollouts) = db.rollouts().list_active() {
+            let known: std::collections::HashSet<String> = observed
+                .active_rollouts
+                .iter()
+                .map(|r| r.id.clone())
+                .collect();
+            for r in table_rollouts {
+                if known.contains(&r.rollout_id) || superseded.contains(&r.rollout_id) {
+                    continue;
+                }
+                let target_ref = channel_refs.get(&r.channel).cloned().unwrap_or_default();
+                observed
+                    .active_rollouts
+                    .push(nixfleet_reconciler::observed::Rollout {
+                        id: r.rollout_id,
+                        channel: r.channel,
+                        target_ref,
+                        state: nixfleet_reconciler::RolloutState::Executing,
+                        current_wave: r.current_wave as usize,
+                        host_states: HashMap::new(),
+                        last_healthy_since: HashMap::new(),
+                        budgets: vec![],
+                    });
+            }
+        }
+    }
 
     let mut deferrals: Vec<serde_json::Value> = Vec::new();
     for (channel, current_ref) in &channel_refs {
