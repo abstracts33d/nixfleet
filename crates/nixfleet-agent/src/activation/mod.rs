@@ -343,6 +343,7 @@ mod tests {
         assert!(s.contains("darwin-activate-spawn"));
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn read_unit_exit_code_short_circuits_on_darwin() {
         let result = tokio::time::timeout(

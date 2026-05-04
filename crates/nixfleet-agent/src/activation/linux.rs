@@ -170,6 +170,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::default_constructed_unit_structs)]
     fn linux_backend_default_is_unit_struct() {
         let _b: LinuxBackend = LinuxBackend;
         let _: LinuxBackend = LinuxBackend::default();

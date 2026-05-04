@@ -122,7 +122,7 @@ pub(in crate::server) async fn bootstrap_report(
                     hostname: &req.token.claims.hostname,
                     event_id: &event_id,
                     received_at,
-                    event_kind: &event_str,
+                    event_kind: event_str,
                     rollout: None,
                     signature_status: None,
                     report_json: &report_json,

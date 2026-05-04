@@ -46,6 +46,7 @@ pub enum Decision {
 /// staging contract always opens at wave 0). Reconciler's PromoteWave
 /// action persists advancement; the checkin path reads the same column
 /// to gate.
+#[allow(clippy::too_many_arguments)]
 pub fn decide_target(
     hostname: &str,
     request: &CheckinRequest,

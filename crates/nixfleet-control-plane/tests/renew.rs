@@ -242,9 +242,8 @@ async fn renew_rejects_request_without_client_cert() {
         .json(&req)
         .send()
         .await;
-    match resp {
-        Ok(r) => assert_eq!(r.status(), 401, "expected 401, got {}", r.status()),
-        Err(_) => {}
+    if let Ok(r) = resp {
+        assert_eq!(r.status(), 401, "expected 401, got {}", r.status());
     }
 
     handle.abort();

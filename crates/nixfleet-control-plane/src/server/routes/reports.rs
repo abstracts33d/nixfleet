@@ -69,7 +69,7 @@ pub(in crate::server) async fn report(
                         hostname: &req.hostname,
                         event_id: &event_id,
                         received_at,
-                        event_kind: &event_str,
+                        event_kind: event_str,
                         rollout: req.rollout.as_deref(),
                         signature_status: signature_status_str.as_deref(),
                         report_json: &report_json,

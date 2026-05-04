@@ -379,6 +379,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
 }
 
 /// Returns `(tick_output, fleet)`; fleet `None` on verify failure so caller preserves prior snapshot.
+#[allow(clippy::too_many_arguments)]
 fn run_tick_with_projection(
     inputs: &TickInputs,
     live_fleet: Option<&crate::server::VerifiedFleetSnapshot>,

@@ -295,7 +295,7 @@ mod tests {
                 .record_host_report(&HostReportInsert {
                     hostname: host,
                     event_id: eid,
-                    received_at: now - chrono::Duration::seconds((10 - (i as i64) * 5).into()),
+                    received_at: now - chrono::Duration::seconds(10 - (i as i64) * 5),
                     event_kind: kind,
                     rollout: None,
                     signature_status: None,
