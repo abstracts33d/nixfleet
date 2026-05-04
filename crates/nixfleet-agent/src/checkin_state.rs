@@ -122,6 +122,20 @@ pub fn read_last_fetch_outcome(state_dir: &Path) -> Result<Option<FetchOutcome>>
     read_atomic_json(state_dir, LAST_FETCH_OUTCOME_FILENAME)
 }
 
+/// Best-effort delete; absent file is success. Called when the agent
+/// observes it has settled (no pending dispatch + current matches an
+/// expected state) so the file doesn't keep reporting an outcome from
+/// a long-resolved fetch attempt — the dashboard's "verify-failed"
+/// badge would otherwise stick on hosts that have manually recovered.
+pub fn clear_last_fetch_outcome(state_dir: &Path) -> Result<()> {
+    let path = state_dir.join(LAST_FETCH_OUTCOME_FILENAME);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(anyhow::anyhow!("remove {}: {err}", path.display())),
+    }
+}
+
 // FOOTGUN: closure_hash is the FULL store basename, not the 32-char hash — wire-equality trap.
 const CURRENT_SYSTEM: &str = "/run/current-system";
 

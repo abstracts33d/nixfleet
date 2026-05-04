@@ -417,6 +417,27 @@ async fn send_checkin(
             None
         }
     };
+    // Suppress + delete the outcome file when no fetch is in flight.
+    // `last_fetch_outcome` is the result of the agent's most recent
+    // FETCH attempt — meaningful while a target is pending, ancient
+    // history once the host has settled. Reporting a stale failure
+    // surfaces as a red badge on the dashboard for hosts that have
+    // long since recovered (saw this on aether after a manual
+    // darwin-rebuild bypassed the dispatch path). CP's circuit
+    // breaker (`Decision::HoldAfterFailure`) is only relevant when
+    // there's a recent fetch to circuit-break — without pending,
+    // there's no fetch to gate.
+    let last_fetch_outcome = if pending_generation.is_some() {
+        last_fetch_outcome
+    } else {
+        if let Err(err) = checkin_state::clear_last_fetch_outcome(&args.state_dir) {
+            tracing::debug!(
+                error = %err,
+                "clear_last_fetch_outcome failed (non-fatal)",
+            );
+        }
+        None
+    };
 
     let req = CheckinRequest {
         hostname: args.machine_id.clone(),
