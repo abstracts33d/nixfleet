@@ -56,4 +56,15 @@ pub enum Action {
         failing_hosts: Vec<String>,
         failing_events_count: usize,
     },
+    /// Cross-channel ordering held OpenRollout: a `channelEdges` predecessor
+    /// channel has not converged its most-recent rollout. The reconciler
+    /// re-checks every tick; the journal-emission is debounced via
+    /// `Observed.last_deferrals` so this fires once per (channel, target_ref,
+    /// blocked_by) transition rather than every reconcile tick.
+    RolloutDeferred {
+        channel: String,
+        target_ref: String,
+        blocked_by: String,
+        reason: String,
+    },
 }

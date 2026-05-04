@@ -124,6 +124,12 @@ pub struct AppState {
     pub db: Option<Arc<crate::db::Db>>,
     pub closure_upstream: Option<ClosureUpstream>,
     pub verified_fleet: Arc<RwLock<Option<VerifiedFleetSnapshot>>>,
+    /// Most recent successfully-journalled `RolloutDeferred` per channel.
+    /// Fed into the reconciler's `Observed.last_deferrals` so a still-blocked
+    /// channel doesn't re-emit the same line every reconcile tick. In-memory
+    /// only — losing this on restart just means one duplicate line on the
+    /// first post-restart tick, which is correct behavior.
+    pub last_deferrals: Arc<RwLock<HashMap<String, nixfleet_reconciler::observed::DeferralRecord>>>,
     pub confirm_deadline_secs: i64,
     pub rollouts_dir: Option<PathBuf>,
     pub rollouts_source: Option<crate::rollouts_source::RolloutsSource>,
@@ -143,6 +149,7 @@ impl Default for AppState {
             db: None,
             closure_upstream: None,
             verified_fleet: Arc::new(RwLock::new(None)),
+            last_deferrals: Arc::new(RwLock::new(HashMap::new())),
             confirm_deadline_secs: DEFAULT_CONFIRM_DEADLINE_SECS,
             rollouts_dir: None,
             rollouts_source: None,

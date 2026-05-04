@@ -20,6 +20,20 @@ pub struct Observed {
     /// don't gate the new one.
     #[serde(default)]
     pub compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
+    /// Last `RolloutDeferred` the CP successfully journalled per channel.
+    /// The reconciler consults this and only emits a fresh `RolloutDeferred`
+    /// when (target_ref, blocked_by) would change — without this debounce,
+    /// every reconcile tick on a blocked channel would pollute the journal
+    /// with an identical line.
+    #[serde(default)]
+    pub last_deferrals: HashMap<String, DeferralRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeferralRecord {
+    pub target_ref: String,
+    pub blocked_by: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

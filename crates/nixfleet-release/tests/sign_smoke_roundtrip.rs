@@ -45,6 +45,7 @@ fn dummy_resolved() -> FleetResolved {
         rollout_policies: Default::default(),
         waves: Default::default(),
         edges: vec![],
+        channel_edges: vec![],
         disruption_budgets: vec![],
         meta: Meta {
             schema_version: 1,

@@ -325,6 +325,15 @@
       )
       cfg.edges;
 
+    channelEdgeErrors =
+      lib.concatMap (
+        e:
+          lib.optional (!builtins.elem e.before channelNames) "channelEdges.before references unknown channel '${e.before}'"
+          ++ lib.optional (!builtins.elem e.after channelNames) "channelEdges.after references unknown channel '${e.after}'"
+          ++ lib.optional (e.before == e.after) "channelEdges entry has before == after ('${e.before}'); use a wave-staged policy for intra-channel ordering instead"
+      )
+      cfg.channelEdges;
+
     configurationErrors =
       lib.concatMap (
         n: let
@@ -352,6 +361,8 @@
       (lib.attrNames cfg.channels);
 
     cycleErrors = lib.optional (hasCycle cfg.edges) "edges form a cycle; the DAG invariant is violated";
+
+    channelCycleErrors = lib.optional (hasCycle cfg.channelEdges) "channelEdges form a cycle; cross-channel ordering must be a DAG";
 
     freshnessErrors =
       lib.concatMap (
@@ -402,7 +413,7 @@
       lib.filter (n: resolvedComplianceMode n == "enforce") (lib.attrNames cfg.channels);
     staticComplianceErrors = staticFailuresForChannels enforceChannels;
 
-    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ configurationErrors ++ complianceErrors ++ cycleErrors ++ freshnessErrors ++ staticComplianceErrors;
+    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ channelEdgeErrors ++ configurationErrors ++ complianceErrors ++ cycleErrors ++ channelCycleErrors ++ freshnessErrors ++ staticComplianceErrors;
   in
     if errs == []
     then true
@@ -517,9 +528,15 @@
           )
           cfg.channels;
         edges = cfg.edges;
+        channelEdges = cfg.channelEdges;
+        # Selector preserved at wire level (was: expanded to hosts at eval).
+        # Reconciler resolves dynamically so adding/removing a tagged host
+        # doesn't require re-signing fleet.resolved. Pre-feat-channel-edges
+        # consumers that read `hosts:[]` will see this field absent and must
+        # be upgraded — the reconciler in this PR handles either shape.
         disruptionBudgets =
           map (b: {
-            hosts = resolveSelector b.selector cfg.hosts;
+            selector = b.selector;
             maxInFlight = b.maxInFlight;
             maxInFlightPct = b.maxInFlightPct;
           })
@@ -566,6 +583,19 @@
               type = types.listOf edgeType;
               default = [];
             };
+            channelEdges = mkOption {
+              type = types.listOf edgeType;
+              default = [];
+              description = ''
+                Cross-channel rollout ordering. A new rollout on channel
+                `after` is held until the most-recent rollout on channel
+                `before` reaches Converged. Validated at eval time:
+                channels must exist and edges must form a DAG.
+
+                Within-channel coordination uses `edges` (host-level);
+                this is RFC-0002 §4.3's cross-channel primitive.
+              '';
+            };
             disruptionBudgets = mkOption {
               type = types.listOf budgetType;
               default = [];
@@ -602,7 +632,7 @@
       revocations = evaluated.config.revocations;
     };
 
-  # LOADBEARING: hosts/tags/channels strict-merge (collision throws); rolloutPolicies later-wins; edges/disruptionBudgets concat; complianceFrameworks union.
+  # LOADBEARING: hosts/tags/channels strict-merge (collision throws); rolloutPolicies later-wins; edges/channelEdges/disruptionBudgets concat; complianceFrameworks union.
   mergeFleets = fleetInputs: let
     mergeStrict = kind: a: b:
       lib.foldl' (
@@ -618,6 +648,7 @@
       channels = mergeStrict "channel" acc.channels (input.channels or {});
       rolloutPolicies = acc.rolloutPolicies // (input.rolloutPolicies or {});
       edges = acc.edges ++ (input.edges or []);
+      channelEdges = acc.channelEdges ++ (input.channelEdges or []);
       disruptionBudgets = acc.disruptionBudgets ++ (input.disruptionBudgets or []);
     };
     empty = {
@@ -626,6 +657,7 @@
       channels = {};
       rolloutPolicies = {};
       edges = [];
+      channelEdges = [];
       disruptionBudgets = [];
     };
     merged = lib.foldl' step empty fleetInputs;

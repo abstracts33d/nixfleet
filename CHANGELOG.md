@@ -4,6 +4,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Cross-channel rollout ordering + tag-driven disruption budgets (2026-05-04)
+
+Closes RFC-0002 §4.3's cross-channel coordination punt (#65). Two coordinated changes shipped together because both move budget/edge resolution from fleet-eval time to reconcile time.
+
+#### Added
+
+- **`fleet.channelEdges = [{ before; after; reason }]`** — DAG ordering between channels. The reconciler refuses to OpenRollout for `after` while `before` has any non-terminal rollout. mkFleet validates: both channels must exist, no cycles (reuses `hasCycle`), `before != after`. RFC-0002 §4.3 punt resolved as: if `before` has never had a rollout, the gate is open (proceed). `Halted` predecessor blocks `after` — operator must clear the halt or remove the edge.
+- **`Action::RolloutDeferred { channel, target_ref, blocked_by, reason }`** — emitted when a channelEdge holds OpenRollout. Debounced via `Observed.last_deferrals`: same `(target_ref, blocked_by)` doesn't re-fire across reconcile ticks. CP `apply_actions` stamps the in-memory `last_deferrals_emitted` map on emit and clears on `OpenRollout`, feeding it back into the next tick's projection.
+
+#### Changed
+
+- **Disruption budgets are tag-driven at the wire level.** `disruptionBudgets[].selector: Selector` replaces the previously-eval-expanded `hosts: [..]` field. The reconciler resolves selectors at lookup time, so adding/removing a tagged host (e.g. retagging `ohm` from `family` to `dev`) takes effect on the next reconcile tick without re-signing fleet.resolved. **Hard schema cutover** — pre-feat-channel-edges artifacts (`hosts: [..]`) no longer parse; the CP must rebuild on a release CI'd with this version. Operators upgrading should also wipe the CP's state.db so no in-flight rollout state from the old schema lingers.
+- **`Selector::matches(host_name, host)`** + `resolve()` — promoted from internal-to-Nix to a runtime helper on the proto type. Mirrors `lib/mk-fleet.nix:resolveSelector`.
+
+#### Tests
+
+- **Reconciler unit tests** for the new branch: predecessor active blocks, no-history proceeds, debounce holds across ticks, blocker-change re-fires, predecessor-cleared opens. Plus a budget test asserting tag-driven selectors resolve at call time.
+
+#### Notes
+
+- **Wave sequencing was already correct.** Investigation into "waves fire simultaneously" found `current_wave`-gated dispatch (`host_state.rs:242`) and `wave_all_soaked` promotion (`rollout_state.rs:81-140`). The previous symptom was a single 3-host `workstation`-tagged wave serialized only by `maxInFlight=1`; not a sequencing bug.
+- **Schema is wire-breaking for `disruptionBudgets`.** `channelEdges:[]` is additive (matches the existing `edges:[]` convention); proto goldens updated to include the empty list. `disruptionBudgets[].selector` is required — old artifacts emitting `hosts:[..]` will fail to deserialize. CP and agent must be on the same nixfleet rev as the producing CI for a release to be consumable.
+
 ### v0.2 acceptance cycle (2026-04-30)
 
 ARCHITECTURE.md §8's four falsifiable done-criteria are now harness-enforced end-to-end. Closes the gap from "stated as a contract" to "fails loudly on regression." Net −2,421 LOC across 83 commits; 280 Rust tests, 0 clippy warnings, 9 microvm scenarios.

@@ -36,6 +36,8 @@ mod budgets {
     }
 
     /// Tightest (in_flight, max_in_flight) across budgets that include host.
+    /// Each budget's selector is resolved against `fleet.hosts` at call time —
+    /// tag membership is dynamic, no re-sign of fleet.resolved required.
     pub(super) fn budget_max(
         fleet: &FleetResolved,
         observed: &Observed,
@@ -44,10 +46,13 @@ mod budgets {
         fleet
             .disruption_budgets
             .iter()
-            .filter(|b| b.hosts.iter().any(|bh| bh == host))
             .filter_map(|b| {
+                let members = b.selector.resolve(fleet.hosts.iter());
+                if !members.iter().any(|m| m == host) {
+                    return None;
+                }
                 b.max_in_flight
-                    .map(|max| (in_flight_count(observed, &b.hosts), max))
+                    .map(|max| (in_flight_count(observed, &members), max))
             })
             .min_by_key(|(_, max)| *max)
     }
@@ -78,6 +83,7 @@ mod budgets {
                     last_healthy_since: HashMap::new(),
                 }],
                 compliance_failures_by_rollout: HashMap::new(),
+            last_deferrals: HashMap::new(),
             }
         }
 
@@ -108,6 +114,72 @@ mod budgets {
             ]);
             assert_eq!(in_flight_count(&obs, &["a".into()]), 1);
         }
+
+        #[test]
+        fn budget_resolves_selector_at_call_time_not_eval_time() {
+            use nixfleet_proto::{
+                Compliance, DisruptionBudget, FleetResolved, Host, Meta, Selector,
+            };
+            let mut hosts = HashMap::new();
+            for n in ["a", "b", "c"] {
+                hosts.insert(
+                    n.into(),
+                    Host {
+                        system: "x86_64-linux".into(),
+                        tags: vec!["family".into()],
+                        channel: "stable".into(),
+                        closure_hash: None,
+                        pubkey: None,
+                    },
+                );
+            }
+            let mut channels = HashMap::new();
+            channels.insert(
+                "stable".into(),
+                nixfleet_proto::Channel {
+                    rollout_policy: "p".into(),
+                    reconcile_interval_minutes: 30,
+                    freshness_window: 1440,
+                    signing_interval_minutes: 60,
+                    compliance: Compliance {
+                        frameworks: vec![],
+                        mode: "disabled".into(),
+                    },
+                },
+            );
+            // Budget written by the new wire format: tag-driven, no `hosts`.
+            let fleet = FleetResolved {
+                schema_version: 1,
+                hosts,
+                channels,
+                rollout_policies: HashMap::new(),
+                waves: HashMap::new(),
+                edges: vec![],
+                channel_edges: vec![],
+                disruption_budgets: vec![DisruptionBudget {
+                    selector: Selector {
+                        tags: vec!["family".into()],
+                        ..Default::default()
+                    },
+                    max_in_flight: Some(2),
+                    max_in_flight_pct: None,
+                }],
+                meta: Meta {
+                    schema_version: 1,
+                    signed_at: None,
+                    ci_commit: None,
+                    signature_algorithm: "ed25519".into(),
+                },
+            };
+            let observed = observed_with(vec![
+                ("a".into(), HostRolloutState::Dispatched),
+                ("b".into(), HostRolloutState::Dispatched),
+            ]);
+            let (in_flight, max) = budget_max(&fleet, &observed, "c").expect("c is family-tagged");
+            assert_eq!(in_flight, 2, "selector resolved to {{a,b,c}} dynamically");
+            assert_eq!(max, 2);
+        }
+
     }
 }
 
@@ -152,6 +224,7 @@ mod edges {
                 rollout_policies: HashMap::new(),
                 waves: HashMap::new(),
                 edges,
+                channel_edges: Vec::new(),
                 disruption_budgets: Vec::new(),
                 meta: Meta {
                     schema_version: 1,
@@ -413,6 +486,7 @@ mod tests {
             rollout_policies,
             waves: HashMap::new(),
             edges: vec![],
+            channel_edges: vec![],
             disruption_budgets: vec![],
             meta: Meta {
                 schema_version: 1,
@@ -454,6 +528,7 @@ mod tests {
             host_state,
             active_rollouts: vec![],
             compliance_failures_by_rollout: std::collections::HashMap::new(),
+            last_deferrals: std::collections::HashMap::new(),
         }
     }
 

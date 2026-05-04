@@ -13,8 +13,9 @@ pub mod rollout_manifest;
 pub mod trust;
 
 pub use fleet_resolved::{
-    Channel, Compliance, ComplianceProbes, DisruptionBudget, Edge, FleetResolved, HealthGate, Host,
-    Meta, OnHealthFailure, PolicyWave, RolloutPolicy, Selector, SystemdFailedUnits, Wave,
+    Channel, ChannelEdge, Compliance, ComplianceProbes, DisruptionBudget, Edge, FleetResolved,
+    HealthGate, Host, Meta, OnHealthFailure, PolicyWave, RolloutPolicy, Selector,
+    SystemdFailedUnits, Wave,
 };
 pub use host_rollout_state::HostRolloutState;
 pub use revocations::{RevocationEntry, Revocations};

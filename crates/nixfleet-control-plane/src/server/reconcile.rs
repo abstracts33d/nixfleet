@@ -131,6 +131,7 @@ pub(super) fn spawn_reconcile_loop(
             // tick instead of waiting for lab to rebuild and re-link the
             // baked-in artifact path.
             let live_fleet = state.verified_fleet.read().await.clone();
+            let last_deferrals = state.last_deferrals.read().await.clone();
             let (result, verified_fleet) = if checkins.is_empty() && channel_refs.is_empty() {
                 (tick(&inputs_now), verify_fleet_only(&inputs_now))
             } else {
@@ -141,6 +142,7 @@ pub(super) fn spawn_reconcile_loop(
                     &channel_refs,
                     &rollouts,
                     compliance_failures_by_rollout,
+                    last_deferrals,
                 )
             };
 
@@ -202,12 +204,44 @@ pub(super) fn spawn_reconcile_loop(
 
 /// At-least-once action handler; SoakHost + ConvergeRollout mutate DB, others are journal-only.
 async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
+    use nixfleet_reconciler::observed::DeferralRecord;
     use nixfleet_reconciler::Action;
 
     let actions = match &out.verify {
         crate::VerifyOutcome::Ok(ok) => &ok.actions,
         crate::VerifyOutcome::Failed { .. } => return,
     };
+    // Stamp / clear deferral state BEFORE the DB gate below — deferrals are
+    // pure-journal and the debounce must work even on a CP started without
+    // --db. OpenRollout for a previously-deferred channel clears the entry
+    // so a same-ref re-block (rare: predecessor converges → fresh rollout
+    // opens on it before this channel starts) re-emits as a transition
+    // rather than being silenced by stale state.
+    {
+        let mut deferrals = state.last_deferrals.write().await;
+        for action in actions {
+            match action {
+                Action::RolloutDeferred {
+                    channel,
+                    target_ref,
+                    blocked_by,
+                    ..
+                } => {
+                    deferrals.insert(
+                        channel.clone(),
+                        DeferralRecord {
+                            target_ref: target_ref.clone(),
+                            blocked_by: blocked_by.clone(),
+                        },
+                    );
+                }
+                Action::OpenRollout { channel, .. } => {
+                    deferrals.remove(channel);
+                }
+                _ => {}
+            }
+        }
+    }
     let Some(db) = state.db.as_ref() else {
         return;
     };
@@ -317,6 +351,7 @@ fn run_tick_with_projection(
     channel_refs: &HashMap<String, String>,
     rollouts: &[crate::db::RolloutDbSnapshot],
     compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
+    last_deferrals: HashMap<String, nixfleet_reconciler::observed::DeferralRecord>,
 ) -> (anyhow::Result<crate::TickOutput>, Option<FleetResolved>) {
     // LOADBEARING: prefer the live verified-fleet snapshot (kept fresh by
     // the channel-refs polling loop) over re-reading the static artifact
@@ -346,6 +381,7 @@ fn run_tick_with_projection(
             channel_refs,
             rollouts,
             compliance_failures_by_rollout,
+            last_deferrals,
         );
         let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
         return (
@@ -409,6 +445,7 @@ fn run_tick_with_projection(
                 channel_refs,
                 rollouts,
                 compliance_failures_by_rollout,
+                last_deferrals.clone(),
             );
             let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
             (

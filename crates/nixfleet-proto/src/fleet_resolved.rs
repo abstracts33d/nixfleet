@@ -16,6 +16,12 @@ pub struct FleetResolved {
     pub waves: HashMap<String, Vec<Wave>>,
     #[serde(default)]
     pub edges: Vec<Edge>,
+    /// Cross-channel ordering: a `before` channel must reach Converged
+    /// before any new rollout opens on the `after` channel. RFC-0002 §4.3
+    /// — within-channel coordination uses `edges`; channel-level uses this.
+    /// Cycles are rejected at mkFleet eval time.
+    #[serde(default)]
+    pub channel_edges: Vec<ChannelEdge>,
     #[serde(default)]
     pub disruption_budgets: Vec<DisruptionBudget>,
     pub meta: Meta,
@@ -98,7 +104,7 @@ pub struct PolicyWave {
     pub soak_minutes: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Selector {
     #[serde(default)]
@@ -111,6 +117,46 @@ pub struct Selector {
     pub channel: Option<String>,
     #[serde(default)]
     pub all: bool,
+}
+
+impl Selector {
+    /// Match a single host. Mirrors `lib/mk-fleet.nix:resolveSelector` —
+    /// any rule that fires (all / hosts / channel / tags-all / tags-any)
+    /// matches; sub-selector composition (and / not) is mkFleet-only and
+    /// not exposed in the wire format.
+    pub fn matches(&self, host_name: &str, host: &Host) -> bool {
+        if self.all {
+            return true;
+        }
+        if !self.hosts.is_empty() && self.hosts.iter().any(|h| h == host_name) {
+            return true;
+        }
+        if let Some(ch) = &self.channel {
+            if &host.channel == ch {
+                return true;
+            }
+        }
+        if !self.tags.is_empty() && self.tags.iter().all(|t| host.tags.contains(t)) {
+            return true;
+        }
+        if !self.tags_any.is_empty() && self.tags_any.iter().any(|t| host.tags.contains(t)) {
+            return true;
+        }
+        false
+    }
+
+    /// Resolve to the matching host names. Order is `fleet.hosts`'s natural
+    /// iteration; callers that need a stable ordering should sort.
+    pub fn resolve<'a, I: IntoIterator<Item = (&'a String, &'a Host)>>(
+        &self,
+        hosts: I,
+    ) -> Vec<String> {
+        hosts
+            .into_iter()
+            .filter(|(n, h)| self.matches(n, h))
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -151,10 +197,26 @@ pub struct Edge {
     pub reason: Option<String>,
 }
 
+/// Cross-channel ordering edge. `before` channel must converge before any
+/// rollout opens on `after`. "Converge" = the most-recent rollout on `before`
+/// reached terminal state `converged`. If `before` has never had a rollout,
+/// the gate is open (no rollout to wait for). Validated at mkFleet eval time:
+/// both channels must exist, no cycles.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelEdge {
+    pub before: String,
+    pub after: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DisruptionBudget {
-    pub hosts: Vec<String>,
+    /// Tag-driven selector resolved at reconcile time so adding/removing
+    /// hosts under a tag doesn't require re-signing fleet.resolved.
+    pub selector: Selector,
     #[serde(default)]
     pub max_in_flight: Option<u32>,
     #[serde(default)]

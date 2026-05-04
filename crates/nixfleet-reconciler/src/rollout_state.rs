@@ -265,6 +265,7 @@ mod tests {
             rollout_policies,
             waves,
             edges: vec![],
+            channel_edges: vec![],
             disruption_budgets: vec![],
             meta: Meta {
                 schema_version: 1,
@@ -307,6 +308,7 @@ mod tests {
             host_state: HashMap::new(),
             active_rollouts: vec![],
             compliance_failures_by_rollout: by_rollout,
+            last_deferrals: HashMap::new(),
         }
     }
 
@@ -324,6 +326,7 @@ mod tests {
                 Action::ChannelUnknown { .. } => "channel_unknown",
                 Action::Skip { .. } => "skip",
                 Action::WaveBlocked { .. } => "wave_blocked",
+                Action::RolloutDeferred { .. } => "rollout_deferred",
             })
             .collect()
     }

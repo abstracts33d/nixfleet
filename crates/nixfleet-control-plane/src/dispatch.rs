@@ -177,6 +177,7 @@ mod tests {
             rollout_policies,
             waves: HashMap::new(),
             edges: vec![],
+            channel_edges: vec![],
             disruption_budgets: vec![],
             meta: Meta {
                 schema_version: 1,

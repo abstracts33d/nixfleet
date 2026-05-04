@@ -194,6 +194,7 @@ mod tests {
             host_state: HashMap::new(),
             active_rollouts: vec![],
             compliance_failures_by_rollout: HashMap::new(),
+            last_deferrals: HashMap::new(),
         }
     }
 

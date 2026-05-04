@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use nixfleet_reconciler::observed::{HostState, Observed, Rollout};
+use nixfleet_reconciler::observed::{DeferralRecord, HostState, Observed, Rollout};
 use nixfleet_reconciler::{HostRolloutState, RolloutState};
 
 use crate::db::RolloutDbSnapshot;
@@ -13,6 +13,7 @@ pub fn project(
     channel_refs: &HashMap<String, String>,
     rollouts: &[RolloutDbSnapshot],
     compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
+    last_deferrals: HashMap<String, DeferralRecord>,
 ) -> Observed {
     let mut host_state: HashMap<String, HostState> = HashMap::new();
     for (host, record) in host_checkins {
@@ -62,6 +63,7 @@ pub fn project(
         host_state,
         active_rollouts,
         compliance_failures_by_rollout,
+        last_deferrals,
     }
 }
 
@@ -98,7 +100,7 @@ mod tests {
         checkins.insert("ohm".to_string(), checkin_for("ohm", "def"));
 
         let channel_refs = HashMap::from([("dev".to_string(), "deadbeef".to_string())]);
-        let observed = project(&checkins, &channel_refs, &[], HashMap::new());
+        let observed = project(&checkins, &channel_refs, &[], HashMap::new(), HashMap::new());
 
         assert_eq!(observed.host_state.len(), 2);
         assert_eq!(
@@ -113,7 +115,7 @@ mod tests {
 
     #[test]
     fn projection_with_no_checkins_yields_empty_host_state() {
-        let observed = project(&HashMap::new(), &HashMap::new(), &[], HashMap::new());
+        let observed = project(&HashMap::new(), &HashMap::new(), &[], HashMap::new(), HashMap::new());
         assert!(observed.host_state.is_empty());
         assert!(observed.channel_refs.is_empty());
         assert!(observed.active_rollouts.is_empty());
@@ -161,6 +163,7 @@ mod tests {
             &HashMap::new(),
             std::slice::from_ref(&snap),
             HashMap::new(),
+            HashMap::new(),
         );
         assert_eq!(
             observed.active_rollouts[0].host_states.get("ohm").copied(),
@@ -185,6 +188,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             std::slice::from_ref(&snap),
+            HashMap::new(),
             HashMap::new(),
         );
         assert_eq!(
@@ -215,6 +219,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             std::slice::from_ref(&snap),
+            HashMap::new(),
             HashMap::new(),
         );
         assert_eq!(observed.active_rollouts.len(), 1);
