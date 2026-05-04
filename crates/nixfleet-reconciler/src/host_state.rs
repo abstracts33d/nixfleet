@@ -380,21 +380,30 @@ pub(crate) fn handle_wave(
                     });
                     continue;
                 }
-                if let Some(predecessor) = edges::predecessor_blocking(fleet, rollout, host) {
+                // Fleet-level gates (channelEdges, wave-promotion, host-edges,
+                // disruption-budget). Same evaluator the dispatch endpoint
+                // calls — if this Skip is emitted here, the agent's
+                // checkin path returns None for the same reason.
+                let empty_emitted_opens = std::collections::HashSet::new();
+                let gate_input = crate::gates::GateInput {
+                    fleet,
+                    observed,
+                    rollout: Some(rollout),
+                    host,
+                    now,
+                    emitted_opens_in_tick: &empty_emitted_opens,
+                    // Reconciler runs after polling has populated rollouts
+                    // table; missing predecessor state is a real "predecessor
+                    // not yet declared" situation and shouldn't pre-block
+                    // every channel.
+                    conservative_on_missing_state: false,
+                };
+                if let Some(block) = crate::gates::evaluate_for_host(&gate_input) {
                     out.actions.push(Action::Skip {
                         host: host.clone(),
-                        reason: format!("edge predecessor {predecessor} incomplete"),
+                        reason: block.reason(),
                     });
                     continue;
-                }
-                if let Some((in_flight, max)) = budgets::budget_max(observed, rollout, host) {
-                    if in_flight >= max {
-                        out.actions.push(Action::Skip {
-                            host: host.clone(),
-                            reason: format!("disruption budget ({in_flight}/{max} in flight)"),
-                        });
-                        continue;
-                    }
                 }
                 out.actions.push(Action::DispatchHost {
                     rollout: rollout.id.clone(),

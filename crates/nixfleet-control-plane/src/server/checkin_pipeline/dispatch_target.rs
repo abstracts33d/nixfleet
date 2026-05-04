@@ -21,18 +21,25 @@ pub(super) async fn dispatch_target_for_checkin(
     // same conclusion from the same Observed snapshot. Adding a new gate
     // touches one module + one parity test; both layers pick it up
     // automatically. See nixfleet-reconciler/src/gates/mod.rs.
-    if fleet.hosts.contains_key(&req.hostname) {
-        let observed = super::dispatch_observed::build_observed_for_gates(
-            db,
-            &fleet,
-            &fleet_resolved_hash,
-        );
+    if let Some(host) = fleet.hosts.get(&req.hostname) {
+        let observed =
+            super::dispatch_observed::build_observed_for_gates_from_state(state, &fleet, &fleet_resolved_hash)
+                .await;
+        // Locate the rollout for this host's channel — host-edges + budget
+        // gates need the host's current rollout to read frozen budgets +
+        // host_states. None when no rollout recorded yet (fresh boot /
+        // fresh rev); the gates handle that conservatively per their
+        // own semantics.
+        let rollout_for_host = observed
+            .active_rollouts
+            .iter()
+            .find(|r| r.channel == host.channel);
         let empty_emitted_opens: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let input = nixfleet_reconciler::gates::GateInput {
             fleet: &fleet,
             observed: &observed,
-            rollout: None,
+            rollout: rollout_for_host,
             host: &req.hostname,
             now,
             emitted_opens_in_tick: &empty_emitted_opens,
