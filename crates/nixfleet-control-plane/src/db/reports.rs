@@ -95,6 +95,46 @@ impl Reports<'_> {
         Ok(rows)
     }
 
+    /// Fleet-wide most-recent rows in DESC chronological order. Used by the
+    /// `/v1/host-reports` endpoint to back the dashboard's "recent reports"
+    /// panel — the durable DB ring is authoritative regardless of journal
+    /// rotation / window. Returns `(hostname, report)` pairs.
+    pub fn recent_across_hosts(&self, limit: usize) -> Result<Vec<(String, HostReportRow)>> {
+        let guard = super::lock_conn(self.conn)?;
+        let mut stmt = guard.prepare(
+            "SELECT hostname, event_id, received_at, event_kind,
+                    rollout, signature_status, report_json
+             FROM host_reports
+             ORDER BY received_at DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let rows: rusqlite::Result<Vec<(String, HostReportRow)>> = stmt
+            .query_map(params![limit as i64], |row| {
+                let hostname: String = row.get(0)?;
+                let received_str: String = row.get(2)?;
+                let received_at = received_str.parse::<DateTime<Utc>>().map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                Ok((
+                    hostname,
+                    HostReportRow {
+                        event_id: row.get::<_, String>(1)?,
+                        received_at,
+                        event_kind: row.get::<_, String>(3)?,
+                        rollout: row.get::<_, Option<String>>(4)?,
+                        signature_status: row.get::<_, Option<String>>(5)?,
+                        report_json: row.get::<_, String>(6)?,
+                    },
+                ))
+            })?
+            .collect();
+        rows.context("query host_reports recent_across_hosts")
+    }
+
     pub fn host_reports_known_hostnames(&self) -> Result<Vec<String>> {
         let guard = super::lock_conn(self.conn)?;
         let mut stmt = guard.prepare("SELECT DISTINCT hostname FROM host_reports")?;

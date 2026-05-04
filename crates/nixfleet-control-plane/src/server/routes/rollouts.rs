@@ -172,27 +172,48 @@ pub(in crate::server) async fn signature(
     Ok((StatusCode::OK, headers, Bytes::from(sig_bytes)))
 }
 
-/// `GET /v1/rollouts` — enumerate active (non-superseded) rollouts directly
-/// from the rollouts table. Operators (status renderers) use this instead
-/// of inferring from per-host `lastRolloutId` breadcrumbs, which only update
-/// on real agent confirms — converged-at-dispatch hosts never confirm so
-/// their breadcrumb stays at whatever they last truly confirmed.
+/// `GET /v1/rollouts` — enumerate active (non-superseded) rollouts with
+/// per-host state pulled from `host_rollout_state` (DB-authoritative,
+/// independent of the journal event window).
+///
+/// Operators (status renderers) use this for "what's actually deployed"
+/// instead of inferring from journal `target=confirm` events — agent
+/// confirms only fire on real dispatches, so converged-at-dispatch hosts
+/// would otherwise look unconfirmed forever in journal-derived views.
 pub(in crate::server) async fn list_active(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let db = state.db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let rows = db.rollouts().list_active().map_err(|err| {
+    let rollouts_meta = db.rollouts().list_active().map_err(|err| {
         tracing::warn!(error = %err, "list_active rollouts query failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    let rollouts: Vec<serde_json::Value> = rows
+    let snap = db
+        .host_dispatch_state()
+        .active_rollouts_snapshot()
+        .map_err(|err| {
+            tracing::warn!(error = %err, "active_rollouts_snapshot query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    // host_states keyed by rollout_id; rollouts not in the snapshot get an
+    // empty map (no hosts dispatched yet — happens briefly after a CI sign
+    // before agents check in).
+    let mut by_rollout: std::collections::HashMap<String, std::collections::HashMap<String, String>> =
+        std::collections::HashMap::new();
+    for r in &snap {
+        by_rollout.insert(r.rollout_id.clone(), r.host_states.clone());
+    }
+
+    let rollouts: Vec<serde_json::Value> = rollouts_meta
         .into_iter()
         .map(|r| {
+            let host_states = by_rollout.remove(&r.rollout_id).unwrap_or_default();
             serde_json::json!({
                 "rolloutId": r.rollout_id,
                 "channel": r.channel,
                 "currentWave": r.current_wave,
                 "createdAt": r.created_at,
+                "hostStates": host_states,
             })
         })
         .collect();

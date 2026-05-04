@@ -47,6 +47,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/whoami", get(routes::status::whoami))
         .route("/v1/agent/checkin", post(checkin_pipeline::checkin))
         .route("/v1/agent/report", post(routes::reports::report))
+        .route("/v1/host-reports", get(routes::reports::list_recent))
         .route("/v1/agent/confirm", post(checkin_pipeline::confirm))
         .route(
             "/v1/agent/closure/{hash}",

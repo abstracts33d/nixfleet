@@ -111,6 +111,56 @@ pub(in crate::server) async fn report(
     Ok(Json(ReportResponse { event_id }))
 }
 
+/// `GET /v1/host-reports?limit=N` — fleet-wide recent host reports from
+/// the durable `host_reports` table. Backs the dashboard's "recent reports"
+/// panel — DB-sourced, so it stays accurate regardless of the journal
+/// rotation window. Default limit 15, max 200.
+pub(in crate::server) async fn list_recent(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<RecentReportsQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse as _;
+    let db = state.db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let limit = params.limit.unwrap_or(15).clamp(1, 200);
+    let rows = db.reports().recent_across_hosts(limit).map_err(|err| {
+        tracing::warn!(error = %err, "list_recent host_reports failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let reports: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(host, r)| {
+            // Try to surface the inner ReportEvent details for downstream
+            // panels — render.sh wants control_id / status etc. without
+            // re-parsing the whole envelope itself.
+            let parsed: Option<serde_json::Value> = serde_json::from_str(&r.report_json).ok();
+            let event_details = parsed.as_ref().and_then(|v| v.get("event").cloned());
+            let details_block = parsed.as_ref().and_then(|v| v.get("details").cloned());
+            serde_json::json!({
+                "hostname": host,
+                "eventId": r.event_id,
+                "receivedAt": r.received_at.to_rfc3339(),
+                "eventKind": r.event_kind,
+                "rollout": r.rollout,
+                "signatureStatus": r.signature_status,
+                "event": event_details,
+                "details": details_block,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({ "reports": reports }).to_string();
+    let mut response = (StatusCode::OK, body).into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    Ok(response)
+}
+
+#[derive(serde::Deserialize)]
+pub struct RecentReportsQuery {
+    pub limit: Option<usize>,
+}
+
 /// Flip `host_rollout_state` Failed → Reverted on `RollbackTriggered`; guard leaves non-Failed alone.
 fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
     use nixfleet_proto::agent_wire::ReportEvent;
