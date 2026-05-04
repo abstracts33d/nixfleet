@@ -356,3 +356,256 @@ async fn record_rollouts_gated_by_channel_edges(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_helpers::fresh_db;
+    use crate::db::DispatchInsert;
+    use crate::server::VerifiedFleetSnapshot;
+    use crate::state::{HealthyMarker, HostRolloutState};
+    use chrono::Utc;
+    use nixfleet_proto::{
+        Channel, ChannelEdge, Compliance, FleetResolved, Host, Meta, OnHealthFailure,
+        RolloutPolicy,
+    };
+
+    fn fleet_edge_then_stable() -> FleetResolved {
+        let mut hosts = HashMap::new();
+        hosts.insert(
+            "lab".into(),
+            Host {
+                system: "x86_64-linux".into(),
+                tags: vec!["server".into()],
+                channel: "edge".into(),
+                closure_hash: Some("lab-closure-new".into()),
+                pubkey: None,
+            },
+        );
+        hosts.insert(
+            "krach".into(),
+            Host {
+                system: "x86_64-linux".into(),
+                tags: vec!["dev".into()],
+                channel: "stable".into(),
+                closure_hash: Some("krach-closure-new".into()),
+                pubkey: None,
+            },
+        );
+
+        let mut channels = HashMap::new();
+        for ch in ["edge", "stable"] {
+            channels.insert(
+                ch.to_string(),
+                Channel {
+                    rollout_policy: "p".into(),
+                    reconcile_interval_minutes: 30,
+                    freshness_window: 1440,
+                    signing_interval_minutes: 60,
+                    compliance: Compliance {
+                        frameworks: vec![],
+                        mode: "disabled".into(),
+                    },
+                },
+            );
+        }
+
+        let mut rollout_policies = HashMap::new();
+        rollout_policies.insert(
+            "p".into(),
+            RolloutPolicy {
+                strategy: "all-at-once".into(),
+                waves: vec![],
+                health_gate: Default::default(),
+                on_health_failure: OnHealthFailure::Halt,
+            },
+        );
+
+        FleetResolved {
+            schema_version: 1,
+            hosts,
+            channels,
+            rollout_policies,
+            waves: HashMap::new(),
+            edges: vec![],
+            channel_edges: vec![ChannelEdge {
+                before: "edge".into(),
+                after: "stable".into(),
+                reason: Some("canary".into()),
+            }],
+            disruption_budgets: vec![],
+            meta: Meta {
+                schema_version: 1,
+                signed_at: None,
+                ci_commit: None,
+                signature_algorithm: Some("ed25519".into()),
+            },
+        }
+    }
+
+    fn seed_old_rollout(db: &crate::db::Db, rollout_id: &str, channel: &str, hostname: &str) {
+        db.rollouts()
+            .record_active_rollout(rollout_id, channel)
+            .unwrap();
+        db.host_dispatch_state()
+            .record_dispatch(&DispatchInsert {
+                hostname,
+                rollout_id,
+                channel,
+                wave: 0,
+                target_closure_hash: "old-closure",
+                target_channel_ref: rollout_id,
+                confirm_deadline: Utc::now() + chrono::Duration::seconds(60),
+            })
+            .unwrap();
+        db.rollout_state()
+            .transition_host_state(
+                hostname,
+                rollout_id,
+                HostRolloutState::Converged,
+                HealthyMarker::Untouched,
+                None,
+            )
+            .unwrap();
+    }
+
+    /// Regression: without the `current_rollout_ids` filter, the previous
+    /// rev's edge rollout (lab=Converged, terminal-for-ordering) would
+    /// satisfy the predecessor check for the new stable rollout and
+    /// channelEdges would silently bypass on the first poll of every
+    /// release.
+    #[tokio::test]
+    async fn stale_predecessor_rollout_does_not_unblock_new_successor() {
+        let db = fresh_db();
+        let fleet = fleet_edge_then_stable();
+        let verified_fleet = Arc::new(RwLock::new(Some(VerifiedFleetSnapshot {
+            fleet: Arc::new(fleet),
+            fleet_resolved_hash: "test-hash".into(),
+        })));
+        let last_deferrals = Arc::new(RwLock::new(HashMap::new()));
+
+        // Previous rev: edge fully converged, stable also fully converged.
+        // These rows survive in host_dispatch_state across a fleet rev
+        // change until polling supersedes them.
+        seed_old_rollout(&db, "old-edge-rid", "edge", "lab");
+        seed_old_rollout(&db, "old-stable-rid", "stable", "krach");
+
+        // New rev's rolloutIds — what compute_rollout_id_for_channel would
+        // return for the just-published fleet.resolved.
+        let channel_rollouts = vec![
+            ("edge".into(), "new-edge-rid".into()),
+            ("stable".into(), "new-stable-rid".into()),
+        ];
+
+        record_rollouts_gated_by_channel_edges(
+            &db,
+            &verified_fleet,
+            &last_deferrals,
+            &channel_rollouts,
+        )
+        .await;
+
+        let active = db.rollouts().list_active().unwrap();
+        let active_ids: std::collections::HashSet<String> =
+            active.iter().map(|r| r.rollout_id.clone()).collect();
+        assert!(
+            active_ids.contains("new-edge-rid"),
+            "edge has no predecessor; must be recorded. active={active_ids:?}",
+        );
+        assert!(
+            !active_ids.contains("new-stable-rid"),
+            "stable must be HELD by channelEdges — old converged predecessor must NOT count. active={active_ids:?}",
+        );
+
+        let supersede = db
+            .rollouts()
+            .supersede_status("old-edge-rid")
+            .unwrap()
+            .expect("old edge row must exist");
+        assert!(
+            supersede.is_superseded(),
+            "old edge must be superseded by new edge in the same record_active_rollout txn",
+        );
+
+        let deferrals = last_deferrals.read().await;
+        let stable_record = deferrals
+            .get("stable")
+            .expect("/v1/deferrals must show stable held — last_deferrals write missing");
+        assert_eq!(stable_record.blocked_by, "edge");
+        assert_eq!(stable_record.target_ref, "new-stable-rid");
+    }
+
+    /// Positive flow: once the predecessor's CURRENT rollout converges,
+    /// the next poll opens the successor and clears the deferral.
+    #[tokio::test]
+    async fn successor_opens_once_current_predecessor_converges() {
+        let db = fresh_db();
+        let fleet = fleet_edge_then_stable();
+        let verified_fleet = Arc::new(RwLock::new(Some(VerifiedFleetSnapshot {
+            fleet: Arc::new(fleet),
+            fleet_resolved_hash: "test-hash".into(),
+        })));
+        let last_deferrals = Arc::new(RwLock::new(HashMap::new()));
+
+        let channel_rollouts = vec![
+            ("edge".into(), "new-edge-rid".into()),
+            ("stable".into(), "new-stable-rid".into()),
+        ];
+
+        // First poll: stable held (edge has no host_states yet → active).
+        record_rollouts_gated_by_channel_edges(
+            &db,
+            &verified_fleet,
+            &last_deferrals,
+            &channel_rollouts,
+        )
+        .await;
+        assert!(
+            last_deferrals.read().await.contains_key("stable"),
+            "first poll: stable must be held",
+        );
+
+        // Simulate lab activating + converging on the new edge rollout.
+        db.host_dispatch_state()
+            .record_dispatch(&DispatchInsert {
+                hostname: "lab",
+                rollout_id: "new-edge-rid",
+                channel: "edge",
+                wave: 0,
+                target_closure_hash: "lab-closure-new",
+                target_channel_ref: "new-edge-rid",
+                confirm_deadline: Utc::now() + chrono::Duration::seconds(60),
+            })
+            .unwrap();
+        db.rollout_state()
+            .transition_host_state(
+                "lab",
+                "new-edge-rid",
+                HostRolloutState::Converged,
+                HealthyMarker::Untouched,
+                None,
+            )
+            .unwrap();
+
+        // Second poll: stable should now open.
+        record_rollouts_gated_by_channel_edges(
+            &db,
+            &verified_fleet,
+            &last_deferrals,
+            &channel_rollouts,
+        )
+        .await;
+
+        let active = db.rollouts().list_active().unwrap();
+        let active_ids: std::collections::HashSet<String> =
+            active.iter().map(|r| r.rollout_id.clone()).collect();
+        assert!(
+            active_ids.contains("new-stable-rid"),
+            "stable must open once edge fully converged. active={active_ids:?}",
+        );
+        assert!(
+            !last_deferrals.read().await.contains_key("stable"),
+            "stable's last_deferrals entry must be cleared on release",
+        );
+    }
+}
