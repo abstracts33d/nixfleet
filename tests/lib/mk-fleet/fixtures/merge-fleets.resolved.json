@@ -1,4 +1,5 @@
 {
+    "channelEdges": [],
     "channels": {
         "edge": {
             "compliance": {
@@ -23,18 +24,34 @@
     },
     "disruptionBudgets": [
         {
-            "hosts": [
-                "paris-1"
-            ],
             "maxInFlight": 1,
-            "maxInFlightPct": null
+            "maxInFlightPct": null,
+            "selector": {
+                "all": false,
+                "and": [],
+                "channel": null,
+                "hosts": [],
+                "not": null,
+                "tags": [
+                    "paris"
+                ],
+                "tagsAny": []
+            }
         },
         {
-            "hosts": [
-                "lyon-1"
-            ],
             "maxInFlight": 1,
-            "maxInFlightPct": null
+            "maxInFlightPct": null,
+            "selector": {
+                "all": false,
+                "and": [],
+                "channel": null,
+                "hosts": [],
+                "not": null,
+                "tags": [
+                    "lyon"
+                ],
+                "tagsAny": []
+            }
         }
     ],
     "edges": [],

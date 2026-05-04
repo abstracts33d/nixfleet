@@ -1,4 +1,5 @@
 {
+    "channelEdges": [],
     "channels": {
         "prod": {
             "compliance": {
