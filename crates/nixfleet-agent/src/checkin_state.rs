@@ -113,6 +113,7 @@ pub fn read_last_target(state_dir: &Path) -> Result<Option<EvaluatedTarget>> {
     read_atomic_json(state_dir, LAST_TARGET_FILENAME)
 }
 
+/// Failure is non-fatal — next-fetch will retry.
 pub fn write_last_fetch_outcome(state_dir: &Path, outcome: &FetchOutcome) -> Result<()> {
     write_atomic_json(state_dir, LAST_FETCH_OUTCOME_FILENAME, outcome)
 }
@@ -156,7 +157,9 @@ pub fn write_last_confirmed(state_dir: &Path, closure_hash: &str, at: DateTime<U
 /// (`recovery.rs`). Splitting them across two call sites previously caused the
 /// boot-recovery path to skip `write_last_target`, which silently broke the
 /// CP's `outstanding-failure` filter and `active-rollouts` panel for every
-/// host that confirmed via the recovery path.
+/// host that confirmed via the recovery path — without `last_target`'s
+/// rollout_id breadcrumb on each checkin, every event ever recorded would
+/// look "outstanding" forever.
 ///
 /// Each step is best-effort — failures are logged but never propagated; the
 /// next checkin re-converges. `clear_last_dispatched` runs last so a partial
