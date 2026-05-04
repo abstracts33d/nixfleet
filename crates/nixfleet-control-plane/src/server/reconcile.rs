@@ -132,6 +132,12 @@ pub(super) fn spawn_reconcile_loop(
             // baked-in artifact path.
             let live_fleet = state.verified_fleet.read().await.clone();
             let last_deferrals = state.last_deferrals.read().await.clone();
+            // Load each active rollout's budget snapshot from its signed
+            // manifest. Disk-backed lookup is fine at reconcile cadence
+            // (~5 manifests, ~30s tick); cache later if it shows up in
+            // a profile.
+            let rollout_budgets =
+                load_rollout_budgets(state.as_ref(), &rollouts).await;
             let (result, verified_fleet) = if checkins.is_empty() && channel_refs.is_empty() {
                 (tick(&inputs_now), verify_fleet_only(&inputs_now))
             } else {
@@ -143,6 +149,7 @@ pub(super) fn spawn_reconcile_loop(
                     &rollouts,
                     compliance_failures_by_rollout,
                     last_deferrals,
+                    &rollout_budgets,
                 )
             };
 
@@ -352,6 +359,7 @@ fn run_tick_with_projection(
     rollouts: &[crate::db::RolloutDbSnapshot],
     compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
     last_deferrals: HashMap<String, nixfleet_reconciler::observed::DeferralRecord>,
+    rollout_budgets: &HashMap<String, Vec<nixfleet_proto::RolloutBudget>>,
 ) -> (anyhow::Result<crate::TickOutput>, Option<FleetResolved>) {
     // LOADBEARING: prefer the live verified-fleet snapshot (kept fresh by
     // the channel-refs polling loop) over re-reading the static artifact
@@ -382,6 +390,7 @@ fn run_tick_with_projection(
             rollouts,
             compliance_failures_by_rollout,
             last_deferrals,
+            rollout_budgets,
         );
         let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
         return (
@@ -446,7 +455,8 @@ fn run_tick_with_projection(
                 rollouts,
                 compliance_failures_by_rollout,
                 last_deferrals.clone(),
-            );
+            rollout_budgets,
+        );
             let actions = nixfleet_reconciler::reconcile(&fleet, &observed, inputs.now);
             (
                 crate::VerifyOutcome::Ok(Box::new(crate::VerifyOk {
@@ -473,6 +483,52 @@ fn run_tick_with_projection(
         }),
         fleet,
     )
+}
+
+/// Load each active rollout's `disruption_budgets` snapshot from its signed
+/// manifest. Returns an empty map entry on read or parse failure — the
+/// reconciler then dispatches without a budget gate for that rollout, which
+/// is the same as "no budget declared". Deliberately permissive: a missing
+/// manifest blocks dispatch in a more correct way (the host's last-rolled-
+/// ref check will hold the rollout open), so failing the budget gate hard
+/// here would double-block dispatches without informational value.
+async fn load_rollout_budgets(
+    state: &AppState,
+    rollouts: &[crate::db::RolloutDbSnapshot],
+) -> HashMap<String, Vec<nixfleet_proto::RolloutBudget>> {
+    let mut out: HashMap<String, Vec<nixfleet_proto::RolloutBudget>> = HashMap::new();
+    let dir = match state.rollouts_dir.as_ref() {
+        Some(d) => d.clone(),
+        None => return out,
+    };
+    for r in rollouts {
+        let manifest_path = dir.join(format!("{}.json", r.rollout_id));
+        let bytes = match tokio::fs::read(&manifest_path).await {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::debug!(
+                    rollout = %r.rollout_id,
+                    path = %manifest_path.display(),
+                    error = %err,
+                    "load_rollout_budgets: manifest unavailable; budget gate no-ops for this rollout",
+                );
+                continue;
+            }
+        };
+        match serde_json::from_slice::<nixfleet_proto::RolloutManifest>(&bytes) {
+            Ok(m) => {
+                out.insert(r.rollout_id.clone(), m.disruption_budgets);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    rollout = %r.rollout_id,
+                    error = %err,
+                    "load_rollout_budgets: manifest parse failed; budget gate no-ops for this rollout",
+                );
+            }
+        }
+    }
+    out
 }
 
 /// `None` on verify failure → caller preserves prior snapshot.

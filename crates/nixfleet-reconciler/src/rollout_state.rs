@@ -271,7 +271,7 @@ mod tests {
                 schema_version: 1,
                 signed_at: Some(Utc::now()),
                 ci_commit: Some("abc12345".into()),
-                signature_algorithm: "ed25519".into(),
+                signature_algorithm: Some("ed25519".into()),
             },
         }
     }
@@ -287,6 +287,7 @@ mod tests {
             current_wave: 0,
             host_states,
             last_healthy_since: HashMap::new(),
+            budgets: vec![],
         }
     }
 

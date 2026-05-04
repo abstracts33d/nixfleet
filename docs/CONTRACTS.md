@@ -147,6 +147,8 @@ The CP enforces nothing here — operators that violate the invariant get the ch
 
 **Trust topology.** The CP holds NO signing key for rollouts. It is a verified stateless distributor: it adopts pre-signed manifests it can verify, refuses those it cannot, and serves the verified bytes byte-for-byte at `GET /v1/rollouts/<rolloutId>`. This preserves the "CP forges no trust" property: every byte an agent acts on traces back to a CI-held key.
 
+**Architectural invariant — rollout topology is immutable for the rollout's life.** The manifest carries the resolved topology snapshot computed from `fleet.resolved` at projection time: wave membership (`host_set`), per-host target closure, AND per-budget host membership (`disruption_budgets[]`, the operator's selectors resolved against `fleet.hosts.tags` at that instant). Once the manifest is signed, none of these reshape until the rollout terminates and is replaced. Consequence: mid-rollout retags affect future rollouts only — they cannot reshape the budget enforcement an in-flight rollout is running under. This mirrors how waves already work and unifies the model: **`fleet.resolved` declares intent (selectors); the rollout manifest declares topology (resolved hosts).** Cross-rollout fleet-wide enforcement (e.g. "no more than one etcd node disrupted at a time, ever, across all channels") survives by matching budgets across active rollouts via selector equality.
+
 ---
 
 ## II. Trust roots

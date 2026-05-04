@@ -6,20 +6,39 @@ use chrono::{DateTime, Utc};
 use nixfleet_proto::{FleetResolved, Wave};
 
 /// Disruption-budget evaluation for the dispatch gate.
+///
+/// Architectural note: budgets are read from the rollout's snapshot
+/// (frozen at OpenRollout time, signed into the rollout manifest), NOT
+/// re-resolved against live `fleet.hosts.tags` per tick. Mid-rollout
+/// retags therefore cannot reshape budget membership — the cascading-
+/// dispatch hazard from live resolution is structurally impossible.
+///
+/// Cross-rollout fleet-wide enforcement survives the snapshot model:
+/// each rollout carries its own snapshot, but in-flight summing matches
+/// budgets across rollouts by `selector` equality so the "max one
+/// workstation in flight, ever" semantics hold even with multiple
+/// rollouts active simultaneously.
 mod budgets {
     use super::HostRolloutState;
-    use crate::observed::Observed;
-    use nixfleet_proto::FleetResolved;
+    use crate::observed::{Observed, Rollout};
+    use nixfleet_proto::{RolloutBudget, Selector};
 
-    pub(super) fn in_flight_count(observed: &Observed, budget_hosts: &[String]) -> u32 {
+    /// Sum of in-flight hosts across all active rollouts whose snapshot
+    /// has a budget with the matching `selector`. Match by selector
+    /// equality (not list index) so reordering `fleet.disruptionBudgets`
+    /// between rollout opens doesn't conflate distinct budgets.
+    pub(super) fn in_flight_count(observed: &Observed, selector: &Selector) -> u32 {
         observed
             .active_rollouts
             .iter()
             .map(|r| {
+                let Some(b) = r.budgets.iter().find(|rb| &rb.selector == selector) else {
+                    return 0;
+                };
                 r.host_states
                     .iter()
                     .filter(|(h, st)| {
-                        if !budget_hosts.iter().any(|b| b == *h) {
+                        if !b.hosts.iter().any(|bh| bh == *h) {
                             return false;
                         }
                         matches!(
@@ -35,24 +54,22 @@ mod budgets {
             .sum()
     }
 
-    /// Tightest (in_flight, max_in_flight) across budgets that include host.
-    /// Each budget's selector is resolved against `fleet.hosts` at call time —
-    /// tag membership is dynamic, no re-sign of fleet.resolved required.
+    /// Tightest (in_flight, max_in_flight) across `rollout`'s snapshot
+    /// budgets that include `host`. Returns `None` when no budget
+    /// gates `host` (no `max_in_flight`, or host not in any budget's
+    /// frozen membership).
     pub(super) fn budget_max(
-        fleet: &FleetResolved,
         observed: &Observed,
+        rollout: &Rollout,
         host: &str,
     ) -> Option<(u32, u32)> {
-        fleet
-            .disruption_budgets
+        rollout
+            .budgets
             .iter()
-            .filter_map(|b| {
-                let members = b.selector.resolve(fleet.hosts.iter());
-                if !members.iter().any(|m| m == host) {
-                    return None;
-                }
+            .filter(|b| b.hosts.iter().any(|h| h == host))
+            .filter_map(|b: &RolloutBudget| {
                 b.max_in_flight
-                    .map(|max| (in_flight_count(observed, &members), max))
+                    .map(|max| (in_flight_count(observed, &b.selector), max))
             })
             .min_by_key(|(_, max)| *max)
     }
@@ -62,124 +79,157 @@ mod budgets {
         use super::*;
         use crate::observed::Rollout;
         use crate::rollout_state::RolloutState;
+        use nixfleet_proto::{RolloutBudget, Selector};
         use std::collections::HashMap;
 
-        fn observed_with(rollout_hosts: Vec<(String, HostRolloutState)>) -> Observed {
-            let mut host_states = HashMap::new();
-            for (h, s) in rollout_hosts {
-                host_states.insert(h, s);
+        fn family_selector() -> Selector {
+            Selector {
+                tags: vec!["family".into()],
+                ..Default::default()
             }
+        }
+
+        fn rollout_with(
+            id: &str,
+            channel: &str,
+            host_states: Vec<(&str, HostRolloutState)>,
+            budgets: Vec<RolloutBudget>,
+        ) -> Rollout {
+            Rollout {
+                id: id.into(),
+                channel: channel.into(),
+                target_ref: "ref".into(),
+                state: RolloutState::Executing,
+                current_wave: 0,
+                host_states: host_states
+                    .into_iter()
+                    .map(|(h, s)| (h.to_string(), s))
+                    .collect(),
+                last_healthy_since: HashMap::new(),
+                budgets,
+            }
+        }
+
+        fn observed_with(rollouts: Vec<Rollout>) -> Observed {
             Observed {
                 channel_refs: HashMap::new(),
                 last_rolled_refs: HashMap::new(),
                 host_state: HashMap::new(),
-                active_rollouts: vec![Rollout {
-                    id: "r".into(),
-                    channel: "c".into(),
-                    target_ref: "ref".into(),
-                    state: RolloutState::Executing,
-                    current_wave: 0,
-                    host_states,
-                    last_healthy_since: HashMap::new(),
-                }],
+                active_rollouts: rollouts,
                 compliance_failures_by_rollout: HashMap::new(),
-            last_deferrals: HashMap::new(),
+                last_deferrals: HashMap::new(),
             }
         }
 
         #[test]
-        fn in_flight_count_empty() {
-            let obs = observed_with(vec![]);
-            assert_eq!(in_flight_count(&obs, &["a".into(), "b".into()]), 0);
-        }
-
-        #[test]
-        fn in_flight_count_counts_only_in_flight_states() {
-            let obs = observed_with(vec![
-                ("a".into(), HostRolloutState::Queued),
-                ("b".into(), HostRolloutState::Dispatched),
-                ("c".into(), HostRolloutState::Activating),
-                ("d".into(), HostRolloutState::Soaked),
-                ("e".into(), HostRolloutState::Healthy),
-            ]);
-            let budget = vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()];
-            assert_eq!(in_flight_count(&obs, &budget), 3);
-        }
-
-        #[test]
-        fn in_flight_count_filters_by_budget_hosts() {
-            let obs = observed_with(vec![
-                ("a".into(), HostRolloutState::Dispatched),
-                ("b".into(), HostRolloutState::Dispatched),
-            ]);
-            assert_eq!(in_flight_count(&obs, &["a".into()]), 1);
-        }
-
-        #[test]
-        fn budget_resolves_selector_at_call_time_not_eval_time() {
-            use nixfleet_proto::{
-                Compliance, DisruptionBudget, FleetResolved, Host, Meta, Selector,
+        fn budget_max_reads_from_rollout_snapshot() {
+            // Snapshot says {a, b, c}; live tags don't matter because the
+            // budget gate consults the rollout's frozen membership.
+            let snap = RolloutBudget {
+                selector: family_selector(),
+                hosts: vec!["a".into(), "b".into(), "c".into()],
+                max_in_flight: Some(2),
+                max_in_flight_pct: None,
             };
-            let mut hosts = HashMap::new();
-            for n in ["a", "b", "c"] {
-                hosts.insert(
-                    n.into(),
-                    Host {
-                        system: "x86_64-linux".into(),
-                        tags: vec!["family".into()],
-                        channel: "stable".into(),
-                        closure_hash: None,
-                        pubkey: None,
-                    },
-                );
-            }
-            let mut channels = HashMap::new();
-            channels.insert(
-                "stable".into(),
-                nixfleet_proto::Channel {
-                    rollout_policy: "p".into(),
-                    reconcile_interval_minutes: 30,
-                    freshness_window: 1440,
-                    signing_interval_minutes: 60,
-                    compliance: Compliance {
-                        frameworks: vec![],
-                        mode: "disabled".into(),
-                    },
-                },
+            let r = rollout_with(
+                "r",
+                "stable",
+                vec![
+                    ("a", HostRolloutState::Dispatched),
+                    ("b", HostRolloutState::Activating),
+                    ("c", HostRolloutState::Queued),
+                ],
+                vec![snap],
             );
-            // Budget written by the new wire format: tag-driven, no `hosts`.
-            let fleet = FleetResolved {
-                schema_version: 1,
-                hosts,
-                channels,
-                rollout_policies: HashMap::new(),
-                waves: HashMap::new(),
-                edges: vec![],
-                channel_edges: vec![],
-                disruption_budgets: vec![DisruptionBudget {
-                    selector: Selector {
-                        tags: vec!["family".into()],
-                        ..Default::default()
-                    },
-                    max_in_flight: Some(2),
-                    max_in_flight_pct: None,
-                }],
-                meta: Meta {
-                    schema_version: 1,
-                    signed_at: None,
-                    ci_commit: None,
-                    signature_algorithm: "ed25519".into(),
-                },
-            };
-            let observed = observed_with(vec![
-                ("a".into(), HostRolloutState::Dispatched),
-                ("b".into(), HostRolloutState::Dispatched),
-            ]);
-            let (in_flight, max) = budget_max(&fleet, &observed, "c").expect("c is family-tagged");
-            assert_eq!(in_flight, 2, "selector resolved to {{a,b,c}} dynamically");
-            assert_eq!(max, 2);
+            let observed = observed_with(vec![r.clone()]);
+            let (in_flight, max) = budget_max(&observed, &r, "c").expect("c in budget");
+            assert_eq!((in_flight, max), (2, 2));
         }
 
+        #[test]
+        fn budget_max_returns_none_when_host_outside_snapshot() {
+            let snap = RolloutBudget {
+                selector: family_selector(),
+                hosts: vec!["a".into(), "b".into()],
+                max_in_flight: Some(1),
+                max_in_flight_pct: None,
+            };
+            let r = rollout_with(
+                "r",
+                "stable",
+                vec![("a", HostRolloutState::Dispatched)],
+                vec![snap],
+            );
+            let observed = observed_with(vec![r.clone()]);
+            assert!(budget_max(&observed, &r, "z").is_none());
+        }
+
+        #[test]
+        fn cross_rollout_in_flight_sums_by_selector_identity() {
+            // Two active rollouts with budgets sharing the same selector.
+            // Cross-rollout fleet-wide enforcement: lab dispatched in r1
+            // counts towards the shared budget when checking krach in r2.
+            let snap_r1 = RolloutBudget {
+                selector: family_selector(),
+                hosts: vec!["lab".into(), "krach".into()],
+                max_in_flight: Some(1),
+                max_in_flight_pct: None,
+            };
+            let snap_r2 = RolloutBudget {
+                selector: family_selector(),
+                hosts: vec!["krach".into(), "ohm".into()],
+                max_in_flight: Some(1),
+                max_in_flight_pct: None,
+            };
+            let r1 = rollout_with(
+                "r1",
+                "edge",
+                vec![("lab", HostRolloutState::Dispatched)],
+                vec![snap_r1],
+            );
+            let r2 = rollout_with(
+                "r2",
+                "stable",
+                vec![("krach", HostRolloutState::Queued)],
+                vec![snap_r2],
+            );
+            let observed = observed_with(vec![r1, r2.clone()]);
+            let (in_flight, max) =
+                budget_max(&observed, &r2, "krach").expect("krach in r2 budget");
+            assert_eq!(in_flight, 1, "lab in r1 contributes via selector identity");
+            assert_eq!(max, 1);
+        }
+
+        #[test]
+        fn snapshot_is_frozen_against_mid_rollout_retag() {
+            // The architectural invariant: rollout topology is immutable
+            // for the rollout's life. A retag mid-flight cannot reshape
+            // the budget membership the rollout is enforcing.
+            let snap = RolloutBudget {
+                selector: family_selector(),
+                hosts: vec!["a".into(), "b".into(), "c".into()],
+                max_in_flight: Some(2),
+                max_in_flight_pct: None,
+            };
+            let r = rollout_with(
+                "r",
+                "stable",
+                vec![
+                    ("a", HostRolloutState::Dispatched),
+                    ("b", HostRolloutState::Dispatched),
+                    ("c", HostRolloutState::Queued),
+                ],
+                vec![snap],
+            );
+            // The "retag" — operator changes b's tags in fleet.nix —
+            // would normally drop b from the family selector. Snapshot
+            // model means the rollout's view of family budget is
+            // unchanged, so c sees the budget exhausted (a + b in
+            // flight = 2 = max).
+            let observed = observed_with(vec![r.clone()]);
+            let (in_flight, max) = budget_max(&observed, &r, "c").unwrap();
+            assert_eq!((in_flight, max), (2, 2));
+        }
     }
 }
 
@@ -230,7 +280,7 @@ mod edges {
                     schema_version: 1,
                     signed_at: None,
                     ci_commit: None,
-                    signature_algorithm: "ed25519".into(),
+                    signature_algorithm: Some("ed25519".into()),
                 },
             }
         }
@@ -249,6 +299,7 @@ mod edges {
                 current_wave: 0,
                 host_states,
                 last_healthy_since: HashMap::new(),
+            budgets: vec![],
             }
         }
 
@@ -336,7 +387,7 @@ pub(crate) fn handle_wave(
                     });
                     continue;
                 }
-                if let Some((in_flight, max)) = budgets::budget_max(fleet, observed, host) {
+                if let Some((in_flight, max)) = budgets::budget_max(observed, rollout, host) {
                     if in_flight >= max {
                         out.actions.push(Action::Skip {
                             host: host.clone(),
@@ -422,6 +473,7 @@ mod tests {
             current_wave: 0,
             host_states: std::collections::HashMap::new(),
             last_healthy_since: std::collections::HashMap::new(),
+            budgets: vec![],
         };
         assert_eq!(
             lookup_host_state(&rollout, "missing"),
@@ -492,7 +544,7 @@ mod tests {
                 schema_version: 1,
                 signed_at: None,
                 ci_commit: None,
-                signature_algorithm: "ed25519".into(),
+                signature_algorithm: Some("ed25519".into()),
             },
         }
     }
@@ -509,6 +561,7 @@ mod tests {
             current_wave: 0,
             host_states,
             last_healthy_since: std::collections::HashMap::new(),
+            budgets: vec![],
         }
     }
 

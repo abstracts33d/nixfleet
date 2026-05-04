@@ -3,7 +3,7 @@
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::{FleetResolved, HostWave, Meta, RolloutManifest};
+use nixfleet_proto::{FleetResolved, HostWave, Meta, RolloutBudget, RolloutManifest};
 
 /// CP-side rolloutId for a host on `channel`. `Ok(None)` when the channel
 /// has no host with a declared closure.
@@ -23,7 +23,7 @@ pub fn compute_rollout_id_for_channel(
         fleet_resolved_hash,
         signed_at,
         ci_commit,
-        &fleet.meta.signature_algorithm,
+        fleet.meta.signature_algorithm_or_default(),
     )? {
         Some(m) => m,
         None => return Ok(None),
@@ -100,6 +100,25 @@ pub fn project_manifest(
 
     let channel_ref = ci_commit.unwrap_or_default().to_string();
 
+    // Snapshot disruption budgets at projection time. Each fleet-level
+    // budget's selector resolves against `fleet.hosts` here and freezes;
+    // mid-rollout retags affect future rollouts, never this one. Hosts
+    // sorted alphabetically for JCS canonical-byte stability.
+    let disruption_budgets: Vec<RolloutBudget> = fleet
+        .disruption_budgets
+        .iter()
+        .map(|b| {
+            let mut hosts = b.selector.resolve(fleet.hosts.iter());
+            hosts.sort();
+            RolloutBudget {
+                selector: b.selector.clone(),
+                hosts,
+                max_in_flight: b.max_in_flight,
+                max_in_flight_pct: b.max_in_flight_pct,
+            }
+        })
+        .collect();
+
     Ok(Some(RolloutManifest {
         schema_version: 1,
         display_name,
@@ -109,11 +128,12 @@ pub fn project_manifest(
         host_set,
         health_gate: policy.health_gate.clone(),
         compliance_frameworks: channel_def.compliance.frameworks.clone(),
+        disruption_budgets,
         meta: Meta {
             schema_version: 1,
             signed_at: Some(signed_at),
             ci_commit: ci_commit.map(|c| c.to_string()),
-            signature_algorithm: signature_algorithm.to_string(),
+            signature_algorithm: Some(signature_algorithm.to_string()),
         },
     }))
 }

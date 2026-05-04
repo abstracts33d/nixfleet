@@ -59,7 +59,7 @@ fn fleet_with_single_wave_host(hostname: &str, closure: &str, soak_minutes: u32)
             schema_version: 1,
             signed_at: Some(Utc::now()),
             ci_commit: Some("abc12345".to_string()),
-            signature_algorithm: "ed25519".into(),
+            signature_algorithm: Some("ed25519".into()),
         },
     }
 }
@@ -113,7 +113,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
     );
 
     let observed =
-        observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new(), HashMap::new());
+        observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new(), HashMap::new(), &HashMap::new());
     assert_eq!(observed.active_rollouts.len(), 1);
 
     let fleet = fleet_with_single_wave_host(host, target_closure, 5);
@@ -149,7 +149,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
         "host must surface as Soaked after the action processor",
     );
     let observed2 =
-        observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts2, HashMap::new(), HashMap::new());
+        observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts2, HashMap::new(), HashMap::new(), &HashMap::new());
     let actions2 = reconcile(&fleet, &observed2, now);
     assert!(
         actions2
@@ -195,7 +195,7 @@ fn soak_loop_skips_when_window_not_elapsed() {
 
     let rollouts = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
     let observed =
-        observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new(), HashMap::new());
+        observed_projection::project(&HashMap::new(), &HashMap::new(), &rollouts, HashMap::new(), HashMap::new(), &HashMap::new());
     let fleet = fleet_with_single_wave_host(host, target_closure, 5);
     let actions = reconcile(&fleet, &observed, now);
     assert!(

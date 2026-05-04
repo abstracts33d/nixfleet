@@ -231,5 +231,18 @@ pub struct Meta {
     pub signed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub ci_commit: Option<String>,
-    pub signature_algorithm: String,
+    /// Optional per CONTRACTS §V Pattern A — absent ≡ "ed25519" within
+    /// `schemaVersion: 1`. Pre-stamp eval emits absent (unsigned: no
+    /// algorithm decided yet); `stamp_meta` populates with the actual
+    /// signer's algorithm at signing time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_algorithm: Option<String>,
+}
+
+impl Meta {
+    /// `signature_algorithm` with the `absent ≡ "ed25519"` rule applied.
+    /// Use this in any read path that needs a concrete algorithm string.
+    pub fn signature_algorithm_or_default(&self) -> &str {
+        self.signature_algorithm.as_deref().unwrap_or("ed25519")
+    }
 }

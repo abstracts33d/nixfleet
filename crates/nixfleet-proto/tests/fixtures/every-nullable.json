@@ -25,8 +25,7 @@
   "meta": {
     "ciCommit": null,
     "schemaVersion": 1,
-    "signedAt": null,
-    "signatureAlgorithm": "ed25519"
+    "signedAt": null
   },
   "rolloutPolicies": {
     "none": {

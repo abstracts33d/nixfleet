@@ -19,5 +19,5 @@ pub use fleet_resolved::{
 };
 pub use host_rollout_state::HostRolloutState;
 pub use revocations::{RevocationEntry, Revocations};
-pub use rollout_manifest::{HostWave, RolloutManifest};
+pub use rollout_manifest::{HostWave, RolloutBudget, RolloutManifest};
 pub use trust::{KeySlot, TrustConfig, TrustedPubkey};

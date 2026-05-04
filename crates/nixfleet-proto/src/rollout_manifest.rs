@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::fleet_resolved::{HealthGate, Meta};
+use crate::fleet_resolved::{HealthGate, Meta, Selector};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +35,32 @@ pub struct RolloutManifest {
     /// Mirrored from `channels[channel].compliance.frameworks`.
     pub compliance_frameworks: Vec<String>,
 
+    /// Disruption-budget snapshot: each `fleet.disruptionBudgets[i]` resolved
+    /// against `fleet.hosts.tags` at projection time. Frozen for the
+    /// rollout's life — mid-rollout retag does NOT reshape these. Cross-
+    /// rollout in-flight counting matches by `selector` equality so the
+    /// fleet-wide enforcement property survives the snapshot model.
+    /// Empty vec when fleet declares no budgets.
+    /// FOOTGUN: per-budget `hosts` MUST be sorted alphabetically — JCS
+    /// canonicalizes object keys but not array elements.
+    #[serde(default)]
+    pub disruption_budgets: Vec<RolloutBudget>,
+
     pub meta: Meta,
+}
+
+/// Per-rollout snapshot of a fleet-wide disruption budget. The selector is
+/// preserved so cross-rollout sums can match by intent regardless of
+/// whether host membership has shifted between rollout opens.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutBudget {
+    pub selector: Selector,
+    pub hosts: Vec<String>,
+    #[serde(default)]
+    pub max_in_flight: Option<u32>,
+    #[serde(default)]
+    pub max_in_flight_pct: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -60,7 +85,7 @@ mod tests {
             schema_version: 1,
             signed_at: Some("2026-04-30T12:00:00Z".parse().unwrap()),
             ci_commit: Some("def45678".into()),
-            signature_algorithm: "ed25519".into(),
+            signature_algorithm: Some("ed25519".into()),
         }
     }
 
@@ -86,6 +111,7 @@ mod tests {
             ],
             health_gate: HealthGate::default(),
             compliance_frameworks: vec!["anssi-bp028".into()],
+            disruption_budgets: vec![],
             meta: meta_v1(),
         }
     }

@@ -1,17 +1,12 @@
+// Budget enforcement moved to per-rollout snapshots (see RFC-0001 §2.6
+// rollout-manifest budget snapshot). Fixture-based budget tests retired
+// in favour of in-line unit tests in `nixfleet-reconciler/src/host_state.rs`
+// `budgets::tests` — those exercise the snapshot semantics directly,
+// including cross-rollout selector-identity counting and the frozen-
+// against-mid-rollout-retag invariant.
+
 #[path = "common/mod.rs"]
 mod common;
-
-#[test]
-fn budget_exhausted_skip() {
-    let (actual, expected) = common::run("budgets_edges/budget_exhausted_skip");
-    common::assert_matches(&actual, &expected);
-}
-
-#[test]
-fn budget_across_rollouts() {
-    let (actual, expected) = common::run("budgets_edges/budget_across_rollouts");
-    common::assert_matches(&actual, &expected);
-}
 
 #[test]
 fn edge_predecessor_blocks() {

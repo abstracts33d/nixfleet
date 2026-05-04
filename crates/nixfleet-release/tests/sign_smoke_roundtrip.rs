@@ -51,7 +51,7 @@ fn dummy_resolved() -> FleetResolved {
             schema_version: 1,
             signed_at: Some(Utc::now()),
             ci_commit: Some("deadbeef".into()),
-            signature_algorithm: "ed25519".into(),
+            signature_algorithm: Some("ed25519".into()),
         },
     }
 }

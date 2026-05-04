@@ -64,12 +64,23 @@ fn stream_b_empty_selector_parses_and_canonicalizes() {
 }
 
 #[test]
-fn meta_signature_algorithm_none_round_trips_as_absent() {
+fn meta_signature_algorithm_absent_round_trips_as_none() {
+    // CONTRACTS.md §V Pattern A: absent ≡ "ed25519" within schemaVersion 1.
+    // The fixture omits signatureAlgorithm; parse → None; helper resolves
+    // to "ed25519"; re-serialize keeps it absent (skip_serializing_if).
     let input = load("every-nullable.json");
     let parsed: FleetResolved = serde_json::from_str(&input).expect("parse");
+    assert_eq!(parsed.meta.signature_algorithm, None);
     assert_eq!(
-        parsed.meta.signature_algorithm, "ed25519",
-        "fixture meta.signatureAlgorithm parses as required string",
+        parsed.meta.signature_algorithm_or_default(),
+        "ed25519",
+        "absent ≡ ed25519 default per CONTRACTS §V Pattern A",
+    );
+
+    let reserialized = serde_json::to_string(&parsed).expect("serialize");
+    assert!(
+        !reserialized.contains("\"signatureAlgorithm\""),
+        "absent input must round-trip as absent (no field emitted): {reserialized}",
     );
 }
 
@@ -81,7 +92,7 @@ fn meta_signature_algorithm_some_round_trips_as_explicit_string() {
 
     let parsed: FleetResolved =
         serde_json::from_str(&value.to_string()).expect("parse with signatureAlgorithm");
-    assert_eq!(parsed.meta.signature_algorithm.as_str(), "ecdsa-p256");
+    assert_eq!(parsed.meta.signature_algorithm.as_deref(), Some("ecdsa-p256"));
 
     let reserialized = serde_json::to_string(&parsed).expect("serialize");
     assert!(

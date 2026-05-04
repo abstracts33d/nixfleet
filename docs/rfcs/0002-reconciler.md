@@ -145,11 +145,15 @@ Edges (RFC-0001 §2.5) are consulted *within the current wave*: a host cannot ad
 
 Budgets (RFC-0001 §2.6) apply *across all active rollouts simultaneously*. A host counts against its budget from Dispatched through Converged. If advancing the next host would exceed `maxInFlight` or `maxInFlightPct` for any matching budget, the reconciler defers — host stays in Queued until a slot opens.
 
-Budget evaluation is fleet-wide, not per-rollout. Two concurrent rollouts on different channels respect the same etcd budget.
+**Budget snapshots are per-rollout; identity is by selector.** Each rollout's manifest carries a frozen `disruption_budgets[]` snapshot — the operator's selector resolved against `fleet.hosts` at OpenRollout time. The reconciler reads the snapshot, never the live `fleet.disruptionBudgets[].selector`. Mid-rollout retags therefore cannot reshape an in-flight rollout's budget membership; they take effect on the next rollout. Cross-rollout fleet-wide enforcement survives the snapshot model: in-flight summing matches budgets across active rollouts by selector equality, so two rollouts that share a `tags = ["etcd"]` budget cap concurrent etcd disruption to the global maxInFlight.
 
 ### 4.3 Concurrency across channels
 
-Channels roll out independently. A new rev on channel `edge-slow` can progress while `stable` is mid-rollout. The only global coordination is via disruption budgets.
+Two ordering primitives, in increasing strictness:
+
+1. **Disruption budgets** — fleet-wide caps on in-flight count. Always active. Two channels rolling out concurrently respect the same `tags = ["etcd"]` cap.
+
+2. **`channelEdges`** — DAG ordering between channels. A `{ before; after }` edge holds OpenRollout for `after` until `before` has no non-terminal rollout. This is the v0.3 punt closed: cross-channel coordination is no longer "punt to disruption budgets only", it has its own primitive. Edge predecessors with no rollout history are open (proceed); a `Halted` predecessor blocks `after` until the operator resolves it. The reconciler emits `Action::RolloutDeferred { channel, target_ref, blocked_by, reason }` when the edge holds; emission is debounced via `Observed.last_deferrals` so a still-blocked channel doesn't pollute the journal across reconcile ticks.
 
 Per-channel: at most one active rollout. A new ref arriving while a rollout is in progress is queued; when the current rollout reaches Converged / Halted / Cancelled, the queued ref triggers a fresh rollout. Queue depth ≤ 1 — if two new refs arrive, only the latest is retained (intermediate commits are skipped).
 
@@ -169,7 +173,9 @@ A `RolloutManifest` is the per-rollout signed plan: the frozen view of which hos
 
 **Distribution.** Agents fetch the manifest via `GET /v1/rollouts/<rolloutId>` (RFC-0003 §4.6) on first sight, verify it independently against the trust roots they already hold, recompute the hash, and assert that `(hostname, wave_index)` ∈ `manifest.host_set`. Mismatch is a hard refuse-to-act with `ReportEvent::ManifestMismatch`. The cached manifest is the source of truth for the rollout's lifetime — subsequent checkins re-assert that the CP-advertised `rolloutId` matches the cached one. A second-call manifest with the same `rolloutId` but different content cannot exist (the hash would differ).
 
-**Schema.** Defined in `nixfleet-proto::rollout_manifest`. The `host_set` array MUST be sorted by `hostname` ascending; JCS sorts object keys but not array elements, so the producer's emission order is the canonical order.
+**Schema.** Defined in `nixfleet-proto::rollout_manifest`. The `host_set` array MUST be sorted by `hostname` ascending; the per-budget `hosts` arrays in `disruption_budgets` MUST be sorted alphabetically. JCS sorts object keys but not array elements, so the producer's emission order is the canonical order.
+
+**Disruption-budget snapshot.** Each manifest carries `disruption_budgets[]` — the operator's selectors from `fleet.disruptionBudgets` resolved against `fleet.hosts` at projection time, frozen for the rollout's life. The reconciler reads from this snapshot rather than re-resolving live `fleet.hosts.tags` per tick, which is what makes mid-rollout retag safe (§4.2). Cross-rollout in-flight counting matches budgets by selector equality.
 
 **Future work.** With `len(host_set)` in the thousands, full-roster manifests grow into the hundreds of KB. Per-host scoping (one signed object per host) trades manifest count for message size; a Merkle-inclusion proof shape trades both at the cost of a more complex verifier. Single-tenant fleets at v0.2 scale do not need either; they belong in v0.3.
 

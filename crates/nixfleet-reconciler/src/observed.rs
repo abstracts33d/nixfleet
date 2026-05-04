@@ -66,6 +66,14 @@ pub struct Rollout {
     /// Hosts not in Healthy are absent.
     #[serde(default)]
     pub last_healthy_since: HashMap<String, DateTime<Utc>>,
+    /// Disruption-budget snapshot copied from the rollout's signed
+    /// manifest at projection time. Frozen for the rollout's life so
+    /// mid-rollout retag does not reshape budget enforcement. Cross-
+    /// rollout in-flight summing matches by `selector` equality — the
+    /// fleet-wide property is preserved even though each rollout
+    /// carries its own snapshot.
+    #[serde(default)]
+    pub budgets: Vec<nixfleet_proto::RolloutBudget>,
 }
 
 fn serialize_rollout_state<S: Serializer>(s: &RolloutState, ser: S) -> Result<S::Ok, S::Error> {

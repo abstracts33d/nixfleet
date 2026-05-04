@@ -187,7 +187,7 @@ mod tests {
                         .with_timezone(&Utc),
                 ),
                 ci_commit: Some("abc12345deadbeef".to_string()),
-                signature_algorithm: "ed25519".into(),
+                signature_algorithm: Some("ed25519".into()),
             },
         }
     }

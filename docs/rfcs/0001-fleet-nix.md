@@ -96,14 +96,32 @@ outputs = { self, nixpkgs, nixfleet, ... }: {
     };
 
     # ------------------------------------------------------------
-    # 2.5 Edges — ordering constraints across hosts.
+    # 2.5 Edges — ordering constraints across hosts (within a rollout).
     # ------------------------------------------------------------
     edges = [
       { after = "db-primary"; before = "app-*"; reason = "schema migrations"; }
     ];
 
     # ------------------------------------------------------------
-    # 2.6 Disruption budgets — max in-flight per selector.
+    # 2.6 Channel edges — ordering across channels (across rollouts).
+    # `before` channel must converge before any new rollout opens on
+    # `after`. Edge predecessors with no rollout history are open
+    # (proceed); halted predecessors block until the operator
+    # resolves them or removes the edge.
+    # ------------------------------------------------------------
+    channelEdges = [
+      { before = "edge"; after = "stable"; reason = "lab canaries first"; }
+    ];
+
+    # ------------------------------------------------------------
+    # 2.7 Disruption budgets — max in-flight per selector. Tag-driven
+    # at the wire level: each budget carries its `selector` (operator
+    # intent) and is resolved into a concrete host list at OpenRollout
+    # time, snapshotted into the rollout manifest. Mid-rollout retags
+    # affect future rollouts only — a rollout's topology is immutable
+    # for its life. Cross-rollout fleet-wide enforcement survives the
+    # snapshot model: in-flight summing matches by selector identity
+    # across all active rollouts' snapshots.
     # ------------------------------------------------------------
     disruptionBudgets = [
       { selector = { tags = [ "etcd" ]; }; maxInFlight = 1; }
@@ -140,7 +158,10 @@ The control plane never evaluates Nix. It reads the resolved fleet from a single
 nix eval --json .#fleet.resolved > fleet.json
 ```
 
-`fleet.resolved` is a derived attribute: the above schema, but with all selectors pre-resolved to host lists, all policies inlined, and closure hashes computed per host per channel-ref pair. This is the reconciler's input.
+`fleet.resolved` is a derived attribute. Two resolution policies coexist:
+
+- **Waves** are pre-resolved to host lists at fleet-eval time (CI). Wave membership is signed into the artifact.
+- **Disruption budgets** carry their `selector` through unchanged — resolution to host lists happens at OpenRollout time and is snapshotted into the per-rollout manifest. The `fleet.resolved` artifact records intent; the rollout manifest records the frozen topology that intent produced for that specific rollout. Mid-rollout retags affect future rollouts only.
 
 Shape:
 
@@ -163,9 +184,29 @@ Shape:
       { "hosts": ["m70q-attic"], "soakMinutes": 0 }
     ]
   },
+  "channelEdges": [
+    { "before": "edge", "after": "stable", "reason": "lab canaries first" }
+  ],
   "disruptionBudgets": [
-    { "hosts": ["etcd-1", "etcd-2", "etcd-3"], "maxInFlight": 1 }
+    { "selector": { "tags": ["etcd"] }, "maxInFlight": 1 }
   ]
+}
+```
+
+The rollout manifest (`releases/rollouts/<rolloutId>.json`, signed) carries the resolved snapshot:
+
+```json
+{
+  "channel": "stable",
+  "hostSet": [ ... ],
+  "disruptionBudgets": [
+    {
+      "selector": { "tags": ["etcd"] },
+      "hosts": ["etcd-1", "etcd-2", "etcd-3"],
+      "maxInFlight": 1
+    }
+  ],
+  ...
 }
 ```
 

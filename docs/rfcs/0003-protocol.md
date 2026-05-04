@@ -154,6 +154,19 @@ Out of scope for this RFC in detail. Summary:
 
 - `POST /enroll` — accepts bootstrap token + CSR, returns signed cert. Token is burned on use.
 - `POST /agent/renew` — accepts current cert (mTLS) + CSR, returns refreshed cert.
+- `POST /agent/bootstrap-report` — pre-cert reporting path for failures that prevent normal cert provisioning.
+
+#### Bootstrap report
+
+Agents that fail enrollment cannot use the mTLS-gated `POST /agent/report` to surface the failure (no cert yet). `POST /agent/bootstrap-report` exists for this case alone.
+
+**Authentication.** Bound to a hostname + agent-supplied pubkey via the same bootstrap token used by `POST /enroll`. The token is NOT consumed — multiple bootstrap reports may fire while the operator iterates on the underlying issue. The token's lifetime gates the window.
+
+**Allowlisted events.** Only `TrustError` and `EnrollmentFailed` events are accepted on this endpoint. Anything else is `400`. The allowlist enforces the path's narrow purpose: surfacing why enrollment is broken, not generic agent telemetry.
+
+**No nonce consumption.** Standard `/agent/report` consumes a per-checkin nonce to bind the report to a specific server view. Bootstrap reports happen before the agent has a checkin nonce; nonce binding is not enforced. The token + hostname + pubkey + event allowlist together constrain the abuse surface.
+
+**Response.** `204 No Content` on accept; the CP records the event in `host_reports` (same ring as post-enrollment events) so the operator dashboard sees pre-cert failures in the same panel as post-cert ones. Subsequent successful `/enroll` does not retroactively rewrite the bootstrap-report rows.
 
 ### 4.6 `GET /v1/rollouts/<rolloutId>`
 

@@ -140,7 +140,7 @@ mod channel_edge_tests {
                 schema_version: 1,
                 signed_at: None,
                 ci_commit: None,
-                signature_algorithm: "ed25519".into(),
+                signature_algorithm: Some("ed25519".into()),
             },
         }
     }
@@ -156,6 +156,7 @@ mod channel_edge_tests {
             current_wave: 0,
             host_states: HashMap::new(),
             last_healthy_since: HashMap::new(),
+            budgets: vec![],
         });
         o
     }
@@ -274,6 +275,7 @@ mod channel_edge_tests {
             current_wave: 0,
             host_states: HashMap::new(),
             last_healthy_since: HashMap::new(),
+            budgets: vec![],
         });
         // Need a third channel in fleet for completeness.
         observed.last_deferrals.insert(

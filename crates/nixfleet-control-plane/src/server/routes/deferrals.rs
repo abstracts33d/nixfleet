@@ -61,15 +61,17 @@ pub(in crate::server) async fn list(
         _ => rollouts,
     };
 
-    // last_deferrals isn't consulted here on purpose — the panel needs
-    // domain truth, not the debounce-map snapshot. The empty `last_deferrals`
-    // we pass to project() reflects that.
+    // last_deferrals + rollout_budgets aren't consulted here on purpose —
+    // the panel needs domain truth (channelEdges ∩ active_rollouts), not
+    // the debounce-map snapshot or per-rollout budget membership. The
+    // empty maps we pass to project() reflect that.
     let observed = observed_projection::project(
         &checkins,
         &channel_refs,
         &rollouts,
         HashMap::new(),
         HashMap::new(),
+        &HashMap::new(),
     );
 
     let mut deferrals: Vec<serde_json::Value> = Vec::new();

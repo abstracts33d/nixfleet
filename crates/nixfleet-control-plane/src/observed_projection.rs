@@ -2,18 +2,24 @@
 
 use std::collections::HashMap;
 
+use nixfleet_proto::RolloutBudget;
 use nixfleet_reconciler::observed::{DeferralRecord, HostState, Observed, Rollout};
 use nixfleet_reconciler::{HostRolloutState, RolloutState};
 
 use crate::db::RolloutDbSnapshot;
 use crate::server::HostCheckinRecord;
 
+/// `rollout_budgets`: per-rollout budget snapshot from the signed
+/// manifest. Empty entry when no manifest is loaded yet (CP just primed)
+/// — budget gates then no-op, which is correct: a rollout with no known
+/// budgets has no constraint until its manifest is verified.
 pub fn project(
     host_checkins: &HashMap<String, HostCheckinRecord>,
     channel_refs: &HashMap<String, String>,
     rollouts: &[RolloutDbSnapshot],
     compliance_failures_by_rollout: HashMap<String, HashMap<String, usize>>,
     last_deferrals: HashMap<String, DeferralRecord>,
+    rollout_budgets: &HashMap<String, Vec<RolloutBudget>>,
 ) -> Observed {
     let mut host_state: HashMap<String, HostState> = HashMap::new();
     for (host, record) in host_checkins {
@@ -54,6 +60,10 @@ pub fn project(
                 })
                 .collect(),
             last_healthy_since: snap.last_healthy_since.clone(),
+            budgets: rollout_budgets
+                .get(&snap.rollout_id)
+                .cloned()
+                .unwrap_or_default(),
         })
         .collect();
 
@@ -100,7 +110,7 @@ mod tests {
         checkins.insert("ohm".to_string(), checkin_for("ohm", "def"));
 
         let channel_refs = HashMap::from([("dev".to_string(), "deadbeef".to_string())]);
-        let observed = project(&checkins, &channel_refs, &[], HashMap::new(), HashMap::new());
+        let observed = project(&checkins, &channel_refs, &[], HashMap::new(), HashMap::new(), &HashMap::new());
 
         assert_eq!(observed.host_state.len(), 2);
         assert_eq!(
@@ -115,7 +125,7 @@ mod tests {
 
     #[test]
     fn projection_with_no_checkins_yields_empty_host_state() {
-        let observed = project(&HashMap::new(), &HashMap::new(), &[], HashMap::new(), HashMap::new());
+        let observed = project(&HashMap::new(), &HashMap::new(), &[], HashMap::new(), HashMap::new(), &HashMap::new());
         assert!(observed.host_state.is_empty());
         assert!(observed.channel_refs.is_empty());
         assert!(observed.active_rollouts.is_empty());
@@ -164,6 +174,7 @@ mod tests {
             std::slice::from_ref(&snap),
             HashMap::new(),
             HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(
             observed.active_rollouts[0].host_states.get("ohm").copied(),
@@ -190,6 +201,7 @@ mod tests {
             std::slice::from_ref(&snap),
             HashMap::new(),
             HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(
             observed.active_rollouts[0].host_states.get("ohm").copied(),
@@ -221,6 +233,7 @@ mod tests {
             std::slice::from_ref(&snap),
             HashMap::new(),
             HashMap::new(),
+            &HashMap::new(),
         );
         assert_eq!(observed.active_rollouts.len(), 1);
         let r = &observed.active_rollouts[0];

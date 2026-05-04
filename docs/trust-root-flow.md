@@ -199,6 +199,20 @@ Recommendation: start with (b) — simplest, no new network surface on CP, match
 
 This is a separate design question from the trust-root flow but needs resolution before Phase 2 can end-to-end test. Open as a follow-up issue on nixfleet once the trust-flow implementation PR is posted.
 
+## 4.5 Bootstrap-report path (pre-cert reporting)
+
+Agents whose enrollment fails (bad token, missing trust roots, CP refusing the CSR) cannot use the mTLS-gated `POST /agent/report` to surface the failure. The flow needs a path that works **before** the trust handshake completes — otherwise enrollment failures are invisible until an operator SSHs into the agent.
+
+`POST /agent/bootstrap-report` is that path. The trust-handshake implications:
+
+- **Token-bound auth.** Same bootstrap token used by `POST /enroll`. The token binds to (hostname, agent-pubkey) at issuance time; the bootstrap-report endpoint validates that binding on every call.
+- **Token NOT consumed.** Multiple reports may fire during a debugging cycle. The token's lifetime is the window during which bootstrap reports are accepted.
+- **Event allowlist.** `TrustError` (signature/key issues with the trust file) and `EnrollmentFailed` (CSR refused, hostname conflict, etc.). Anything else returns 400. The narrow allowlist keeps the pre-cert path from doubling as generic telemetry.
+- **No nonce consumption.** The agent has no checkin nonce yet (no successful checkin). Token + hostname + pubkey + event-shape together constrain abuse.
+- **Storage parity.** Events land in the same `host_reports` ring as post-enrollment events, so the operator's dashboard surface unifies pre- and post-cert failure modes. RFC-0003 §4.5 documents the wire shape.
+
+This closes the "trust handshake failure is silent" gap: an agent that can't enroll still tells the CP why, with the same auth material it already has.
+
 ## 5. Agent-side parity
 
 Agents also verify closures (against `atticCacheKey`). The same pattern applies:
