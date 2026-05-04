@@ -285,6 +285,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             state.channel_refs_cache.clone(),
             state.verified_fleet.clone(),
             state.db.clone(),
+            state.last_deferrals.clone(),
             channel_refs_source,
         ));
     }

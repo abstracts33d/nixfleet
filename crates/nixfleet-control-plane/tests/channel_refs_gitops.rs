@@ -172,11 +172,13 @@ async fn poll_refreshes_verified_fleet_snapshot() {
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
+    let last_deferrals = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
     let _poll = spawn(
         CancellationToken::new(),
         cache.clone(),
         verified_fleet.clone(),
         None,
+        last_deferrals,
         cfg,
     );
 
@@ -271,11 +273,13 @@ async fn poll_retains_snapshot_on_verify_failure() {
         freshness_window: Duration::from_secs(86400 * 365 * 5),
     };
 
+    let last_deferrals = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
     let _poll = spawn(
         CancellationToken::new(),
         cache.clone(),
         verified_fleet.clone(),
         None,
+        last_deferrals,
         cfg,
     );
 

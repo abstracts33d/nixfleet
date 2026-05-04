@@ -15,6 +15,31 @@ pub(super) async fn dispatch_target_for_checkin(
     let snap = state.verified_fleet.read().await.clone()?;
     let fleet = snap.fleet;
     let fleet_resolved_hash = snap.fleet_resolved_hash;
+
+    // Channel-edges gate. Held BEFORE decide_target so the dispatch path
+    // and the polling path agree on the same channelEdges semantics. Without
+    // this, the polling layer would correctly skip recording the successor
+    // rollout, but the FIRST host on the successor channel to check in would
+    // still receive Decision::Dispatch and the unconditional defensive
+    // record_active_rollout in record_dispatched_target (line ~340) would
+    // create the rollout DB row anyway — bypassing channelEdges at the
+    // storage layer. The fix has to live here, where we still have the
+    // host's channel and an opportunity to refuse before any state change.
+    if let Some(host) = fleet.hosts.get(&req.hostname) {
+        if let Some(blocker) =
+            channel_edges_blocking_for_dispatch(db, &fleet, &fleet_resolved_hash, &host.channel)
+        {
+            tracing::info!(
+                target: "dispatch",
+                hostname = %req.hostname,
+                channel = %host.channel,
+                blocked_by = %blocker,
+                "dispatch: held by channelEdges — predecessor channel hasn't converged",
+            );
+            return None;
+        }
+    }
+
     let pending_for_host = match db
         .host_dispatch_state()
         .pending_dispatch_exists(&req.hostname)
@@ -300,6 +325,99 @@ pub(super) async fn stage_channel_hosts(
             (n.clone(), buf, cur_rollout, wave_idx)
         })
         .collect()
+}
+
+/// True if this host's channel is held by `channelEdges` — predecessor
+/// channel hasn't converged its current rollout, OR has hosts but no
+/// rollout has been recorded yet (polling tick hasn't run for this rev).
+///
+/// Filters `active_rollouts_snapshot` to the CURRENT fleet's expected
+/// rolloutIds so a stale `Converged` rollout from the previous rev (still
+/// present in host_dispatch_state until polling supersedes it) does not
+/// satisfy the predecessor check. Mirrors the polling-layer filter in
+/// `record_rollouts_gated_by_channel_edges`.
+///
+/// Conservative on missing predecessors: if the fleet declares hosts on
+/// the `before` channel but no rollout for it exists in DB yet, returns
+/// the blocker. Reasoning: at fresh CP boot or on a fleet rev change,
+/// the polling tick is the only path that records the predecessor; until
+/// it runs, dispatch must hold the successor or risk recording it first
+/// via `record_dispatched_target`'s defensive `record_active_rollout`.
+fn channel_edges_blocking_for_dispatch(
+    db: &crate::db::Db,
+    fleet: &nixfleet_proto::FleetResolved,
+    fleet_resolved_hash: &str,
+    channel: &str,
+) -> Option<String> {
+    let predecessors: Vec<&str> = fleet
+        .channel_edges
+        .iter()
+        .filter(|e| e.after == channel)
+        .map(|e| e.before.as_str())
+        .collect();
+    if predecessors.is_empty() {
+        return None;
+    }
+
+    let current_rollout_ids: std::collections::HashSet<String> = fleet
+        .channels
+        .keys()
+        .filter_map(|ch| {
+            nixfleet_reconciler::compute_rollout_id_for_channel(fleet, fleet_resolved_hash, ch)
+                .ok()
+                .flatten()
+        })
+        .collect();
+
+    let raw = match db.host_dispatch_state().active_rollouts_snapshot() {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(error = %err, "dispatch: active_rollouts_snapshot failed; channelEdges gate falls back to permissive (non-fatal)");
+            return None;
+        }
+    };
+    let superseded: std::collections::HashSet<String> = db
+        .rollouts()
+        .superseded_rollout_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    for predecessor in predecessors {
+        let predecessor_has_hosts = fleet.hosts.values().any(|h| h.channel == predecessor);
+        if !predecessor_has_hosts {
+            continue;
+        }
+        let snap = raw.iter().find(|r| {
+            r.channel == predecessor
+                && !superseded.contains(&r.rollout_id)
+                && current_rollout_ids.contains(&r.rollout_id)
+        });
+        let active = match snap {
+            None => true,
+            Some(s) => {
+                if s.host_states.is_empty() {
+                    true
+                } else {
+                    !s.host_states.values().all(|state| {
+                        nixfleet_reconciler::HostRolloutState::from_db_str(state)
+                            .map(|st| {
+                                matches!(
+                                    st,
+                                    nixfleet_reconciler::HostRolloutState::Soaked
+                                        | nixfleet_reconciler::HostRolloutState::Converged
+                                )
+                            })
+                            .unwrap_or(false)
+                    })
+                }
+            }
+        };
+        if active {
+            return Some(predecessor.to_string());
+        }
+    }
+    None
 }
 
 pub(super) fn wave_index_for(

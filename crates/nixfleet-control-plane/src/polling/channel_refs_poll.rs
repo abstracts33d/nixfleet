@@ -37,6 +37,9 @@ pub fn spawn(
     cache: Arc<RwLock<ChannelRefsCache>>,
     verified_fleet: Arc<RwLock<Option<crate::server::VerifiedFleetSnapshot>>>,
     db: Option<Arc<crate::db::Db>>,
+    last_deferrals: Arc<
+        RwLock<HashMap<String, nixfleet_reconciler::observed::DeferralRecord>>,
+    >,
     config: ChannelRefsSource,
 ) -> tokio::task::JoinHandle<()> {
     SignedArtifactPoller {
@@ -47,10 +50,20 @@ pub fn spawn(
         let cache = Arc::clone(&cache);
         let verified_fleet = Arc::clone(&verified_fleet);
         let db = db.clone();
+        let last_deferrals = Arc::clone(&last_deferrals);
         let config = config.clone();
         async move {
             let (refs, fleet, fleet_hash) = poll_once(&client, &config).await?;
-            apply_verified_refs(&cache, &verified_fleet, db.as_deref(), refs, fleet, fleet_hash).await;
+            apply_verified_refs(
+                &cache,
+                &verified_fleet,
+                db.as_deref(),
+                &last_deferrals,
+                refs,
+                fleet,
+                fleet_hash,
+            )
+            .await;
             Ok(())
         }
     })
@@ -65,6 +78,7 @@ async fn apply_verified_refs(
     cache: &RwLock<ChannelRefsCache>,
     verified_fleet: &RwLock<Option<crate::server::VerifiedFleetSnapshot>>,
     db: Option<&crate::db::Db>,
+    last_deferrals: &RwLock<HashMap<String, nixfleet_reconciler::observed::DeferralRecord>>,
     refs: HashMap<String, String>,
     fleet: nixfleet_proto::FleetResolved,
     fleet_hash: String,
@@ -117,7 +131,13 @@ async fn apply_verified_refs(
     drop(guard);
 
     if let Some(db) = db {
-        record_rollouts_gated_by_channel_edges(db, verified_fleet, &channel_rollouts).await;
+        record_rollouts_gated_by_channel_edges(
+            db,
+            verified_fleet,
+            last_deferrals,
+            &channel_rollouts,
+        )
+        .await;
     }
 
     tracing::info!(
@@ -201,9 +221,23 @@ async fn poll_once(
 /// in this poll is seen as active by `after`'s predecessor check. This
 /// mirrors the reconcile loop's invariants — the two layers stay
 /// architecturally aligned.
+///
+/// Stale-rollout filter (LOADBEARING for fleet-rev transitions): the
+/// `active_rollouts_snapshot` returns rows for any rollout that has ever
+/// had host_dispatch_state writes, including the OLD rollout from the
+/// previous fleet rev. That old rollout's hosts are typically `Converged`
+/// at the moment a new rev is published, so the predecessor check would
+/// see "edge=Converged → not active → not blocked" and let the new
+/// successor through INSTANTLY — channelEdges silently bypassed for the
+/// first poll of every release. We filter by current rolloutIds (the
+/// derivation from the new fleet snapshot) so only rollouts belonging to
+/// this rev contribute to predecessor state. Old rollouts get marked
+/// superseded as soon as `record_active_rollout` runs for the new ones,
+/// so the filter is a one-tick guard.
 async fn record_rollouts_gated_by_channel_edges(
     db: &crate::db::Db,
     verified_fleet: &RwLock<Option<crate::server::VerifiedFleetSnapshot>>,
+    last_deferrals: &RwLock<HashMap<String, nixfleet_reconciler::observed::DeferralRecord>>,
     channel_rollouts: &[(String, String)],
 ) {
     let fleet_snap = match verified_fleet.read().await.clone() {
@@ -227,9 +261,14 @@ async fn record_rollouts_gated_by_channel_edges(
         .unwrap_or_default()
         .into_iter()
         .collect();
+    let current_rollout_ids: std::collections::HashSet<String> = channel_rollouts
+        .iter()
+        .map(|(_, rid)| rid.clone())
+        .collect();
     let active_rollouts: Vec<nixfleet_reconciler::observed::Rollout> = raw
         .into_iter()
         .filter(|r| !superseded.contains(&r.rollout_id))
+        .filter(|r| current_rollout_ids.contains(&r.rollout_id))
         .map(|snap| nixfleet_reconciler::observed::Rollout {
             id: snap.rollout_id,
             channel: snap.channel,
@@ -263,6 +302,8 @@ async fn record_rollouts_gated_by_channel_edges(
     let order = nixfleet_reconciler::topological_channel_order(fleet, &channel_names);
 
     let mut emitted_opens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut held: HashMap<String, nixfleet_reconciler::observed::DeferralRecord> = HashMap::new();
+    let mut released: Vec<String> = Vec::new();
     for channel in order {
         let Some((_, rid)) = channel_rollouts.iter().find(|(c, _)| c == &channel) else {
             continue;
@@ -279,6 +320,13 @@ async fn record_rollouts_gated_by_channel_edges(
                 blocked_by = %blocker,
                 "channel-refs poll: skip record_active_rollout — channelEdges holds until predecessor converges",
             );
+            held.insert(
+                channel.clone(),
+                nixfleet_reconciler::observed::DeferralRecord {
+                    target_ref: rid.clone(),
+                    blocked_by: blocker,
+                },
+            );
             continue;
         }
         if let Err(err) = db.rollouts().record_active_rollout(rid, &channel) {
@@ -289,7 +337,22 @@ async fn record_rollouts_gated_by_channel_edges(
                 "channel-refs poll: record_active_rollout failed (non-fatal)",
             );
         } else {
-            emitted_opens.insert(channel);
+            emitted_opens.insert(channel.clone());
+            released.push(channel);
+        }
+    }
+
+    // Mirror the polling-layer hold/release decision into last_deferrals so
+    // /v1/deferrals shows the held channel. The reconciler's RolloutDeferred
+    // path can't reach this — it short-circuits on `has_active=true` when
+    // the previous-rev rollout for the held channel is still in the table.
+    if !held.is_empty() || !released.is_empty() {
+        let mut guard = last_deferrals.write().await;
+        for ch in &released {
+            guard.remove(ch);
+        }
+        for (ch, rec) in held {
+            guard.insert(ch, rec);
         }
     }
 }

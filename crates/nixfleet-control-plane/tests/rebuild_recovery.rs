@@ -246,11 +246,13 @@ async fn polling_populates_rollouts_after_rebuild_and_supersedes_on_bump() {
     > = Arc::new(RwLock::new(None));
 
     let cancel = CancellationToken::new();
+    let last_deferrals = Arc::new(RwLock::new(std::collections::HashMap::new()));
     let _poll = spawn(
         cancel.clone(),
         cache.clone(),
         verified_fleet.clone(),
         Some(db.clone()),
+        last_deferrals,
         ChannelRefsSource {
             artifact_url: fixture.artifact_url.clone(),
             signature_url: fixture.signature_url.clone(),

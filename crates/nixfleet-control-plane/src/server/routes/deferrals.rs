@@ -55,9 +55,29 @@ pub(in crate::server) async fn list(
         .unwrap_or_default()
         .into_iter()
         .collect();
+    // LOADBEARING: filter to the CURRENT fleet's expected rolloutIds so a
+    // stale Converged rollout from the previous rev doesn't satisfy the
+    // predecessor check and hide the actual deferral. Same filter as
+    // the polling layer's `record_rollouts_gated_by_channel_edges` —
+    // the two stay symmetric so dashboard observability matches the
+    // gating decision the polling layer just made.
+    let current_rollout_ids: std::collections::HashSet<String> = fleet
+        .channels
+        .keys()
+        .filter_map(|ch| {
+            nixfleet_reconciler::compute_rollout_id_for_channel(
+                fleet,
+                &snapshot.fleet_resolved_hash,
+                ch,
+            )
+            .ok()
+            .flatten()
+        })
+        .collect();
     let dispatch_snapshot: Vec<_> = dispatch_snapshot
         .into_iter()
         .filter(|r| !superseded.contains(&r.rollout_id))
+        .filter(|r| current_rollout_ids.contains(&r.rollout_id))
         .collect();
 
     let observed = observed_projection::project(
@@ -85,7 +105,10 @@ pub(in crate::server) async fn list(
                 .map(|r| r.id.clone())
                 .collect();
             for r in table_rollouts {
-                if known.contains(&r.rollout_id) || superseded.contains(&r.rollout_id) {
+                if known.contains(&r.rollout_id)
+                    || superseded.contains(&r.rollout_id)
+                    || !current_rollout_ids.contains(&r.rollout_id)
+                {
                     continue;
                 }
                 let target_ref = channel_refs.get(&r.channel).cloned().unwrap_or_default();
