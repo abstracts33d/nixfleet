@@ -227,3 +227,105 @@ async fn dispatch_end_to_end_signed_fleet_then_idempotent() {
 
     handle.abort();
 }
+
+/// LOADBEARING regression: when target == current (Decision::Converged),
+/// the CP materialises rollout-layer rows so the reconciler can see the
+/// host as Soaked-equivalent. That insert is APPEND-ONLY on
+/// `dispatch_history`, so naïve repeat-fires would leak a row on every
+/// checkin (~5 hosts × 2 rollouts × 30s checkin = unbounded growth).
+///
+/// This test exercises the production guard (host_state probe → skip
+/// if already Converged) by sending TWO checkins where current matches
+/// the declared closure. After the first, the CP should have one
+/// dispatch_history row + one host_rollout_state row in `Converged`.
+/// After the second, the count must be unchanged — the guard short-
+/// circuited the materialisation.
+#[tokio::test]
+async fn converged_at_dispatch_does_not_leak_dispatch_history_rows() {
+    install_crypto_provider_once();
+
+    let dir = TempDir::new().unwrap();
+    let (artifact, signature, trust) = write_signed_fleet(&dir, DECLARED_CLOSURE, CI_COMMIT);
+    let (ca, server_cert, server_key, client_cert, client_key) =
+        mint_ca_and_certs(&dir, "test-host");
+    let db_path = dir.path().join("state.db");
+    let port = pick_free_port().await;
+
+    let handle = spawn_with_signed_fleet(
+        &dir,
+        artifact,
+        signature,
+        trust,
+        server_cert,
+        server_key,
+        ca.clone(),
+        db_path.clone(),
+        port,
+    )
+    .await;
+
+    let client = build_mtls_client(&ca, &client_cert, &client_key);
+
+    // Checkin #1: agent reports current == declared → Decision::Converged.
+    let resp = client
+        .post(format!("https://localhost:{port}/v1/agent/checkin"))
+        .json(&checkin_request(DECLARED_CLOSURE))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: CheckinResponse = resp.json().await.unwrap();
+    assert!(
+        body.target.is_none(),
+        "Decision::Converged returns no target — agent has nothing to confirm",
+    );
+
+    let count_open_rows = || -> i64 {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM dispatch_history
+             WHERE hostname = ?1 AND terminal_state IS NULL",
+            rusqlite::params!["test-host"],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let after_first = count_open_rows();
+    assert_eq!(
+        after_first, 1,
+        "first converged-at-dispatch materialises exactly one dispatch_history row",
+    );
+
+    // Verify host_rollout_state is in Converged so the guard will trip.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let state: String = conn
+            .query_row(
+                "SELECT host_state FROM host_rollout_state WHERE hostname = ?1",
+                rusqlite::params!["test-host"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "Converged");
+    }
+
+    // Checkin #2 (and onwards): same current, same target. Without the
+    // guard this would insert row after row.
+    for _ in 0..3 {
+        let resp = client
+            .post(format!("https://localhost:{port}/v1/agent/checkin"))
+            .json(&checkin_request(DECLARED_CLOSURE))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    let after_repeats = count_open_rows();
+    assert_eq!(
+        after_repeats, after_first,
+        "guard must skip materialisation when host_rollout_state is already Converged",
+    );
+
+    handle.abort();
+}

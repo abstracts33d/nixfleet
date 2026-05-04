@@ -279,6 +279,65 @@ mod tests {
     }
 
     #[test]
+    fn recent_across_hosts_returns_newest_first_across_all_hosts() {
+        let db = fresh_db();
+        let now = Utc::now();
+        // Three events on two hosts at distinct receive times.
+        for (i, (host, eid, kind)) in [
+            ("lab", "evt-1-oldest", "activation-started"),
+            ("krach", "evt-2-mid", "compliance-failure"),
+            ("ohm", "evt-3-newest", "rollback-triggered"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            db.reports()
+                .record_host_report(&HostReportInsert {
+                    hostname: host,
+                    event_id: eid,
+                    received_at: now - chrono::Duration::seconds((10 - (i as i64) * 5).into()),
+                    event_kind: kind,
+                    rollout: None,
+                    signature_status: None,
+                    report_json: "{}",
+                })
+                .unwrap();
+        }
+        let rows = db.reports().recent_across_hosts(10).unwrap();
+        assert_eq!(rows.len(), 3);
+        // DESC chronological — newest first regardless of host.
+        let event_ids: Vec<&str> = rows.iter().map(|(_, r)| r.event_id.as_str()).collect();
+        assert_eq!(event_ids, vec!["evt-3-newest", "evt-2-mid", "evt-1-oldest"]);
+        // Hostname is the first tuple element so callers can filter without
+        // re-parsing the JSON envelope.
+        let hosts: Vec<&str> = rows.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(hosts, vec!["ohm", "krach", "lab"]);
+    }
+
+    #[test]
+    fn recent_across_hosts_clamps_to_limit() {
+        let db = fresh_db();
+        let now = Utc::now();
+        for i in 0..5 {
+            db.reports()
+                .record_host_report(&HostReportInsert {
+                    hostname: "lab",
+                    event_id: &format!("evt-{i}"),
+                    received_at: now - chrono::Duration::seconds(i),
+                    event_kind: "activation-started",
+                    rollout: None,
+                    signature_status: None,
+                    report_json: "{}",
+                })
+                .unwrap();
+        }
+        let rows = db.reports().recent_across_hosts(2).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1.event_id, "evt-0");
+        assert_eq!(rows[1].1.event_id, "evt-1");
+    }
+
+    #[test]
     fn prune_host_reports_drops_old_rows() {
         let db = fresh_db();
         let past = Utc::now() - chrono::Duration::hours(48);
