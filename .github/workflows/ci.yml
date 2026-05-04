@@ -1,3 +1,10 @@
+# Dormant. Lab forgejo (.forgejo/workflows/ci.yml) is the primary CI
+# path — the operator pushes to lab as the source of truth. This
+# workflow only runs if someone pushes the same ref to github, which
+# is intended as off-site backup / second-opinion validation. The
+# job spec here mirrors the forgejo workflow but uses hosted ubuntu
+# runners (no native:host runner exists on github). Keep in sync
+# with .forgejo/workflows/ci.yml when the validate matrix changes.
 name: CI
 
 on:
