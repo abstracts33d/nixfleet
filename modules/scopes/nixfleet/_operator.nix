@@ -10,8 +10,8 @@
 in {
   options.nixfleet.operator = {
     enable = lib.mkEnableOption ''
-      operator-workstation tooling: installs `nixfleet-mint-token`
-      and `nixfleet-derive-pubkey` system-wide.
+      operator-workstation tooling: installs `nixfleet` (status),
+      `nixfleet-mint-token`, and `nixfleet-derive-pubkey` system-wide.
     '';
 
     orgRootKeyFile = lib.mkOption {

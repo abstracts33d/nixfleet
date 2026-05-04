@@ -51,7 +51,11 @@
       meta.description = "NixFleet control plane server";
     };
 
-    # GOTCHA: no `apps.nixfleet`; nixfleet-cli ships only mint-token + derive-pubkey via `nix shell nixfleet#nixfleet-cli`.
+    apps.nixfleet = {
+      type = "app";
+      program = "${workspace.packages.nixfleet-cli}/bin/nixfleet";
+      meta.description = "Operator CLI — `nixfleet status`, planned: rollout trace + diff";
+    };
 
     apps.nixfleet-canonicalize = {
       type = "app";

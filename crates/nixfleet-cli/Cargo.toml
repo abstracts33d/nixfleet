@@ -2,11 +2,17 @@
 name = "nixfleet-cli"
 version = "0.2.0"
 edition = "2021"
-description = "NixFleet v0.2 operator-workstation helper binaries (mint-token, derive-pubkey)"
+description = "NixFleet v0.2 operator CLI: nixfleet (status), nixfleet-mint-token, nixfleet-derive-pubkey"
 license = "MIT"
 repository = "https://github.com/arcanesys/nixfleet"
 homepage = "https://github.com/arcanesys/nixfleet"
 authors = ["nixfleet contributors"]
+
+# Top-level operator command: status (initial), rollout trace + diff
+# planned. Reads CP URL + mTLS paths from CLI args / env.
+[[bin]]
+name = "nixfleet"
+path = "src/bin/nixfleet.rs"
 
 # Operator-side bootstrap-token minter. Run once per fleet host
 # before first deploy; emits a one-shot signed token the agent
@@ -25,7 +31,7 @@ path = "src/bin/derive_pubkey.rs"
 [dependencies]
 nixfleet-proto = { path = "../nixfleet-proto" }
 nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -33,6 +39,8 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 base64 = "0.22"
 rand = "0.8"
 hex = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -1400,8 +1400,10 @@ dependencies = [
  "nixfleet-canonicalize",
  "nixfleet-proto",
  "rand 0.8.6",
+ "reqwest",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
