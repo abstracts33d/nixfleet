@@ -487,6 +487,12 @@
           schemaVersion = 1;
           signedAt = null;
           ciCommit = null;
+          # LOADBEARING: required by the proto (nixfleet-release parses
+          # `nix eval .#fleet.resolved` BEFORE calling stamp_meta).
+          # `stamp_meta` still overrides this with config.signature_algorithm
+          # at signing time, so flipping the algorithm just means changing
+          # the CI flag — this default just keeps the pre-sign JSON parseable.
+          signatureAlgorithm = "ed25519";
         };
         hosts =
           lib.mapAttrs (_: h: {
