@@ -312,6 +312,32 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                         );
                     }
                 }
+                // Settle host_rollout_state: Soaked → Converged for every
+                // host in this rollout. The reconciler's wave-staging only
+                // takes hosts as far as Soaked (via SoakHost actions);
+                // ConvergeRollout is the final transition that stamps the
+                // per-host terminal state. Without this, the dashboard
+                // shows hosts as Soaked indefinitely after the rollout
+                // completes, and predecessor_channel_blocking would have
+                // to special-case Soaked-as-terminal everywhere.
+                match db.rollout_state().mark_rollout_hosts_converged(rollout) {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        tracing::info!(
+                            target: "converge",
+                            rollout = %rollout,
+                            host_rollout_state_rows_marked = n,
+                            "converge: transitioned host_rollout_state Soaked → Converged",
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            rollout = %rollout,
+                            error = %err,
+                            "converge: host_rollout_state Soaked → Converged sweep failed",
+                        );
+                    }
+                }
             }
             Action::PromoteWave { rollout, new_wave } => {
                 // LOADBEARING: persists the advance so subsequent ticks see

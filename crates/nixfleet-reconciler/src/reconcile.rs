@@ -83,9 +83,18 @@ pub fn predecessor_channel_blocking(
 
 /// True if the rollout still has work outstanding from the perspective of
 /// `channelEdges` ordering. Empty host_states = newly-recorded, no dispatch
-/// yet — counts as active (work pending). All-Converged = done — counts as
-/// inactive (successor may proceed). Anything else = at least one host
-/// non-terminal — active.
+/// yet — counts as active (work pending).
+///
+/// `Soaked` and `Converged` both count as terminal-for-ordering: the host
+/// has cleared its soak window and the rollout is at-or-past wave-staging
+/// completion. Treating only `Converged` as terminal would block the
+/// successor channel during the gap between SoakHost transitions and the
+/// next reconcile tick's `ConvergeRollout` action — small in practice but
+/// adds latency and is semantically wrong (a Soaked host has finished its
+/// observable activation).
+///
+/// `Failed` / `Reverted` are NOT terminal-for-ordering: the predecessor is
+/// in trouble, operator action is needed, and the successor must wait.
 fn rollout_is_active_for_ordering(r: &crate::observed::Rollout) -> bool {
     use crate::host_state::HostRolloutState;
     if r.host_states.is_empty() {
@@ -93,7 +102,7 @@ fn rollout_is_active_for_ordering(r: &crate::observed::Rollout) -> bool {
     }
     !r.host_states
         .values()
-        .all(|s| matches!(s, HostRolloutState::Converged))
+        .all(|s| matches!(s, HostRolloutState::Soaked | HostRolloutState::Converged))
 }
 
 /// Topological order of `channels` with respect to `fleet.channel_edges`.
@@ -350,8 +359,9 @@ mod channel_edge_tests {
 
     #[test]
     fn partially_converged_predecessor_still_blocks_successor() {
-        // Until ALL hosts in the predecessor reach Converged, the
-        // predecessor is still active and blocks its successor.
+        // Until ALL hosts in the predecessor reach a terminal state
+        // (Soaked or Converged), the predecessor is still active and
+        // blocks its successor.
         let fleet = fleet_with_channel_edges(vec![ChannelEdge {
             before: "db".into(),
             after: "app".into(),
@@ -376,7 +386,80 @@ mod channel_edge_tests {
         let blocked = actions.iter().any(
             |a| matches!(a, Action::RolloutDeferred { channel, blocked_by, .. } if channel == "app" && blocked_by == "db"),
         );
-        assert!(blocked, "any non-Converged host keeps the predecessor active: {actions:?}");
+        assert!(blocked, "any non-terminal host keeps the predecessor active: {actions:?}");
+    }
+
+    #[test]
+    fn all_soaked_predecessor_unblocks_successor() {
+        // Bridges the SoakHost-to-ConvergeRollout window: once every
+        // host of the predecessor reaches Soaked, the rollout has
+        // semantically completed wave-staging even though the next
+        // reconcile tick hasn't yet emitted ConvergeRollout. Soaked
+        // counts as terminal-for-ordering so the successor doesn't
+        // get artificially held for one extra tick.
+        let fleet = fleet_with_channel_edges(vec![ChannelEdge {
+            before: "db".into(),
+            after: "app".into(),
+            reason: None,
+        }]);
+        let mut observed = Observed::default();
+        observed.channel_refs.insert("app".into(), "ref-app-1".into());
+        observed.active_rollouts.push(Rollout {
+            id: "db-rollout".into(),
+            channel: "db".into(),
+            target_ref: "ref-db-soaked".into(),
+            state: RolloutState::Executing,
+            current_wave: 0,
+            host_states: HashMap::from([
+                ("db1".to_string(), HostRolloutState::Soaked),
+                ("db2".to_string(), HostRolloutState::Soaked),
+            ]),
+            last_healthy_since: HashMap::new(),
+            budgets: vec![],
+        });
+        let actions = reconcile(&fleet, &observed, chrono::Utc::now());
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::OpenRollout { channel, .. } if channel == "app")),
+            "all-Soaked predecessor must unblock successor: {actions:?}",
+        );
+    }
+
+    #[test]
+    fn mixed_soaked_and_converged_predecessor_unblocks_successor() {
+        // A multi-wave rollout in the brief window between the last
+        // wave reaching Soaked and ConvergeRollout firing: earlier-
+        // wave hosts may already be Converged (hands-stamped by a
+        // previous ConvergeRollout-equivalent path) while the last
+        // wave's hosts are at Soaked. Either is terminal-for-ordering.
+        let fleet = fleet_with_channel_edges(vec![ChannelEdge {
+            before: "db".into(),
+            after: "app".into(),
+            reason: None,
+        }]);
+        let mut observed = Observed::default();
+        observed.channel_refs.insert("app".into(), "ref-app-1".into());
+        observed.active_rollouts.push(Rollout {
+            id: "db-rollout".into(),
+            channel: "db".into(),
+            target_ref: "ref-db".into(),
+            state: RolloutState::Executing,
+            current_wave: 1,
+            host_states: HashMap::from([
+                ("db-wave0".to_string(), HostRolloutState::Converged),
+                ("db-wave1".to_string(), HostRolloutState::Soaked),
+            ]),
+            last_healthy_since: HashMap::new(),
+            budgets: vec![],
+        });
+        let actions = reconcile(&fleet, &observed, chrono::Utc::now());
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::OpenRollout { channel, .. } if channel == "app")),
+            "mixed Soaked + Converged predecessor must unblock successor: {actions:?}",
+        );
     }
 
     #[test]

@@ -74,6 +74,30 @@ impl RolloutState<'_> {
         Ok(n)
     }
 
+    /// Bulk-transition every `Soaked` host of `rollout_id` to `Converged`.
+    /// Called by `apply_actions` when the reconciler emits `ConvergeRollout`
+    /// — the rollout has terminally completed (all waves soaked, last wave
+    /// reached) so the per-host state machine settles at Converged.
+    ///
+    /// Idempotent (only matches Soaked rows); subsequent calls return 0.
+    /// Other states (Failed, Reverted, Healthy, ConfirmWindow, etc.) are
+    /// untouched — those represent un-completed work the reconciler must
+    /// still resolve, and stamping them Converged would lose information.
+    pub fn mark_rollout_hosts_converged(&self, rollout_id: &str) -> Result<usize> {
+        let guard = super::lock_conn(self.conn)?;
+        let n = guard
+            .execute(
+                "UPDATE host_rollout_state
+                 SET host_state = 'Converged',
+                     updated_at = datetime('now')
+                 WHERE rollout_id = ?1
+                   AND host_state = 'Soaked'",
+                params![rollout_id],
+            )
+            .context("mark_rollout_hosts_converged: Soaked → Converged sweep")?;
+        Ok(n)
+    }
+
     /// GOTCHA: nulls only `last_healthy_since` — `host_state` is left for the
     /// reconciler. The soak timer must restart on next Healthy attestation.
     pub fn clear_healthy_marker(&self, hostname: &str, rollout_id: &str) -> Result<usize> {
