@@ -27,14 +27,10 @@ pub(in crate::server) async fn report(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let event_id = format!("evt-{}-{}", Utc::now().timestamp_millis(), rand_suffix(8));
+    let event_id = super::new_event_id();
     let received_at = Utc::now();
 
-    // GOTCHA: serde_json round-trip extracts the kebab-case discriminator for grep-friendly logs.
-    let event_str = serde_json::to_value(&req.event)
-        .ok()
-        .and_then(|v| v.get("event").and_then(|e| e.as_str()).map(String::from))
-        .unwrap_or_else(|| "<unknown>".to_string());
+    let event_str = req.event.discriminator();
     let rollout_str = req.rollout.clone().unwrap_or_else(|| "<none>".to_string());
 
     // Best-effort: we always store the record (mTLS already authenticated); verdict shapes gating.
@@ -428,14 +424,6 @@ async fn compute_signature_status(
     }
 }
 
-fn rand_suffix(n: usize) -> String {
-    use rand::Rng;
-    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
-    (0..n)
-        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {

@@ -45,37 +45,52 @@ pub struct LastDispatchRecord {
     pub dispatched_at: DateTime<Utc>,
 }
 
-/// Atomic tempfile + rename; failures fall back to next-checkin re-dispatch.
-pub fn write_last_dispatched(state_dir: &Path, record: &LastDispatchRecord) -> Result<()> {
+/// Atomic tempfile + rename. Used by every `write_last_*` so a crash mid-write
+/// can never leave a half-written state file. Body is raw bytes — JSON encoding
+/// happens in the typed wrapper.
+fn write_atomic(state_dir: &Path, filename: &str, body: &[u8]) -> Result<()> {
     std::fs::create_dir_all(state_dir)
         .with_context(|| format!("create state dir {}", state_dir.display()))?;
-    let final_path = state_dir.join(LAST_DISPATCH_FILENAME);
-    let tmp_path = state_dir.join(format!("{LAST_DISPATCH_FILENAME}.tmp"));
-    let body = serde_json::to_string(record).context("serialize LastDispatchRecord")?;
-    std::fs::write(&tmp_path, body)
-        .with_context(|| format!("write {}", tmp_path.display()))?;
+    let final_path = state_dir.join(filename);
+    let tmp_path = state_dir.join(format!("{filename}.tmp"));
+    std::fs::write(&tmp_path, body).with_context(|| format!("write {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, &final_path).with_context(|| {
-        format!(
-            "rename {} -> {}",
-            tmp_path.display(),
-            final_path.display()
-        )
+        format!("rename {} -> {}", tmp_path.display(), final_path.display())
     })?;
     Ok(())
 }
 
-/// `Ok(None)` for both absent and malformed; `Err` only on FS I/O failures.
-pub fn read_last_dispatched(state_dir: &Path) -> Result<Option<LastDispatchRecord>> {
-    let path = state_dir.join(LAST_DISPATCH_FILENAME);
+fn write_atomic_json<T: serde::Serialize>(
+    state_dir: &Path,
+    filename: &str,
+    value: &T,
+) -> Result<()> {
+    let body = serde_json::to_string(value)
+        .with_context(|| format!("serialize {filename}"))?;
+    write_atomic(state_dir, filename, body.as_bytes())
+}
+
+/// `Ok(None)` for both absent and malformed JSON; `Err` only on FS I/O failures.
+fn read_atomic_json<T: for<'de> serde::Deserialize<'de>>(
+    state_dir: &Path,
+    filename: &str,
+) -> Result<Option<T>> {
+    let path = state_dir.join(filename);
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
     };
-    match serde_json::from_str::<LastDispatchRecord>(&raw) {
-        Ok(rec) => Ok(Some(rec)),
-        Err(_) => Ok(None),
-    }
+    Ok(serde_json::from_str::<T>(&raw).ok())
+}
+
+/// Atomic; failures fall back to next-checkin re-dispatch.
+pub fn write_last_dispatched(state_dir: &Path, record: &LastDispatchRecord) -> Result<()> {
+    write_atomic_json(state_dir, LAST_DISPATCH_FILENAME, record)
+}
+
+pub fn read_last_dispatched(state_dir: &Path) -> Result<Option<LastDispatchRecord>> {
+    read_atomic_json(state_dir, LAST_DISPATCH_FILENAME)
 }
 
 /// Idempotent: absent file returns `Ok`.
@@ -88,65 +103,22 @@ pub fn clear_last_dispatched(state_dir: &Path) -> Result<()> {
     }
 }
 
-/// Atomic tempfile + rename. Persists the most recently confirmed
-/// `EvaluatedTarget` so the agent can carry its `last_evaluated_target`
-/// breadcrumb on every subsequent checkin. Failure is non-fatal —
-/// next-confirm will retry.
+/// Persists the most recently confirmed `EvaluatedTarget` so the agent can
+/// carry its `last_evaluated_target` breadcrumb on every subsequent checkin.
 pub fn write_last_target(state_dir: &Path, target: &EvaluatedTarget) -> Result<()> {
-    std::fs::create_dir_all(state_dir)
-        .with_context(|| format!("create state dir {}", state_dir.display()))?;
-    let final_path = state_dir.join(LAST_TARGET_FILENAME);
-    let tmp_path = state_dir.join(format!("{LAST_TARGET_FILENAME}.tmp"));
-    let body = serde_json::to_string(target).context("serialize EvaluatedTarget")?;
-    std::fs::write(&tmp_path, body)
-        .with_context(|| format!("write {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &final_path).with_context(|| {
-        format!("rename {} -> {}", tmp_path.display(), final_path.display())
-    })?;
-    Ok(())
+    write_atomic_json(state_dir, LAST_TARGET_FILENAME, target)
 }
 
-/// `Ok(None)` for both absent and malformed; `Err` only on FS I/O failures.
 pub fn read_last_target(state_dir: &Path) -> Result<Option<EvaluatedTarget>> {
-    let path = state_dir.join(LAST_TARGET_FILENAME);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
-    match serde_json::from_str::<EvaluatedTarget>(&raw) {
-        Ok(t) => Ok(Some(t)),
-        Err(_) => Ok(None),
-    }
+    read_atomic_json(state_dir, LAST_TARGET_FILENAME)
 }
 
-/// Atomic tempfile + rename. Failure is non-fatal — next-fetch will retry.
 pub fn write_last_fetch_outcome(state_dir: &Path, outcome: &FetchOutcome) -> Result<()> {
-    std::fs::create_dir_all(state_dir)
-        .with_context(|| format!("create state dir {}", state_dir.display()))?;
-    let final_path = state_dir.join(LAST_FETCH_OUTCOME_FILENAME);
-    let tmp_path = state_dir.join(format!("{LAST_FETCH_OUTCOME_FILENAME}.tmp"));
-    let body = serde_json::to_string(outcome).context("serialize FetchOutcome")?;
-    std::fs::write(&tmp_path, body)
-        .with_context(|| format!("write {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &final_path).with_context(|| {
-        format!("rename {} -> {}", tmp_path.display(), final_path.display())
-    })?;
-    Ok(())
+    write_atomic_json(state_dir, LAST_FETCH_OUTCOME_FILENAME, outcome)
 }
 
-/// `Ok(None)` for both absent and malformed; `Err` only on FS I/O failures.
 pub fn read_last_fetch_outcome(state_dir: &Path) -> Result<Option<FetchOutcome>> {
-    let path = state_dir.join(LAST_FETCH_OUTCOME_FILENAME);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
-    match serde_json::from_str::<FetchOutcome>(&raw) {
-        Ok(o) => Ok(Some(o)),
-        Err(_) => Ok(None),
-    }
+    read_atomic_json(state_dir, LAST_FETCH_OUTCOME_FILENAME)
 }
 
 // FOOTGUN: closure_hash is the FULL store basename, not the 32-char hash — wire-equality trap.
@@ -171,23 +143,12 @@ pub fn uptime_secs(started_at: Instant) -> u64 {
     started_at.elapsed().as_secs()
 }
 
-/// Atomic tempfile + rename; failures are non-fatal.
+/// Plain-text format (`<closure_hash>\n<rfc3339>\n`) so a corrupt half-write
+/// is trivially readable; not JSON because the consumer is `read_last_confirmed`
+/// which does its own line-parsing + closure/skew checks.
 pub fn write_last_confirmed(state_dir: &Path, closure_hash: &str, at: DateTime<Utc>) -> Result<()> {
-    std::fs::create_dir_all(state_dir)
-        .with_context(|| format!("create state dir {}", state_dir.display()))?;
-    let final_path = state_dir.join(LAST_CONFIRM_FILENAME);
-    let tmp_path = state_dir.join(format!("{LAST_CONFIRM_FILENAME}.tmp"));
     let body = format!("{closure_hash}\n{}\n", at.to_rfc3339());
-    std::fs::write(&tmp_path, body)
-        .with_context(|| format!("write {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &final_path).with_context(|| {
-        format!(
-            "rename {} -> {}",
-            tmp_path.display(),
-            final_path.display()
-        )
-    })?;
-    Ok(())
+    write_atomic(state_dir, LAST_CONFIRM_FILENAME, body.as_bytes())
 }
 
 /// LOADBEARING: the three persistence steps a successful confirm must do, in

@@ -302,6 +302,140 @@ pub enum ReportEvent {
     },
 }
 
+impl ReportEvent {
+    /// Wire-side `event` discriminator — matches the serde kebab-case rename.
+    /// Adding a variant requires updating this match (compiler-enforced) and
+    /// the corresponding wire string in lockstep.
+    pub fn discriminator(&self) -> &'static str {
+        match self {
+            Self::ActivationStarted { .. } => "activation-started",
+            Self::ActivationFailed { .. } => "activation-failed",
+            Self::RealiseFailed { .. } => "realise-failed",
+            Self::VerifyMismatch { .. } => "verify-mismatch",
+            Self::RollbackTriggered { .. } => "rollback-triggered",
+            Self::EnrollmentFailed { .. } => "enrollment-failed",
+            Self::RenewalFailed { .. } => "renewal-failed",
+            Self::TrustError { .. } => "trust-error",
+            Self::ClosureSignatureMismatch { .. } => "closure-signature-mismatch",
+            Self::StaleTarget { .. } => "stale-target",
+            Self::ComplianceFailure { .. } => "compliance-failure",
+            Self::ManifestMissing { .. } => "manifest-missing",
+            Self::ManifestVerifyFailed { .. } => "manifest-verify-failed",
+            Self::ManifestMismatch { .. } => "manifest-mismatch",
+            Self::RuntimeGateError { .. } => "runtime-gate-error",
+            Self::Other { .. } => "other",
+        }
+    }
+}
+
+#[cfg(test)]
+mod report_event_discriminator_tests {
+    use super::*;
+
+    /// LOADBEARING: discriminator() must match the wire-serialized "event" tag
+    /// exactly, since the CP indexes events by the string. Round-trip a value
+    /// of every variant through serde and compare against the hand-written
+    /// match — if a variant is renamed at the serde layer this test catches it.
+    #[test]
+    fn discriminator_matches_serde_event_tag() {
+        let now = chrono::Utc::now();
+        let cases: Vec<ReportEvent> = vec![
+            ReportEvent::ActivationStarted {
+                closure_hash: "x".into(),
+                channel_ref: "y".into(),
+            },
+            ReportEvent::ActivationFailed {
+                phase: "x".into(),
+                exit_code: None,
+                stderr_tail: None,
+                signature: None,
+            },
+            ReportEvent::RealiseFailed {
+                closure_hash: "x".into(),
+                reason: "y".into(),
+                signature: None,
+            },
+            ReportEvent::VerifyMismatch {
+                expected: "x".into(),
+                actual: "y".into(),
+                signature: None,
+            },
+            ReportEvent::RollbackTriggered {
+                reason: "x".into(),
+                signature: None,
+            },
+            ReportEvent::EnrollmentFailed {
+                reason: "x".into(),
+            },
+            ReportEvent::RenewalFailed {
+                reason: "x".into(),
+            },
+            ReportEvent::TrustError {
+                reason: "x".into(),
+            },
+            ReportEvent::ClosureSignatureMismatch {
+                closure_hash: "x".into(),
+                stderr_tail: "y".into(),
+                signature: None,
+            },
+            ReportEvent::StaleTarget {
+                closure_hash: "x".into(),
+                channel_ref: "y".into(),
+                signed_at: now,
+                freshness_window_secs: 60,
+                age_secs: 0,
+                signature: None,
+            },
+            ReportEvent::ComplianceFailure {
+                control_id: "x".into(),
+                status: "fail".into(),
+                framework_articles: vec![],
+                evidence_snippet: None,
+                evidence_collected_at: now,
+                signature: None,
+            },
+            ReportEvent::ManifestMissing {
+                rollout_id: "x".into(),
+                reason: "y".into(),
+                signature: None,
+            },
+            ReportEvent::ManifestVerifyFailed {
+                rollout_id: "x".into(),
+                reason: "y".into(),
+                signature: None,
+            },
+            ReportEvent::ManifestMismatch {
+                rollout_id: "x".into(),
+                reason: "y".into(),
+                signature: None,
+            },
+            ReportEvent::RuntimeGateError {
+                reason: "x".into(),
+                collector_exit_code: None,
+                evidence_collected_at: None,
+                activation_completed_at: now,
+                signature: None,
+            },
+            ReportEvent::Other {
+                kind: "x".into(),
+                detail: None,
+            },
+        ];
+        for ev in &cases {
+            let wire = serde_json::to_value(ev).unwrap();
+            let tag = wire
+                .get("event")
+                .and_then(|v| v.as_str())
+                .expect("event tag missing");
+            assert_eq!(
+                tag,
+                ev.discriminator(),
+                "wire tag must match discriminator() for {ev:?}",
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportResponse {

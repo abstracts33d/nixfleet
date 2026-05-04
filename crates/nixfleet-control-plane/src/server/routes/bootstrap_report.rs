@@ -78,19 +78,15 @@ pub(in crate::server) async fn bootstrap_report(
     ) {
         tracing::warn!(
             hostname = %req.token.claims.hostname,
-            event = %discriminator(&event),
+            event = %event.discriminator(),
             "bootstrap-report: event variant not on the pre-cert allowlist"
         );
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    let event_id = format!(
-        "evt-{}-{}",
-        Utc::now().timestamp_millis(),
-        rand_suffix(8)
-    );
+    let event_id = super::new_event_id();
     let received_at = Utc::now();
-    let event_str = discriminator(&event);
+    let event_str = event.discriminator();
 
     tracing::warn!(
         target: "bootstrap-report",
@@ -153,18 +149,3 @@ pub(in crate::server) async fn bootstrap_report(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn discriminator(event: &ReportEvent) -> String {
-    serde_json::to_value(event)
-        .ok()
-        .and_then(|v| v.get("event").and_then(|e| e.as_str()).map(String::from))
-        .unwrap_or_else(|| "<unknown>".to_string())
-}
-
-fn rand_suffix(n: usize) -> String {
-    use rand::Rng;
-    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
-    (0..n)
-        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
-        .collect()
-}
