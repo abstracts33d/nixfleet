@@ -6,6 +6,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::HostRolloutState;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HostStatusEntry {
@@ -30,6 +32,13 @@ pub struct HostStatusEntry {
     /// `last_checkin_at`).
     #[serde(default)]
     pub last_uptime_secs: Option<u64>,
+    /// Per-host rollout state machine position for the channel's CURRENT
+    /// rolloutId (computed from verified_fleet, not the agent-reported
+    /// last_rollout_id which may be stale after a fresh deploy). `None`
+    /// when no DB row exists yet for the current rollout — a freshly
+    /// opened rollout shows None until the host transitions.
+    #[serde(default)]
+    pub rollout_state: Option<HostRolloutState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

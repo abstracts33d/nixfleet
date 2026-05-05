@@ -82,12 +82,32 @@ fn status_label(
     now: DateTime<Utc>,
     freshness_minutes: Option<u32>,
 ) -> String {
+    use nixfleet_proto::HostRolloutState;
+
+    // Failed/Reverted is louder than closure-match because the rollout's
+    // state machine remembers the failure even after operator-driven
+    // recovery — surface it.
+    if let Some(state) = host.rollout_state {
+        if state.is_failed() {
+            return match state {
+                HostRolloutState::Failed => "\u{2717} failed".to_string(),
+                HostRolloutState::Reverted => "\u{2717} reverted".to_string(),
+                _ => format!("\u{2717} {}", state.as_db_str().to_lowercase()),
+            };
+        }
+    }
+
     if host.converged {
         return "\u{2713} converged".to_string();
     }
+
+    // No checkin yet — host hasn't reached the CP since the rollout opened.
     let Some(last) = host.last_checkin_at else {
         return "\u{2717} never".to_string();
     };
+
+    // Stale-checkin trumps in-flight state — a host stuck in `Activating`
+    // for 3 days isn't "activating", it's offline.
     if let Some(window) = freshness_minutes {
         let age = now.signed_duration_since(last);
         let stale_threshold = chrono::Duration::minutes(i64::from(window) * 2);
@@ -95,7 +115,20 @@ fn status_label(
             return format!("\u{26A0} stale ({})", format_age(age));
         }
     }
-    "\u{2192} in progress".to_string()
+
+    // Fresh checkin + non-failed state → use the state machine if present.
+    match host.rollout_state {
+        Some(s) if s.is_terminal_for_ordering() => format!(
+            "\u{2713} {}",
+            s.as_db_str().to_lowercase(),
+        ),
+        Some(s) if s.is_in_flight() => format!(
+            "\u{2192} {}",
+            s.as_db_str().to_lowercase(),
+        ),
+        Some(HostRolloutState::Queued) => "\u{2026} queued".to_string(),
+        _ => "\u{2192} in progress".to_string(),
+    }
 }
 
 fn format_age(d: chrono::Duration) -> String {
@@ -141,6 +174,7 @@ mod tests {
             outstanding_runtime_gate_errors: 0,
             verified_event_count: 0,
             last_uptime_secs: None,
+            rollout_state: None,
         }
     }
 
@@ -193,5 +227,87 @@ mod tests {
             "fell through to in-progress without a window: {out}"
         );
         assert!(!out.contains("stale"), "shouldn't be stale without window: {out}");
+    }
+
+    #[test]
+    fn rollout_state_failed_takes_priority_over_converged() {
+        use nixfleet_proto::HostRolloutState;
+        let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
+        let mut h = fixture_host("a", "stable", true, Some(1), 0);
+        h.rollout_state = Some(HostRolloutState::Failed);
+        let inputs = StatusInputs {
+            now,
+            hosts: vec![h],
+            channel_freshness: BTreeMap::from([("stable".to_string(), 180)]),
+        };
+        let out = render_status_table(&inputs);
+        assert!(out.contains("\u{2717} failed"), "expected failed label: {out}");
+        assert!(!out.contains("converged"), "should not show converged: {out}");
+    }
+
+    #[test]
+    fn rollout_state_in_flight_renders_active_state() {
+        use nixfleet_proto::HostRolloutState;
+        let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
+        let mut h = fixture_host("a", "stable", false, Some(1), 0);
+        h.rollout_state = Some(HostRolloutState::Activating);
+        let inputs = StatusInputs {
+            now,
+            hosts: vec![h],
+            channel_freshness: BTreeMap::from([("stable".to_string(), 180)]),
+        };
+        let out = render_status_table(&inputs);
+        assert!(out.contains("\u{2192} activating"), "expected activating: {out}");
+    }
+
+    #[test]
+    fn rollout_state_soaked_renders_as_terminal() {
+        use nixfleet_proto::HostRolloutState;
+        let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
+        let mut h = fixture_host("a", "stable", false, Some(1), 0);
+        h.rollout_state = Some(HostRolloutState::Soaked);
+        let inputs = StatusInputs {
+            now,
+            hosts: vec![h],
+            channel_freshness: BTreeMap::from([("stable".to_string(), 180)]),
+        };
+        let out = render_status_table(&inputs);
+        assert!(
+            out.contains("\u{2713} soaked"),
+            "expected soaked terminal label: {out}"
+        );
+    }
+
+    #[test]
+    fn rollout_state_queued_renders_distinctly() {
+        use nixfleet_proto::HostRolloutState;
+        let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
+        let mut h = fixture_host("a", "stable", false, Some(1), 0);
+        h.rollout_state = Some(HostRolloutState::Queued);
+        let inputs = StatusInputs {
+            now,
+            hosts: vec![h],
+            channel_freshness: BTreeMap::from([("stable".to_string(), 180)]),
+        };
+        let out = render_status_table(&inputs);
+        assert!(out.contains("\u{2026} queued"), "expected queued label: {out}");
+    }
+
+    #[test]
+    fn stale_checkin_overrides_in_flight_state() {
+        use nixfleet_proto::HostRolloutState;
+        let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
+        let mut h = fixture_host("a", "stable", false, Some(60 * 24 * 3), 0);
+        h.rollout_state = Some(HostRolloutState::Activating);
+        let inputs = StatusInputs {
+            now,
+            hosts: vec![h],
+            channel_freshness: BTreeMap::from([("stable".to_string(), 180)]),
+        };
+        let out = render_status_table(&inputs);
+        assert!(
+            out.contains("\u{26A0} stale"),
+            "stale should win over in-flight Activating: {out}"
+        );
     }
 }

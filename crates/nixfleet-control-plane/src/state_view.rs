@@ -3,8 +3,11 @@
 //! + CLI status renderer. Sharing this means the row shape and label
 //! set agree by construction across all three surfaces.
 
+use std::collections::HashMap;
+
 use nixfleet_proto::agent_wire::ReportEvent;
-use nixfleet_proto::HostStatusEntry;
+use nixfleet_proto::{HostRolloutState, HostStatusEntry};
+use nixfleet_reconciler::compute_rollout_id_for_channel;
 use nixfleet_reconciler::evidence::SignatureStatus;
 
 use crate::server::AppState;
@@ -30,8 +33,20 @@ pub async fn fleet_state_view(state: &AppState) -> Result<Vec<HostStatusEntry>, 
         .clone()
         .ok_or(StateViewError::FleetNotPrimed)?;
     let fleet = snapshot.fleet;
+    let fleet_hash = snapshot.fleet_resolved_hash;
     let checkins = state.host_checkins.read().await;
     let reports = state.host_reports.read().await;
+
+    // Memoise per-channel rollout ID so we project the manifest once per
+    // channel, not per host. `None` covers both the err and ok-None cases —
+    // either way, no current rollout for that channel.
+    let mut current_rollout_for_channel: HashMap<String, Option<String>> = HashMap::new();
+    for channel in fleet.channels.keys() {
+        let id = compute_rollout_id_for_channel(&fleet, &fleet_hash, channel)
+            .ok()
+            .flatten();
+        current_rollout_for_channel.insert(channel.clone(), id);
+    }
 
     let mut entries: Vec<HostStatusEntry> = fleet
         .hosts
@@ -93,6 +108,21 @@ pub async fn fleet_state_view(state: &AppState) -> Result<Vec<HostStatusEntry>, 
 
             let last_uptime_secs = checkin.and_then(|c| c.checkin.uptime_secs);
 
+            // GOTCHA: query state for the FLEET's current rolloutId for this
+            // channel, not the agent-reported last_rollout_id (may be stale
+            // after a fresh deploy supersedes). Returns None when:
+            //   - no DB configured (in-memory CP),
+            //   - no current rollout (channel has no host with a closure),
+            //   - DB row absent (host hasn't transitioned for this rollout yet),
+            //   - DB row has an unrecognised state string (parse fail).
+            let rollout_state = state.db.as_ref().and_then(|db| {
+                let rid = current_rollout_for_channel
+                    .get(&host_decl.channel)
+                    .and_then(|o| o.as_deref())?;
+                let s = db.rollout_state().host_state(hostname, rid).ok().flatten()?;
+                HostRolloutState::from_db_str(&s).ok()
+            });
+
             HostStatusEntry {
                 hostname: hostname.clone(),
                 channel: host_decl.channel.clone(),
@@ -106,6 +136,7 @@ pub async fn fleet_state_view(state: &AppState) -> Result<Vec<HostStatusEntry>, 
                 outstanding_runtime_gate_errors: runtime_gate_errors,
                 verified_event_count: verified_count,
                 last_uptime_secs,
+                rollout_state,
             }
         })
         .collect();

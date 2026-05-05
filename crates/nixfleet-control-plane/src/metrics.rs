@@ -132,6 +132,21 @@ fn record_host_gauges(view: &HostStatusEntry, now: chrono::DateTime<Utc>) {
         )
         .set(uptime as f64);
     }
+
+    // One-of-N gauge: emit only the active state per host. PromQL queries
+    // (`nixfleet_host_rollout_state == 1`, `count by (state)`) read this
+    // naturally; absent state = host has no DB row for the current
+    // rollout (e.g. fresh deploy hasn't reached this host yet).
+    // Cardinality bound: hosts × channels × at most 1 active state.
+    if let Some(state) = view.rollout_state {
+        gauge!(
+            "nixfleet_host_rollout_state",
+            "host" => view.hostname.clone(),
+            "channel" => view.channel.clone(),
+            "state" => state.as_db_str().to_string(),
+        )
+        .set(1.0);
+    }
 }
 
 /// Set once at server boot. `cp_build_info{version,git_commit}=1` is
