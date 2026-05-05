@@ -372,6 +372,159 @@ fn disruption_budget_passes_when_under_max() {
 }
 
 #[test]
+fn host_edges_skips_cross_channel_edges() {
+    // Regression: Edge { before: krach (stable), after: lab (edge) }
+    // would look up lab in stable's rollout.host_states (always None),
+    // default to Queued, and block krach forever. The cross-channel
+    // guard treats such edges as no-ops.
+    let mut fleet = fleet_two_channels();
+    fleet.edges = vec![Edge {
+        before: "krach".into(),
+        after: "lab".into(),
+        reason: None,
+    }];
+    let r = rollout("stable", vec![]);
+    let observed = Observed {
+        active_rollouts: vec![rollout(
+            "edge",
+            vec![("lab", HostRolloutState::Converged)],
+        )],
+        ..Default::default()
+    };
+    let empty = empty_set();
+    let input = GateInput {
+        fleet: &fleet,
+        observed: &observed,
+        rollout: Some(&r),
+        host: "krach",
+        now: Utc::now(),
+        emitted_opens_in_tick: &empty,
+        conservative_on_missing_state: false,
+    };
+    assert_eq!(
+        evaluate_for_host(&input),
+        None,
+        "cross-channel host edge must NOT block",
+    );
+}
+
+#[test]
+fn compliance_wave_blocks_when_earlier_wave_has_failures_under_enforce() {
+    let mut fleet = fleet_two_channels();
+    fleet
+        .channels
+        .get_mut("stable")
+        .unwrap()
+        .compliance
+        .mode = "enforce".into();
+    fleet.waves.insert(
+        "stable".into(),
+        vec![
+            Wave {
+                hosts: vec!["krach".into()],
+                soak_minutes: 5,
+            },
+            Wave {
+                hosts: vec!["aether".into()],
+                soak_minutes: 60,
+            },
+        ],
+    );
+
+    let mut r = rollout("stable", vec![]);
+    r.current_wave = 1; // wave_promotion gate must pass for aether (wave 1)
+    let mut compliance_failures = HashMap::new();
+    let mut by_host = HashMap::new();
+    by_host.insert("krach".to_string(), 2usize);
+    compliance_failures.insert(r.id.clone(), by_host);
+
+    let observed = Observed {
+        active_rollouts: vec![rollout(
+            "edge",
+            vec![("lab", HostRolloutState::Converged)],
+        )],
+        compliance_failures_by_rollout: compliance_failures,
+        ..Default::default()
+    };
+    let empty = empty_set();
+    let input = GateInput {
+        fleet: &fleet,
+        observed: &observed,
+        rollout: Some(&r),
+        host: "aether",
+        now: Utc::now(),
+        emitted_opens_in_tick: &empty,
+        conservative_on_missing_state: false,
+    };
+    let block = evaluate_for_host(&input);
+    match block {
+        Some(GateBlock::ComplianceWave {
+            failing_events_count,
+            host_wave,
+        }) => {
+            assert_eq!(failing_events_count, 2);
+            assert_eq!(host_wave, 1);
+        }
+        other => panic!("expected ComplianceWave block, got {other:?}"),
+    }
+}
+
+#[test]
+fn compliance_wave_passes_under_permissive_mode() {
+    let mut fleet = fleet_two_channels();
+    fleet
+        .channels
+        .get_mut("stable")
+        .unwrap()
+        .compliance
+        .mode = "permissive".into();
+    fleet.waves.insert(
+        "stable".into(),
+        vec![
+            Wave {
+                hosts: vec!["krach".into()],
+                soak_minutes: 5,
+            },
+            Wave {
+                hosts: vec!["aether".into()],
+                soak_minutes: 60,
+            },
+        ],
+    );
+
+    let mut r = rollout("stable", vec![]);
+    r.current_wave = 1; // wave_promotion gate must pass for aether (wave 1)
+    let mut compliance_failures = HashMap::new();
+    let mut by_host = HashMap::new();
+    by_host.insert("krach".to_string(), 5usize);
+    compliance_failures.insert(r.id.clone(), by_host);
+
+    let observed = Observed {
+        active_rollouts: vec![rollout(
+            "edge",
+            vec![("lab", HostRolloutState::Converged)],
+        )],
+        compliance_failures_by_rollout: compliance_failures,
+        ..Default::default()
+    };
+    let empty = empty_set();
+    let input = GateInput {
+        fleet: &fleet,
+        observed: &observed,
+        rollout: Some(&r),
+        host: "aether",
+        now: Utc::now(),
+        emitted_opens_in_tick: &empty,
+        conservative_on_missing_state: false,
+    };
+    assert_eq!(
+        evaluate_for_host(&input),
+        None,
+        "permissive mode must not block",
+    );
+}
+
+#[test]
 fn empty_input_passes_all_gates() {
     let fleet = fleet_two_channels();
     let observed = Observed {

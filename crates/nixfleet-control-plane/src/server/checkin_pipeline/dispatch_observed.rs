@@ -91,8 +91,26 @@ pub(super) async fn build_observed_for_gates(
         }
     }
 
+    // Compliance failures aggregated by (rollout, host). Same DB query
+    // the reconciler tick uses, so the compliance_wave gate sees the
+    // same input at both call sites. Permissive on read failure: the
+    // gate then no-ops which is the same behaviour as the disabled
+    // mode, preserving "missing data is silent" rather than surprising
+    // the operator with a hard block.
+    let compliance_failures_by_rollout = match db.reports().outstanding_compliance_events_by_rollout() {
+        Ok(m) => m,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "dispatch_observed: outstanding_compliance_events_by_rollout failed; compliance gate no-ops",
+            );
+            std::collections::HashMap::new()
+        }
+    };
+
     Observed {
         active_rollouts,
+        compliance_failures_by_rollout,
         ..Default::default()
     }
 }

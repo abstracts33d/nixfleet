@@ -4,7 +4,6 @@ mod dispatch_observed;
 mod dispatch_target;
 mod recovery;
 mod rollback_signal;
-mod wave_gate;
 
 use std::sync::Arc;
 

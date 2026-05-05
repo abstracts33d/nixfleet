@@ -39,6 +39,7 @@ use nixfleet_proto::FleetResolved;
 use crate::observed::{Observed, Rollout};
 
 pub mod channel_edges;
+pub mod compliance_wave;
 pub mod disruption_budget;
 pub mod host_edges;
 pub mod wave_promotion;
@@ -66,6 +67,12 @@ pub enum GateBlock {
         max: u32,
         selector_summary: String,
     },
+    /// Compliance wave staging: earlier-wave host has outstanding
+    /// compliance failures under `enforce` mode.
+    ComplianceWave {
+        failing_events_count: usize,
+        host_wave: u32,
+    },
 }
 
 impl GateBlock {
@@ -91,6 +98,12 @@ impl GateBlock {
                 max,
                 selector_summary,
             } => format!("disruption-budget: {in_flight}/{max} in flight ({selector_summary})"),
+            GateBlock::ComplianceWave {
+                failing_events_count,
+                host_wave,
+            } => format!(
+                "compliance-wave: {failing_events_count} outstanding failure(s) on hosts in wave < {host_wave}"
+            ),
         }
     }
 
@@ -101,6 +114,7 @@ impl GateBlock {
             GateBlock::WavePromotion { .. } => "wave-promotion",
             GateBlock::HostEdge { .. } => "host-edge",
             GateBlock::DisruptionBudget { .. } => "disruption-budget",
+            GateBlock::ComplianceWave { .. } => "compliance-wave",
         }
     }
 }
@@ -155,6 +169,9 @@ pub fn evaluate_for_host(input: &GateInput) -> Option<GateBlock> {
         return Some(b);
     }
     if let Some(b) = disruption_budget::check(input) {
+        return Some(b);
+    }
+    if let Some(b) = compliance_wave::check(input) {
         return Some(b);
     }
     None

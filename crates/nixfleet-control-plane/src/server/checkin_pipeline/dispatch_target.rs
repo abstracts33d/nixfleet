@@ -120,12 +120,19 @@ pub(super) async fn dispatch_target_for_checkin(
             rollout_id,
             wave_index,
         } => {
-            // Wave gate only blocks fresh dispatches — converged-at-dispatch
-            // is informational bookkeeping and must not be gated (the host
-            // is already running the target).
-            if super::wave_gate::wave_gate_blocks_dispatch(state, req, &fleet).await {
-                return None;
-            }
+            // Compliance wave gate is now part of `gates::evaluate_for_host`
+            // (called above pre-decide_target). The legacy
+            // `wave_gate_blocks_dispatch` call here is superseded —
+            // see `gates/compliance_wave.rs`.
+            //
+            // Behaviour change to note: previously the compliance wave
+            // gate fired ONLY in the Decision::Dispatch arm, so a
+            // host's converged-at-dispatch path (host already on
+            // target closure) bypassed it. With the unified gate, a
+            // converged-at-dispatch host whose earlier-wave peers have
+            // outstanding compliance failures will also be held until
+            // the failures resolve. Strictly safer; rare in practice.
+
             // Persist channel explicitly: content-addressed rolloutIds don't encode it.
             let channel = fleet
                 .hosts
@@ -315,38 +322,6 @@ fn record_converged_at_dispatch(
         target_closure = %target_closure,
         "dispatch: host converged-at-dispatch (rollout-layer state materialized)",
     );
-}
-
-/// Owned per-host snapshot so gate iterator outlives the lock guards.
-pub(super) async fn stage_channel_hosts(
-    state: &AppState,
-    fleet: &nixfleet_proto::FleetResolved,
-    channel_name: &str,
-) -> Vec<(
-    String,
-    Vec<crate::server::ReportRecord>,
-    Option<String>,
-    Option<u32>,
-)> {
-    let reports_guard = state.host_reports.read().await;
-    let checkins_guard = state.host_checkins.read().await;
-    fleet
-        .hosts
-        .iter()
-        .filter(|(_, h)| h.channel == channel_name)
-        .map(|(n, _)| {
-            let buf: Vec<crate::server::ReportRecord> = reports_guard
-                .get(n)
-                .map(|q| q.iter().cloned().collect())
-                .unwrap_or_default();
-            let cur_rollout = checkins_guard
-                .get(n)
-                .and_then(|c| c.checkin.last_evaluated_target.as_ref())
-                .map(|t| t.rollout_id.clone());
-            let wave_idx = wave_index_for(fleet, channel_name, n);
-            (n.clone(), buf, cur_rollout, wave_idx)
-        })
-        .collect()
 }
 
 pub(super) fn wave_index_for(

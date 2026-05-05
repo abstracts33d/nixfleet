@@ -11,7 +11,6 @@ pub mod server;
 pub mod state;
 pub mod timers;
 pub mod tls;
-pub mod wave_gate;
 
 use std::fs;
 use std::path::PathBuf;
