@@ -74,35 +74,55 @@ pub(super) fn spawn_reconcile_loop(
             };
             let checkins = state.host_checkins.read().await.clone();
 
-            let rollouts = match state
-                .db
-                .as_deref()
-                .map(|db| db.host_dispatch_state().active_rollouts_snapshot())
-            {
-                Some(Ok(v)) => v,
-                Some(Err(err)) => {
-                    tracing::warn!(error = %err, "reconcile: active_rollouts_snapshot failed; treating as empty");
-                    Vec::new()
-                }
-                None => Vec::new(),
-            };
-
-            // Drop rollouts the rollouts table marks superseded — advancing
-            // a superseded rollout is wasted work (replacement already
-            // covers the same hosts) and surfaces ghosts in the panel.
-            let rollouts = match state.db.as_deref().map(|db| db.rollouts().superseded_rollout_ids()) {
-                Some(Ok(ids)) => {
-                    let dead: std::collections::HashSet<String> = ids.into_iter().collect();
-                    rollouts
+            // Reconciler-side observed: source from rollouts.list_active()
+            // (canonical "in-flight" — excludes both superseded_at AND
+            // terminal_at) and merge per-host observable state from
+            // host_dispatch_state. Same shape as the dispatch endpoint's
+            // build_observed_for_gates so gates see identical input at
+            // both call sites — a freshly-opened rollout is visible
+            // even before any host has dispatched on it.
+            let rollouts: Vec<crate::db::RolloutDbSnapshot> = match state.db.as_deref() {
+                Some(db) => {
+                    let in_flight = match db.rollouts().list_active() {
+                        Ok(v) => v,
+                        Err(err) => {
+                            tracing::warn!(error = %err, "reconcile: list_active failed; treating as empty");
+                            Vec::new()
+                        }
+                    };
+                    let host_state_by_rollout: HashMap<String, crate::db::RolloutDbSnapshot> =
+                        match db.host_dispatch_state().active_rollouts_snapshot() {
+                            Ok(v) => v.into_iter().map(|s| (s.rollout_id.clone(), s)).collect(),
+                            Err(err) => {
+                                tracing::warn!(error = %err, "reconcile: active_rollouts_snapshot failed; merging with empty host states");
+                                HashMap::new()
+                            }
+                        };
+                    in_flight
                         .into_iter()
-                        .filter(|r| !dead.contains(&r.rollout_id))
+                        .map(|r| match host_state_by_rollout.get(&r.rollout_id) {
+                            Some(snap) => crate::db::RolloutDbSnapshot {
+                                rollout_id: r.rollout_id,
+                                channel: r.channel,
+                                target_closure_hash: snap.target_closure_hash.clone(),
+                                target_channel_ref: snap.target_channel_ref.clone(),
+                                host_states: snap.host_states.clone(),
+                                last_healthy_since: snap.last_healthy_since.clone(),
+                                current_wave: r.current_wave,
+                            },
+                            None => crate::db::RolloutDbSnapshot {
+                                rollout_id: r.rollout_id.clone(),
+                                channel: r.channel,
+                                target_closure_hash: String::new(),
+                                target_channel_ref: r.rollout_id,
+                                host_states: HashMap::new(),
+                                last_healthy_since: HashMap::new(),
+                                current_wave: r.current_wave,
+                            },
+                        })
                         .collect()
                 }
-                Some(Err(err)) => {
-                    tracing::warn!(error = %err, "reconcile: superseded_rollout_ids failed; not filtering");
-                    rollouts
-                }
-                None => rollouts,
+                None => Vec::new(),
             };
 
             let compliance_failures_by_rollout = match state
@@ -199,6 +219,15 @@ pub(super) fn spawn_reconcile_loop(
                         }
                     }
                     apply_actions(&state, &out).await;
+                    // Per-tick orphan sweep: rollouts that exist in the
+                    // rollouts table (in-flight per the column filter)
+                    // but whose channel has zero expected hosts in the
+                    // live fleet snapshot — operator removed the
+                    // channel or stripped closure_hash from every host
+                    // on it. Without this, those rollouts sit in
+                    // list_active() forever and the reconciler emits
+                    // no-op ConvergeRollout actions on every tick.
+                    sweep_terminal_orphans(&state, live_fleet.as_ref()).await;
                     let plan = render_plan(&out);
                     tracing::info!(target: "reconcile", "{}", plan.trim_end());
                 }
@@ -338,6 +367,37 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                         );
                     }
                 }
+                // Stamp terminal_at on the rollouts table — closes the
+                // lifecycle and stops list_active() from returning this
+                // rollout to subsequent ticks. Without this the
+                // reconciler emits ConvergeRollout every tick for a
+                // already-converged rollout (history rows already
+                // stamped, host_rollout_state already Converged → both
+                // are no-ops at n=0), which is wasted work and clutters
+                // the action stream.
+                match db.rollouts().mark_terminal(rollout, chrono::Utc::now()) {
+                    Ok(0) => {
+                        tracing::debug!(
+                            target: "converge",
+                            rollout = %rollout,
+                            "converge: mark_terminal no-op (rollout absent or already terminal)",
+                        );
+                    }
+                    Ok(_) => {
+                        tracing::info!(
+                            target: "converge",
+                            rollout = %rollout,
+                            "converge: stamped rollouts.terminal_at — rollout removed from in-flight",
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            rollout = %rollout,
+                            error = %err,
+                            "converge: mark_terminal failed (rollout will keep re-emitting ConvergeRollout)",
+                        );
+                    }
+                }
             }
             Action::PromoteWave { rollout, new_wave } => {
                 // LOADBEARING: persists the advance so subsequent ticks see
@@ -374,6 +434,78 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Per-tick safety net for the rollouts.terminal_at lifecycle.
+///
+/// `Action::ConvergeRollout` already stamps terminal_at when a rollout
+/// converges naturally. This sweep catches the residual case: a rollout
+/// is in-flight per the rollouts table but has no expected hosts in the
+/// current fleet snapshot, so the reconciler will never emit
+/// ConvergeRollout for it (no host_states → wave_all_soaked is vacuously
+/// satisfied but advance_rollout's terminal predicate doesn't fire on
+/// empty rollouts). Without this sweep the rollout sits in list_active
+/// forever, surfacing as a ghost in the deferrals view and triggering
+/// no-op DB writes on every tick.
+///
+/// Conservative: only stamps terminal when BOTH the channel has zero
+/// hosts with a closure_hash AND the live fleet snapshot is loaded
+/// (skip when verified-fleet is None — better a one-tick delay than a
+/// premature stamp during a cold-boot prime).
+async fn sweep_terminal_orphans(
+    state: &AppState,
+    live_fleet: Option<&crate::server::VerifiedFleetSnapshot>,
+) {
+    let Some(snapshot) = live_fleet else {
+        return;
+    };
+    let Some(db) = state.db.as_deref() else {
+        return;
+    };
+
+    // Channels that still have at least one host expecting a closure.
+    // A channel with no such hosts is a candidate for terminal-stamping
+    // any rollouts on it.
+    let mut channels_with_expected_hosts: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
+    for host in snapshot.fleet.hosts.values() {
+        if host.closure_hash.is_some() {
+            channels_with_expected_hosts.insert(host.channel.as_str());
+        }
+    }
+
+    let in_flight = match db.rollouts().list_active() {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(error = %err, "orphan-sweep: list_active failed");
+            return;
+        }
+    };
+
+    let now = chrono::Utc::now();
+    for rollout in in_flight {
+        if channels_with_expected_hosts.contains(rollout.channel.as_str()) {
+            continue;
+        }
+        match db.rollouts().mark_terminal(&rollout.rollout_id, now) {
+            Ok(0) => {}
+            Ok(_) => {
+                tracing::info!(
+                    target: "converge",
+                    rollout = %rollout.rollout_id,
+                    channel = %rollout.channel,
+                    "orphan-sweep: stamped terminal_at — channel has no expected hosts in live fleet",
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    rollout = %rollout.rollout_id,
+                    error = %err,
+                    "orphan-sweep: mark_terminal failed",
+                );
+            }
         }
     }
 }

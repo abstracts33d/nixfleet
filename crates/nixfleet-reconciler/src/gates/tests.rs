@@ -300,6 +300,53 @@ fn host_edges_blocks_until_gating_host_converges() {
     );
 }
 
+/// Regression: the host-edges gate must fire on the FIRST checkin
+/// of a freshly-opened channel (rollout exists, no host has dispatched
+/// yet). Earlier the dispatch path built `Observed.active_rollouts`
+/// from `host_dispatch_state.active_rollouts_snapshot()` which is
+/// keyed by dispatch rows — a brand-new rollout with empty host_states
+/// was invisible, `input.rollout` collapsed to None, and host_edges
+/// short-circuited. The new builder reads from `rollouts.list_active()`
+/// and merges host_states LEFT-JOIN-style; this test pins the gate's
+/// behaviour when host_states is empty: gating peer defaults to
+/// Queued, which is NOT terminal-for-ordering, so the gate fires.
+#[test]
+fn host_edges_fires_on_freshly_opened_rollout_with_empty_host_states() {
+    // fleet.edges = [{ gated: krach, gates: aether }]
+    let mut fleet = fleet_two_channels();
+    fleet.edges = vec![Edge {
+        gated: "krach".into(),
+        gates: "aether".into(),
+        reason: None,
+    }];
+    // Rollout is "in flight" (visible to gates) but no host has
+    // dispatched yet — empty host_states. This is the channelEdges-
+    // just-released window.
+    let r = rollout("stable", vec![]);
+    let observed = Observed {
+        active_rollouts: vec![r.clone()],
+        ..Default::default()
+    };
+    let empty = empty_set();
+    let input = GateInput {
+        fleet: &fleet,
+        observed: &observed,
+        rollout: Some(&r),
+        host: "krach",
+        now: Utc::now(),
+        emitted_opens_in_tick: &empty,
+        conservative_on_missing_state: false,
+    };
+    assert_eq!(
+        evaluate_for_host(&input),
+        Some(GateBlock::HostEdge {
+            gating_host: "aether".into(),
+        }),
+        "host-edges must enforce ordering even when no host has dispatched yet — \
+         empty host_states defaults peers to Queued (not terminal-for-ordering)",
+    );
+}
+
 #[test]
 fn disruption_budget_blocks_when_at_max_in_flight() {
     let fleet = fleet_two_channels();

@@ -16,11 +16,24 @@ pub struct Rollouts<'a> {
 pub struct SupersedeStatus {
     pub superseded_at: Option<DateTime<Utc>>,
     pub superseded_by: Option<String>,
+    pub terminal_at: Option<DateTime<Utc>>,
 }
 
 impl SupersedeStatus {
     pub fn is_superseded(&self) -> bool {
         self.superseded_at.is_some()
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.terminal_at.is_some()
+    }
+
+    /// Single predicate for "this rollout is no longer in flight" — the
+    /// reconciler and dispatch path treat both as equivalent (don't
+    /// advance, don't include in gate observed). Terminal vs superseded
+    /// is only useful for diagnostic/audit surfaces.
+    pub fn is_finished(&self) -> bool {
+        self.is_superseded() || self.is_terminal()
     }
 }
 
@@ -67,34 +80,66 @@ impl Rollouts<'_> {
         let guard = super::lock_conn(self.conn)?;
         let row = guard
             .query_row(
-                "SELECT superseded_at, superseded_by
+                "SELECT superseded_at, superseded_by, terminal_at
                  FROM rollouts
                  WHERE rollout_id = ?1",
                 params![rollout_id],
                 |row| {
                     let at: Option<String> = row.get(0)?;
                     let by: Option<String> = row.get(1)?;
-                    Ok((at, by))
+                    let term: Option<String> = row.get(2)?;
+                    Ok((at, by, term))
                 },
             )
             .optional()
             .context("query rollouts.supersede_status")?;
         let parsed = row
-            .map(|(at_raw, by)| -> Result<SupersedeStatus> {
-                let superseded_at = match at_raw {
-                    Some(s) => Some(
-                        s.parse::<DateTime<Utc>>()
-                            .with_context(|| format!("parse rollouts.superseded_at: {s}"))?,
-                    ),
-                    None => None,
+            .map(|(at_raw, by, term_raw)| -> Result<SupersedeStatus> {
+                let parse_ts = |raw: Option<String>, field: &str| -> Result<Option<DateTime<Utc>>> {
+                    match raw {
+                        Some(s) => Ok(Some(
+                            s.parse::<DateTime<Utc>>()
+                                .with_context(|| format!("parse rollouts.{field}: {s}"))?,
+                        )),
+                        None => Ok(None),
+                    }
                 };
                 Ok(SupersedeStatus {
-                    superseded_at,
+                    superseded_at: parse_ts(at_raw, "superseded_at")?,
                     superseded_by: by,
+                    terminal_at: parse_ts(term_raw, "terminal_at")?,
                 })
             })
             .transpose()?;
         Ok(parsed)
+    }
+
+    /// Mark a rollout as terminal — no longer in flight, won't appear in
+    /// `list_active` or in the gate observed. Idempotent: re-marking is
+    /// a no-op (returns 0) so the reconciler can call this every time
+    /// `Action::ConvergeRollout` fires without bookkeeping a "did we
+    /// already?" flag.
+    ///
+    /// Two trigger sites:
+    ///   1. `Action::ConvergeRollout` — every host on this rollout has
+    ///      reached terminal-for-ordering (Soaked/Converged/Reverted),
+    ///      and the wave is the last wave.
+    ///   2. Per-tick orphan sweep — the rollout's channel has zero
+    ///      expected hosts in the current fleet snapshot (the operator
+    ///      removed them from fleet.nix, or the closure_hash was
+    ///      stripped). Without this sweep the rollout sits "in flight"
+    ///      forever even with no hosts to converge.
+    pub fn mark_terminal(&self, rollout_id: &str, now: DateTime<Utc>) -> Result<usize> {
+        let guard = super::lock_conn(self.conn)?;
+        let n = guard
+            .execute(
+                "UPDATE rollouts
+                 SET terminal_at = ?2
+                 WHERE rollout_id = ?1 AND terminal_at IS NULL",
+                params![rollout_id, now.to_rfc3339()],
+            )
+            .context("UPDATE rollouts terminal_at")?;
+        Ok(n)
     }
 
     /// Monotonic wave-index advance. The `WHERE current_wave < ?2` guard
@@ -139,17 +184,41 @@ impl Rollouts<'_> {
         Ok(rows)
     }
 
-    /// Used by `GET /v1/rollouts` to enumerate active rollouts directly from
-    /// the table — bypasses the agent-breadcrumb (`lastRolloutId`) discovery
-    /// path that goes silent for converged-at-dispatch hosts (the agent
-    /// never confirms there, so the breadcrumb stays at whatever it last
-    /// truly confirmed).
+    /// Returns rollout-ids no longer in flight — superseded OR terminal.
+    /// Single set so callers don't have to track two filters; the
+    /// reconciler and dispatch path treat both states equivalently
+    /// (don't advance, exclude from gate observed).
+    pub fn finished_rollout_ids(&self) -> Result<Vec<String>> {
+        let guard = super::lock_conn(self.conn)?;
+        let mut stmt = guard.prepare(
+            "SELECT rollout_id FROM rollouts
+             WHERE superseded_at IS NOT NULL OR terminal_at IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Canonical "what's in flight" — single source of truth for the
+    /// active-rollouts panel, the dispatch gate observed builder, and
+    /// the reconciler tick. Filters BOTH superseded_at AND terminal_at,
+    /// so a rollout that's converged with no successor stops showing
+    /// up after `Action::ConvergeRollout` stamps terminal_at.
+    ///
+    /// Returns a row even for rollouts that have zero `host_dispatch_state`
+    /// entries yet — i.e., a freshly-opened channel right after
+    /// channelEdges releases. That's the load-bearing change versus
+    /// reading `host_dispatch_state.active_rollouts_snapshot()` directly
+    /// (which is keyed by dispatch rows and goes silent for the brand-
+    /// new rollout's first-checkin window — the exact moment host-edges
+    /// must enforce ordering).
     pub fn list_active(&self) -> Result<Vec<ActiveRollout>> {
         let guard = super::lock_conn(self.conn)?;
         let mut stmt = guard.prepare(
             "SELECT rollout_id, channel, current_wave, created_at
              FROM rollouts
-             WHERE superseded_at IS NULL
+             WHERE superseded_at IS NULL AND terminal_at IS NULL
              ORDER BY created_at DESC, rollout_id",
         )?;
         let rows = stmt
@@ -343,5 +412,95 @@ mod tests {
             .expect("current rid present after polling tick");
         assert!(!s.is_superseded());
         assert!(db.rollouts().supersede_status("r-old").unwrap().is_none());
+    }
+
+    #[test]
+    fn mark_terminal_excludes_from_list_active_and_is_idempotent() {
+        let db = fresh_db();
+        db.rollouts()
+            .record_active_rollout("r1", "stable")
+            .unwrap();
+        db.rollouts()
+            .record_active_rollout("r2", "edge")
+            .unwrap();
+
+        // Both visible before terminal stamp.
+        let before = db.rollouts().list_active().unwrap();
+        assert_eq!(before.len(), 2);
+
+        // First mark stamps; second is idempotent no-op.
+        let now = chrono::Utc::now();
+        let n = db.rollouts().mark_terminal("r1", now).unwrap();
+        assert_eq!(n, 1);
+        let n2 = db.rollouts().mark_terminal("r1", now).unwrap();
+        assert_eq!(n2, 0, "re-marking is idempotent");
+
+        // list_active excludes terminal.
+        let after = db.rollouts().list_active().unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].rollout_id, "r2");
+
+        // Status reflects terminal.
+        let s = db.rollouts().supersede_status("r1").unwrap().unwrap();
+        assert!(s.is_terminal());
+        assert!(!s.is_superseded(), "terminal is independent of superseded");
+        assert!(s.is_finished());
+    }
+
+    #[test]
+    fn finished_rollout_ids_unions_superseded_and_terminal() {
+        let db = fresh_db();
+        // r1 → r2 same channel: r1 superseded.
+        db.rollouts()
+            .record_active_rollout("r1", "stable")
+            .unwrap();
+        db.rollouts()
+            .record_active_rollout("r2", "stable")
+            .unwrap();
+        // r3 standalone, then marked terminal.
+        db.rollouts()
+            .record_active_rollout("r3", "edge")
+            .unwrap();
+        db.rollouts()
+            .mark_terminal("r3", chrono::Utc::now())
+            .unwrap();
+
+        let mut ids = db.rollouts().finished_rollout_ids().unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["r1".to_string(), "r3".to_string()]);
+
+        // r2 (active, neither superseded nor terminal) absent from finished set.
+        assert!(!ids.contains(&"r2".to_string()));
+    }
+
+    /// Supersession overrides terminal: superseded rollouts can't be
+    /// "un-marked" by a later terminal stamp, and terminal can be
+    /// stamped on a superseded rollout (idempotent — finished is the
+    /// union). Either field alone is sufficient to drop from in-flight.
+    #[test]
+    fn terminal_and_superseded_compose_independently() {
+        let db = fresh_db();
+        db.rollouts()
+            .record_active_rollout("r1", "stable")
+            .unwrap();
+        db.rollouts()
+            .record_active_rollout("r2", "stable")
+            .unwrap();
+        // r1 is now superseded by r2.
+        let s1_before = db.rollouts().supersede_status("r1").unwrap().unwrap();
+        assert!(s1_before.is_superseded());
+        assert!(!s1_before.is_terminal());
+
+        // Stamping r1 terminal too is allowed (UPDATE only fires on terminal_at IS NULL).
+        let n = db
+            .rollouts()
+            .mark_terminal("r1", chrono::Utc::now())
+            .unwrap();
+        assert_eq!(n, 1);
+
+        let s1_after = db.rollouts().supersede_status("r1").unwrap().unwrap();
+        assert!(s1_after.is_superseded());
+        assert!(s1_after.is_terminal());
+        assert!(s1_after.is_finished());
     }
 }
