@@ -4,44 +4,53 @@
 [![License: MIT/AGPL](https://img.shields.io/badge/license-MIT%2FAGPL-blue)](LICENSE-MIT)
 [![Latest tag](https://img.shields.io/github/v/tag/arcanesys/nixfleet?label=version&sort=semver)](https://github.com/arcanesys/nixfleet/releases)
 
-Declarative NixOS fleet management with reproducible deployments, cryptographic security, and compliance automation.
+Declarative NixOS fleet management where **truth lives in git and signing keys, and the control plane is a caching router for already-signed intent**. Compromise of the control plane is an outage, not a breach.
 
-## Why NixFleet
+## Design principle
 
-Infrastructure teams face four converging crises:
+> The control plane holds no secrets, forges no trust, and can be rebuilt from empty state without data loss.
 
-- **Configuration drift** - Imperative tools (Ansible, Puppet, Chef) depend on existing system state. Every command may produce a different result depending on what ran before. State diverges silently over time.
-- **Sovereignty** - Fleet management depends on US cloud platforms (Jamf, Intune, AWS SSM), creating legal exposure under GDPR, the Cloud Act, and European digital sovereignty doctrine.
-- **Bolted-on security** - Security is layered after the fact (EDR agents, SIEM collectors, SBOM scanners) rather than built into the system model. No tool can prove the running system matches its declared state.
-- **Compliance** - Frameworks like NIS2, DORA, ISO 27001, and ANSSI require traceability, rapid incident recovery, and supply chain security that traditional stacks cannot prove.
+Every component below serves that inversion. In v0.1, the control plane was the source of truth; compromise it and the fleet followed wherever it pointed. In v0.2, the truth is signed by CI from a git commit, the control plane only routes verified artifacts, and agents independently verify everything they're told to run.
 
-NixFleet resolves all four by building on NixOS's declarative model. Infrastructure is a pure function of its declaration, so drift is impossible by construction. The hash-addressed Nix store makes every binary immutable and verifiable. Impermanence erases non-persistent state at reboot. `flake.lock` pins every dependency with cryptographic hashes, providing automatic SBOM and supply chain provenance. Every deployment is a Git commit. Rollback is atomic and instant. The entire stack is self-hosted and open source - if NixFleet disappears, your machines keep running with standard NixOS tools.
+## What this gets you
+
+- **Drift impossible by construction.** A host's state is a pure function of its declaration. `nix build` is the gate; if it builds, it's already correct.
+- **Sovereign by default.** No US cloud platforms in the trust path. Self-hosted Forgejo + cache + control plane. If NixFleet disappears, hosts keep running with stock NixOS tools.
+- **Compliance as a release gate, not a scanner.** Static controls fail the build before a non-compliant closure can ship; runtime probes block wave promotion and can trigger rollback. (See [nixfleet-compliance](https://github.com/arcanesys/nixfleet-compliance).)
+- **Magic rollback.** Activate → confirm window → auto-revert on silence. Unattended canaries are safe by deadline, not by hope.
+- **Reproducible supply chain.** `flake.lock` pins every input. Every closure is content-addressed and cache-signed. SBOM provenance is a property of the build, not a separate tool.
+- **Atomic, instant rollback** via NixOS generation switching.
+- **Darwin participation** for macOS hosts via the nix-darwin agent.
 
 ## Architecture
 
-NixFleet's runtime is a Rust stack. The **agent** runs on each managed host - it polls the control plane for desired state, fetches the target NixOS closure, applies it as a new generation, and reports health back. The **control plane** is an Axum HTTP server with mTLS authentication, SQLite storage, and role-based access control. Agent identity is derived from the TLS client certificate CN. **Operator binaries** mint bootstrap tokens and derive trust-root pubkeys from the workstation; there is no long-lived operator daemon — fleet changes are git pushes, and the control plane picks them up via HTTPS poll.
+The runtime is a Rust stack. The **agent** runs on each managed host, polls the control plane for desired state, fetches the target NixOS closure, applies it as a new generation, and reports health back. The **control plane** is an Axum HTTP server with mTLS authentication, SQLite storage, and role-based access control. Agent identity is bound to the TLS client certificate. **Operator binaries** mint bootstrap tokens and derive trust-root pubkeys; there is no long-lived operator daemon — fleet changes are git pushes, the control plane picks them up via signed-artifact poll.
 
 ```
 Operator             Forgejo (fleet repo)         Control Plane              Hosts
   |  git push           |                              |                       |
   |-------------------->|--- HTTPS poll (signed) ----->|                       |
   |                     |                              |<-- poll (mTLS) -------|
-  |                     |                              |--- desired state --->|
-  |                     |                              |<-- health report ----|
+  |                     |                              |--- target closure -->|
+  |                     |                              |<-- health + evidence-|
 ```
 
-## Ecosystem
+No imperative deploy/apply endpoints exist on the control plane. The only verb available to operators is "commit and push."
 
-| Repository | What it provides | License |
-|------------|-----------------|---------|
-| **nixfleet** (this repo) | Framework: `mkHost` / `mkFleet` API, contract impls (`flake.scopes.*`), agent, control plane, operator helper binaries | MIT / AGPL |
-| [nixfleet-compliance](https://github.com/arcanesys/nixfleet-compliance) | Compliance controls (NIS2, DORA, ISO 27001, ANSSI), evidence probes | MIT |
+## Status — v0.2 spine
 
-The framework ships kernel + contract impls. Service wraps, hardware bundles, role taxonomies, and other deployment opinions live in the consuming fleet repo — not in nixfleet — so the framework stays generic and the consumer keeps full ownership of its shape.
+Tracked in [#10](https://github.com/abstracts33d/nixfleet/issues/10):
 
-> **Try it now:** [nixfleet-demo](https://github.com/arcanesys/nixfleet-demo) ships a complete 6-host QEMU fleet with pre-baked credentials. Clone, build VMs, deploy - no setup required.
+| Pillar | Status |
+|--------|--------|
+| Declarative fleet topology (`mkFleet`) | shipped |
+| GitOps reconciler (commit = intent, no deploy commands) | shipped |
+| Signed artifacts (CI release key, attic, host probes) | shipped |
+| Freshness window (agents refuse stale targets) | shipped |
+| Magic rollback (deadline-based auto-revert) | shipped |
+| Compliance as rollout gate (static + runtime) | static shipped; runtime gate enforcing; CLI surfacing in flight |
 
-## Quick Start
+## Quick start
 
 ```nix
 {
@@ -55,7 +64,6 @@ The framework ships kernel + contract impls. Service wraps, hardware bundles, ro
       hostName = "my-server";
       platform = "x86_64-linux";
       modules = [
-        # Contract impls — opt in to the ones you want
         nixfleet.scopes.persistence.impermanence
         nixfleet.scopes.secrets
 
@@ -78,25 +86,25 @@ The framework ships kernel + contract impls. Service wraps, hardware bundles, ro
 }
 ```
 
+### Declaring a fleet
+
+`mkFleet` takes a typed declaration of hosts, channels, edges, disruption budgets, compliance modes, and revocations. CI evaluates it, signs it, and writes `fleet.resolved.json`. The control plane polls that artifact, verifies the signature, and reconciles toward it. See [`docs/rfcs/0001-fleet-nix.md`](docs/rfcs/0001-fleet-nix.md) for the full schema.
+
 ### Deployment
 
 Standard NixOS tooling works out of the box:
 
 ```sh
-nixos-anywhere --flake .#my-server root@192.168.1.50   # Fresh install (formats disks)
+nixos-anywhere --flake .#my-server root@192.168.1.50   # Fresh install
 sudo nixos-rebuild switch --flake .#my-server           # Local rebuild
 darwin-rebuild switch --flake .#my-mac                  # macOS
 ```
 
-Fleet rollouts are **git-driven**: the control plane polls a signed
-`fleet.resolved.json` from your forge (Forgejo / GitHub) and dispatches
-each host its target closure on the next agent checkin. There is no
-long-lived operator CLI — bumping the fleet IS the rollout.
+Fleet rollouts are git-driven: commit → CI builds and signs → CP polls `fleet.resolved.json` → agents pull their per-host target on next checkin. There is no operator CLI verb between commit and host activation.
 
 ### Enrolling a new host
 
-The framework ships two operator-side helper binaries inside
-`packages.nixfleet-cli`:
+Two operator-side helpers in `packages.nixfleet-cli`:
 
 ```sh
 # Derive the org-root pubkey for trust.json (run once at fleet init).
@@ -113,25 +121,19 @@ nix shell nixfleet#nixfleet-cli -c \
   > bootstrap-token-my-server.json
 ```
 
-The token is committed to the fleet repo (encrypted via your secrets
-backend) and consumed by the agent's first-boot `/v1/enroll` call.
+The token is committed to the fleet repo (encrypted via your secrets backend) and consumed by the agent's first-boot `/v1/enroll` call.
 
-### VM lifecycle (consumer-side)
+### VM lifecycle (consumer fleets)
 
-Fleets that opt into VM testing wire `nixfleet.lib.mkVmApps` into their
-own flake's `apps`:
+Fleets that opt into VM testing wire `nixfleet.lib.mkVmApps` into their flake's `apps`:
 
 ```nix
 apps = nixfleet.lib.mkVmApps { inherit pkgs; };
 ```
 
-This exposes `build-vm`, `start-vm`, `stop-vm`, `clean-vm`, `test-vm`
-as `nix run .#<name>` in the **consumer fleet** (not in nixfleet
-itself).
+This exposes `build-vm`, `start-vm`, `stop-vm`, `clean-vm`, `test-vm` as `nix run .#<name>` in the consumer fleet.
 
 ### Test runner
-
-A single entry point exercises the whole suite:
 
 ```sh
 nix run .#validate              # Fast: format + flake check + eval + host builds
@@ -140,33 +142,45 @@ nix run .#validate -- --vm      # + every fleet-harness-* scenario
 nix run .#validate -- --all     # Everything
 ```
 
-## Features
+## Ecosystem
 
-- **Fleet orchestration** - Agent polls control plane for desired state, applies NixOS generations, reports health
-- **Deployment strategies** - Canary, staged, and all-at-once rollouts with health gates and automatic rollback
-- **Operators** - Declarative multi-user management with SSH keys, sudo access, Home Manager routing
-- **Compliance as code** - NIS2, DORA, ISO 27001, ANSSI controls with evidence probes and governance engine
-- **Securix compatibility** - Integrates with [Securix](https://github.com/arcanesys/securix), the DINUM-aligned secure NixOS distribution for French and European government environments.
-- **Instant rollback** - Atomic NixOS generation switching
-- **Darwin support** - macOS fleet participation via nix-darwin agent
+| Repository | What it provides | License |
+|------------|-----------------|---------|
+| **nixfleet** (this repo) | Framework: `mkHost` / `mkFleet`, contract impls (`flake.scopes.*`), agent, control plane, operator helpers | MIT / AGPL |
+| [nixfleet-compliance](https://github.com/arcanesys/nixfleet-compliance) | Typed compliance controls (NIS2, DORA, ISO 27001, ANSSI), signed evidence, the rollout-gate moat | MIT |
+| [nixfleet-demo](https://github.com/arcanesys/nixfleet-demo) | Reference 6-host QEMU fleet with pre-baked credentials | MIT |
+
+The framework ships kernel + contract impls. Service wraps, hardware bundles, role taxonomies, and other deployment opinions live in the consuming fleet repo — not in nixfleet — so the framework stays generic and the consumer keeps full ownership of its shape.
+
+> **Try it now:** [nixfleet-demo](https://github.com/arcanesys/nixfleet-demo) ships a complete 6-host QEMU fleet. Clone, build VMs, deploy.
+
+## Non-goals
+
+- **Not a general-purpose imperative runner.** No "run this script on all hosts" — the only vocabulary is "target closure hash."
+- **Not a multi-tenant SaaS.** Single administrative domain.
+- **Not a replacement for NixOS tooling.** `nixos-rebuild`, `nix flake`, `nix-store --verify` remain ground truth.
+- **Not a cloud provisioning tool.** Fleet membership is declared; hosts aren't auto-created from templates.
+- **Not agentless.** Pull-based means an agent runs on every managed host. Acceptable cost for the sovereignty property.
 
 ## Documentation
 
-Full documentation: [arcanesys.github.io/nixfleet](https://arcanesys.github.io/nixfleet)
+- Full docs: [arcanesys.github.io/nixfleet](https://arcanesys.github.io/nixfleet)
+- Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md)
+- ADRs: [`docs/adr/`](docs/adr/) (12 records)
+- RFCs: [`docs/rfcs/`](docs/rfcs/) — fleet.nix schema, reconciler, wire protocol
 
 ## Development
 
 ```sh
 nix develop                        # Dev shell (cargo, clippy, rustfmt, rust-analyzer)
 nix fmt                            # Format (alejandra + rustfmt + shfmt)
-nix run .#validate -- --all        # Full test suite (format, eval, hosts, VM, Rust, clippy)
+nix run .#validate -- --all        # Full test suite
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contributor guidelines and
-[ARCHITECTURE.md](ARCHITECTURE.md) for the v0.2 design.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor guidelines.
 
 ## License
 
 Framework, agent, and CLI: [MIT](LICENSE-MIT). Control plane: [AGPL-3.0](LICENSE-AGPL).
 
-Your fleet configurations, custom modules, and agent deployments remain fully private - the AGPL applies only to modifications of the control plane itself.
+Your fleet configurations, custom modules, and agent deployments remain fully private — the AGPL applies only to modifications of the control plane itself.
