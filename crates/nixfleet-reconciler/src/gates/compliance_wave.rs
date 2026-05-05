@@ -24,8 +24,45 @@
 //! a fresh deploy clears the gate without operator intervention.
 
 use nixfleet_proto::compliance::GateMode;
+use nixfleet_proto::Wave;
+
+use crate::observed::Observed;
 
 use super::{GateBlock, GateInput};
+
+/// Outstanding compliance failures grouped per host, restricted to the
+/// hosts in `wave_range` of `waves`. Returned vec is sorted+deduped.
+///
+/// LOADBEARING: same predicate consumed by both the dispatch gate
+/// (waves 0..host_wave, exclusive — only EARLIER waves count) and the
+/// reconciler's wave-promotion `Action::WaveBlocked` emission (waves
+/// 0..=current_wave, inclusive — current wave's failures hold
+/// promotion). Range is the only difference between call sites; one
+/// helper means a fix to filtering / signature handling / per-host
+/// grouping covers both.
+pub fn outstanding_failures_in_waves(
+    observed: &Observed,
+    rollout_id: &str,
+    waves: &[Wave],
+    wave_range: std::ops::Range<usize>,
+) -> Vec<(String, usize)> {
+    let Some(per_host) = observed.compliance_failures_by_rollout.get(rollout_id) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for w in waves.iter().take(wave_range.end).skip(wave_range.start) {
+        for h in &w.hosts {
+            if let Some(&n) = per_host.get(h) {
+                if n > 0 {
+                    out.push((h.clone(), n));
+                }
+            }
+        }
+    }
+    out.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
 
 pub fn check(input: &GateInput) -> Option<GateBlock> {
     let host_channel = input
@@ -55,21 +92,10 @@ pub fn check(input: &GateInput) -> Option<GateBlock> {
     };
 
     let rollout = input.rollout?;
-
-    let per_host = input
-        .observed
-        .compliance_failures_by_rollout
-        .get(&rollout.id)?;
-
     let waves = input.fleet.waves.get(host_channel)?;
-    let mut failing_count: usize = 0;
-    for earlier_wave in waves.iter().take(host_wave_idx) {
-        for h in &earlier_wave.hosts {
-            if let Some(n) = per_host.get(h) {
-                failing_count = failing_count.saturating_add(*n);
-            }
-        }
-    }
+
+    let earlier = outstanding_failures_in_waves(input.observed, &rollout.id, waves, 0..host_wave_idx);
+    let failing_count: usize = earlier.iter().map(|(_, n)| *n).sum();
 
     if failing_count > 0 {
         Some(GateBlock::ComplianceWave {

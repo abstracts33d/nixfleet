@@ -79,49 +79,33 @@ pub(crate) fn advance_rollout(
     actions.extend(wave_actions);
 
     if wave_all_soaked {
-        // Wave-promotion gate. `enforce` converts an outstanding
-        // failure on any earlier-wave host into `WaveBlocked` instead
-        // of `PromoteWave`; `permissive`/`disabled` advance regardless.
+        // Wave-promotion gate. `enforce` converts an outstanding failure
+        // on any host in waves [0..=current_wave] into `WaveBlocked`
+        // instead of `PromoteWave`. Inclusive range — current wave's
+        // failures hold promotion. Compare with
+        // `gates::compliance_wave::check` which uses the EXCLUSIVE
+        // range 0..host_wave for dispatch gating: the per-rollout
+        // shared helper `outstanding_failures_in_waves` makes the
+        // difference explicit (the range argument).
         let channel_mode = fleet
             .channels
             .get(&rollout.channel)
             .map(|c| nixfleet_proto::compliance::GateMode::from_wire_str(&c.compliance.mode))
             .unwrap_or(nixfleet_proto::compliance::GateMode::Disabled);
-        // Per-rollout grouping in the projection layer enforces
-        // resolution-by-replacement: events under a superseded rollout
-        // never appear under THIS rollout's key.
-        let per_host = observed
-            .compliance_failures_by_rollout
-            .get(&rollout.id);
-        let blocked_hosts: Vec<String> = if channel_mode.is_enforcing() {
-            let mut out = Vec::new();
-            if let Some(map) = per_host {
-                for wave_idx in 0..=rollout.current_wave {
-                    if let Some(w) = waves.get(wave_idx) {
-                        for host in &w.hosts {
-                            if map.get(host).copied().unwrap_or(0) > 0 {
-                                out.push(host.clone());
-                            }
-                        }
-                    }
-                }
-                out.sort_unstable();
-                out.dedup();
-            }
-            out
+        let blocked: Vec<(String, usize)> = if channel_mode.is_enforcing() {
+            crate::gates::compliance_wave::outstanding_failures_in_waves(
+                observed,
+                &rollout.id,
+                waves,
+                0..(rollout.current_wave + 1), // inclusive of current wave
+            )
         } else {
             Vec::new()
         };
 
-        if !blocked_hosts.is_empty() {
-            let total: usize = blocked_hosts
-                .iter()
-                .map(|h| {
-                    per_host
-                        .and_then(|m| m.get(h).copied())
-                        .unwrap_or(0)
-                })
-                .sum();
+        if !blocked.is_empty() {
+            let total: usize = blocked.iter().map(|(_, n)| *n).sum();
+            let blocked_hosts: Vec<String> = blocked.into_iter().map(|(h, _)| h).collect();
             actions.push(Action::WaveBlocked {
                 rollout: rollout.id.clone(),
                 blocked_wave: rollout.current_wave + 1,
