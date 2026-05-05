@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use nixfleet_cli::{render_status_table, StatusInputs};
-use nixfleet_proto::HostsResponse;
+use nixfleet_cli::{render_status_table, render_trace_table, StatusInputs};
+use nixfleet_proto::{HostsResponse, RolloutTrace};
 use reqwest::{Certificate, Identity};
 
 #[derive(Parser, Debug)]
@@ -23,6 +23,29 @@ struct Cli {
 enum Commands {
     /// Show fleet state: convergence, staleness, outstanding compliance per host.
     Status(StatusArgs),
+    /// Rollout-scoped operations.
+    #[command(subcommand)]
+    Rollout(RolloutCommands),
+}
+
+#[derive(Subcommand, Debug)]
+enum RolloutCommands {
+    /// Wave-by-wave dispatch history for a rollout (dispatched_at + terminal_state).
+    Trace(TraceArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct TraceArgs {
+    /// 64-char hex sha256 rollout id (matches `lookup` in /v1/rollouts).
+    rollout_id: String,
+    #[arg(long, env = "NIXFLEET_CP_URL")]
+    cp_url: Option<String>,
+    #[arg(long, env = "NIXFLEET_CA_CERT")]
+    ca_cert: Option<PathBuf>,
+    #[arg(long, env = "NIXFLEET_CLIENT_CERT")]
+    client_cert: Option<PathBuf>,
+    #[arg(long, env = "NIXFLEET_CLIENT_KEY")]
+    client_key: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -46,6 +69,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Status(args) => run_status(args).await,
+        Commands::Rollout(RolloutCommands::Trace(args)) => run_trace(args).await,
     }
 }
 
@@ -104,6 +128,37 @@ async fn run_status(args: StatusArgs) -> Result<()> {
         channel_freshness,
     };
     print!("{}", render_status_table(&inputs));
+    Ok(())
+}
+
+async fn run_trace(args: TraceArgs) -> Result<()> {
+    let cp_url = args
+        .cp_url
+        .ok_or_else(|| anyhow::anyhow!("missing --cp-url (or NIXFLEET_CP_URL env)."))?;
+    let cp_url = cp_url.trim_end_matches('/').to_string();
+    let client = build_client(
+        args.ca_cert.as_deref(),
+        args.client_cert.as_deref(),
+        args.client_key.as_deref(),
+    )?;
+    let url = format!("{cp_url}/v1/rollouts/{}/trace", args.rollout_id);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!(
+            "rollout {} has no dispatch history (never dispatched, or pruned past 90d retention)",
+            args.rollout_id,
+        );
+    }
+    let trace: RolloutTrace = resp
+        .error_for_status()?
+        .json()
+        .await
+        .context("parse /v1/rollouts/{id}/trace response")?;
+    print!("{}", render_trace_table(&trace));
     Ok(())
 }
 

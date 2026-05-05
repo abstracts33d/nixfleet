@@ -245,3 +245,41 @@ pub(in crate::server) async fn lifecycle(
     );
     Ok((StatusCode::OK, headers, body))
 }
+
+/// `GET /v1/rollouts/{rolloutId}/trace` — wave-by-wave dispatch history
+/// rendered for `nixfleet rollout trace`. Returns 404 when the rollout
+/// has no dispatch_history rows (either never dispatched or pruned past
+/// the 90d retention window).
+pub(in crate::server) async fn trace(
+    State(state): State<Arc<AppState>>,
+    Path(rollout_id): Path<String>,
+) -> Result<axum::Json<nixfleet_proto::RolloutTrace>, StatusCode> {
+    if !looks_like_rollout_id(&rollout_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let db = state.db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let rows = db.dispatch_history().for_rollout(&rollout_id).map_err(|err| {
+        tracing::warn!(error = %err, rollout = %rollout_id, "trace: dispatch_history.for_rollout failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    if rows.is_empty() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let events = rows
+        .into_iter()
+        .map(|r| nixfleet_proto::RolloutTraceEvent {
+            host: r.hostname,
+            channel: r.channel,
+            wave: r.wave,
+            target_closure_hash: r.target_closure_hash,
+            target_channel_ref: r.target_channel_ref,
+            dispatched_at: r.dispatched_at,
+            terminal_state: r.terminal_state,
+            terminal_at: r.terminal_at,
+        })
+        .collect();
+    Ok(axum::Json(nixfleet_proto::RolloutTrace {
+        rollout_id,
+        events,
+    }))
+}

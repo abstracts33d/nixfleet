@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use nixfleet_proto::HostStatusEntry;
+use nixfleet_proto::{HostStatusEntry, RolloutTrace};
 
 pub struct StatusInputs {
     pub now: DateTime<Utc>,
@@ -145,6 +145,67 @@ fn format_age(d: chrono::Duration) -> String {
 fn compliance_label(host: &HostStatusEntry) -> String {
     let total = host.outstanding_compliance_failures + host.outstanding_runtime_gate_errors;
     format!("{total} outstanding")
+}
+
+/// Render `nixfleet rollout trace` output: wave-major listing of every
+/// dispatch_history row for a rollout. Open dispatches show `<open>`
+/// in the TERMINAL column; the operator reads the table top-to-bottom
+/// to follow the rollout through waves.
+pub fn render_trace_table(trace: &RolloutTrace) -> String {
+    let mut rows: Vec<[String; 5]> = Vec::with_capacity(trace.events.len() + 1);
+    rows.push([
+        "WAVE".into(),
+        "HOST".into(),
+        "DISPATCHED".into(),
+        "TERMINAL".into(),
+        "AT".into(),
+    ]);
+    for ev in &trace.events {
+        rows.push([
+            ev.wave.to_string(),
+            ev.host.clone(),
+            short_ts(&ev.dispatched_at),
+            ev.terminal_state.clone().unwrap_or_else(|| "<open>".into()),
+            ev.terminal_at
+                .as_deref()
+                .map(short_ts)
+                .unwrap_or_default(),
+        ]);
+    }
+
+    let mut widths = [0usize; 5];
+    for row in &rows {
+        for (i, col) in row.iter().enumerate() {
+            widths[i] = widths[i].max(col.chars().count());
+        }
+    }
+
+    let mut out = format!("rollout {}\n", trace.rollout_id);
+    for row in &rows {
+        for (i, col) in row.iter().enumerate() {
+            if i > 0 {
+                out.push_str("  ");
+            }
+            out.push_str(col);
+            if i + 1 < row.len() {
+                let pad = widths[i].saturating_sub(col.chars().count());
+                for _ in 0..pad {
+                    out.push(' ');
+                }
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// "2026-05-05T12:34:56.789Z" → "2026-05-05 12:34:56" (drop subseconds +
+/// zone for a denser column). Falls back to the original on parse fail
+/// so malformed historical rows surface to the operator.
+fn short_ts(rfc3339: &str) -> String {
+    DateTime::parse_from_rfc3339(rfc3339)
+        .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|_| rfc3339.to_string())
 }
 
 #[cfg(test)]
@@ -291,6 +352,39 @@ mod tests {
         };
         let out = render_status_table(&inputs);
         assert!(out.contains("\u{2026} queued"), "expected queued label: {out}");
+    }
+
+    fn trace_event(host: &str, wave: u32, terminal: Option<&str>) -> nixfleet_proto::RolloutTraceEvent {
+        nixfleet_proto::RolloutTraceEvent {
+            host: host.into(),
+            channel: "stable".into(),
+            wave,
+            target_closure_hash: "system-r1".into(),
+            target_channel_ref: "stable@trace1".into(),
+            dispatched_at: "2026-05-05T12:00:00Z".into(),
+            terminal_state: terminal.map(String::from),
+            terminal_at: terminal.map(|_| "2026-05-05T12:30:00Z".into()),
+        }
+    }
+
+    #[test]
+    fn render_trace_table_shows_open_dispatches_distinctly() {
+        let trace = RolloutTrace {
+            rollout_id: "stable@trace1".into(),
+            events: vec![
+                trace_event("lab", 0, Some("converged")),
+                trace_event("krach", 1, None),
+            ],
+        };
+        let out = render_trace_table(&trace);
+        assert!(out.contains("rollout stable@trace1"), "missing header: {out}");
+        assert!(out.contains("WAVE"), "missing column header: {out}");
+        assert!(out.contains("converged"), "missing terminal state: {out}");
+        assert!(out.contains("<open>"), "missing open marker: {out}");
+        assert!(
+            out.contains("2026-05-05 12:00:00"),
+            "timestamp not shortened: {out}"
+        );
     }
 
     #[test]

@@ -45,3 +45,31 @@ pub struct HostStatusEntry {
 pub struct HostsResponse {
     pub hosts: Vec<HostStatusEntry>,
 }
+
+/// Wave-by-wave dispatch trace for a single rollout. One entry per
+/// dispatch_history row; the rollout's lifecycle reads top-to-bottom as
+/// wave 0 hosts dispatch first, then wave 1, then wave 2, etc.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RolloutTrace {
+    pub rollout_id: String,
+    pub events: Vec<RolloutTraceEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutTraceEvent {
+    pub host: String,
+    pub channel: String,
+    pub wave: u32,
+    pub target_closure_hash: String,
+    pub target_channel_ref: String,
+    /// RFC3339 — kept as string because the DB writes it as text and
+    /// re-parsing would mask malformed historical rows the operator
+    /// needs to see.
+    pub dispatched_at: String,
+    /// `None` while the dispatch is still open (no confirm, no rollback).
+    #[serde(default)]
+    pub terminal_state: Option<String>,
+    #[serde(default)]
+    pub terminal_at: Option<String>,
+}

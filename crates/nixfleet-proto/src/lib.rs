@@ -18,7 +18,7 @@ pub use fleet_resolved::{
     HealthGate, Host, Meta, OnHealthFailure, PolicyWave, RolloutPolicy, Selector,
     SystemdFailedUnits, Wave,
 };
-pub use fleet_view::{HostStatusEntry, HostsResponse};
+pub use fleet_view::{HostStatusEntry, HostsResponse, RolloutTrace, RolloutTraceEvent};
 pub use host_rollout_state::HostRolloutState;
 pub use revocations::{RevocationEntry, Revocations};
 pub use rollout_manifest::{HostWave, RolloutBudget, RolloutManifest};

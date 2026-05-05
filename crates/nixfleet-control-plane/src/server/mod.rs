@@ -68,6 +68,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/v1/rollouts/{rolloutId}/lifecycle",
             get(routes::rollouts::lifecycle),
         )
+        .route(
+            "/v1/rollouts/{rolloutId}/trace",
+            get(routes::rollouts::trace),
+        )
         .layer(axum::middleware::from_fn(move |req, next| {
             let s = auth_state.clone();
             async move { middleware::require_cn_layer(s, req, next).await }

@@ -91,6 +91,24 @@ impl DispatchHistory<'_> {
         Ok(n)
     }
 
+    /// Wave-major, dispatched_at-ascending — operator reads top-to-bottom
+    /// as the rollout progressed. Used by `/v1/rollouts/{id}/trace`.
+    pub fn for_rollout(&self, rollout_id: &str) -> Result<Vec<DispatchHistoryRow>> {
+        let guard = super::lock_conn(self.conn)?;
+        let mut stmt = guard.prepare(
+            "SELECT id, hostname, rollout_id, channel, wave,
+                    target_closure_hash, target_channel_ref,
+                    dispatched_at, terminal_state, terminal_at
+             FROM dispatch_history
+             WHERE rollout_id = ?1
+             ORDER BY wave ASC, dispatched_at ASC, id ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![rollout_id], row_to_history_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Newest-first; ordering is part of the contract.
     pub fn recent_for_host(
         &self,
@@ -154,6 +172,50 @@ mod tests {
     use super::super::test_helpers::{dispatch_insert, fresh_db};
     use crate::state::TerminalState;
     use chrono::Utc;
+
+    #[test]
+    fn for_rollout_returns_wave_major_ascending_order() {
+        use crate::db::host_dispatch_state::DispatchInsert;
+        let db = fresh_db();
+        let deadline = Utc::now() + chrono::Duration::seconds(120);
+        // Out-of-order wave + dispatch_at insertion; query must reorder.
+        let inserts = [
+            ("krach", 2u32),
+            ("lab", 0u32),
+            ("ohm", 1u32),
+            ("aether", 0u32),
+        ];
+        for (host, wave) in inserts {
+            db.host_dispatch_state()
+                .record_dispatch(&DispatchInsert {
+                    hostname: host,
+                    rollout_id: "stable@trace1",
+                    channel: "stable",
+                    wave,
+                    target_closure_hash: "system-r1",
+                    target_channel_ref: "stable@trace1",
+                    confirm_deadline: deadline,
+                })
+                .unwrap();
+        }
+        let trace = db
+            .dispatch_history()
+            .for_rollout("stable@trace1")
+            .unwrap();
+        let waves: Vec<u32> = trace.iter().map(|r| r.wave).collect();
+        assert_eq!(
+            waves,
+            vec![0, 0, 1, 2],
+            "wave-major ascending order required: {waves:?}",
+        );
+    }
+
+    #[test]
+    fn for_rollout_returns_empty_when_unknown() {
+        let db = fresh_db();
+        let trace = db.dispatch_history().for_rollout("absent").unwrap();
+        assert!(trace.is_empty());
+    }
 
     #[test]
     fn append_only_grows_on_each_dispatch() {
