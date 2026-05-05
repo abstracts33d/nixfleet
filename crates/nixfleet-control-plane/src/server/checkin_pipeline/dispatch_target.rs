@@ -51,6 +51,7 @@ pub(super) async fn dispatch_target_for_checkin(
             conservative_on_missing_state: true,
         };
         if let Some(block) = nixfleet_reconciler::gates::evaluate_for_host(&input) {
+            crate::metrics::record_gate_block(block.discriminator());
             tracing::info!(
                 target: "dispatch",
                 hostname = %req.hostname,

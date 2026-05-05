@@ -54,6 +54,20 @@ pub fn record_runtime_gate_error() {
     counter!("nixfleet_runtime_gate_error_events_total").increment(1);
 }
 
+/// Increment when `gates::evaluate_for_host` returns `Some(GateBlock)`
+/// at the dispatch endpoint. `gate_kind` is the kebab-case discriminator
+/// (channel-edges / wave-promotion / host-edge / disruption-budget /
+/// compliance-wave) — bounded set, safe label. Operators alert on
+/// `rate(nixfleet_gate_block_total{gate="compliance-wave"}[5m]) > 0` or
+/// similar to surface "enforce mode is actively holding hosts".
+pub fn record_gate_block(gate_kind: &str) {
+    counter!(
+        "nixfleet_gate_block_total",
+        "gate" => gate_kind.to_string(),
+    )
+    .increment(1);
+}
+
 /// Refresh per-host + per-channel gauges from the current fleet state
 /// view. Called by the `/metrics` handler on every scrape — cheap (no
 /// SQLite query, just RwLock reads + arithmetic).
@@ -171,6 +185,26 @@ mod tests {
         assert!(
             body.contains("version=\"0.2.0-test\""),
             "missing version label:\n{body}"
+        );
+    }
+
+    #[test]
+    fn gate_block_counter_renders_with_kebab_label() {
+        let handle = install_recorder();
+        record_gate_block("compliance-wave");
+        record_gate_block("disruption-budget");
+        let body = handle.render();
+        assert!(
+            body.contains("nixfleet_gate_block_total"),
+            "missing gate_block counter:\n{body}"
+        );
+        assert!(
+            body.contains("gate=\"compliance-wave\""),
+            "missing compliance-wave label:\n{body}"
+        );
+        assert!(
+            body.contains("gate=\"disruption-budget\""),
+            "missing disruption-budget label:\n{body}"
         );
     }
 }
