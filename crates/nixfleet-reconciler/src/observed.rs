@@ -76,6 +76,27 @@ pub struct Rollout {
     pub budgets: Vec<nixfleet_proto::RolloutBudget>,
 }
 
+impl Rollout {
+    /// Active-for-ordering: the rollout still has work outstanding from
+    /// the perspective of `channelEdges` / host-edges sequencing. Empty
+    /// `host_states` (newly-recorded, no dispatches yet) counts as
+    /// active — the rollout has work to do, just hasn't started.
+    /// Otherwise: active iff at least one host is non-terminal.
+    ///
+    /// `Failed` / `Reverted` count as active (predecessor in trouble).
+    /// See `HostRolloutState::is_terminal_for_ordering` for the per-host
+    /// terminal predicate.
+    pub fn is_active_for_ordering(&self) -> bool {
+        if self.host_states.is_empty() {
+            return true;
+        }
+        !self
+            .host_states
+            .values()
+            .all(HostRolloutState::is_terminal_for_ordering)
+    }
+}
+
 fn serialize_rollout_state<S: Serializer>(s: &RolloutState, ser: S) -> Result<S::Ok, S::Error> {
     ser.serialize_str(s.as_str())
 }

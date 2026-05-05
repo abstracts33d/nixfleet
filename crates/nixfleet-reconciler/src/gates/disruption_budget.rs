@@ -19,7 +19,6 @@
 //! retags do NOT reshape budget membership — the cascading-dispatch
 //! hazard from live resolution is structurally impossible by design.
 
-use crate::host_state::HostRolloutState;
 use crate::observed::Observed;
 use nixfleet_proto::{RolloutBudget, Selector};
 
@@ -63,13 +62,7 @@ fn in_flight_count(observed: &Observed, selector: &Selector) -> u32 {
                     if !b.hosts.iter().any(|bh| bh == *h) {
                         return false;
                     }
-                    matches!(
-                        st,
-                        HostRolloutState::Dispatched
-                            | HostRolloutState::Activating
-                            | HostRolloutState::ConfirmWindow
-                            | HostRolloutState::Healthy
-                    )
+                    st.is_in_flight()
                 })
                 .count() as u32
         })

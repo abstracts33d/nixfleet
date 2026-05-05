@@ -14,6 +14,9 @@ use crate::host_state::HostRolloutState;
 
 use super::{GateBlock, GateInput};
 
+// `is_terminal_for_ordering` is centralised on HostRolloutState — both
+// gates use the same predicate so "what counts as done" can't drift.
+
 pub fn check(input: &GateInput) -> Option<GateBlock> {
     // No rollout = no per-host states to gate against. Channel-level
     // gates (channelEdges) hold dispatch in this case until the rollout
@@ -57,10 +60,7 @@ pub fn check(input: &GateInput) -> Option<GateBlock> {
                 .get(&e.gates)
                 .copied()
                 .unwrap_or(HostRolloutState::Queued);
-            if matches!(
-                other_state,
-                HostRolloutState::Soaked | HostRolloutState::Converged
-            ) {
+            if other_state.is_terminal_for_ordering() {
                 None
             } else {
                 Some(GateBlock::HostEdge {

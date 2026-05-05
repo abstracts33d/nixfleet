@@ -11,8 +11,7 @@
 //! so adding a new edge case touches one function and is enforced
 //! everywhere.
 
-use crate::host_state::HostRolloutState;
-use crate::observed::{Observed, Rollout};
+use crate::observed::Observed;
 use nixfleet_proto::FleetResolved;
 use std::collections::HashSet;
 
@@ -94,7 +93,7 @@ fn channel_blocked(
         .iter()
         .find(|r| r.channel == predecessor);
     match db_rollout {
-        Some(r) => rollout_is_active_for_ordering(r),
+        Some(r) => r.is_active_for_ordering(),
         None => {
             if emitted_opens_in_tick.contains(predecessor) {
                 return true;
@@ -106,28 +105,4 @@ fn channel_blocked(
             }
         }
     }
-}
-
-/// True if the rollout still has work outstanding from the perspective
-/// of `channelEdges` ordering.
-///
-/// `Soaked` and `Converged` count as terminal-for-ordering: the host
-/// has cleared its soak window. Treating only `Converged` as terminal
-/// would block the successor channel during the gap between SoakHost
-/// transitions and the next reconcile tick's `ConvergeRollout` action —
-/// small in practice but adds latency and is semantically wrong.
-///
-/// Empty `host_states` (a freshly-recorded rollout that has not yet
-/// dispatched any host) is also treated as active — the rollout has
-/// work to do, just hasn't started.
-///
-/// `Failed` / `Reverted` are NOT terminal-for-ordering: the predecessor
-/// is in trouble and the successor must wait.
-fn rollout_is_active_for_ordering(r: &Rollout) -> bool {
-    if r.host_states.is_empty() {
-        return true;
-    }
-    !r.host_states
-        .values()
-        .all(|s| matches!(s, HostRolloutState::Soaked | HostRolloutState::Converged))
 }

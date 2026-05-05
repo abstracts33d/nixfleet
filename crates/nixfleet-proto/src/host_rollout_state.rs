@@ -64,6 +64,40 @@ impl HostRolloutState {
             }),
         }
     }
+
+    /// Terminal-for-ordering: host has cleared its observable activation
+    /// (soak window passed or rollout reached Converged). Used by:
+    ///   - `gates::channel_edges` (predecessor channel done?)
+    ///   - `gates::host_edges` (gating host done?)
+    ///
+    /// Why both `Soaked` and `Converged`: treating only `Converged` as
+    /// terminal would leave the gap between SoakHost transitions and the
+    /// next reconcile tick's `ConvergeRollout` action holding the
+    /// successor — small in practice but semantically wrong (a Soaked
+    /// host has finished its observable activation).
+    ///
+    /// `Failed` / `Reverted` are NOT terminal-for-ordering: predecessor
+    /// is in trouble, operator action is needed, successor must wait.
+    pub fn is_terminal_for_ordering(&self) -> bool {
+        matches!(self, Self::Soaked | Self::Converged)
+    }
+
+    /// In-flight: host is consuming a disruption-budget slot. Used by
+    /// `gates::disruption_budget::in_flight_count` for cross-rollout
+    /// budget enforcement.
+    pub fn is_in_flight(&self) -> bool {
+        matches!(
+            self,
+            Self::Dispatched | Self::Activating | Self::ConfirmWindow | Self::Healthy
+        )
+    }
+
+    /// Stuck-and-staying-stuck: needs operator action. Distinct from
+    /// `is_terminal_for_ordering` because Failed/Reverted hosts must
+    /// hold their successor (the rollout is in trouble).
+    pub fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed | Self::Reverted)
+    }
 }
 
 #[cfg(test)]
