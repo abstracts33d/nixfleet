@@ -32,13 +32,13 @@ in
     };
     edges = [
       {
-        after = "a";
-        before = "b";
-        reason = "a before b";
+        gated = "a";
+        gates = "b";
+        reason = "a waits for b";
       }
       {
-        after = "b";
-        before = "a";
+        gated = "b";
+        gates = "a";
         reason = "cycle!";
       }
     ];
