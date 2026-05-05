@@ -186,7 +186,30 @@
     };
   };
 
-  edgeType = types.submodule {
+  # Host-level DAG edge. `gated` waits for `gates` to reach Soaked /
+  # Converged within the same rollout. Both hosts MUST be on the same
+  # channel — cross-channel ordering is `channelEdges`'s job.
+  hostEdgeType = types.submodule {
+    options = {
+      gated = mkOption {
+        type = types.str;
+        description = "Host whose dispatch is held until `gates` completes.";
+      };
+      gates = mkOption {
+        type = types.str;
+        description = "Host that must reach Soaked/Converged before `gated` dispatches.";
+      };
+      reason = mkOption {
+        type = types.str;
+        default = "";
+      };
+    };
+  };
+
+  # Channel-level DAG edge. `before` channel must converge its rollout
+  # before `after` channel opens. `before`/`after` here read naturally
+  # in time order (predecessor / successor).
+  channelEdgeType = types.submodule {
     options = {
       before = mkOption {type = types.str;};
       after = mkOption {type = types.str;};
@@ -320,8 +343,14 @@
     edgeErrors =
       lib.concatMap (
         e:
-          lib.optional (!builtins.elem e.before hostNames) "edge.before references unknown host '${e.before}'"
-          ++ lib.optional (!builtins.elem e.after hostNames) "edge.after references unknown host '${e.after}'"
+          lib.optional (!builtins.elem e.gated hostNames) "edge.gated references unknown host '${e.gated}'"
+          ++ lib.optional (!builtins.elem e.gates hostNames) "edge.gates references unknown host '${e.gates}'"
+          ++ lib.optional (
+            (cfg.hosts.${e.gated}.channel or null)
+            != null
+            && (cfg.hosts.${e.gates}.channel or null) != null
+            && cfg.hosts.${e.gated}.channel != cfg.hosts.${e.gates}.channel
+          ) "edge.gated '${e.gated}' (channel '${cfg.hosts.${e.gated}.channel}') and edge.gates '${e.gates}' (channel '${cfg.hosts.${e.gates}.channel}') are on different channels; use channelEdges for cross-channel ordering"
       )
       cfg.edges;
 
@@ -360,7 +389,15 @@
       )
       (lib.attrNames cfg.channels);
 
-    cycleErrors = lib.optional (hasCycle cfg.edges) "edges form a cycle; the DAG invariant is violated";
+    # Normalise host-edge field names (gated/gates) to the channelEdge
+    # before/after shape that hasCycle expects: "before runs first, after
+    # runs second". A `gated` host runs AFTER its `gates` host completes
+    # (gates → gated in DAG order), so map gates → before, gated → after.
+    cycleErrors = lib.optional (hasCycle (map (e: {
+        before = e.gates;
+        after = e.gated;
+      })
+      cfg.edges)) "edges form a cycle; the DAG invariant is violated";
 
     channelCycleErrors = lib.optional (hasCycle cfg.channelEdges) "channelEdges form a cycle; cross-channel ordering must be a DAG";
 
@@ -579,11 +616,18 @@
               default = {};
             };
             edges = mkOption {
-              type = types.listOf edgeType;
+              type = types.listOf hostEdgeType;
               default = [];
+              description = ''
+                Per-host DAG ordering within a rollout. `gated` host's
+                dispatch is held until `gates` host reaches
+                Soaked/Converged within the same rollout. Both hosts
+                must be on the same channel — cross-channel ordering
+                is `channelEdges`'s job.
+              '';
             };
             channelEdges = mkOption {
-              type = types.listOf edgeType;
+              type = types.listOf channelEdgeType;
               default = [];
               description = ''
                 Cross-channel rollout ordering. A new rollout on channel

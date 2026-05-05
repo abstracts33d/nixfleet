@@ -188,11 +188,26 @@ pub struct Wave {
     pub soak_minutes: u32,
 }
 
+/// Per-host DAG edge: `gated` host can dispatch only once `gates` host
+/// reaches terminal-for-ordering (Soaked / Converged) within the same
+/// rollout. Both hosts must be on the same channel — cross-channel
+/// ordering is `ChannelEdge`'s job (the gate operates within a single
+/// rollout's host_states; cross-channel pairs would silently brick the
+/// gated host).
+///
+/// Schema note: pre-rev these were named `before`/`after`, where
+/// "before" actually meant "the gated host" (held back) — the
+/// opposite of natural DAG reading. Renamed to `gated`/`gates` for
+/// clarity. Hard cutover: any pre-rename fleet.resolved bytes will
+/// fail to parse against this schema. Verified safe because lab is
+/// the only CP and gets the new code + new artifact together.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Edge {
-    pub before: String,
-    pub after: String,
+    /// Host whose dispatch is held until `gates` completes.
+    pub gated: String,
+    /// Host that must reach Soaked/Converged before `gated` can dispatch.
+    pub gates: String,
     #[serde(default)]
     pub reason: Option<String>,
 }

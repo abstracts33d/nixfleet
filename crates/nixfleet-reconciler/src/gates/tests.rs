@@ -263,12 +263,12 @@ fn wave_promotion_blocks_wave_one_when_current_is_zero() {
 
 #[test]
 fn host_edges_blocks_until_gating_host_converges() {
-    // fleet.edges = [{ before: krach, after: aether }]
-    // Per existing semantics: krach is gated on aether's completion.
+    // fleet.edges = [{ gated: krach, gates: aether }]
+    // krach's dispatch is held until aether reaches Soaked/Converged.
     let mut fleet = fleet_two_channels();
     fleet.edges = vec![Edge {
-        before: "krach".into(),
-        after: "aether".into(),
+        gated: "krach".into(),
+        gates: "aether".into(),
         reason: None,
     }];
     let r = rollout(
@@ -379,8 +379,8 @@ fn host_edges_skips_cross_channel_edges() {
     // guard treats such edges as no-ops.
     let mut fleet = fleet_two_channels();
     fleet.edges = vec![Edge {
-        before: "krach".into(),
-        after: "lab".into(),
+        gated: "krach".into(),
+        gates: "lab".into(),
         reason: None,
     }];
     let r = rollout("stable", vec![]);

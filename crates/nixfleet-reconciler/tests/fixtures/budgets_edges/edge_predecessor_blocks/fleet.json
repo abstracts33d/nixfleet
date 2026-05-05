@@ -14,8 +14,8 @@
   "disruptionBudgets": [],
   "edges": [
     {
-      "after": "h2",
-      "before": "h1",
+      "gated": "h1",
+      "gates": "h2",
       "reason": "schema migration"
     }
   ],
