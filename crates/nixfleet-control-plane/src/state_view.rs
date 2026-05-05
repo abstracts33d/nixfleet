@@ -9,6 +9,7 @@ use nixfleet_proto::agent_wire::ReportEvent;
 use nixfleet_proto::{HostRolloutState, HostStatusEntry};
 use nixfleet_reconciler::compute_rollout_id_for_channel;
 use nixfleet_reconciler::evidence::SignatureStatus;
+use tracing::warn;
 
 use crate::server::AppState;
 
@@ -38,13 +39,23 @@ pub async fn fleet_state_view(state: &AppState) -> Result<Vec<HostStatusEntry>, 
     let reports = state.host_reports.read().await;
 
     // Memoise per-channel rollout ID so we project the manifest once per
-    // channel, not per host. `None` covers both the err and ok-None cases —
-    // either way, no current rollout for that channel.
+    // channel, not per host. Projection failure is louder than the legitimate
+    // "no host with closure on this channel" Ok(None) case — warn so a broken
+    // fleet manifest surfaces in logs instead of as silently empty rollout_state.
     let mut current_rollout_for_channel: HashMap<String, Option<String>> = HashMap::new();
     for channel in fleet.channels.keys() {
-        let id = compute_rollout_id_for_channel(&fleet, &fleet_hash, channel)
-            .ok()
-            .flatten();
+        let id = match compute_rollout_id_for_channel(&fleet, &fleet_hash, channel) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(
+                    target: "state_view",
+                    channel = %channel,
+                    error = %e,
+                    "compute_rollout_id_for_channel failed; rollout_state will be None for hosts on this channel",
+                );
+                None
+            }
+        };
         current_rollout_for_channel.insert(channel.clone(), id);
     }
 
@@ -110,17 +121,47 @@ pub async fn fleet_state_view(state: &AppState) -> Result<Vec<HostStatusEntry>, 
 
             // GOTCHA: query state for the FLEET's current rolloutId for this
             // channel, not the agent-reported last_rollout_id (may be stale
-            // after a fresh deploy supersedes). Returns None when:
-            //   - no DB configured (in-memory CP),
-            //   - no current rollout (channel has no host with a closure),
-            //   - DB row absent (host hasn't transitioned for this rollout yet),
-            //   - DB row has an unrecognised state string (parse fail).
+            // after a fresh deploy supersedes).
+            //
+            // Three classes of "None" with different meanings:
+            //   - benign: no DB / no current rollout / row absent (host hasn't
+            //     transitioned for this rollout yet) — silent.
+            //   - DB error: lock poisoned, schema drift, I/O — warn (was
+            //     previously swallowed as Ok(None)).
+            //   - parse error: unrecognised state string in DB row — warn
+            //     (data-integrity issue, not normal).
             let rollout_state = state.db.as_ref().and_then(|db| {
                 let rid = current_rollout_for_channel
                     .get(&host_decl.channel)
                     .and_then(|o| o.as_deref())?;
-                let s = db.rollout_state().host_state(hostname, rid).ok().flatten()?;
-                HostRolloutState::from_db_str(&s).ok()
+                let row = match db.rollout_state().host_state(hostname, rid) {
+                    Ok(row) => row,
+                    Err(e) => {
+                        warn!(
+                            target: "state_view",
+                            host = %hostname,
+                            rollout_id = %rid,
+                            error = %e,
+                            "rollout_state DB lookup failed; rendering host as None",
+                        );
+                        return None;
+                    }
+                };
+                let s = row?;
+                match HostRolloutState::from_db_str(&s) {
+                    Ok(parsed) => Some(parsed),
+                    Err(e) => {
+                        warn!(
+                            target: "state_view",
+                            host = %hostname,
+                            rollout_id = %rid,
+                            raw = %s,
+                            error = %e,
+                            "host_rollout_state row has unrecognised state string; rendering as None",
+                        );
+                        None
+                    }
+                }
             });
 
             HostStatusEntry {

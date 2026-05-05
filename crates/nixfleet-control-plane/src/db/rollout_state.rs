@@ -115,17 +115,21 @@ impl RolloutState<'_> {
         Ok(n)
     }
 
+    /// Row absent → `Ok(None)`. A real DB error (lock poisoned, schema drift,
+    /// I/O) propagates as `Err` so the caller can warn rather than silently
+    /// rendering "no rollout state".
     pub fn host_state(&self, hostname: &str, rollout_id: &str) -> Result<Option<String>> {
         let guard = super::lock_conn(self.conn)?;
-        let row = guard
-            .query_row(
-                "SELECT host_state FROM host_rollout_state
-                 WHERE rollout_id = ?1 AND hostname = ?2",
-                params![rollout_id, hostname],
-                |row| row.get::<_, String>(0),
-            )
-            .ok();
-        Ok(row)
+        match guard.query_row(
+            "SELECT host_state FROM host_rollout_state
+             WHERE rollout_id = ?1 AND hostname = ?2",
+            params![rollout_id, hostname],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(s) => Ok(Some(s)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e).context("host_rollout_state lookup"),
+        }
     }
 
     /// Existing row authoritative over re-attestation; recovery skips when row exists.
@@ -416,5 +420,26 @@ mod tests {
             snap[0].host_states.get("ohm").map(String::as_str),
             Some("Soaked"),
         );
+    }
+
+    #[test]
+    fn host_state_returns_none_when_row_absent() {
+        let db = fresh_db();
+        let got = db
+            .rollout_state()
+            .host_state("ghost-host", "stable@r-never")
+            .expect("absent row must be Ok(None), not Err");
+        assert!(got.is_none(), "no row → None, got {got:?}");
+    }
+
+    #[test]
+    fn host_state_returns_some_after_transition() {
+        let db = fresh_db();
+        mark_healthy(&db, "ohm", "stable@r1", Utc::now());
+        let got = db
+            .rollout_state()
+            .host_state("ohm", "stable@r1")
+            .expect("present row must be Ok(Some(...))");
+        assert_eq!(got.as_deref(), Some("Healthy"));
     }
 }

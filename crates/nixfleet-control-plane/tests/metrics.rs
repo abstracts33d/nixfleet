@@ -17,6 +17,7 @@ use common::{
 use ed25519_dalek::{Signer, SigningKey};
 use nixfleet_control_plane::server;
 use nixfleet_proto::agent_wire::{ReportEvent, ReportRequest};
+use prometheus_parse::{Sample, Scrape, Value};
 use rand::rngs::OsRng;
 use tempfile::TempDir;
 
@@ -164,43 +165,51 @@ async fn metrics_endpoint_returns_expected_gauges_and_counters() {
         "unexpected content-type: {ct}"
     );
     let body = resp.text().await.unwrap();
+    let scrape = parse_scrape(&body);
 
     assert!(
-        body.contains("nixfleet_cp_build_info"),
+        metric_present(&scrape, "nixfleet_cp_build_info"),
         "missing build_info gauge:\n{body}"
     );
     assert!(
-        body.contains(&format!(
-            "nixfleet_channel_freshness_window_minutes{{channel=\"{CHANNEL}\"}}"
-        )),
+        metric_present_with_labels(
+            &scrape,
+            "nixfleet_channel_freshness_window_minutes",
+            &[("channel", CHANNEL)],
+        ),
         "missing channel freshness window gauge:\n{body}"
     );
     assert!(
-        body.contains("nixfleet_fleet_signed_age_seconds"),
+        metric_present(&scrape, "nixfleet_fleet_signed_age_seconds"),
         "missing fleet signed-age gauge:\n{body}"
     );
     assert!(
-        body.contains(&format!(
-            "nixfleet_host_converged{{channel=\"{CHANNEL}\",host=\"{HOST}\"}}"
-        )) || body.contains(&format!(
-            "nixfleet_host_converged{{host=\"{HOST}\",channel=\"{CHANNEL}\"}}"
-        )),
+        metric_present_with_labels(
+            &scrape,
+            "nixfleet_host_converged",
+            &[("host", HOST), ("channel", CHANNEL)],
+        ),
         "missing host_converged gauge with both labels:\n{body}"
     );
 
     // ---- 2. Cardinality discipline: forbidden labels never appear ----
-    for forbidden in [
-        "closure_hash=",
-        "rollout_id=",
-        "evidence_snippet=",
-        "framework_articles=",
-        DECLARED_CLOSURE,
-    ] {
-        assert!(
-            !body.contains(forbidden),
-            "forbidden label/value '{forbidden}' leaked into /metrics:\n{body}"
-        );
-    }
+    // High-cardinality fields (closure_hash, rollout_id) and free-text
+    // fields (evidence_snippet, framework_articles) belong in tracing,
+    // never in metric labels. Asserted at the parsed-label level so
+    // adding a metric with one of these as a label key fails the test
+    // — substring matching couldn't tell a label from a metric name.
+    assert_no_forbidden_label_keys(
+        &scrape,
+        &[
+            "closure_hash",
+            "rollout_id",
+            "evidence_snippet",
+            "framework_articles",
+        ],
+    );
+    // The closure-hash literal must not leak as a label VALUE either
+    // (e.g. snuck into a `closure=` label that wasn't on our denylist).
+    assert_no_forbidden_label_value_substring(&scrape, &[DECLARED_CLOSURE]);
 
     // ---- 3. ComplianceFailure report increments counter + flips gauge ----
     let event_id_payload = ReportRequest {
@@ -240,24 +249,25 @@ async fn metrics_endpoint_returns_expected_gauges_and_counters() {
         .text()
         .await
         .unwrap();
+    let scrape2 = parse_scrape(&body2);
 
     assert!(
-        body2.contains("nixfleet_compliance_failure_events_total"),
-        "missing compliance_failure counter after report:\n{body2}"
+        metric_present_with_labels(
+            &scrape2,
+            "nixfleet_compliance_failure_events_total",
+            &[("control_id", "TEST-CONTROL-A")],
+        ),
+        "missing compliance_failure counter with control_id label after report:\n{body2}"
     );
     assert!(
-        body2.contains("control_id=\"TEST-CONTROL-A\""),
-        "missing control_id label after report:\n{body2}"
-    );
-    assert!(
-        body2.contains("nixfleet_host_outstanding_compliance_failures"),
+        metric_present(&scrape2, "nixfleet_host_outstanding_compliance_failures"),
         "missing outstanding gauge after report:\n{body2}"
     );
 
     // Counter increment is monotonic — second scrape's value strictly
     // exceeds first scrape's (zero or absent before the report posted).
-    let count_v1 = scrape_counter(&body, "nixfleet_compliance_failure_events_total");
-    let count_v2 = scrape_counter(&body2, "nixfleet_compliance_failure_events_total");
+    let count_v1 = sum_counter(&scrape, "nixfleet_compliance_failure_events_total");
+    let count_v2 = sum_counter(&scrape2, "nixfleet_compliance_failure_events_total");
     assert!(
         count_v2 > count_v1,
         "compliance counter did not increment: v1={count_v1} v2={count_v2}"
@@ -320,13 +330,64 @@ async fn metrics_returns_503_when_fleet_snapshot_not_primed() {
     handle.abort();
 }
 
-/// Sum every line that starts with `name{` (any label set) — counter
-/// values are floats in Prometheus text format. Returns 0.0 when the
-/// metric is absent so the "first scrape" baseline reads as zero.
-fn scrape_counter(body: &str, name: &str) -> f64 {
-    body.lines()
-        .filter(|line| line.starts_with(name))
-        .filter_map(|line| line.rsplit_once(' '))
-        .filter_map(|(_, v)| v.parse::<f64>().ok())
+fn parse_scrape(body: &str) -> Scrape {
+    let lines = body.lines().map(|l| Ok::<_, std::io::Error>(l.to_string()));
+    Scrape::parse(lines).expect("/metrics body must be valid Prometheus text format")
+}
+
+fn metric_present(scrape: &Scrape, name: &str) -> bool {
+    scrape.samples.iter().any(|s| s.metric == name)
+}
+
+fn metric_present_with_labels(scrape: &Scrape, name: &str, labels: &[(&str, &str)]) -> bool {
+    scrape.samples.iter().any(|s| sample_matches(s, name, labels))
+}
+
+fn sample_matches(s: &Sample, name: &str, labels: &[(&str, &str)]) -> bool {
+    if s.metric != name {
+        return false;
+    }
+    labels.iter().all(|(k, v)| s.labels.get(k) == Some(*v))
+}
+
+/// Sum across every label-set; counter and gauge collapse to f64.
+/// Returns 0.0 when the metric is absent so the baseline reads as zero.
+fn sum_counter(scrape: &Scrape, name: &str) -> f64 {
+    scrape
+        .samples
+        .iter()
+        .filter(|s| s.metric == name)
+        .filter_map(|s| match s.value {
+            Value::Counter(v) | Value::Gauge(v) | Value::Untyped(v) => Some(v),
+            _ => None,
+        })
         .sum()
+}
+
+fn assert_no_forbidden_label_keys(scrape: &Scrape, forbidden_keys: &[&str]) {
+    for sample in &scrape.samples {
+        for (key, _) in sample.labels.iter() {
+            assert!(
+                !forbidden_keys.contains(&key.as_str()),
+                "forbidden label key '{key}' leaked onto metric '{}' \
+                 (cardinality discipline: high-cardinality fields belong in tracing, not metrics)",
+                sample.metric,
+            );
+        }
+    }
+}
+
+fn assert_no_forbidden_label_value_substring(scrape: &Scrape, forbidden_substrings: &[&str]) {
+    for sample in &scrape.samples {
+        for (key, val) in sample.labels.iter() {
+            for needle in forbidden_substrings {
+                assert!(
+                    !val.contains(needle),
+                    "forbidden literal '{needle}' leaked into label value '{val}' \
+                     (key='{key}', metric='{}')",
+                    sample.metric,
+                );
+            }
+        }
+    }
 }
