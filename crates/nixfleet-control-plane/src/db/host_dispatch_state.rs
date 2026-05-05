@@ -3,6 +3,43 @@
 //! LOADBEARING: paired with `dispatch_history` (append-only audit). This module
 //! UPSERTs one row per host (replaced on every new dispatch); audit trail must
 //! survive in `dispatch_history` even after the operational row is overwritten.
+//!
+//! ## confirm_deadline — invariant across the four call sites
+//!
+//! Four code paths read `confirm_deadline` differently. They MUST stay
+//! consistent, or you get either zombie dispatches (expired rows
+//! treated as live) or premature rollbacks (deadline-violating
+//! confirms accepted late):
+//!
+//!   - `confirm()` rejects past-deadline confirms via
+//!     `datetime(confirm_deadline) > datetime('now')`. Late-arriving
+//!     agent confirms are silently dropped (audit row flagged
+//!     `rolled-back` when the timer eventually sweeps).
+//!
+//!   - `pending_deadlines()` returns past-deadline pending rows for the
+//!     rollback timer to flip via `datetime(confirm_deadline) < datetime('now')`.
+//!
+//!   - `pending_dispatch_exists()` does NOT filter by deadline —
+//!     past-deadline pending rows STILL count as in-flight.
+//!     Intentional: dispatch endpoint returns `Decision::InFlight`
+//!     for these so a new dispatch can't race the rollback timer
+//!     and overwrite the row before the audit stamp lands.
+//!
+//!   - `active_rollouts_snapshot()` filters by `state IN ('pending',
+//!     'confirmed')` only — same intent: past-deadline pending rows
+//!     project as `ConfirmWindow` until the timer fires, so the
+//!     reconciler / dashboard show the host as still settling.
+//!
+//! Eventual-consistency window: ROLLBACK_TIMER_INTERVAL (30s today).
+//! After deadline + 30s, the timer flips state to 'rolled-back', the
+//! row drops out of pending_dispatch_exists / active_rollouts_snapshot,
+//! and a fresh dispatch can be issued.
+//!
+//! Adding a fifth caller? Use `pending_dispatch_exists` (deadline-
+//! agnostic, "is the row in-flight from CP's bookkeeping standpoint?")
+//! or run a custom query with `datetime(confirm_deadline)` — never
+//! skip the `datetime(...)` wrapper, naked string compare ranks `'T'`
+//! after `' '` and breaks the timer.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
