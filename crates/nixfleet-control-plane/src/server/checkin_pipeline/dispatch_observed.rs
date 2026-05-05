@@ -37,15 +37,8 @@ pub(super) async fn build_observed_for_gates(
     fleet_resolved_hash: &str,
     rollouts_dir: Option<&Path>,
 ) -> Observed {
-    let current_rollout_ids: HashSet<String> = fleet
-        .channels
-        .keys()
-        .filter_map(|ch| {
-            nixfleet_reconciler::compute_rollout_id_for_channel(fleet, fleet_resolved_hash, ch)
-                .ok()
-                .flatten()
-        })
-        .collect();
+    let current_rollout_ids: HashSet<String> =
+        nixfleet_reconciler::current_rollout_ids(fleet, fleet_resolved_hash);
 
     let raw = match db.host_dispatch_state().active_rollouts_snapshot() {
         Ok(v) => v,

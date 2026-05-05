@@ -5,6 +5,37 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use nixfleet_proto::{FleetResolved, HostWave, Meta, RolloutBudget, RolloutManifest};
 
+/// Set of rolloutIds the CURRENT fleet snapshot expects across all
+/// channels. Used by every code path that needs to filter
+/// `host_dispatch_state` snapshots to "this rev's rollouts only" so a
+/// stale Converged rollout from the previous rev doesn't poison
+/// channelEdges / budget / host-edge gate evaluation.
+///
+/// Centralised here because the same filter is consumed by:
+///   - `polling::channel_refs_poll::record_rollouts_gated_by_channel_edges`
+///   - `server::routes::deferrals` (live dashboard read)
+///   - `server::checkin_pipeline::dispatch_observed` (per-checkin gate eval)
+///
+/// Channels whose `compute_rollout_id_for_channel` errors are silently
+/// dropped; callers handle the empty case as "no current rollout".
+/// Errors are logged at the call site that has tracing infrastructure
+/// — keeping this fn pure means the reconciler crate remains
+/// dependency-light.
+pub fn current_rollout_ids(
+    fleet: &FleetResolved,
+    fleet_resolved_hash: &str,
+) -> std::collections::HashSet<String> {
+    fleet
+        .channels
+        .keys()
+        .filter_map(|ch| {
+            compute_rollout_id_for_channel(fleet, fleet_resolved_hash, ch)
+                .ok()
+                .flatten()
+        })
+        .collect()
+}
+
 /// CP-side rolloutId for a host on `channel`. `Ok(None)` when the channel
 /// has no host with a declared closure.
 pub fn compute_rollout_id_for_channel(
