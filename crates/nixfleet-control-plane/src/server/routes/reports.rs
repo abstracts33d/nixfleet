@@ -40,7 +40,7 @@ pub(in crate::server) async fn report(
     // counter is the raw arrival rate, deliberately monotonic.
     use nixfleet_proto::agent_wire::ReportEvent;
     if let ReportEvent::ComplianceFailure { control_id, .. } = &req.event {
-        crate::metrics::record_compliance_event(control_id);
+        crate::metrics::record_compliance_event(control_id, &req.hostname);
     } else if matches!(req.event, ReportEvent::RuntimeGateError { .. }) {
         crate::metrics::record_runtime_gate_error();
     }

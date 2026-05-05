@@ -255,13 +255,52 @@ async fn metrics_endpoint_returns_expected_gauges_and_counters() {
         metric_present_with_labels(
             &scrape2,
             "nixfleet_compliance_failure_events_total",
-            &[("control_id", "TEST-CONTROL-A")],
+            &[("control_id", "TEST-CONTROL-A"), ("host", HOST)],
         ),
-        "missing compliance_failure counter with control_id label after report:\n{body2}"
+        "missing compliance_failure counter with control_id+host labels after report:\n{body2}"
     );
     assert!(
         metric_present(&scrape2, "nixfleet_host_outstanding_compliance_failures"),
         "missing outstanding gauge after report:\n{body2}"
+    );
+
+    // Active-rollouts and channel-deferred parity metrics: emitted on
+    // every scrape regardless of state (zero where nothing's active /
+    // nothing's deferred), so a panel that filters `> 0` is stable.
+    assert!(
+        metric_present_with_labels(
+            &scrape,
+            "nixfleet_channel_active_rollouts_total",
+            &[("channel", CHANNEL)],
+        ),
+        "missing channel_active_rollouts_total gauge:\n{body}"
+    );
+    assert!(
+        metric_present_with_labels(
+            &scrape,
+            "nixfleet_channel_max_current_wave",
+            &[("channel", CHANNEL)],
+        ),
+        "missing channel_max_current_wave gauge:\n{body}"
+    );
+    assert!(
+        metric_present_with_labels(
+            &scrape,
+            "nixfleet_channel_oldest_active_rollout_age_seconds",
+            &[("channel", CHANNEL)],
+        ),
+        "missing channel_oldest_active_rollout_age_seconds gauge:\n{body}"
+    );
+    // No channelEdges in this test fleet, so the deferred series should
+    // emit with `blocked_by="none"` and value 0 — the canonical
+    // not-deferred shape.
+    assert!(
+        metric_present_with_labels(
+            &scrape,
+            "nixfleet_channel_deferred",
+            &[("channel", CHANNEL), ("blocked_by", "none")],
+        ),
+        "missing channel_deferred gauge for un-blocked channel:\n{body}"
     );
 
     // Counter increment is monotonic — second scrape's value strictly

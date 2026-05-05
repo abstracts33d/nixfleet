@@ -3,6 +3,7 @@
 
 pub mod auth;
 pub mod db;
+pub mod deferrals_view;
 pub mod dispatch;
 pub mod metrics;
 pub mod observed_projection;

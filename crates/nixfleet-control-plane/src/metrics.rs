@@ -16,13 +16,15 @@
 //! call installs the global; subsequent calls return the same handle.
 //! Tests can therefore spin multiple test servers without colliding.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use nixfleet_proto::HostStatusEntry;
 
+use crate::deferrals_view::compute_channel_deferrals;
 use crate::server::AppState;
 use crate::state_view::{fleet_state_view, StateViewError};
 
@@ -40,11 +42,14 @@ pub fn install_recorder() -> &'static PrometheusHandle {
 
 /// Counter increment hook for `/v1/agent/report` to call when a
 /// `ComplianceFailure` event arrives. `control_id` is bounded by the
-/// closed compliance crate's control set (currently 16).
-pub fn record_compliance_event(control_id: &str) {
+/// closed compliance crate's control set (currently 16); `host` is
+/// bounded by the verified-fleet snapshot. Cardinality: hosts ×
+/// controls — within budget for fleets up to a few hundred hosts.
+pub fn record_compliance_event(control_id: &str, host: &str) {
     counter!(
         "nixfleet_compliance_failure_events_total",
         "control_id" => control_id.to_string(),
+        "host" => host.to_string(),
     )
     .increment(1);
 }
@@ -69,8 +74,10 @@ pub fn record_gate_block(gate_kind: &str) {
 }
 
 /// Refresh per-host + per-channel gauges from the current fleet state
-/// view. Called by the `/metrics` handler on every scrape — cheap (no
-/// SQLite query, just RwLock reads + arithmetic).
+/// view. Called by the `/metrics` handler on every scrape. The DB-backed
+/// reads (active rollouts, deferrals) are bounded by the fleet size and
+/// fast enough to run on the scrape path; if a future fleet outgrows
+/// that, move them to the reconcile-tick instead.
 pub async fn record_fleet_metrics(state: &AppState) -> Result<(), StateViewError> {
     let views = fleet_state_view(state).await?;
     let snapshot = state
@@ -97,7 +104,119 @@ pub async fn record_fleet_metrics(state: &AppState) -> Result<(), StateViewError
         gauge!("nixfleet_fleet_signed_age_seconds").set(age as f64);
     }
 
+    record_active_rollouts(state, &snapshot.fleet.channels.keys().cloned().collect::<Vec<_>>(), now);
+    record_channel_deferrals(state, &snapshot.fleet.channels.keys().cloned().collect::<Vec<_>>()).await;
+
     Ok(())
+}
+
+/// Per-channel rollout activity. Pulls from the rollouts table directly
+/// (same source `/v1/rollouts` consumes), so the dashboard reflects the
+/// CP's authoritative view, not an agent-breadcrumb summary.
+///
+/// Emits, per channel that has at least one active rollout:
+///   nixfleet_channel_active_rollouts_total{channel}     — count
+///   nixfleet_channel_max_current_wave{channel}          — highest wave
+///   nixfleet_channel_oldest_active_rollout_age_seconds{channel}
+///
+/// Channels with no active rollouts get a zero `_total` gauge so PromQL
+/// `sum by (channel) (nixfleet_channel_active_rollouts_total)` is
+/// well-defined fleet-wide. Cardinality bounded by #channels.
+fn record_active_rollouts(state: &AppState, all_channels: &[String], now: DateTime<Utc>) {
+    let Some(db) = state.db.as_deref() else {
+        return;
+    };
+    let rollouts = match db.rollouts().list_active() {
+        Ok(rs) => rs,
+        Err(err) => {
+            tracing::warn!(error = %err, "metrics: list_active rollouts failed");
+            return;
+        }
+    };
+
+    // Per-channel aggregates.
+    let mut count_by_channel: HashMap<String, u32> = HashMap::new();
+    let mut max_wave: HashMap<String, u32> = HashMap::new();
+    let mut oldest: HashMap<String, DateTime<Utc>> = HashMap::new();
+    for r in &rollouts {
+        *count_by_channel.entry(r.channel.clone()).or_insert(0) += 1;
+        let entry = max_wave.entry(r.channel.clone()).or_insert(0);
+        if r.current_wave > *entry {
+            *entry = r.current_wave;
+        }
+        if let Ok(ts) = DateTime::parse_from_rfc3339(&r.created_at) {
+            let ts = ts.with_timezone(&Utc);
+            let cur = oldest.entry(r.channel.clone()).or_insert(ts);
+            if ts < *cur {
+                *cur = ts;
+            }
+        }
+    }
+
+    // Emit for every declared channel — zero where nothing's active —
+    // so a panel filtered to "active>0" is a stable expression.
+    for channel in all_channels {
+        let count = count_by_channel.get(channel).copied().unwrap_or(0);
+        gauge!(
+            "nixfleet_channel_active_rollouts_total",
+            "channel" => channel.clone(),
+        )
+        .set(f64::from(count));
+        let wave = max_wave.get(channel).copied().unwrap_or(0);
+        gauge!(
+            "nixfleet_channel_max_current_wave",
+            "channel" => channel.clone(),
+        )
+        .set(f64::from(wave));
+        let age = oldest
+            .get(channel)
+            .map(|ts| now.signed_duration_since(*ts).num_seconds().max(0))
+            .unwrap_or(0);
+        gauge!(
+            "nixfleet_channel_oldest_active_rollout_age_seconds",
+            "channel" => channel.clone(),
+        )
+        .set(age as f64);
+    }
+}
+
+/// Per-channel deferral state. Reuses the same `compute_channel_deferrals`
+/// helper as `GET /v1/deferrals` so the metric and the API never diverge.
+///
+///   nixfleet_channel_deferred{channel,blocked_by} = 1 when held;
+///   the gauge is set to 0 for declared channels not currently deferred,
+///   so `sum(nixfleet_channel_deferred)` is the fleet-wide deferred count.
+async fn record_channel_deferrals(state: &AppState, all_channels: &[String]) {
+    let deferrals = compute_channel_deferrals(state).await;
+    let mut blockers: HashMap<String, String> = HashMap::new();
+    for d in &deferrals {
+        blockers.insert(d.channel.clone(), d.blocked_by.clone());
+    }
+    for channel in all_channels {
+        match blockers.get(channel) {
+            Some(blocked_by) => {
+                gauge!(
+                    "nixfleet_channel_deferred",
+                    "channel" => channel.clone(),
+                    "blocked_by" => blocked_by.clone(),
+                )
+                .set(1.0);
+            }
+            None => {
+                // Reset any prior series to 0 — but only when there's no
+                // blocker label to attach. Using `blocked_by="none"` keeps
+                // the series rendered (PromQL `== 1` filters cleanly) and
+                // bounds cardinality to (#channels × ≤2) since each
+                // channel is either deferred-by-X or not-deferred.
+                gauge!(
+                    "nixfleet_channel_deferred",
+                    "channel" => channel.clone(),
+                    "blocked_by" => "none".to_string(),
+                )
+                .set(0.0);
+            }
+        }
+    }
 }
 
 fn record_host_gauges(view: &HostStatusEntry, now: chrono::DateTime<Utc>) {
@@ -176,7 +295,7 @@ mod tests {
     #[test]
     fn rendered_output_contains_known_metric_after_increment() {
         let handle = install_recorder();
-        record_compliance_event("ANSSI-BP-028");
+        record_compliance_event("ANSSI-BP-028", "metrics-test-host");
         let body = handle.render();
         assert!(
             body.contains("nixfleet_compliance_failure_events_total"),
@@ -185,6 +304,10 @@ mod tests {
         assert!(
             body.contains("ANSSI-BP-028"),
             "missing control_id label:\n{body}"
+        );
+        assert!(
+            body.contains("host=\"metrics-test-host\""),
+            "missing host label:\n{body}"
         );
     }
 
