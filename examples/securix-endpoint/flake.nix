@@ -1,6 +1,6 @@
 # Example: a Sécurix-hardened endpoint composed via NixFleet `mkHost`.
 #
-# mkHost is platform-agnostic — Sécurix's NixOS modules drop in like any
+# mkHost is platform-agnostic -- Sécurix's NixOS modules drop in like any
 # other module. The framework stays oblivious to ANSSI, hardware SKUs,
 # lanzaboote, etc.; the example proves the composition holds.
 #
@@ -39,13 +39,13 @@
           keyboardLayout = "fr";
         };
         modules = [
-          # Sécurix base — bundles lanzaboote + agenix + disko + the full
-          # ANSSI module tree (anssi, bastion, vpn, pam, auditd, …).
+          # Sécurix base -- bundles lanzaboote + agenix + disko + the full
+          # ANSSI module tree (anssi, bastion, vpn, pam, auditd, ...).
           inputs.securix.nixosModules.securix-base
 
           # SKU hardware profile. Pick from: e14-g7, elitebook645g11,
           # elitebook850g8, latitude5340, t14g6, x9-15, x280.
-          # Omit on VM — vm-overrides.nix neutralizes the hardware bits.
+          # Omit on VM -- vm-overrides.nix neutralizes the hardware bits.
           inputs.securix.nixosModules.securix-hardware.t14g6
 
           # Host-specific: operators + securix.self metadata + agent.
@@ -64,7 +64,7 @@
       }: {
         apps = inputs.nixfleet.lib.mkVmApps {inherit pkgs;};
 
-        # Minimal installer ISO with a placeholder root SSH key — needed
+        # Minimal installer ISO with a placeholder root SSH key -- needed
         # by `build-vm` (which uses ISO + nixos-anywhere). Replace the key
         # with your own; or, for a real-hardware deploy, skip this and
         # drive nixos-anywhere directly with any installer.

@@ -4,7 +4,7 @@
 use axum::http::StatusCode;
 use std::fmt::Display;
 
-/// `.map_err(internal("label: detail"))` → log at error + 500.
+/// `.map_err(internal("label: detail"))` -> log at error + 500.
 pub(crate) fn internal<E: Display>(label: &'static str) -> impl FnOnce(E) -> StatusCode {
     move |err| {
         tracing::error!(error = %err, "{label}");
@@ -12,7 +12,7 @@ pub(crate) fn internal<E: Display>(label: &'static str) -> impl FnOnce(E) -> Sta
     }
 }
 
-/// `.map_err(bad_request("label: detail"))` → log at warn + 400.
+/// `.map_err(bad_request("label: detail"))` -> log at warn + 400.
 pub(crate) fn bad_request<E: Display>(label: &'static str) -> impl FnOnce(E) -> StatusCode {
     move |err| {
         tracing::warn!(error = %err, "{label}");

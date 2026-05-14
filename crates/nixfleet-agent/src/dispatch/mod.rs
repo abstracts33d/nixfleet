@@ -155,7 +155,7 @@ mod tests {
                 assert_eq!(stderr_tail, "error: lacks a valid signature");
                 assert!(
                     signature.is_none(),
-                    "no evidence_signer wired → signature must be None",
+                    "no evidence_signer wired -> signature must be None",
                 );
             }
             other => panic!("expected ClosureSignatureMismatch, got {other:?}"),
@@ -325,7 +325,7 @@ mod tests {
             now + chrono::Duration::seconds(60 + 4200),
         )
         .await;
-        assert_eq!(fake.calls().len(), 2, "throttle window elapsed → re-posts");
+        assert_eq!(fake.calls().len(), 2, "throttle window elapsed -> re-posts");
 
         // Each post must be ClosureQuarantined with the right shape.
         for (rollout, ev) in fake.calls() {

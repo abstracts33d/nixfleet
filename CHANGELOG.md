@@ -31,7 +31,7 @@ The Rust workspace builds via crane caching. CI signs releases with an HSM-held 
 - **Bootstrap-nonce allowlist** (closes #96): the CP refuses
   `/v1/enroll` whose nonce is not in the signed `bootstrap-nonces.json`
   allowlist (declared in `fleet.nix`, signed by `ciReleaseKey`).
-  Closes the replay-after-DB-wipe vector — replay protection now
+  Closes the replay-after-DB-wipe vector -- replay protection now
   durably anchored to the signed fleet repo rather than CP-local
   state.db. New mkFleet attribute `bootstrapNonces`, new CP NixOS
   option `services.nixfleet-control-plane.bootstrapNoncesSource`,

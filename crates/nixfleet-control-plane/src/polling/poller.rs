@@ -24,7 +24,7 @@ impl SignedArtifactPoller {
 
     /// Wakes on cadence OR the external `kick` (channel-refs uses this for
     /// reconciler-side `ConvergeRollout`/`SoakHost` triggers; cadence is the
-    /// safety net). `watch::Receiver` semantics → kick bursts coalesce to one wake.
+    /// safety net). `watch::Receiver` semantics -> kick bursts coalesce to one wake.
     pub fn spawn_with_kick<F, Fut>(
         self,
         cancel: CancellationToken,
@@ -65,7 +65,7 @@ impl SignedArtifactPoller {
                             None => std::future::pending().await,
                         }
                     } => {
-                        // Sender dropped → fall back to cadence-only;
+                        // Sender dropped -> fall back to cadence-only;
                         // log once so it's visible if this happens.
                         if res.is_err() {
                             tracing::warn!(
@@ -115,7 +115,7 @@ mod tests {
     /// because tick_count stays at 0/1 instead of rising on each
     /// kick.
     ///
-    /// The kick is what closes the channelEdges → rollouts-table
+    /// The kick is what closes the channelEdges -> rollouts-table
     /// timing gap structurally: when a predecessor goes terminal,
     /// the reconciler kicks and the new successor rollout gets
     /// recorded the same tick. Without this wakeup the gap reopens

@@ -225,7 +225,7 @@ The rollout manifest (`releases/rollouts/<rolloutId>.json`, signed) carries the 
 `fleet.resolved.json` is a trust-boundary artifact (see ../design/architecture.md §4). CI produces and signs it with the CI release key; every consumer verifies before use.
 
 - **Signing.** CI writes `fleet.resolved.json` + `fleet.resolved.sig` to the channel's storage. The signature covers the full canonicalized JSON plus a `signedAt` RFC 3339 timestamp (embedded as `meta.signedAt` in the artifact).
-- **Verification - control plane.** On every fetch, verifies the signature against the pinned CI release public key. Signature mismatch or unknown key → refuse to reconcile the channel; emit an alert.
+- **Verification - control plane.** On every fetch, verifies the signature against the pinned CI release public key. Signature mismatch or unknown key -> refuse to reconcile the channel; emit an alert.
 - **Verification - agents (optional path).** An agent that fetches `fleet.resolved` directly (rather than receiving targets from the control plane) performs the same verification. Enables the trust-minimized bootstrap in RFC-0003 §4.
 - **Key pinning.** The CI release public key is committed to the flake (`nixfleet.trust.ciReleaseKey`) and embedded in every built closure. Key rotation is a new commit + a grace window during which both keys verify.
 - **Freshness.** Downstream consumers (RFC-0003 §7) enforce `now − meta.signedAt ≤ channel.freshnessWindow` to defend against stale-closure replay by a compromised control plane. `freshnessWindow` is declared per-channel in minutes (see §2.3); there is no implicit default and the value is part of the signed payload so a compromised control plane cannot widen it.

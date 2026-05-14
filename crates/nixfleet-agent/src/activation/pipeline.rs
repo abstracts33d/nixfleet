@@ -1,4 +1,4 @@
-//! Main activate pipeline: realise → set-profile → fire → poll → self-correct.
+//! Main activate pipeline: realise -> set-profile -> fire -> poll -> self-correct.
 
 use anyhow::{Context, Result};
 use nixfleet_proto::agent_wire::EvaluatedTarget;

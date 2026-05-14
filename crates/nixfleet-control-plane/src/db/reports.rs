@@ -90,7 +90,7 @@ impl Reports<'_> {
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .context("query host_reports")?;
-            // DB DESC → ring buffer ASC.
+            // DB DESC -> ring buffer ASC.
             rows.reverse();
             Ok(rows)
         })

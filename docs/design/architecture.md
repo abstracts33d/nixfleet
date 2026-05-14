@@ -62,7 +62,7 @@ Rust/Axum service, SQLite for operational state, mTLS for all incoming connectio
 **What it does not do:**
 
 - Hold any secret material (all secrets are agenix-encrypted in the flake).
-- Sign anything that a host is asked to trust (closures → attic; intent → CI; probe outputs → hosts).
+- Sign anything that a host is asked to trust (closures -> attic; intent -> CI; probe outputs -> hosts).
 - Store anything that cannot be recomputed from git + attic + agent check-ins.
 
 Trust role: **router.** Compromise yields at worst a denial of service (refuse to propagate updates) or a replay attack (point hosts at stale-but-valid closures). Cannot inject code, cannot read secrets, cannot forge compliance evidence.
@@ -100,12 +100,12 @@ Trust role: **local decision-maker.** The agent is the last line of defense agai
 
 `nixfleet-compliance` repo. Controls declared as typed units with two projections:
 
-- `evaluate :: config → { passed, evidence }` - pure, runs at CI time. Violations fail static gate; no release produced.
+- `evaluate :: config -> { passed, evidence }` - pure, runs at CI time. Violations fail static gate; no release produced.
 - `probe :: { command, expectedShape, schemaVersion }` - descriptor consumed by the agent post-activation. Output is canonicalized and signed by the host's key, producing non-repudiable evidence.
 
 Every control belongs to one or more frameworks (ANSSI-BP-028, NIS2, DORA, ISO 27001). A channel's `compliance.frameworks` list enforces the union of controls.
 
-Trust role: **turns NixOS configuration into auditable, content-addressed evidence.** The chain: host key signs probe output → closure hash pins what was running → git commit pins what was intended. An auditor verifies the whole chain without trusting the control plane, the CI runner, or the operator.
+Trust role: **turns NixOS configuration into auditable, content-addressed evidence.** The chain: host key signs probe output -> closure hash pins what was running -> git commit pins what was intended. An auditor verifies the whole chain without trusting the control plane, the CI runner, or the operator.
 
 ### 1.7 Secrets (zero-knowledge ferrying)
 
@@ -131,8 +131,8 @@ Trust role: **the only honest way to know the protocol is correct.** Every state
 
 **Boundaries.** Three typed, versioned contracts:
 
-1. `fleet.resolved.json` - Nix → Rust, via CI, signed.
-2. Compliance probe descriptors - Nix → Rust, embedded in closures, schema-versioned.
+1. `fleet.resolved.json` - Nix -> Rust, via CI, signed.
+2. Compliance probe descriptors - Nix -> Rust, embedded in closures, schema-versioned.
 3. Agent/control-plane wire protocol - Rust ↔ Rust, versioned in header.
 
 Crossing a boundary always means a version check and a signature verification (where applicable). Nothing is trusted by proximity.
@@ -148,9 +148,9 @@ The happy path, one commit from push to all hosts converged:
                                              │
 2. Forgejo ─── webhook ────────────────▶ CI
                                              │
-3. CI evaluates flake → builds closures per host
+3. CI evaluates flake -> builds closures per host
    CI runs static compliance gate
-   CI pushes closures → attic (signs)
+   CI pushes closures -> attic (signs)
    CI produces fleet.resolved.json (signs)
    CI updates channel pointer, commits
                                              │
@@ -164,17 +164,17 @@ The happy path, one commit from push to all hosts converged:
 6. agent fetches sha256-X from attic
    verifies attic signature, verifies hash
    decrypts host-scoped secrets locally
-   activates → confirm window opens
+   activates -> confirm window opens
                                              │
 7. agent boots new generation
    runs runtime probes, signs outputs with host key
    phones home /agent/confirm with boot ID + probe results
    control plane accepts confirmation
                                              │
-8. soak elapses → wave 0 promoted → wave 1 begins
+8. soak elapses -> wave 0 promoted -> wave 1 begins
    attic-01 receives dispatch; same sequence
                                              │
-9. wave 1 converges → rollout Converged
+9. wave 1 converges -> rollout Converged
    channel's lastRolledRef updated to new rev
 ```
 
@@ -315,42 +315,42 @@ If all four hold, the slogan is true. If not, find the gap and close it before c
 
 ```
 nixfleet/
-├── flake.nix                      ← entry point, inputs, flake-parts wiring
-├── Cargo.toml                     ← Rust workspace root
-├── crane-workspace.nix            ← Nix wrapper around crane for Rust builds
+├── flake.nix                      <- entry point, inputs, flake-parts wiring
+├── Cargo.toml                     <- Rust workspace root
+├── crane-workspace.nix            <- Nix wrapper around crane for Rust builds
 │
-├── README.md, CHANGELOG.md, etc.  ← consumer-facing docs (root meta-files)
+├── README.md, CHANGELOG.md, etc.  <- consumer-facing docs (root meta-files)
 ├── SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, LICENSE-*
 │
-├── contracts/                     ← schemas. Top-level so import-tree skips
+├── contracts/                     <- schemas. Top-level so import-tree skips
 │   ├── host-spec.nix              │  them. They declare options; impls
 │   ├── persistence.nix            │  satisfy them. NO mechanism here.
 │   └── trust.nix                  ↓
 │
-├── impls/                         ← pluggable contract implementations,
+├── impls/                         <- pluggable contract implementations,
 │   ├── persistence/impermanence.nix
 │   ├── keyslots/tpm/
 │   ├── gitops/forgejo.nix
 │   └── secrets/default.nix        ↑  exposed as flake.scopes.<family>.<impl>
 │
-├── lib/                           ← public API (mkHost, mkFleet, ...)
+├── lib/                           <- public API (mkHost, mkFleet, ...)
 │   ├── default.nix                │  wired entry: imports flake inputs
 │   ├── mk-fleet.nix               │  pure entry: just nixpkgs lib
 │   ├── mk-host.nix                │
 │   └── mk-vm-apps.nix             ↓
 │
-├── modules/                       ← flake-parts modules (auto-imported by
+├── modules/                       <- flake-parts modules (auto-imported by
 │   ├── flake-module.nix           │  import-tree, except _-prefixed files)
 │   ├── apps.nix                   │  These declare flake outputs:
 │   ├── formatter.nix              │    flake.lib, .scopes, .nixosModules
 │   ├── options-doc.nix            │    perSystem.apps, .packages, .checks
 │   ├── rust-packages.nix          │    .devShells, .formatter
 │   │
-│   ├── core/                      ← minimal NixOS/Darwin glue
-│   │   ├── _nixos.nix             │  hostSpec → standard options,
+│   ├── core/                      <- minimal NixOS/Darwin glue
+│   │   ├── _nixos.nix             │  hostSpec -> standard options,
 │   │   └── _darwin.nix            ↓  flake-mode nix prereqs.
 │   │
-│   ├── scopes/nixfleet/           ← framework runtime services
+│   ├── scopes/nixfleet/           <- framework runtime services
 │   │   ├── _agent.nix             │  systemd unit for the agent
 │   │   ├── _agent-darwin.nix      │  launchd unit for the agent (macOS)
 │   │   ├── _control-plane.nix     │  systemd unit for the CP
@@ -359,29 +359,29 @@ nixfleet/
 │   │   ├── _operator.nix          │  workstation tools (mint-token, etc.)
 │   │   └── _trust-json.nix        ↓  shared helper: build trust.json
 │   │
-│   └── tests/                     ← flake-parts entries that register
+│   └── tests/                     <- flake-parts entries that register
 │       ├── eval.nix               │  the checks that the test fabric runs
 │       ├── harness.nix            │
 │       ├── _agent-v2-trust.nix    │
 │       ├── _cp-v2-trust.nix       │
 │       └── _trust-options.nix     ↓
 │
-├── crates/                        ← the Rust workspace
-│   ├── nixfleet-proto/            ← shared types (boundary contracts)
-│   ├── nixfleet-canonicalize/     ← JCS canonicalizer (lib + bin)
-│   ├── nixfleet-reconciler/       ← pure decision engine (lib only)
-│   ├── nixfleet-agent/            ← per-host actuator daemon
-│   ├── nixfleet-control-plane/    ← Axum HTTP server + reconcile loop
-│   ├── nixfleet-cli/              ← operator workstation tools
-│   ├── nixfleet-release/          ← CI release pipeline orchestrator
-│   └── nixfleet-verify-artifact/  ← offline verifier for auditors
+├── crates/                        <- the Rust workspace
+│   ├── nixfleet-proto/            <- shared types (boundary contracts)
+│   ├── nixfleet-canonicalize/     <- JCS canonicalizer (lib + bin)
+│   ├── nixfleet-reconciler/       <- pure decision engine (lib only)
+│   ├── nixfleet-agent/            <- per-host actuator daemon
+│   ├── nixfleet-control-plane/    <- Axum HTTP server + reconcile loop
+│   ├── nixfleet-cli/              <- operator workstation tools
+│   ├── nixfleet-release/          <- CI release pipeline orchestrator
+│   └── nixfleet-verify-artifact/  <- offline verifier for auditors
 │
-├── tests/                         ← test code, fixtures, harness
+├── tests/                         <- test code, fixtures, harness
 │   ├── fixtures/                  │  Static QEMU references
 │   ├── harness/                   │  microvm.nix scenarios
 │   └── lib/mk-fleet/              ↓  positive + negative eval fixtures
 │
-└── docs/                          ← human-readable docs
+└── docs/                          <- human-readable docs
     ├── README.md                  │  navigation index
     ├── design/                    │  this file + contracts.md + source-layout.md
     ├── reference/                 │  harness.md + per-crate overviews
@@ -507,7 +507,7 @@ options.nixfleet.persistence = {
 };
 ```
 
-Baseline contributions (`/etc/nixos`, `/etc/NetworkManager/system-connections`, `/var/lib/systemd`, `/var/lib/nixos`, `/var/log`, `/etc/machine-id`) are added regardless of impl. Other modules contribute their own paths (agent → `/var/lib/nixfleet`, CP → `/var/lib/nixfleet-cp`, secrets → `/etc/ssh/ssh_host_ed25519_key`). The active impl reads the merged list.
+Baseline contributions (`/etc/nixos`, `/etc/NetworkManager/system-connections`, `/var/lib/systemd`, `/var/lib/nixos`, `/var/log`, `/etc/machine-id`) are added regardless of impl. Other modules contribute their own paths (agent -> `/var/lib/nixfleet`, CP -> `/var/lib/nixfleet-cp`, secrets -> `/etc/ssh/ssh_host_ed25519_key`). The active impl reads the merged list.
 
 #### `trust` - the four roots (`contracts/trust.nix`)
 
@@ -575,7 +575,7 @@ Key options: `enable`, `controlPlaneUrl`, `machineId`, `pollInterval` (60s defau
 
 #### `_agent-darwin.nix` - macOS agent
 
-Same schema plus `sshHostKeyFile` (default `/etc/ssh/ssh_host_ed25519_key`) and `tags` (passed via `NIXFLEET_TAGS` env). Differences: launchd instead of systemd (`KeepAlive`, `RunAtLoad`, `ThrottleInterval=10`); 15-second `sleep` in ExecStart to defend two boot races (NTP not synced → rustls cert "not yet valid"; agenix not yet decrypted → cert files missing); `launchctl kickstart -k` in postActivation forces clean restart even on unchanged plist; `environment.etc.<...>.text` instead of `.source` because Darwin's flake-source symlinks are unreliable.
+Same schema plus `sshHostKeyFile` (default `/etc/ssh/ssh_host_ed25519_key`) and `tags` (passed via `NIXFLEET_TAGS` env). Differences: launchd instead of systemd (`KeepAlive`, `RunAtLoad`, `ThrottleInterval=10`); 15-second `sleep` in ExecStart to defend two boot races (NTP not synced -> rustls cert "not yet valid"; agenix not yet decrypted -> cert files missing); `launchctl kickstart -k` in postActivation forces clean restart even on unchanged plist; `environment.etc.<...>.text` instead of `.source` because Darwin's flake-source symlinks are unreliable.
 
 #### `_control-plane.nix` - CP service
 
@@ -628,7 +628,7 @@ Helper imported by `_agent.nix`, `_control-plane.nix`, `_agent-darwin.nix`. Buil
 
 ### 11.1 Crate map
 
-Eight crates. Three boundary (types, canonicalisation, decision engine); five binaries. Dependency direction: **proto → canonicalize → reconciler → consumers**. No cross-deps among consumers.
+Eight crates. Three boundary (types, canonicalisation, decision engine); five binaries. Dependency direction: **proto -> canonicalize -> reconciler -> consumers**. No cross-deps among consumers.
 
 ```
                 ┌─────────────────────────────────────────────┐
@@ -677,7 +677,7 @@ Canonical definitions for every artifact and message. Modules:
 - **`trust.rs`** - `TrustConfig`, `KeySlot`, `TrustedPubkey`.
 - **`compliance.rs`** + **`evidence_signing.rs`** - typed signed payloads for every evidence event.
 
-Conventions: optional fields use `Option<T>` with `#[serde(default)]` but **no** `skip_serializing_if` - `null` is *present*, important for JCS byte stability across Nix → Rust round-trips. **No** `#[serde(deny_unknown_fields)]` - contracts evolve additively. Object key sorting + deterministic number formatting is the canonicalize crate's job, not serde's.
+Conventions: optional fields use `Option<T>` with `#[serde(default)]` but **no** `skip_serializing_if` - `null` is *present*, important for JCS byte stability across Nix -> Rust round-trips. **No** `#[serde(deny_unknown_fields)]` - contracts evolve additively. Object key sorting + deterministic number formatting is the canonicalize crate's job, not serde's.
 
 #### `nixfleet-canonicalize` - JCS
 
@@ -707,7 +707,7 @@ pub fn verify_artifact(
 ) -> Result<FleetResolved, VerifyError>
 ```
 
-Steps: parse → re-canonicalise (assert byte-for-byte match) → verify signature against each trusted key (ed25519 or ecdsa-p256, algorithm tag from `meta.signatureAlgorithm`) → freshness check (`now - meta.signedAt < freshness_window`) → `reject_before` check (compromise switch) → `schemaVersion == 1`. Returns parsed `FleetResolved` or detailed `VerifyError` (10 variants). Same path is used for `Revocations` and `RolloutManifest` via the `SignedSidecar` trait. Rollout manifests get an extra step: recompute `SHA-256(canonical(manifest))` and assert it equals the advertised `rolloutId` (content addressing).
+Steps: parse -> re-canonicalise (assert byte-for-byte match) -> verify signature against each trusted key (ed25519 or ecdsa-p256, algorithm tag from `meta.signatureAlgorithm`) -> freshness check (`now - meta.signedAt < freshness_window`) -> `reject_before` check (compromise switch) -> `schemaVersion == 1`. Returns parsed `FleetResolved` or detailed `VerifyError` (10 variants). Same path is used for `Revocations` and `RolloutManifest` via the `SignedSidecar` trait. Rollout manifests get an extra step: recompute `SHA-256(canonical(manifest))` and assert it equals the advertised `rolloutId` (content addressing).
 
 ```rust
 pub fn reconcile(
@@ -727,9 +727,9 @@ Internal modules: `host_state.rs` (`HostRolloutState` lives in `nixfleet-proto`;
 
 Long-running daemon. Flags set by the NixOS module: `--control-plane-url`, `--machine-id`, `--poll-interval`, `--trust-file`, `--ca-cert`, `--client-cert`, `--client-key`, `--bootstrap-token-file`, `--state-dir`, `--compliance-mode`.
 
-Main loop: load trust → enrol if no cert + bootstrap token present → build mTLS client → `run_boot_recovery()` (handles fire-and-forget self-switch convergence) → loop every `poll_interval`: POST `/v1/agent/checkin`; if response.target set, fetch + verify rollout manifest, pre-realise (`nix-store --realise <closure>` with cache_keys signature verify), activate (`systemd-run --unit=nixfleet-switch -- switch-to-configuration switch` on Linux, `setsid -c` on Darwin - both detached so they survive agent self-restart during NixOS reload), poll `/run/current-system` every 2s up to 300s, post-verify `basename == expected`, run compliance gate if enabled, POST `/v1/agent/confirm`, clear `last_dispatched`. On failure: POST `/v1/agent/report` with signed evidence. If cert TTL <50%: POST `/v1/agent/renew`.
+Main loop: load trust -> enrol if no cert + bootstrap token present -> build mTLS client -> `run_boot_recovery()` (handles fire-and-forget self-switch convergence) -> loop every `poll_interval`: POST `/v1/agent/checkin`; if response.target set, fetch + verify rollout manifest, pre-realise (`nix-store --realise <closure>` with cache_keys signature verify), activate (`systemd-run --unit=nixfleet-switch -- switch-to-configuration switch` on Linux, `setsid -c` on Darwin - both detached so they survive agent self-restart during NixOS reload), poll `/run/current-system` every 2s up to 300s, post-verify `basename == expected`, run compliance gate if enabled, POST `/v1/agent/confirm`, clear `last_dispatched`. On failure: POST `/v1/agent/report` with signed evidence. If cert TTL <50%: POST `/v1/agent/renew`.
 
-Key modules: `comms.rs` (mTLS reqwest, 10s connect, 30s per-request), `activation.rs` (three-stage validation, fire-and-forget launch, lock coordination via `/run/nixos/switch-to-configuration.lock`, `ActivationOutcome` enum), `enrollment.rs` (CSR generation + enrol + 50% TTL renew), `checkin_state.rs` (`last_confirmed_at` + `last_dispatched`), `compliance.rs` (Pass / Failures / Skipped / GateError; `auto` mode → Permissive if collector present, Disabled if absent), `evidence_signer.rs` (loads `/etc/ssh/ssh_host_ed25519_key`, JCS-canonicalises, ed25519-signs, base64), `freshness.rs`, `manifest_cache.rs` (content-address verification), `recovery.rs` (`run_boot_recovery()`), `host_facts/` (Linux reads boot_id from `/proc/sys/kernel/random/boot_id`; Darwin uses hardware UUID).
+Key modules: `comms.rs` (mTLS reqwest, 10s connect, 30s per-request), `activation.rs` (three-stage validation, fire-and-forget launch, lock coordination via `/run/nixos/switch-to-configuration.lock`, `ActivationOutcome` enum), `enrollment.rs` (CSR generation + enrol + 50% TTL renew), `checkin_state.rs` (`last_confirmed_at` + `last_dispatched`), `compliance.rs` (Pass / Failures / Skipped / GateError; `auto` mode -> Permissive if collector present, Disabled if absent), `evidence_signer.rs` (loads `/etc/ssh/ssh_host_ed25519_key`, JCS-canonicalises, ed25519-signs, base64), `freshness.rs`, `manifest_cache.rs` (content-address verification), `recovery.rs` (`run_boot_recovery()`), `host_facts/` (Linux reads boot_id from `/proc/sys/kernel/random/boot_id`; Darwin uses hardware UUID).
 
 What it never does: accept arbitrary commands (vocabulary is `target = sha256-X`); trust a CP-recommended closure without cache-key verification; hold long-lived credentials beyond 30-day mTLS cert + machine-lifetime SSH host key.
 
@@ -740,18 +740,18 @@ Long-running HTTPS server. Two subcommands: `serve` and `tick` (one-shot, for te
 Routes (under `/v1/` with protocol-version middleware):
 
 ```
-GET  /healthz                          → { ok, version, last_tick_at }
-GET  /v1/whoami                        → { cn, issuedAt }
-POST /v1/enroll                        → 30-day cert from bootstrap token
-POST /v1/agent/renew                   → re-issue cert from existing mTLS identity
-POST /v1/agent/checkin                 → { target?, revocations? }
-POST /v1/agent/confirm                 → marks host_dispatch_state row confirmed
-POST /v1/agent/report                  → ingests telemetry events
-GET  /v1/agent/closure/{hash}          → proxies to binary cache (optional)
-GET  /v1/channels/{name}               → channel metadata
-GET  /v1/hosts                         → { hostname: { online, current_generation } }
-GET  /v1/rollouts/{rolloutId}          → manifest JSON (mTLS-gated)
-GET  /v1/rollouts/{rolloutId}/sig      → manifest signature bytes
+GET  /healthz                          -> { ok, version, last_tick_at }
+GET  /v1/whoami                        -> { cn, issuedAt }
+POST /v1/enroll                        -> 30-day cert from bootstrap token
+POST /v1/agent/renew                   -> re-issue cert from existing mTLS identity
+POST /v1/agent/checkin                 -> { target?, revocations? }
+POST /v1/agent/confirm                 -> marks host_dispatch_state row confirmed
+POST /v1/agent/report                  -> ingests telemetry events
+GET  /v1/agent/closure/{hash}          -> proxies to binary cache (optional)
+GET  /v1/channels/{name}               -> channel metadata
+GET  /v1/hosts                         -> { hostname: { online, current_generation } }
+GET  /v1/rollouts/{rolloutId}          -> manifest JSON (mTLS-gated)
+GET  /v1/rollouts/{rolloutId}/sig      -> manifest signature bytes
 ```
 
 mTLS enforced at TLS handshake when `--client-ca` set. Agent routes authenticate solely via verified client cert (CN matches request hostname). No admin routes in the open kernel - fine-grained operator RBAC is intentionally out of scope and belongs in a sibling commercial-extensions repository.
@@ -781,7 +781,7 @@ There is no big "fleet management" CLI in the open kernel - operations happen th
 
 #### `nixfleet-release` - CI release pipeline orchestrator
 
-Most complex binary. Orchestrates **build → inject closureHash → stamp meta → canonicalise → sign → release**:
+Most complex binary. Orchestrates **build -> inject closureHash -> stamp meta -> canonicalise -> sign -> release**:
 
 1. Enumerate hosts (`auto` = all; `auto:exclude=foo,bar`; or explicit list).
 2. Build closures per host.
@@ -828,12 +828,12 @@ Full integration via `runNixOSTest` hosting microvm.nix guests under one host VM
 |---|---|
 | `fleet-harness-smoke` | 1 stub CP + 2 stub agents fetch fixture over mTLS within 60s |
 | `fleet-harness-fleet-{2,5,10}` | Parameterised smoke for N agents |
-| `fleet-harness-signed-roundtrip` | Real signed fixture → mTLS serve → agent verify-artifact accept |
+| `fleet-harness-signed-roundtrip` | Real signed fixture -> mTLS serve -> agent verify-artifact accept |
 | `fleet-harness-auditor-chain` | Offline `runCommand`: verify-artifact rejects bit-flips |
 | `fleet-harness-corruption-rejection` | Bit-flip artifact + sig; assert typed `VerifyError` |
 | `fleet-harness-manifest-tamper-rejection` | Same for rollout manifests; content-address mismatch |
 | `fleet-harness-teardown` | **Real CP + real agents.** Wipe CP DB mid-run; assert state recovery within one reconcile cycle. The validation of done-criterion #1. |
-| `fleet-harness-deadline-expiry` | Confirm-deadline timeout → 410 |
+| `fleet-harness-deadline-expiry` | Confirm-deadline timeout -> 410 |
 | `fleet-harness-stale-target` | Year-old fixture; agent's freshness gate rejects + posts `StaleTarget` |
 | `fleet-harness-boot-recovery` | Fire-and-forget: pre-staged stale `last_dispatched`; assert `check_boot_recovery` clears before poll loop |
 | `fleet-harness-secret-hygiene` | Agent decrypts age secret; testScript greps CP disk + journal + audit; assert plaintext absent |
@@ -841,7 +841,7 @@ Full integration via `runNixOSTest` hosting microvm.nix guests under one host VM
 | `fleet-harness-concurrent-checkin` | Two agents in same tick window; assert no duplicate dispatch and ordered confirms |
 | `fleet-harness-enroll-replay` | Bootstrap-token nonce replay rejected with 409 |
 | `fleet-harness-future-dated-rejection` | Artifact with `meta.signedAt` past clock-skew slack rejected |
-| `fleet-harness-module-rollouts-wire` | End-to-end manifest → checkin → confirm wiring under signed dispatch |
+| `fleet-harness-module-rollouts-wire` | End-to-end manifest -> checkin -> confirm wiring under signed dispatch |
 
 Real-binary harness nodes (`tests/harness/nodes/cp-real.nix` + `agent-real.nix`) consume `services.nixfleet-control-plane.enable = true` / `services.nixfleet-agent.enable = true` directly - the scenario surface is the operator surface. Stub nodes (`cp.nix`, `agent.nix`, `cp-signed.nix`, `agent-verify.nix`) keep their curl+jq scaffolding because they exercise routes the real CP doesn't expose (e.g. `GET /` for fleet-N substrate scaling, `GET /canonical.json{,.sig}` for the offline-auditor contract).
 

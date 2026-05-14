@@ -102,7 +102,7 @@ until pruned by expiry, so a replay would return either:
   `expiresAt` has passed (the operator's lever)
 - **200 OK with JSON `EnrollResponse` body** (new cert issued) if the allowlist's `expiresAt`
   is still in the future AND the operator hasn't removed the
-  entry — this is the small replay window that exists by
+  entry -- this is the small replay window that exists by
   design until the operator manages the allowlist (or until
   `expiresAt` passes naturally).
 
@@ -122,5 +122,5 @@ intentional rebuild):
 4. For hosts whose nonces have been removed/expired: operator
    re-mints + re-declares.
 
-No host is "permanently dead" from a CP rebuild — full
+No host is "permanently dead" from a CP rebuild -- full
 re-enrolment is always available given operator action.

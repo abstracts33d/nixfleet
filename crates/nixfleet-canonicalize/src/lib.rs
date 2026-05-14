@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use sha2::Digest;
 
-/// JSON string → JCS (RFC 8785) canonical form.
+/// JSON string -> JCS (RFC 8785) canonical form.
 pub fn canonicalize(input: &str) -> Result<String> {
     let value: serde_json::Value =
         serde_json::from_str(input).context("input is not valid JSON")?;

@@ -114,7 +114,7 @@ pub struct GateInput<'a> {
 }
 
 /// First block wins. Cheapest-first order:
-/// channel_edges → wave_promotion → host_edges → disruption_budget → compliance_wave.
+/// channel_edges -> wave_promotion -> host_edges -> disruption_budget -> compliance_wave.
 pub fn evaluate_for_host(input: &GateInput) -> Option<GateBlock> {
     if let Some(b) = channel_edges::check(input) {
         return Some(b);

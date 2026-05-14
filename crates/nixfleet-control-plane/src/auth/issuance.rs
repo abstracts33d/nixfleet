@@ -20,7 +20,7 @@ pub const AGENT_CERT_VALIDITY: Duration = Duration::from_secs(30 * 24 * 60 * 60)
 /// Used as a stand-in by `ServerState::default()` / `ServeFlags::default()`
 /// in tests; NOT a production fallback. Production gets the suffix from
 /// `--agent-cn-suffix` via clap, which is a required argument with no
-/// default — the binary refuses to start if it's unset.
+/// default -- the binary refuses to start if it's unset.
 pub const DEFAULT_AGENT_CN_SUFFIX: &str = "fleet.example.com";
 
 /// Build the canonical CN for an agent cert: `agent-<machineId>.<suffix>`.
@@ -259,7 +259,7 @@ pub trait CaSigner: Send + Sync {
 }
 
 /// Builds a `CaSigner` from a flag triple. TPM (`pub_raw + wrapper`) wins
-/// over file (`fleet_ca_key`); both absent → `None` (enroll/renew will 500).
+/// over file (`fleet_ca_key`); both absent -> `None` (enroll/renew will 500).
 pub fn build_signer_from_args(
     cert_path: &Path,
     tpm_pubkey_raw: Option<&Path>,
@@ -484,7 +484,7 @@ fn der_encode_ecdsa_p256_sig(raw: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Big-endian unsigned int → DER INTEGER. Strips leading zeros + pads if MSB set.
+/// Big-endian unsigned int -> DER INTEGER. Strips leading zeros + pads if MSB set.
 fn der_encode_int(bytes: &[u8]) -> Vec<u8> {
     let mut start = 0;
     while start + 1 < bytes.len() && bytes[start] == 0 {
@@ -642,7 +642,7 @@ mod cn_helpers_tests {
 
     #[test]
     fn extract_passes_through_when_suffix_does_not_match() {
-        // CN under an unexpected suffix → treat as opaque, return as-is.
+        // CN under an unexpected suffix -> treat as opaque, return as-is.
         // Defensive: prevents accidental machineId collisions across
         // suffixes (operator running two fleets with overlapping IDs).
         assert_eq!(
@@ -733,7 +733,7 @@ mod der_encode_tests {
 
     #[test]
     fn encodes_p256_sig_max_padding_both_components() {
-        // MSB set in both r and s → both pad to 33 bytes.
+        // MSB set in both r and s -> both pad to 33 bytes.
         let mut raw = [0u8; 64];
         raw[0] = 0x80; // r MSB set
         raw[32] = 0x80; // s MSB set

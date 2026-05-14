@@ -232,7 +232,7 @@ fn verify_rollout_manifest_rejects_when_trust_roots_empty() {
         .unwrap_err();
     assert!(
         matches!(err, VerifyError::NoTrustRoots),
-        "empty trust roots → NoTrustRoots; got {err:?}"
+        "empty trust roots -> NoTrustRoots; got {err:?}"
     );
 }
 

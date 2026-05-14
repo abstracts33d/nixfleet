@@ -15,7 +15,7 @@ pub struct Observed {
     pub last_rolled_refs: HashMap<String, String>,
     pub host_state: HashMap<String, HostState>,
     pub active_rollouts: Vec<Rollout>,
-    /// `[rollout_id][host] → count` of outstanding evidence failures.
+    /// `[rollout_id][host] -> count` of outstanding evidence failures.
     /// Aggregates both `ComplianceFailure` and `RuntimeGateError` (single
     /// DB-side filter at `db::reports::outstanding_compliance_events_by_rollout`).
     /// Per-rollout grouping enforces resolution-by-replacement so events under

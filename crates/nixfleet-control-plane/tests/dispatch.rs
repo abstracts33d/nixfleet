@@ -193,7 +193,7 @@ async fn dispatch_end_to_end_signed_fleet_then_idempotent() {
 /// `dispatch_history`, so naïve repeat-fires would leak a row on every
 /// checkin (~5 hosts × 2 rollouts × 30s checkin = unbounded growth).
 ///
-/// This test exercises the production guard (host_state probe → skip
+/// This test exercises the production guard (host_state probe -> skip
 /// if already Converged) by sending TWO checkins where current matches
 /// the declared closure. After the first, the CP should have one
 /// dispatch_history row + one host_rollout_state row in `Converged`.
@@ -225,7 +225,7 @@ async fn converged_at_dispatch_does_not_leak_dispatch_history_rows() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
-    // Checkin #1: agent reports current == declared → Decision::Converged.
+    // Checkin #1: agent reports current == declared -> Decision::Converged.
     let resp = client
         .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&checkin_request(DECLARED_CLOSURE))
@@ -383,7 +383,7 @@ async fn converged_at_dispatch_is_idempotent_under_concurrent_checkins() {
     // converged-at-dispatch rows are born terminal since fleet-status A7,
     // so the WHERE clause counts all rows for the host. The race window
     // between "probe says no row" and "insert row" must be closed by the
-    // UNIQUE constraint + atomic txn — independent of terminal_state.
+    // UNIQUE constraint + atomic txn -- independent of terminal_state.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let history_rows: i64 = conn
         .query_row(

@@ -8,8 +8,8 @@ use nixfleet_agent::comms::Reporter;
 use super::DispatchCtx;
 
 /// Shared by `handle_switch_failed` + `handle_verify_mismatch`; arms map:
-/// success → `RollbackTriggered`, partial-fail → `ActivationFailed{prefix/poll}`,
-/// transport-err → `ActivationFailed{prefix, stderr_tail: err}`.
+/// success -> `RollbackTriggered`, partial-fail -> `ActivationFailed{prefix/poll}`,
+/// transport-err -> `ActivationFailed{prefix, stderr_tail: err}`.
 pub(super) fn compose_rollback_followup_event<R: Reporter>(
     rb_outcome: &anyhow::Result<nixfleet_agent::activation::RollbackOutcome>,
     ctx: &DispatchCtx<'_, R>,
@@ -87,7 +87,7 @@ pub(crate) async fn handle_switch_failed<R: Reporter>(
     );
     // Issue #55: record the failure so the next dispatch for this same
     // closure_hash hits the quarantine suppression instead of repeating the
-    // SwitchFailed → rollback cycle. Best-effort; a write failure only
+    // SwitchFailed -> rollback cycle. Best-effort; a write failure only
     // means the next attempt will run normally and probably fail again,
     // which is the existing behavior.
     let reason = match exit_code {

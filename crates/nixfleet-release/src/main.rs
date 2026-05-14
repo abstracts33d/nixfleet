@@ -68,11 +68,11 @@ struct Cli {
     #[arg(long)]
     reuse_unchanged_signature: bool,
 
-    /// Flake attr yielding the revocations list. Unset → no artifact.
+    /// Flake attr yielding the revocations list. Unset -> no artifact.
     #[arg(long)]
     revocations_attr: Option<String>,
 
-    /// Flake attr yielding the bootstrap-nonces allowlist. Unset → no
+    /// Flake attr yielding the bootstrap-nonces allowlist. Unset -> no
     /// artifact. Strongly recommended for production: CP enrolment
     /// in strict mode requires this artifact.
     #[arg(long)]

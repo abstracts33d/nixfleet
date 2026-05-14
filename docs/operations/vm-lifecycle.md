@@ -35,11 +35,11 @@ Once wired, the following `nix run` subcommands are available on the consuming f
 
 ## Reference fleet
 
-[nixfleet-demo](https://github.com/arcanesys/nixfleet-demo) exercises every subcommand end-to-end on a 4-VM reference fleet (`forge`, `cp`, `web-01`, `web-02`). The repo's README is a 10-step walkthrough from `build-vm` to a converged signed-GitOps loop — clone it as the fastest way to internalise the lifecycle.
+[nixfleet-demo](https://github.com/arcanesys/nixfleet-demo) exercises every subcommand end-to-end on a 4-VM reference fleet (`forge`, `cp`, `web-01`, `web-02`). The repo's README is a 10-step walkthrough from `build-vm` to a converged signed-GitOps loop -- clone it as the fastest way to internalise the lifecycle.
 
 ## Common workflows
 
-- **Iterate on a new module locally**: edit fleet config → `nix run .#build-vm -- -h <name> --rebuild` → `nix run .#start-vm -- -h <name>`.
+- **Iterate on a new module locally**: edit fleet config -> `nix run .#build-vm -- -h <name> --rebuild` -> `nix run .#start-vm -- -h <name>`.
 - **Wipe and reinstall a single VM**: `nix run .#clean-vm -- -h <name>` then `nix run .#build-vm -- -h <name>`.
 - **Spin up the full fleet locally**: `nix run .#build-vm -- --all` then `nix run .#start-vm -- -h <each>` (each with the same `--vlan`).
 - **Wipe everything and restart**: `nix run .#stop-vm -- --all && nix run .#clean-vm -- --all && nix run .#build-vm -- --all`.
@@ -47,6 +47,6 @@ Once wired, the following `nix run` subcommands are available on the consuming f
 ## Footguns
 
 - **Darwin returns empty.** `mkVmApps` is a no-op on Darwin platforms; `aarch64-darwin` `pkgs.OVMF` is broken upstream. Build VMs on Linux hosts.
-- **`clean-vm` wipes guest state.** Any keys generated on first boot inside the VM (release-signing keypair, agenix identity, host SSH keys) are gone. If you `clean-vm` a forge VM in the demo pattern, every downstream VM that baked the previous release-trust pin must be rebuilt too — they otherwise reject signatures with `BadSignature`.
+- **`clean-vm` wipes guest state.** Any keys generated on first boot inside the VM (release-signing keypair, agenix identity, host SSH keys) are gone. If you `clean-vm` a forge VM in the demo pattern, every downstream VM that baked the previous release-trust pin must be rebuilt too -- they otherwise reject signatures with `BadSignature`.
 - **VLAN mismatch is silent.** A typo in `--vlan` across VMs produces unresolvable hostnames with no obvious error message. All VMs in a fleet must use the same VLAN port number.
-- **First CI run is slow.** When running the demo pattern (forge VM hosts a CI runner), the first push compiles the workspace from source — 20-45 minutes typical. Subsequent pushes are 2-5 minutes once the store is primed.
+- **First CI run is slow.** When running the demo pattern (forge VM hosts a CI runner), the first push compiles the workspace from source -- 20-45 minutes typical. Subsequent pushes are 2-5 minutes once the store is primed.

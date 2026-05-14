@@ -171,7 +171,7 @@
         Operator-declared health probes (issue #86) - load-bearing for
         wave promotion. Each declared probe runs in-agent on its own
         interval; the latest result is reported with every checkin.
-        The reconciler gates Healthy → Soaked promotion on
+        The reconciler gates Healthy -> Soaked promotion on
         `all-probes-passing`, so a host with even one failing probe
         will never advance the wave (mode-dependent - see `mode`
         below).
@@ -181,8 +181,8 @@
         evidence): `healthChecks` runs in-process for application-level
         liveness signals declared per host, no external service
         required. The two coexist - a host can have both, and they
-        gate at different points in the lifecycle (compliance → confirm,
-        health → soak).
+        gate at different points in the lifecycle (compliance -> confirm,
+        health -> soak).
       '';
       type = lib.types.submodule {
         options = {
@@ -198,7 +198,7 @@
                 before flipping to enforce.
               - `enforce` (default): probes run + report + failures
                 block soak promotion. The reconciler holds at the
-                Healthy → Soaked transition until all probes pass.
+                Healthy -> Soaked transition until all probes pass.
             '';
           };
           http = lib.mkOption {

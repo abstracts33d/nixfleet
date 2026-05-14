@@ -1,6 +1,6 @@
 //! Operator-side config: layered resolution + TOML round-trip.
 //!
-//! Precedence (high → low): explicit flags > NIXFLEET_* env > config file.
+//! Precedence (high -> low): explicit flags > NIXFLEET_* env > config file.
 //! When every layer leaves a field empty the resolver returns
 //! `ConfigError::Missing { field }` so the bin can render a useful hint.
 

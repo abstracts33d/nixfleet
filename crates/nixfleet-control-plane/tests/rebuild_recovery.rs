@@ -6,7 +6,7 @@
 //!      the table with the current rollout per channel.
 //!   3. Idempotent across repeated polls (subsequent ticks find the same rid
 //!      already recorded; no spurious supersession of the active rollout).
-//!   4. After a fleet bump (new fleet_resolved_hash → new rollout_id), the
+//!   4. After a fleet bump (new fleet_resolved_hash -> new rollout_id), the
 //!      previous rid is marked superseded by the new one.
 //!   5. Across a "rebuild" (drop DB + fresh DB + replay polling), the table
 //!      converges to the same state as if the rebuild had never happened  -
@@ -99,7 +99,7 @@ struct PollFixture {
     pub token_path: std::path::PathBuf,
     /// Held to keep the temp dir alive for the duration of the fixture.
     _dir: TempDir,
-    /// Port → join handle, kept alive for the duration of the fixture.
+    /// Port -> join handle, kept alive for the duration of the fixture.
     _stub: tokio::task::JoinHandle<()>,
 }
 
@@ -257,7 +257,7 @@ async fn polling_populates_rollouts_after_rebuild_and_supersedes_on_bump() {
     cancel.cancel();
 
     // Fleet bump: a NEW signing run produces a different fleet_resolved_hash
-    // → different rollout_id. Simulate by computing a fresh rid against a
+    // -> different rollout_id. Simulate by computing a fresh rid against a
     // bumped FleetResolved snapshot and recording it directly. The table
     // should mark the prior rid superseded by the new one.
     let snap = verified_fleet

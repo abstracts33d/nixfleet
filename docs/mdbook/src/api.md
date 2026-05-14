@@ -8,7 +8,7 @@ Rust's official tool (`rustdoc`) is what every developer expects to read for a R
 
 - Type signatures (functions, structs, enums, traits)
 - Per-field and per-variant docs
-- Resolved cross-references (`[`SomeType`]` → working link)
+- Resolved cross-references (`[`SomeType`]` -> working link)
 - Source links per item
 - Search index
 - IDE integration via `rust-analyzer` (the same content you see hovering an identifier in your editor)

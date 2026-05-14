@@ -388,7 +388,7 @@
     };
   };
 
-  # LOADBEARING: edges are walked "gated → gates" (dependent → predecessor).
+  # LOADBEARING: edges are walked "gated -> gates" (dependent -> predecessor).
   # Operates on the NORMALIZED form (post `normalizeChannelEdge`) so legacy
   # `before`/`after` and canonical `gates`/`gated` shapes both flow through
   # the same DAG check.

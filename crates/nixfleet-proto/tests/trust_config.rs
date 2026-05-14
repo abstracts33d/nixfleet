@@ -158,7 +158,7 @@ fn key_slot_active_keys_at_treats_no_retire_at_as_no_overlap() {
     assert_eq!(
         keys.len(),
         1,
-        "no retire_at → no overlap window → ignore successor"
+        "no retire_at -> no overlap window -> ignore successor"
     );
 }
 
@@ -172,7 +172,7 @@ fn trust_config_rejects_missing_schema_version() {
 }
 
 /// Pins the JSON shape Nix scope modules emit when an operator sets
-/// an org root key - the bare-string → struct promotion.
+/// an org root key - the bare-string -> struct promotion.
 #[test]
 fn trust_config_parses_populated_org_root_key_matching_nix_emission() {
     let json = r#"{

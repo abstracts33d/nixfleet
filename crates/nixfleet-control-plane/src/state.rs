@@ -62,7 +62,7 @@ impl FromSql for PendingConfirmState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TerminalState {
     Converged,
-    /// Host was already on target when the rollout opened — no dispatch
+    /// Host was already on target when the rollout opened -- no dispatch
     /// was issued, no soak window applied. Distinct from `Converged` so
     /// trace consumers (fleet-status, dashboards) can show the operator
     /// that this row never went through the activation lifecycle.

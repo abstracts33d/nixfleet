@@ -50,7 +50,7 @@ pub fn read_token(path: Option<&Path>) -> Result<Option<String>> {
     }
 }
 
-/// Non-2xx or network error → `Err`; caller retains previous state.
+/// Non-2xx or network error -> `Err`; caller retains previous state.
 pub async fn fetch_signed_pair(
     client: &reqwest::Client,
     artifact_url: &str,

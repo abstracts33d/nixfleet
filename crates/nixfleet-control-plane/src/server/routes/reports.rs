@@ -109,7 +109,7 @@ pub(in crate::server) async fn report(
         }
     }
 
-    // LOADBEARING: flips Failed → Reverted so compute_rollback_signal stops re-emitting forever.
+    // LOADBEARING: flips Failed -> Reverted so compute_rollback_signal stops re-emitting forever.
     if let Some(db) = state.db.as_ref() {
         apply_rollback_state_transition(db, &req);
         // Parks the dispatch row so the rollback timer's 360s sweep skips it
@@ -176,7 +176,7 @@ pub struct RecentReportsQuery {
     pub limit: Option<usize>,
 }
 
-/// Flip `host_rollout_state` Failed → Reverted on `RollbackTriggered`; guard leaves non-Failed alone.
+/// Flip `host_rollout_state` Failed -> Reverted on `RollbackTriggered`; guard leaves non-Failed alone.
 fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
     use nixfleet_proto::agent_wire::ReportEvent;
     if !matches!(req.event, ReportEvent::RollbackTriggered { .. }) {
@@ -205,7 +205,7 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
                 target: "report",
                 hostname = %req.hostname,
                 rollout = %rollout,
-                "RollbackTriggered: host_rollout_state Failed → Reverted",
+                "RollbackTriggered: host_rollout_state Failed -> Reverted",
             );
             // GOTCHA: record_terminal scopes by rollout_id so a newer dispatch is not clobbered.
             let now = Utc::now();
@@ -243,7 +243,7 @@ fn apply_rollback_state_transition(db: &crate::db::Db, req: &ReportRequest) {
                 hostname = %req.hostname,
                 rollout = %rollout,
                 error = %err,
-                "RollbackTriggered: Failed → Reverted transition failed; report still persisted",
+                "RollbackTriggered: Failed -> Reverted transition failed; report still persisted",
             );
         }
     }
@@ -261,7 +261,7 @@ fn apply_deferred_pending_reboot_transition(db: &crate::db::Db, req: &ReportRequ
     }
     let Some(rollout) = req.rollout.as_deref() else {
         // Defensive: ActivationDeferred without a rollout is malformed (the
-        // agent always carries channel_ref → rollout). Log and skip.
+        // agent always carries channel_ref -> rollout). Log and skip.
         tracing::warn!(
             target: "report",
             hostname = %req.hostname,
@@ -289,7 +289,7 @@ fn apply_deferred_pending_reboot_transition(db: &crate::db::Db, req: &ReportRequ
                 target: "report",
                 hostname = %req.hostname,
                 rollout = %rollout,
-                "ActivationDeferred: host_dispatch_state Pending → DeferredPendingReboot",
+                "ActivationDeferred: host_dispatch_state Pending -> DeferredPendingReboot",
             );
         }
         Err(err) => {
@@ -304,7 +304,7 @@ fn apply_deferred_pending_reboot_transition(db: &crate::db::Db, req: &ReportRequ
     }
 }
 
-/// Verdict for incoming reports; absent pubkey → `NoPubkey`, unsigned variants return `None`.
+/// Verdict for incoming reports; absent pubkey -> `NoPubkey`, unsigned variants return `None`.
 async fn compute_signature_status(
     state: &Arc<AppState>,
     req: &ReportRequest,
@@ -717,7 +717,7 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("Failed"),
-            "non-RollbackTriggered events must not trigger Failed → Reverted",
+            "non-RollbackTriggered events must not trigger Failed -> Reverted",
         );
     }
 }

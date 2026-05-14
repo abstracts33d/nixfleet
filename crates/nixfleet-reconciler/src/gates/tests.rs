@@ -532,7 +532,7 @@ fn compliance_wave_passes_under_permissive_mode() {
 }
 
 /// 3-wave variant pinning transitivity: a failure in wave 0 must still block
-/// wave 2 (the 2-wave variant only proves adjacent wave-0 → wave-1 blocking).
+/// wave 2 (the 2-wave variant only proves adjacent wave-0 -> wave-1 blocking).
 /// Kind-agnostic at this layer; kind-specific coverage lives in CP integration
 /// suite.
 #[test]

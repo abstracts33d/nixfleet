@@ -14,7 +14,7 @@ use nixfleet_proto::{BootstrapNonceEntry, BootstrapNonces};
 /// Lookup by nonce. Empty by default; replaced wholesale per poll.
 #[derive(Debug, Default, Clone)]
 pub struct AllowedNoncesView {
-    /// `nonce` → entry. Read by the enrolment handler.
+    /// `nonce` -> entry. Read by the enrolment handler.
     by_nonce: HashMap<String, BootstrapNonceEntry>,
 }
 

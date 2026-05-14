@@ -130,7 +130,7 @@ pub(in crate::server) async fn enroll(
     }
 
     // RFC-0003 §2 binding: CSR pubkey MUST equal the host's declared
-    // SSH host pubkey from fleet.resolved. Closes #43 (cert ←→ host key
+    // SSH host pubkey from fleet.resolved. Closes #43 (cert <--> host key
     // bond) and #9 (declarative-enrollment fingerprint match) in one
     // call site. Fail-closed when no fleet snapshot is verified yet
     // (cold-start race) or when the host has no declared pubkey.

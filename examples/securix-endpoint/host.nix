@@ -23,7 +23,7 @@
     };
   };
 
-  # Optional desktop. Variants: "kde" (default), "gnome", …
+  # Optional desktop. Variants: "kde" (default), "gnome", ...
   securix.graphical-interface.enable = true;
   securix.graphical-interface.variant = lib.mkDefault "kde";
 

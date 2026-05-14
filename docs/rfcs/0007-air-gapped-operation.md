@@ -206,11 +206,11 @@ The full chain, online commit to first agent activation, is human-paced (typical
   - `bundle verify` (offline, no network).
   - `bundle import` (offline, writes to sovereign attic + CP-polled paths).
   - Air-gap channel schema (`airgap.enabled`, `airgap.maxStaleness`); mkFleet enforcement of explicit `timeSource` for air-gap channels.
-  - microvm.nix scenario simulating the full pipeline (online build → bundle → offline verify → import → agent activation).
+  - microvm.nix scenario simulating the full pipeline (online build -> bundle -> offline verify -> import -> agent activation).
 
 ## 12. Falsifiable done criteria
 
-1. A complete air-gap workflow can be demonstrated end-to-end: online commit → bundle export → physical transfer (simulated as `cp` in the microvm scenario) → verify → import → agent activation, with every step independently signature-verifiable.
+1. A complete air-gap workflow can be demonstrated end-to-end: online commit -> bundle export -> physical transfer (simulated as `cp` in the microvm scenario) -> verify -> import -> agent activation, with every step independently signature-verifiable.
 2. A bundle with one bit flipped in any signed component is rejected at verify.
 3. A CP operating in air-gap can complete a full reconcile cycle with no DNS, no NTP egress, and no internet-bound traffic of any kind.
 4. The sovereign cache can be lost and rebuilt from re-imported bundles without fleet impact beyond fetch latency.

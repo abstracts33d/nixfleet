@@ -56,7 +56,7 @@ pub(crate) struct Args {
     #[arg(long, env = "NIXFLEET_AGENT_COMPLIANCE_GATE_MODE")]
     compliance_gate_mode: Option<String>,
 
-    /// Signs evidence payloads; absent file → events post unsigned.
+    /// Signs evidence payloads; absent file -> events post unsigned.
     #[arg(
         long,
         env = "NIXFLEET_AGENT_SSH_HOST_KEY_FILE",
@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
     run_poll_loop(client, &args, started_at, evidence_signer, health_cache).await
 }
 
-/// Strict (0,1) — boundary values would make the threshold meaningless
+/// Strict (0,1) -- boundary values would make the threshold meaningless
 /// (0 = never renew, 1 = renew every poll).
 fn validate_renewal_threshold(fraction: f64) -> anyhow::Result<()> {
     if !(0.0 < fraction && fraction < 1.0) {
@@ -207,7 +207,7 @@ fn parse_trust_file(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Missing/unreadable key → events post unsigned. Hard-fail only on corrupt key.
+/// Missing/unreadable key -> events post unsigned. Hard-fail only on corrupt key.
 fn load_evidence_signer(
     path: &std::path::Path,
 ) -> std::sync::Arc<Option<nixfleet_agent::evidence_signer::EvidenceSigner>> {
@@ -511,7 +511,7 @@ async fn send_checkin(
     // Sign (hostname, rollout_id, last_confirmed_at) with the SSH host key.
     // CP verifies against hosts.<host>.pubkey before trusting the attested
     // timestamp for soak recovery; missing signature ⇒ timestamp ignored.
-    // Rotation between sign and verify causes mismatch → CP falls back to
+    // Rotation between sign and verify causes mismatch -> CP falls back to
     // unattested clamp (conservative).
     let attestation_signature = match (
         last_confirmed_at,

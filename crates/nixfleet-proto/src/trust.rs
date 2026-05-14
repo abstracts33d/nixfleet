@@ -53,7 +53,7 @@ impl TrustConfig {
 /// `successor` + `retire_at` declare a planned rotation: while
 /// `now < retire_at` the successor's signature is accepted (overlap window);
 /// past `retire_at` the reconciler emits `Action::RotateTrustRoot` so the
-/// operator's tooling can promote `current → previous`, `successor → current`.
+/// operator's tooling can promote `current -> previous`, `successor -> current`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeySlot {

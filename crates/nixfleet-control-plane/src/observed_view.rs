@@ -30,7 +30,7 @@ pub enum ParseUnknown {
     Halt,
 }
 
-/// `RolloutDbSnapshot` → `Rollout`. Shared between the gate observed
+/// `RolloutDbSnapshot` -> `Rollout`. Shared between the gate observed
 /// builder (`build_for_gates`) and the reconciler projection
 /// (`observed_projection::project`); they differ only in `parse` and
 /// in how budgets are sourced.
@@ -130,7 +130,7 @@ pub fn list_active_rollouts(db: &Db) -> Vec<RolloutDbSnapshot> {
 }
 
 /// `rollouts_dir = Some(d)` loads frozen `disruption_budgets` per rollout from
-/// signed manifests; `None` → budget gate no-ops (same as missing manifest).
+/// signed manifests; `None` -> budget gate no-ops (same as missing manifest).
 /// Permissive on DB read failure: callers handle "no DB" / "no fleet" upstream.
 pub async fn build_for_gates(
     db: &Db,
@@ -192,7 +192,7 @@ pub async fn build_for_gates_from_state(
 }
 
 /// Load `disruption_budgets` from a single rollout manifest. Permissive on
-/// failure: missing/corrupt manifest → empty budgets → budget gate
+/// failure: missing/corrupt manifest -> empty budgets -> budget gate
 /// no-ops for this rollout. Mirrors `server::reconcile::load_rollout_budgets`.
 async fn load_budgets_from_manifest(
     dir: &Path,

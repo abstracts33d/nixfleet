@@ -104,7 +104,7 @@ fn end_to_end_sign_then_verify_artifact_accepts() {
 
 #[test]
 fn shell_hook_contract_invokes_sh_with_env_vars() {
-    // sh hook records env + copies input → output.
+    // sh hook records env + copies input -> output.
     let tmpdir = tempfile::tempdir().unwrap();
     let log = tmpdir.path().join("hook.log");
     let log_str = log.to_string_lossy();

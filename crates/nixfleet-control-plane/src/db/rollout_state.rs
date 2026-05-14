@@ -20,7 +20,7 @@ pub struct RolloutState<'a> {
 /// atomic txn. One SQL definition for both paths.
 ///
 /// `expected_from = Some(prev)` is the state-machine guard - concurrent
-/// reconcilers can't both flip `Failed → Reverted`; the second UPDATE
+/// reconcilers can't both flip `Failed -> Reverted`; the second UPDATE
 /// is a no-op (returns 0). `None` upserts unconditionally.
 pub(super) fn transition_host_state_inner(
     conn: &Connection,
@@ -99,7 +99,7 @@ impl RolloutState<'_> {
                    AND host_state = 'Soaked'",
                 params![rollout_id],
             )
-            .context("mark_rollout_hosts_converged: Soaked → Converged sweep")
+            .context("mark_rollout_hosts_converged: Soaked -> Converged sweep")
         })
     }
 
@@ -119,7 +119,7 @@ impl RolloutState<'_> {
         })
     }
 
-    /// Row absent → `Ok(None)`. A real DB error (lock poisoned, schema drift,
+    /// Row absent -> `Ok(None)`. A real DB error (lock poisoned, schema drift,
     /// I/O) propagates as `Err` so the caller can warn rather than silently
     /// rendering "no rollout state".
     pub fn host_state(&self, hostname: &str, rollout_id: &str) -> Result<Option<String>> {
@@ -443,7 +443,7 @@ mod tests {
             .rollout_state()
             .host_state("ghost-host", "stable@r-never")
             .expect("absent row must be Ok(None), not Err");
-        assert!(got.is_none(), "no row → None, got {got:?}");
+        assert!(got.is_none(), "no row -> None, got {got:?}");
     }
 
     #[test]

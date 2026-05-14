@@ -17,7 +17,7 @@ in {
       default = "/dev/disk/by-label/root";
       description = ''
         Block device holding the btrfs root volume. Mounted briefly
-        in the initrd to move @root → old_roots/<timestamp> and
+        in the initrd to move @root -> old_roots/<timestamp> and
         create a fresh empty @root. Override if your fleet labels
         the root differently or uses by-uuid / direct device paths.
       '';
@@ -51,7 +51,7 @@ in {
       deps = [];
     };
 
-    # FOOTGUN: btrfs root-wipe - moves @root → old_roots/<ts> and recreates empty @root every boot; prunes past retention.
+    # FOOTGUN: btrfs root-wipe - moves @root -> old_roots/<ts> and recreates empty @root every boot; prunes past retention.
     boot.initrd.postResumeCommands = lib.mkAfter ''
       mkdir /btrfs_tmp
       mount ${impl.rootDevice} /btrfs_tmp

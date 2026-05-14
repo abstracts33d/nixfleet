@@ -65,7 +65,7 @@ pub fn project(
         })
         .collect();
 
-    // last_rolled_refs: channel → recorded ref. LOADBEARING - without
+    // last_rolled_refs: channel -> recorded ref. LOADBEARING - without
     // it the reconciler re-emits OpenRollout every tick (channel_refs ↔
     // last_rolled_refs equality never matches with an empty map).
     let last_rolled_refs: HashMap<String, String> = rollouts

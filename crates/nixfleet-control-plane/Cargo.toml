@@ -90,7 +90,7 @@ nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }
 # The CP parses `hosts.<hostname>.pubkey` from fleet.resolved
 # (OpenSSH ed25519 format) and verifies signatures on
 # ComplianceFailure / RuntimeGateError event details. Auditor chain
-# closure: pubkey from fleet.nix → JCS canonical event → 64-byte
+# closure: pubkey from fleet.nix -> JCS canonical event -> 64-byte
 # ed25519 sig.
 ssh-key = { version = "0.6", features = ["ed25519"] }
 serde_jcs = "0.2"

@@ -17,7 +17,7 @@ pub enum GateMode {
 
 impl GateMode {
     /// `disabled`/`enforce` map directly; everything else (incl. `auto`,
-    /// unknown) → `Permissive`.
+    /// unknown) -> `Permissive`.
     pub fn from_wire_str(s: &str) -> Self {
         match s {
             "disabled" => GateMode::Disabled,

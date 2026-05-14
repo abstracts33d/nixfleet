@@ -1,4 +1,4 @@
-//! Operator helper: ed25519 private key file → base64 public key.
+//! Operator helper: ed25519 private key file -> base64 public key.
 //!
 //! Folded from the former `nixfleet-derive-pubkey` binary. Subcommand
 //! form: `nixfleet derive-pubkey <path>`.

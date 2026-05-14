@@ -29,7 +29,7 @@ in
     modules ? [],
     # Passthrough for consumer code; framework no longer reads it.
     isVm ? false,
-    # LOADBEARING: extraInputs merged BENEATH framework inputs so framework wins (inputs.self → nixfleet).
+    # LOADBEARING: extraInputs merged BENEATH framework inputs so framework wins (inputs.self -> nixfleet).
     extraInputs ? {},
   }: let
     isDarwin = isDarwinPlatform platform;

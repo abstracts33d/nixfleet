@@ -67,7 +67,7 @@ journalctl -u nixfleet-control-plane.service --since='5 min ago' \
   | grep 'checkin received' | awk '{print $NF}' | sort -u
 ```
 
-All four pass → recovery is complete.
+All four pass -> recovery is complete.
 
 ## When this fails
 

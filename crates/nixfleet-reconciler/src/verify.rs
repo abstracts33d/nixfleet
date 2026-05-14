@@ -11,7 +11,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 /// Signed sidecar under `ciReleaseKey`. Drives the
-/// canonicalize → verify → freshness-gate pipeline.
+/// canonicalize -> verify -> freshness-gate pipeline.
 pub trait SignedSidecar {
     fn schema_version(&self) -> u32;
     fn signed_at(&self) -> Option<DateTime<Utc>>;

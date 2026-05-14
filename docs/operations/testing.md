@@ -1,6 +1,6 @@
 # Testing your fleet config
 
-NixFleet ships a `validate` test runner that gates every level of verification — format, flake check, host eval, system builds, Rust unit + integration tests, and VM-harness scenarios. Run it before every push to the fleet repo.
+NixFleet ships a `validate` test runner that gates every level of verification -- format, flake check, host eval, system builds, Rust unit + integration tests, and VM-harness scenarios. Run it before every push to the fleet repo.
 
 ```sh
 nix run .#validate              # fast: format + flake check + eval + host builds
@@ -27,7 +27,7 @@ nix run .#validate -- --all     # everything
 
 ## Scenario catalogue
 
-For the list of `fleet-harness-*` scenarios and what each one exercises, see [reference/harness](../reference/harness.md). The scenarios are intentionally narrow — each one isolates a single property of the signed-GitOps loop, the rollback machinery, or the reconciler.
+For the list of `fleet-harness-*` scenarios and what each one exercises, see [reference/harness](../reference/harness.md). The scenarios are intentionally narrow -- each one isolates a single property of the signed-GitOps loop, the rollback machinery, or the reconciler.
 
 ## Interaction with CI
 

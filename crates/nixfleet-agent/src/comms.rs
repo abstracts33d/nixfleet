@@ -91,7 +91,7 @@ pub async fn checkin(
         .context("parse checkin response")
 }
 
-/// 204 → Acknowledged; 410 → Cancelled (agent must rollback); else Other.
+/// 204 -> Acknowledged; 410 -> Cancelled (agent must rollback); else Other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmOutcome {
     Acknowledged,
@@ -268,7 +268,7 @@ mod read_client_key_tests {
     }
 
     /// Pubkey round-trip: protects against accidental seed swap during
-    /// OpenSSH → PKCS#8 conversion.
+    /// OpenSSH -> PKCS#8 conversion.
     #[test]
     fn openssh_to_pkcs8_pubkey_round_trips() {
         let dir = tempfile::tempdir().expect("tempdir");

@@ -4,11 +4,11 @@ Tasks the operator does, with concrete commands. Add new recipes when something 
 
 The recipes below use these placeholders:
 
-- `<fleet>` — your fleet repo (the one with `flake.nix` + `mkFleet`).
-- `<secrets>` — your agenix secrets repo, if separate from `<fleet>`.
-- `cp` — the host running `services.nixfleet-control-plane`.
-- `workstation` — any host with `nixfleet.operator` enabled (where you run the `nixfleet` CLI).
-- `newhost`, `stuckhost` — example host names per recipe.
+- `<fleet>` -- your fleet repo (the one with `flake.nix` + `mkFleet`).
+- `<secrets>` -- your agenix secrets repo, if separate from `<fleet>`.
+- `cp` -- the host running `services.nixfleet-control-plane`.
+- `workstation` -- any host with `nixfleet.operator` enabled (where you run the `nixfleet` CLI).
+- `newhost`, `stuckhost` -- example host names per recipe.
 
 Substitute your own values throughout.
 
@@ -76,11 +76,11 @@ SQL\""
 The org root key is the trust anchor for bootstrap tokens. Rotating it means:
 
 1. Operator generates a new ed25519 keypair on an operator workstation.
-2. Encrypt the private half to the operator user(s) only via agenix → `<secrets>/org-root-key.age`. cp MUST NOT be a recipient.
+2. Encrypt the private half to the operator user(s) only via agenix -> `<secrets>/org-root-key.age`. cp MUST NOT be a recipient.
 3. Update `<fleet>/.../trust.nix`:
    - Move the current `nixfleet.trust.orgRootKey.current` to `.previous` (rotation grace window).
    - Set `.current` to the new public half.
-4. Commit + push fleet → CI re-signs → cp picks up the new trust.json on next deploy.
+4. Commit + push fleet -> CI re-signs -> cp picks up the new trust.json on next deploy.
 5. Old tokens minted under the previous key keep working for the rotation window (until the next config change moves `.previous` to null).
 
 ## Diagnose a stuck agent

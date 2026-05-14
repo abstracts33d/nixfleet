@@ -47,7 +47,7 @@ Three operator roles. Each has a documented hardware requirement, a stated maxim
 
 - **What they hold.** A YubiKey 5+ enrolled as a release-channel signer (PIV slot 9c, ECDSA P-256 - interoperates with the existing `ciReleaseKey` slot type that already supports `ecdsa-p256`).
 - **What they do.** Touch the YubiKey to authorize a release-signing operation. Holds no decryption capability. The CI runner's signing process blocks on operator touch; without it, nothing is signed as a release.
-- **Default rotation cadence.** 12 months; new YubiKey enrolled, old removed from `nixfleet.trust.ciReleaseKey` via the existing `current` → `previous` rotation slot pattern.
+- **Default rotation cadence.** 12 months; new YubiKey enrolled, old removed from `nixfleet.trust.ciReleaseKey` via the existing `current` -> `previous` rotation slot pattern.
 - **Loss procedure.** Revoke from `nixfleet.trust.ciReleaseKey.previous` immediately; `successor` becomes `current` if pre-announced, else operator runs an out-of-band rotation ceremony.
 
 ### 3.2 Org root operator
@@ -132,7 +132,7 @@ When `expected_ek_fingerprint` is set:
 1. Operator records the host's TPM EK pubkey via OOB tooling when the hardware is unboxed (typed into `fleet.nix` next to the host's other declarations).
 2. `nixfleet mint-token` includes the EK fingerprint in the signed claims.
 3. The agent's enrollment flow (`POST /v1/enroll`) presents an EK quote alongside the bootstrap token + CSR.
-4. The CP verifies: token signature against `orgRootKey`, token unused (existing `token_replay`), CSR pubkey matches `pubkey_fingerprint`, EK in the quote matches `expected_ek_fingerprint`. Mismatch on any of these → 403 + `EnrollmentFailed` event.
+4. The CP verifies: token signature against `orgRootKey`, token unused (existing `token_replay`), CSR pubkey matches `pubkey_fingerprint`, EK in the quote matches `expected_ek_fingerprint`. Mismatch on any of these -> 403 + `EnrollmentFailed` event.
 
 `expected_ek_fingerprint = None` is the v0.2-compatible behavior. Per-host opt-in; once a host enrolls with EK binding, future re-enrollments require a token bound to the same EK (or a fresh token signed after the operator records the new EK following hardware replacement).
 
@@ -188,7 +188,7 @@ Uses the existing `ciReleaseKey.successor` + `retireAt` mechanism. Operator:
 1. Generates a new key (typically on a fresh YubiKey).
 2. Sets `nixfleet.trust.ciReleaseKey.successor = { algorithm; public; }` and `retireAt = "<RFC3339>"` in the flake. Commits.
 3. CP verifiers begin accepting both `current` and `successor` during the overlap window.
-4. After `retireAt`, the reconciler emits `Action::RotateTrustRoot`; operator's tooling rotates `current → previous`, `successor → current` in the next commit.
+4. After `retireAt`, the reconciler emits `Action::RotateTrustRoot`; operator's tooling rotates `current -> previous`, `successor -> current` in the next commit.
 5. Old key removed from `previous` after the 30-day grace window per CONTRACTS §II #1.
 
 ### 7.2 Attic cache key rotation

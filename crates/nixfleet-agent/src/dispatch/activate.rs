@@ -1,4 +1,4 @@
-//! Dispatch entry: freshness gate → manifest gate → activate → route outcome.
+//! Dispatch entry: freshness gate -> manifest gate -> activate -> route outcome.
 
 use std::sync::Arc;
 

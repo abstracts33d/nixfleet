@@ -1,7 +1,7 @@
 #![allow(clippy::doc_lazy_continuation)]
 //! Producer for `releases/fleet.resolved.json` and signed sidecars. Pipeline:
-//! enumerate hosts → build → push → eval → inject closureHashes → stamp meta
-//! → canonicalize → sign → smoke-verify → atomic write → optional git
+//! enumerate hosts -> build -> push -> eval -> inject closureHashes -> stamp meta
+//! -> canonicalize -> sign -> smoke-verify -> atomic write -> optional git
 //! commit/push. Hook contract lives at the binary surface.
 
 use std::collections::BTreeMap;
@@ -85,7 +85,7 @@ pub struct ReleaseConfig {
     /// Flake attr yielding the bootstrap-nonces list. When set, the pipeline
     /// signs `bootstrap-nonces.json` alongside `fleet.resolved.json` via the
     /// same `sign_cmd`. `None` skips the artifact entirely (which means CP
-    /// enrolment is unusable in strict mode — only used in dev/test).
+    /// enrolment is unusable in strict mode -- only used in dev/test).
     pub bootstrap_nonces_attr: Option<String>,
     /// Source URL for building pinned hosts at non-current commits. Optional
     /// at the type level but required at runtime iff any non-expired host pin
@@ -486,7 +486,7 @@ fn eval_bootstrap_nonces(
         .with_context(|| format!("parse bootstrap nonces from `nix eval .#{attr}`"))
 }
 
-/// Enumerate attribute names; missing attrset → empty. "Missing attribute"
+/// Enumerate attribute names; missing attrset -> empty. "Missing attribute"
 /// matches a small set of stable nix-eval phrasings.
 fn list_attr_optional(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix")
@@ -526,8 +526,8 @@ fn list_attr_optional(flake_dir: &Path, attr_path: &str) -> Result<Vec<String>> 
     Ok(names)
 }
 
-/// Sequential build. No pin or pin.commit == current_commit → local build
-/// path; non-current commit → flake-ref build via `<pin_source_url>?rev=<commit>`.
+/// Sequential build. No pin or pin.commit == current_commit -> local build
+/// path; non-current commit -> flake-ref build via `<pin_source_url>?rev=<commit>`.
 /// Cross-platform builds rely on the operator's `nix.buildMachines`. Failures
 /// abort before any push.
 fn build_hosts(

@@ -211,7 +211,7 @@ size=$(wc -c <"$tmp_pubkey_raw")
 [[ $size -eq 64 ]] ||
   die "TPM pubkey at $tpm_pubkey_path is not 64 bytes (got $size)"
 
-# ── 3. raw → SPKI PEM ────────────────────────────────────────────────
+# ── 3. raw -> SPKI PEM ────────────────────────────────────────────────
 # Prepend the DER SPKI header for ECDSA P-256 + uncompressed point
 # (0x04 prefix). This is the fixed prefix every P-256 SPKI starts with;
 # only the X || Y bytes vary per key.

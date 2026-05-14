@@ -122,7 +122,7 @@ fn soak_loop_end_to_end_healthy_to_soaked_to_converged() {
             Some(HostRolloutState::Healthy),
         )
         .unwrap();
-    assert_eq!(n, 1, "transition Healthy → Soaked must update one row");
+    assert_eq!(n, 1, "transition Healthy -> Soaked must update one row");
 
     let rollouts2 = db.host_dispatch_state().active_rollouts_snapshot().unwrap();
     assert_eq!(

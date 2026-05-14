@@ -139,7 +139,7 @@ pub(super) async fn confirm(
         }
     } else {
         // transition_host_state SELECTs prev under the same lock and
-        // emits the actual prev→new transition counter from inside  -
+        // emits the actual prev->new transition counter from inside  -
         // no synthetic "(any)" tag needed at this call site.
         if let Err(err) = db.rollout_state().transition_host_state(
             &req.hostname,

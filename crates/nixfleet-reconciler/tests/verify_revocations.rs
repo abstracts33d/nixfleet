@@ -167,7 +167,7 @@ fn verify_revocations_rejects_when_trust_roots_empty() {
         verify_revocations(&bytes, &sig, &[], now, Duration::from_secs(3600), None).unwrap_err();
     assert!(
         matches!(err, VerifyError::NoTrustRoots),
-        "empty trust roots → NoTrustRoots; got {err:?}"
+        "empty trust roots -> NoTrustRoots; got {err:?}"
     );
 }
 

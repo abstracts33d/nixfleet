@@ -278,7 +278,7 @@ async fn poll_once(
 /// had host_dispatch_state writes, including the OLD rollout from the
 /// previous fleet rev. That old rollout's hosts are typically `Converged`
 /// at the moment a new rev is published, so the predecessor check would
-/// see "edge=Converged → not active → not blocked" and let the new
+/// see "edge=Converged -> not active -> not blocked" and let the new
 /// successor through INSTANTLY - channelEdges silently bypassed for the
 /// first poll of every release. We filter by current rolloutIds (the
 /// derivation from the new fleet snapshot) so only rollouts belonging to
@@ -366,7 +366,7 @@ async fn record_rollouts_gated_by_channel_edges(
             &pseudo_observed,
             &emitted_opens,
             &channel,
-            // Polling iterates predecessor → successor in topo order
+            // Polling iterates predecessor -> successor in topo order
             // and updates `emitted_opens` as it goes. The in-tick set
             // is the authoritative signal - Reconcile mode is correct.
             nixfleet_reconciler::gates::GateMode::Reconcile,
@@ -552,7 +552,7 @@ mod tests {
             ("stable".into(), "new-stable-rid".into()),
         ];
 
-        // First poll: stable held (edge has no host_states yet → active).
+        // First poll: stable held (edge has no host_states yet -> active).
         record_rollouts_gated_by_channel_edges(
             &db,
             &verified_fleet,

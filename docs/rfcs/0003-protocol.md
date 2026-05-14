@@ -19,7 +19,7 @@
 - **Agent identity = mTLS client certificate, derived from the host key.** At enrollment (nixfleet #9), the agent generates the CSR using the SSH host key as the signing key; the public key in the cert is the host's SSH public key. CN = `hostname`, SANs carry declared host attributes (channel, tags - redundant with fleet.resolved, used only for sanity checking). This binding means compromising the mTLS cert and compromising the host key are the same event; short-lived certs bound the exposure of that event.
 - **Cert issuance.** Agent sends the CSR + a one-shot bootstrap token (signed by the org root key, scoped to `expectedHostname` + `expectedPubkeyFingerprint`). Control plane verifies both, issues cert with 30-day validity. A mismatch between the CSR's public key and the token's `expectedPubkeyFingerprint` aborts enrollment.
 - **Cert rotation.** Agent requests renewal at 50% of remaining validity. Old cert valid until expiry; overlap prevents downtime.
-- **Cert revocation.** Control plane maintains a small revocation set (hostname → notBefore timestamp). Agents with certs issued before `notBefore` for their hostname are rejected. Simpler than CRLs; works because cert lifetime is short.
+- **Cert revocation.** Control plane maintains a small revocation set (hostname -> notBefore timestamp). Agents with certs issued before `notBefore` for their hostname are rejected. Simpler than CRLs; works because cert lifetime is short.
 - **No shared credentials.** No API keys, no HMAC secrets, no bearer tokens. mTLS end to end.
 
 ## 3. Wire format
@@ -165,7 +165,7 @@ This closes the replay-after-DB-wipe vector: even if `state.db` is wiped
 (rebuild, incident, disk loss), the durable replay invariant lives in
 the signed fleet repo, not in CP-local state.
 
-The allowlist entry's `expiresAt` is authoritative — it may be tighter
+The allowlist entry's `expiresAt` is authoritative -- it may be tighter
 than the token's own `claims.expires_at`, but never extends past it
 (the token's own claim is checked separately). Operators can
 declaratively narrow a still-unexpired token's validity window by
@@ -223,7 +223,7 @@ Agents fetch both. Implementations MAY also expose a single endpoint that return
 
 ## 6. Versioning
 
-- **Protocol major version** in header. v1 → v2 is a breaking change; running mixed versions is disallowed and fails at check-in with a clear message. Upgrade path: control plane supports N and N+1 simultaneously; operators upgrade agents, then retire control plane's N support.
+- **Protocol major version** in header. v1 -> v2 is a breaking change; running mixed versions is disallowed and fails at check-in with a clear message. Upgrade path: control plane supports N and N+1 simultaneously; operators upgrade agents, then retire control plane's N support.
 - **Schema evolution within a major.** Fields may be added; agents and control plane MUST ignore unknown fields. Required fields never change meaning. Removing a field requires a major bump.
 - **Agent version (informational).** Control plane refuses agents older than its declared minimum, emits events for newer agents (may indicate staged upgrade in progress).
 
@@ -234,7 +234,7 @@ Agents fetch both. Implementations MAY also expose a single endpoint that return
 - **Passive network observer.** TLS 1.3 - sees only traffic shape.
 - **Active on-path attacker without a cert.** mTLS fails the handshake; no data exposed.
 - **Compromised non-target agent.** Cert only authorizes its own hostname; cannot request targets for other hosts, cannot submit reports for other hosts. Control plane enforces `cert.CN == request.hostname` on every endpoint.
-- **Compromised control plane - closure forgery.** Cannot learn secrets (zero-knowledge property). Can serve a different closure hash as target → agent fetches from attic, verifies attic's ed25519 signature against the pinned attic public key (docs/design/architecture.md §4), refuses unsigned or foreign-signed closures.
+- **Compromised control plane - closure forgery.** Cannot learn secrets (zero-knowledge property). Can serve a different closure hash as target -> agent fetches from attic, verifies attic's ed25519 signature against the pinned attic public key (docs/design/architecture.md §4), refuses unsigned or foreign-signed closures.
 - **Compromised control plane - stale-closure replay.** A compromised CP cannot forge closures but could point hosts at an older-but-still-validly-signed closure to block security fixes. Mitigation: every check-in response references a CI-signed `fleet.resolved` revision; the agent fetches that artifact (directly from cache or via the CP) and refuses any target whose backing `fleet.resolved.meta.signedAt` is older than `channel.freshnessWindow` (per-channel declaration in minutes, required, no default - RFC-0001 §2.3). The freshness window is itself inside the signed artifact, so a compromised CP cannot widen it.
 - **Replay.** Confirm requests include `bootId`; the control plane rejects a confirm whose `bootId` doesn't match the expected new boot.
 

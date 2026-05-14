@@ -38,7 +38,7 @@ The minimum path from a fresh repo to a single managed host. For multi-host flee
 }
 ```
 
-`mkHost` returns a standard `nixosSystem` (or `darwinSystem` for Darwin platforms). Nothing in the result is NixFleet-specific — if you remove the agent module, the host is a vanilla NixOS configuration deployable with stock tooling.
+`mkHost` returns a standard `nixosSystem` (or `darwinSystem` for Darwin platforms). Nothing in the result is NixFleet-specific -- if you remove the agent module, the host is a vanilla NixOS configuration deployable with stock tooling.
 
 ## Deploy
 
@@ -50,7 +50,7 @@ sudo nixos-rebuild switch --flake .#my-server          # local rebuild
 darwin-rebuild switch --flake .#my-mac                 # macOS
 ```
 
-Fleet rollouts are git-driven from this point: commit → CI signs → CP polls `fleet.resolved.json` → agents pull their per-host target on next checkin. There is no operator CLI verb between commit and host activation. See [operator cookbook → Deploy a fleet change](operator-cookbook.md#deploy-a-fleet-change).
+Fleet rollouts are git-driven from this point: commit -> CI signs -> CP polls `fleet.resolved.json` -> agents pull their per-host target on next checkin. There is no operator CLI verb between commit and host activation. See [operator cookbook -> Deploy a fleet change](operator-cookbook.md#deploy-a-fleet-change).
 
 ## Build and install the operator CLI
 
@@ -85,7 +85,7 @@ For the full CLI surface (subcommands, flags, status-label precedence, pin marke
 
 ## Next steps
 
-- Enrol additional hosts: [operator cookbook → Add a host to the fleet](operator-cookbook.md#add-a-host-to-the-fleet)
+- Enrol additional hosts: [operator cookbook -> Add a host to the fleet](operator-cookbook.md#add-a-host-to-the-fleet)
 - Mint a bootstrap token: [bootstrap-token-lifecycle](bootstrap-token-lifecycle.md)
 - Test the loop locally on VMs first: [vm-lifecycle](vm-lifecycle.md)
 - Verify your fleet config before pushing: [testing](testing.md)

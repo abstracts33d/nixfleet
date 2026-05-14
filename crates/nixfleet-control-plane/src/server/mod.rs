@@ -431,7 +431,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Tasks past `TASK_SHUTDOWN_DEADLINE` are abandoned (handles dropped → abort).
+/// Tasks past `TASK_SHUTDOWN_DEADLINE` are abandoned (handles dropped -> abort).
 async fn drain_background_tasks(handles: Vec<tokio::task::JoinHandle<()>>) -> anyhow::Result<()> {
     let total = handles.len();
     let drain_fut = async move {

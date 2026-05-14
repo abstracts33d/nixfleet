@@ -74,7 +74,7 @@ pub struct Channel {
 }
 
 impl Channel {
-    /// Helper that converts minutes → Duration. Avoids the
+    /// Helper that converts minutes -> Duration. Avoids the
     /// `Duration::from_secs(raw)` 60× landmine.
     pub fn freshness_window_duration(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.freshness_window as u64 * 60)

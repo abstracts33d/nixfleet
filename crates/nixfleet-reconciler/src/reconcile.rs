@@ -259,7 +259,7 @@ mod channel_edge_tests {
     #[test]
     fn all_soaked_predecessor_unblocks_successor() {
         // Soaked counts as terminal-for-ordering, bridging the
-        // SoakHost → ConvergeRollout window without holding successors.
+        // SoakHost -> ConvergeRollout window without holding successors.
         let fleet = fleet_with_channel_edges(vec![ChannelEdge {
             gates: "db".into(),
             gated: "app".into(),
@@ -509,7 +509,7 @@ mod channel_edge_tests {
         assert_eq!(
             deferred_blocker.as_deref(),
             Some("infra"),
-            "blocker changed from db→infra; must re-emit: {actions:?}",
+            "blocker changed from db->infra; must re-emit: {actions:?}",
         );
     }
 
@@ -543,7 +543,7 @@ mod channel_edge_tests {
             actions
                 .iter()
                 .any(|a| matches!(a, Action::OpenRollout { channel, .. } if channel == "app")),
-            "predecessor no longer active → must open: {actions:?}",
+            "predecessor no longer active -> must open: {actions:?}",
         );
     }
 

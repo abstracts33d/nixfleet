@@ -3,8 +3,8 @@
 //! Backend trait contract:
 //! - `is_switch_in_progress` is fail-open (false = no contender OR unknown).
 //! - `read_unit_exit_code` returns `None` rather than synthesising a 0.
-//! - `fire_*` are fire-and-forget: `Ok(None)` → caller polls; `Ok(Some)` →
-//!   fire-step failure, no poll; `Err` → spawn-level I/O error only.
+//! - `fire_*` are fire-and-forget: `Ok(None)` -> caller polls; `Ok(Some)` ->
+//!   fire-step failure, no poll; `Err` -> spawn-level I/O error only.
 
 use std::time::Duration;
 

@@ -45,13 +45,13 @@ pub struct ServeArgs {
     pub observed_path: PathBuf,
     pub freshness_window: Duration,
     pub confirm_deadline_secs: i64,
-    /// `None` → file-backed `--artifact` only.
+    /// `None` -> file-backed `--artifact` only.
     pub channel_refs: Option<crate::polling::channel_refs_poll::ChannelRefsSource>,
     pub revocations: Option<crate::polling::revocations_poll::RevocationsSource>,
     pub bootstrap_nonces: Option<crate::polling::bootstrap_nonces_poll::BootstrapNoncesSource>,
-    /// `None` → in-memory state only.
+    /// `None` -> in-memory state only.
     pub db_path: Option<PathBuf>,
-    /// `None` → `/v1/agent/closure/<hash>` returns 501.
+    /// `None` -> `/v1/agent/closure/<hash>` returns 501.
     pub closure_upstream: Option<String>,
     /// Pre-signed `<rolloutId>.{json,sig}` pairs; falls back to `rollouts_source`, then 503.
     pub rollouts_dir: Option<PathBuf>,
@@ -329,7 +329,7 @@ mod ready_tests {
         );
     }
 
-    /// Both flags set in the required configuration → ready.
+    /// Both flags set in the required configuration -> ready.
     #[test]
     fn both_primed_with_revocations_required_is_ready() {
         let state = AppState {
@@ -341,7 +341,7 @@ mod ready_tests {
         assert!(state.is_ready(), "both primed must flip ready");
     }
 
-    /// Revocations primed but artifact not → not ready (can't serve dispatch
+    /// Revocations primed but artifact not -> not ready (can't serve dispatch
     /// without a verified fleet snapshot, even if the revocation list loaded).
     #[test]
     fn revocations_alone_is_not_ready() {

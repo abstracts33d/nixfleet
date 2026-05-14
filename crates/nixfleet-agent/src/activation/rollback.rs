@@ -1,4 +1,4 @@
-//! Rollback pipeline: nix-env --rollback → discover target → fire → poll.
+//! Rollback pipeline: nix-env --rollback -> discover target -> fire -> poll.
 //!
 //! FOOTGUN: bypasses `nixos-rebuild --rollback` because `nixos-rebuild-ng`
 //! evaluates `<nixpkgs/nixos>` even on rollback, which fails in the agent's

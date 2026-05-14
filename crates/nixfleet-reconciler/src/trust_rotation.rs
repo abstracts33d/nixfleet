@@ -1,7 +1,7 @@
 //! Declarative key rotation. Emits `Action::RotateTrustRoot` when a slot's
 //! `retire_at` has passed AND a `successor` is declared. Informational only -
 //! the CP NEVER self-mutates trust roots; the operator's tooling promotes
-//! `current → previous, successor → current` in the next fleet commit.
+//! `current -> previous, successor -> current` in the next fleet commit.
 
 use chrono::{DateTime, Utc};
 use nixfleet_proto::trust::{KeySlot, TrustConfig};

@@ -1,4 +1,4 @@
-//! Pin `DB state → observed → gate verdict` parity across dispatch/reconcile modes.
+//! Pin `DB state -> observed -> gate verdict` parity across dispatch/reconcile modes.
 //! The two modes legitimately diverge only on truly-missing predecessor data
 //! (conservative vs permissive); every other stage must agree.
 
@@ -14,7 +14,7 @@ use nixfleet_reconciler::{HostRolloutState, RolloutState};
 use nixfleet_control_plane::db::{Db, DispatchInsert};
 use nixfleet_control_plane::state::HealthyMarker;
 
-// Fixture: edge ─→ stable. host-05 on edge (server, wave 0), host-01 on
+// Fixture: edge ─-> stable. host-05 on edge (server, wave 0), host-01 on
 // stable (dev, wave 0). Smallest shape exercising channelEdges +
 // per-host gating; mirrors per-host topology.
 
@@ -173,8 +173,8 @@ fn stage1_edge_active_stable_held_in_both_modes() {
 /// channelEdges releases. Both modes must agree: host-01 passes.
 ///
 /// Pre-fix-#74c9ad4: this stage was where dispatch and reconcile
-/// diverged because list_active filtered terminal → predecessor
-/// fell out of observed → asymmetric None-arm verdict.
+/// diverged because list_active filtered terminal -> predecessor
+/// fell out of observed -> asymmetric None-arm verdict.
 #[test]
 fn stage2_edge_terminal_stable_released_in_both_modes() {
     let db = fresh_db();
@@ -353,7 +353,7 @@ fn stage5_terminal_rollout_visible_to_gates_hidden_from_ui() {
     assert_eq!(gate_view.len(), 1, "gate view keeps terminal rollouts");
     assert_eq!(ui_view.len(), 0, "UI view hides terminal rollouts");
 
-    // Asymmetric conversion: gate → UI is OK; UI → gate has no
+    // Asymmetric conversion: gate -> UI is OK; UI -> gate has no
     // method (would re-fabricate missing rows). Confirms the
     // type system enforces the directionality.
     let demoted = gate_view.into_ui();

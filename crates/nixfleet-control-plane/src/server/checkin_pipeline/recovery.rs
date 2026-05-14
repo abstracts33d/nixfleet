@@ -294,7 +294,7 @@ fn verify_attestation_signature(
         //
         // 1. STALE: agent's persisted last_evaluated_target.rollout_id
         //    (only updated when CP issues a real dispatch) differs from
-        //    CP's current projection — typical for converged-at-dispatch
+        //    CP's current projection -- typical for converged-at-dispatch
         //    hosts after a fleet.resolved.json re-sign. Benign; the
         //    payload was signed correctly against an older rollout_id
         //    and would verify if we used that ID. Log DEBUG.
@@ -303,7 +303,7 @@ fn verify_attestation_signature(
         //    signature still fails. The agent canonically signed a
         //    payload identical to what we just constructed, yet the
         //    signature doesn't verify against the declared SSH host
-        //    pubkey. That's key drift or a forged payload. Log WARN —
+        //    pubkey. That's key drift or a forged payload. Log WARN --
         //    this is the actual alert signal.
         //
         // Behavioural outcome is the same in both cases (drop the
@@ -318,7 +318,7 @@ fn verify_attestation_signature(
                 host = %req.hostname,
                 rollout = %rollout_id,
                 error = %err,
-                "soak recovery: attestation signature mismatch on CURRENT rollout_id — potential key drift or forged payload",
+                "soak recovery: attestation signature mismatch on CURRENT rollout_id -- potential key drift or forged payload",
             );
         } else {
             tracing::debug!(
@@ -667,7 +667,7 @@ mod tests {
     async fn b_cp_recovery_stamps_attested_timestamp_when_no_existing_row() {
         // Happy path. Host is converged on the verified target, no
         // host_rollout_state row exists (CP rebuilt), attestation
-        // arrives → stamp last_healthy_since.
+        // arrives -> stamp last_healthy_since.
         use super::super::tests::{sign_attestation, signed_attestation_fixture};
         let (fleet, sk, rollout_id) = signed_attestation_fixture("test-host", "system-r1");
         let (state, db) = state_with_fleet_and_db(fleet).await;

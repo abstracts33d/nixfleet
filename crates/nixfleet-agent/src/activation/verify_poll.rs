@@ -38,7 +38,7 @@ pub enum PollOutcome {
 }
 
 /// `previous_basename = Some(p)` enables hard-mismatch detection: any third
-/// basename → `FlippedToUnexpected` immediately. Rollback path leaves it None
+/// basename -> `FlippedToUnexpected` immediately. Rollback path leaves it None
 /// (no meaningful pre-state). Read errors during polling are non-fatal.
 pub struct VerifyPoll<'a> {
     pub expected_basename: &'a str,

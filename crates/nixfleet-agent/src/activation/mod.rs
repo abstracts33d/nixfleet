@@ -1,5 +1,5 @@
-//! Agent-side activation: pre-realise (force fetch + sig verify) → switch via
-//! the platform `ActivationBackend` → post-verify `/run/current-system` against
+//! Agent-side activation: pre-realise (force fetch + sig verify) -> switch via
+//! the platform `ActivationBackend` -> post-verify `/run/current-system` against
 //! the expected closure or rollback. CP-side magic-rollback is independent.
 
 use anyhow::Result;

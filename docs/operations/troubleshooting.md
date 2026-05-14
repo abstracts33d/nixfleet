@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Known failure modes from real-hardware testing. Each entry: symptom → cause → fix.
+Known failure modes from real-hardware testing. Each entry: symptom -> cause -> fix.
 
 ## CP service flaps after deploy
 
@@ -68,7 +68,7 @@ ssh root@cp "systemctl stop nixfleet-control-plane.service && \
 
 **Symptom**: DB shows the same `(hostname, rollout_id, target_closure_hash)` confirmed every 60s. Activation appears successful but never settles.
 
-**Cause**: Old behaviour - agent's `closure_hash_from_path` stripped after the first `-`, returning just the 32-char hash. CP declares the FULL basename. String comparison never equal → `Decision::Dispatch` every checkin. The fix returns the full basename.
+**Cause**: Old behaviour - agent's `closure_hash_from_path` stripped after the first `-`, returning just the 32-char hash. CP declares the FULL basename. String comparison never equal -> `Decision::Dispatch` every checkin. The fix returns the full basename.
 
 **Fix**: Bump fleet's `nixfleet` input past the fix, redeploy each host.
 
@@ -76,6 +76,6 @@ ssh root@cp "systemctl stop nixfleet-control-plane.service && \
 
 **Symptom**: CP's current is `XXXXXXX-nixos-system-cp-...0810_5176864f_turbo-otter`, artifact says `YYYYYYY-..._5176864f_turbo-otter`. Same nixfleet rev suffix but different store hashes.
 
-**Cause**: The fleet flake references `inputs.self/releases/fleet.resolved.json` for the CP's artifact path. When CI runs, it builds the closure BEFORE committing the new release artifact. An operator workstation may build AFTER, with the new artifact in the source tree. Different `inputs.self` → different closure hash.
+**Cause**: The fleet flake references `inputs.self/releases/fleet.resolved.json` for the CP's artifact path. When CI runs, it builds the closure BEFORE committing the new release artifact. An operator workstation may build AFTER, with the new artifact in the source tree. Different `inputs.self` -> different closure hash.
 
 **Fix**: One activation cycle naturally converges (cp activates to the artifact-declared closure, which then matches on the next checkin). Not a bug; an artifact of the self-referential design. Tracked but not actively fixed - decoupling the artifact path from `inputs.self` is a possible future change.

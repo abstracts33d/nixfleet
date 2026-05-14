@@ -37,7 +37,7 @@ Boundaries cross between three layers:
 4. `(now − meta.signedAt) ≤ channel.freshnessWindow` (units: minutes; see RFC-0001 §4.1).
 5. `meta.schemaVersion` is within the consumer's accepted range.
 
-**Producer pipeline (`nixfleet-release`).** The framework ships one orchestrator binary that produces this artifact: eval `fleet.resolved` → filter expired pins → build host closures (per-host pin-aware, see below) → inject `closureHash = basename(toplevel)` → stamp `meta.{signedAt, ciCommit, signatureAlgorithm}` → canonicalize via `nixfleet_canonicalize` → invoke a sign hook → write `releases/fleet.resolved.json{,.sig}`. The orchestration is a contract; the cache-push and signing tools it shells out to are not.
+**Producer pipeline (`nixfleet-release`).** The framework ships one orchestrator binary that produces this artifact: eval `fleet.resolved` -> filter expired pins -> build host closures (per-host pin-aware, see below) -> inject `closureHash = basename(toplevel)` -> stamp `meta.{signedAt, ciCommit, signatureAlgorithm}` -> canonicalize via `nixfleet_canonicalize` -> invoke a sign hook -> write `releases/fleet.resolved.json{,.sig}`. The orchestration is a contract; the cache-push and signing tools it shells out to are not.
 
 **Per-host commit pins (issue #88).** Each host entry MAY carry an optional `pin: { commit; reason; expiresAt? }` field declaring that the host's closure must be built from a specific source-control commit rather than the current release commit. mkFleet resolves pins from a most-specific-wins precedence chain (host > tag > channel) and emits the result on each affected host; `nixfleet-release` honors the pin by invoking `nix build "<pin_source_url>?rev=<commit>#nixosConfigurations.<host>.config.system.build.toplevel"` when the pin's commit differs from the release commit, and by filtering pins past `expiresAt` before the build dance starts. Operators MUST pass `--pin-source-url` to `nixfleet-release` whenever any active pin specifies a non-current commit (validated post-eval; missing flag aborts release with a list of offending hosts). Pin metadata reaches consumers via `hosts.<name>.pin` - the dashboard and CLI surface it for visibility.
 
@@ -131,7 +131,7 @@ Operator surfaces:
 
 Detection is canonicalize-equality on four store-relative paths: `etc/systemd/system/dbus.service`, `sw/lib/systemd/systemd`, `kernel`, `init`. Any mismatch defers; either side missing a path is out-of-scope and does not defer (see `crates/nixfleet-agent/src/activation/linux.rs::detect_switch_inhibitors`). The agent persists a `last_deferred` sentinel in its state-dir to suppress redundant activate-and-defer cycles for the same `closure_hash`; the suppression is cleared on `record_confirm_success` (post-reboot). Out of scope for this carve-out: glibc major-version swaps, `boot.loader.systemd-boot` ↔ `grub` swaps.
 
-**Closure-hash quarantine carve-out (issue #55).** A second per-closure suppression sits alongside the deferred sentinel: when activation produces `SwitchFailed` or `VerifyMismatch` the agent records `last_failed_closure { closure_hash, last_failure_at, failure_count }` in its state-dir. On the next dispatch within `QUARANTINE_WINDOW_SECS` (24h) for the SAME closure_hash, the agent skips activate() and posts `ReportEvent::ClosureQuarantined` (rate-limited to one post per `QUARANTINE_REPOST_THROTTLE_SECS` = 1h). Auto-clears when the channel-ref advances to a fresher closure_hash (the suppression check stops matching). No CP-side state machine entry - the existing SwitchFailed → rollback flow already drives `host_dispatch_state` to RolledBack; quarantine is purely the operator-visible "agent has stopped retrying this closure" signal, surfaced as `quarantinedClosure: <hash>` on `/v1/hosts` and `✗ quarantined` in `nixfleet status`. The dispatch suppression order is: deferred first, then quarantine; both checks are O(1) state-dir reads with `closure_hash` equality, so dispatch overhead during steady-state suppression is negligible.
+**Closure-hash quarantine carve-out (issue #55).** A second per-closure suppression sits alongside the deferred sentinel: when activation produces `SwitchFailed` or `VerifyMismatch` the agent records `last_failed_closure { closure_hash, last_failure_at, failure_count }` in its state-dir. On the next dispatch within `QUARANTINE_WINDOW_SECS` (24h) for the SAME closure_hash, the agent skips activate() and posts `ReportEvent::ClosureQuarantined` (rate-limited to one post per `QUARANTINE_REPOST_THROTTLE_SECS` = 1h). Auto-clears when the channel-ref advances to a fresher closure_hash (the suppression check stops matching). No CP-side state machine entry - the existing SwitchFailed -> rollback flow already drives `host_dispatch_state` to RolledBack; quarantine is purely the operator-visible "agent has stopped retrying this closure" signal, surfaced as `quarantinedClosure: <hash>` on `/v1/hosts` and `✗ quarantined` in `nixfleet status`. The dispatch suppression order is: deferred first, then quarantine; both checks are O(1) state-dir reads with `closure_hash` equality, so dispatch overhead during steady-state suppression is negligible.
 
 ### 8. Rollout manifest
 
@@ -326,13 +326,13 @@ The patterns are right in their respective scopes; the inconsistency is real but
 ### Decision tree - picking a versioning pattern for a new contract
 
 **Q1.** Is the contract a self-describing chunk of data that may be read out-of-context (off disk, out of a cache, by an auditor, by a third-party tool, mailed to someone)?
-- **Yes** → **Pattern A** (`meta.schemaVersion: u32`). The bytes carry their own version label.
+- **Yes** -> **Pattern A** (`meta.schemaVersion: u32`). The bytes carry their own version label.
 
 **Q2.** Is the contract a per-request interaction capability between two endpoints sharing live session state?
-- **Yes** → **Pattern B** (HTTP header). The version applies to the request, not to a persisted blob.
+- **Yes** -> **Pattern B** (HTTP header). The version applies to the request, not to a persisted blob.
 
 **Q3.** Is the contract an independent vocabulary item that evolves on its own cadence, distinct from peer items in the same family?
-- **Yes** → **Pattern C** (embedded schema string). Each item carries its own version; the family does not aggregate.
+- **Yes** -> **Pattern C** (embedded schema string). Each item carries its own version; the family does not aggregate.
 
 If none fit, the contract is probably small enough not to need a versioning mechanism at all - pin by `flake.lock` (e.g., agenix format §I #5) or by review.
 

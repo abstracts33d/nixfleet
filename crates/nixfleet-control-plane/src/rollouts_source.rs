@@ -16,7 +16,7 @@ pub struct RolloutsSource {
     pub artifact_url_template: String,
     /// Must contain `{rolloutId}`.
     pub signature_url_template: String,
-    /// `None` → unauthenticated GET.
+    /// `None` -> unauthenticated GET.
     pub token_file: Option<PathBuf>,
     pub timeout: Duration,
 }

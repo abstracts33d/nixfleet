@@ -33,7 +33,7 @@ impl ActivationBackend for LinuxBackend {
 
 const SWITCH_LOCK_PATH: &str = "/run/nixos/switch-to-configuration.lock";
 
-/// Fail-open: absent lock file or missing flock binary → false.
+/// Fail-open: absent lock file or missing flock binary -> false.
 async fn is_switch_in_progress() -> bool {
     is_switch_in_progress_at(Path::new(SWITCH_LOCK_PATH)).await
 }
@@ -245,7 +245,7 @@ mod tests {
 
     /// Build a fake system tree at `root` where each `rel_path` is a symlink
     /// pointing to a uniquely-named file under `root.targets/`. Same targets
-    /// across two trees → canonicalize-equal; different `tag` → unequal.
+    /// across two trees -> canonicalize-equal; different `tag` -> unequal.
     fn make_fake_system(root: &Path, rel_paths: &[&str], tag: &str) {
         let targets_dir = root.join(format!("targets-{tag}"));
         std::fs::create_dir_all(&targets_dir).unwrap();

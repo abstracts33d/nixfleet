@@ -382,7 +382,7 @@ in {
           Fully-formed URL that yields the raw bytes of the matching
           signature. The poll task fetches both files together and
           runs verify_artifact - this is what closes the GitOps loop
-          (push → CI re-sign → poll picks up new closureHashes within
+          (push -> CI re-sign -> poll picks up new closureHashes within
           ~60s, no CP redeploy).
         '';
       };

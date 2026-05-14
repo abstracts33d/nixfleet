@@ -43,7 +43,7 @@
   (lib.escapeShellArg cfg.sshHostKeyFile)
 ]
 # Issue #86: only pass --health-checks-config when probes are declared.
-# Empty/absent → agent runs without a probe scheduler (no checkin field
+# Empty/absent -> agent runs without a probe scheduler (no checkin field
 # overhead, no /etc file written).
 ++ lib.optionals (
   cfg.healthChecks.http

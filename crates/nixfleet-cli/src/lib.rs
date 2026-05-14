@@ -148,7 +148,7 @@ pub async fn run_trace(cfg: &ResolvedClientConfig, rollout_id: &str, json: bool)
 pub struct StatusInputs {
     pub now: DateTime<Utc>,
     pub hosts: Vec<HostStatusEntry>,
-    /// channel name → freshness_window in minutes (from `/v1/channels/{name}`).
+    /// channel name -> freshness_window in minutes (from `/v1/channels/{name}`).
     pub channel_freshness: BTreeMap<String, u32>,
 }
 
@@ -436,7 +436,7 @@ pub fn render_trace_table(trace: &RolloutTrace) -> String {
     out
 }
 
-/// "2026-05-05T12:34:56.789Z" → "2026-05-05 12:34:56" (denser column).
+/// "2026-05-05T12:34:56.789Z" -> "2026-05-05 12:34:56" (denser column).
 /// Falls back to the original on parse fail so malformed rows surface.
 fn short_ts(rfc3339: &str) -> String {
     DateTime::parse_from_rfc3339(rfc3339)

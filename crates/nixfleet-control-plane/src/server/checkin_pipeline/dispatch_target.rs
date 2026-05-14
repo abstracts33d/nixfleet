@@ -221,7 +221,7 @@ fn record_converged_at_dispatch(
     }
 
     // Case 2: respect the operator's soakMinutes window. Reconciler runs
-    // the natural Healthy → Soaked → Converged progression.
+    // the natural Healthy -> Soaked -> Converged progression.
     if existing_state.is_some() {
         return;
     }
@@ -345,7 +345,7 @@ fn record_dispatched_target(
 /// `record_dispatch`'s unconditional Pending UPSERT would reset the row
 /// and trip the 360s rollback timer (the agent's `last_deferred` silently
 /// suppresses re-activation). Closure MISMATCH falls through so fresh CI
-/// fixes can land. Read failures → false (fail-open).
+/// fixes can land. Read failures -> false (fail-open).
 pub(crate) fn is_already_deferred_for_target(
     db: &crate::db::Db,
     hostname: &str,

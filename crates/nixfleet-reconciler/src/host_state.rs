@@ -85,7 +85,7 @@ pub(crate) fn handle_wave(
                 out.wave_all_soaked = false;
             }
             HostRolloutState::Healthy => {
-                // Healthy → Soaked requires both `wave.soak_minutes` elapsed
+                // Healthy -> Soaked requires both `wave.soak_minutes` elapsed
                 // AND probes passing. Missing `last_healthy_since` keeps the
                 // gate closed (wait rather than promote on missing data).
                 // Probes-passing absent from the map defaults to true so a
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(soak_count, 1, "actions: {:?}", outcome.actions);
     }
 
-    /// Regression: a failing probe must block Healthy → Soaked regardless
+    /// Regression: a failing probe must block Healthy -> Soaked regardless
     /// of soak elapsed.
     #[test]
     fn soak_holds_when_probes_failing_even_if_window_elapsed() {

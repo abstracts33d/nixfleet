@@ -84,8 +84,8 @@ impl HostDispatchState<'_> {
     }
 
     /// Atomic confirm: operational + history + host_rollout_state in one txn.
-    /// Partial commit would leave hrs NULL → soak timer never fires → host
-    /// stuck Healthy → wave promotion blocks. `target_state` = `Healthy` for
+    /// Partial commit would leave hrs NULL -> soak timer never fires -> host
+    /// stuck Healthy -> wave promotion blocks. `target_state` = `Healthy` for
     /// freshly-confirmed (enters soak), `Converged` for converged-at-dispatch
     /// (host was already on target). `healthy_since` may differ from
     /// `confirmed_at` for attestation recovery (anchor on earlier moment).
@@ -126,7 +126,7 @@ impl HostDispatchState<'_> {
                 None,
             )?;
             // Born-terminal: when the atomic confirm is itself jumping
-            // straight to Converged (converged-at-dispatch path — host
+            // straight to Converged (converged-at-dispatch path -- host
             // was already on target before any dispatch attempt), stamp
             // the just-inserted dispatch_history row's terminal_state in
             // the same txn. Without this, `/v1/rollouts/{id}/trace` shows
@@ -166,7 +166,7 @@ impl HostDispatchState<'_> {
         })
     }
 
-    /// Flips → confirmed. Two acceptable source states:
+    /// Flips -> confirmed. Two acceptable source states:
     ///   - `Pending` with deadline still in the future (normal live-switch confirm)
     ///   - `DeferredPendingReboot` (post-reboot confirm; deadline is irrelevant
     ///     because the lifecycle was paused waiting for the operator's reboot)
@@ -198,7 +198,7 @@ impl HostDispatchState<'_> {
         })
     }
 
-    /// Flips pending → deferred-pending-reboot. Idempotent: only Pending rows
+    /// Flips pending -> deferred-pending-reboot. Idempotent: only Pending rows
     /// transition. A row already in DeferredPendingReboot stays put (the agent
     /// re-posting `ActivationDeferred` for the same closure_hash should be a
     /// no-op, not a state-machine cycle). Mismatched rollout / non-Pending
@@ -615,7 +615,7 @@ mod tests {
         db.host_dispatch_state()
             .record_dispatch(&dispatch_insert("host-02", "stable@r1", "system", past))
             .unwrap();
-        // First call: row is pending → flips to rolled-back.
+        // First call: row is pending -> flips to rolled-back.
         let n = db
             .host_dispatch_state()
             .mark_rolled_back(&[("host-02".to_string(), "stable@r1".to_string())])
@@ -807,7 +807,7 @@ mod tests {
         db.host_dispatch_state()
             .confirm("host-02", "stable@r1")
             .unwrap();
-        // Confirmed → not flipped to deferred.
+        // Confirmed -> not flipped to deferred.
         let n = db
             .host_dispatch_state()
             .mark_deferred("host-02", "stable@r1")
@@ -1079,7 +1079,7 @@ mod tests {
         );
     }
 
-    /// `target_state=Healthy` keeps the row open — the soak window must
+    /// `target_state=Healthy` keeps the row open -- the soak window must
     /// still apply for normal dispatches. Born-terminal is exclusively a
     /// converged-at-dispatch property.
     #[test]

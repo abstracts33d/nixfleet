@@ -1,4 +1,4 @@
-//! stdin JSON → JCS canonical stdout. Exit: 0 ok, 1 parse/canonicalize, 2 I/O.
+//! stdin JSON -> JCS canonical stdout. Exit: 0 ok, 1 parse/canonicalize, 2 I/O.
 
 use std::io::{self, Read, Write};
 use std::process::ExitCode;

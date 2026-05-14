@@ -23,7 +23,7 @@ This RFC specifies its state machines and decision procedure. Implementation lan
 **Outputs, emitted per reconcile tick:**
 
 - Zero or more *intent updates* per host: "host X, target generation Y, within rollout R, wave W".
-- Zero or more *rollout state transitions*: "rollout R wave W → Soaking", "rollout R → Halted".
+- Zero or more *rollout state transitions*: "rollout R wave W -> Soaking", "rollout R -> Halted".
 - Zero or more *events* for observability: decisions, skips, waits, with structured reasoning.
 
 The reconciler itself is stateless: all state lives in the database. A cold-started reconciler picking up an in-progress rollout converges to the same actions as the one that started it. This is essential for restarts and for future HA.
@@ -63,9 +63,9 @@ The reconciler itself is stateless: all state lives in the database. A cold-star
                                   Converged
 
                 Failure branches from any WaveActive/WaveSoaking state:
-                  ├─ onHealthFailure = "rollback-and-halt" → Reverting → Reverted
-                  ├─ onHealthFailure = "halt"              → Halted
-                  └─ operator override                      → Cancelled
+                  ├─ onHealthFailure = "rollback-and-halt" -> Reverting -> Reverted
+                  ├─ onHealthFailure = "halt"              -> Halted
+                  └─ operator override                      -> Cancelled
 ```
 
 Transitions are only taken during reconcile ticks. There is no async callback from an agent that directly mutates rollout state - agents update *observed state* only; the reconciler reads observed state and decides.
@@ -107,32 +107,32 @@ On each reconcile tick (periodic: default 30s; event-triggered: on agent check-i
 1.  Load verified fleet.resolved, observed state, active rollouts.
 2.  For each channel c:
       a. If channels[c].ref differs from lastRolledRef[c]:
-         → open a new rollout R for channel c at ref r.
-         → static compliance gate:
+         -> open a new rollout R for channel c at ref r.
+         -> static compliance gate:
               evaluate all type ∈ {static, both} controls against
               fleet.resolved[c].hosts configurations.
-              If any required control fails → R ends in Failed (blocked).
-         → Else → R.state = Planning.
+              If any required control fails -> R ends in Failed (blocked).
+         -> Else -> R.state = Planning.
 3.  For each rollout R in Planning:
       a. Compute waves from policy.waves + selectors against current hosts.
-      b. R.state = Executing; first wave → WaveActive.
+      b. R.state = Executing; first wave -> WaveActive.
 4.  For each rollout R in Executing:
       a. For each wave W in R.currentWave:
            - If W is WaveActive:
                * For each host h in W with state ∈ {Queued, Dispatched} and
                  (h is online) and (no edge predecessor is incomplete) and
                  (disruption budgets permit):
-                   → advance h to Dispatched, emit intent for h.
+                   -> advance h to Dispatched, emit intent for h.
                * For hosts h ∈ W in ConfirmWindow:
-                   → if deadline passed with no phone-home → h → Reverted.
+                   -> if deadline passed with no phone-home -> h -> Reverted.
                * For hosts h ∈ W in Healthy:
-                   → evaluate health gate; if fail → h → Failed.
-               * If all hosts in W are Soaked → W → WaveSoaking.
+                   -> evaluate health gate; if fail -> h -> Failed.
+               * If all hosts in W are Soaked -> W -> WaveSoaking.
                * If failed-host count in W exceeds policy.healthGate.maxFailures:
-                   → trigger policy.onHealthFailure.
+                   -> trigger policy.onHealthFailure.
            - If W is WaveSoaking:
                * If soak elapsed and runtime compliance probes pass for all
-                 hosts in W → W → WavePromoted, advance R.currentWave.
+                 hosts in W -> W -> WavePromoted, advance R.currentWave.
 5.  Emit events for every state transition with reasoning.
 6.  Persist new state; commit atomically.
 ```
@@ -205,9 +205,9 @@ Runtime compliance probes distinguish three outcomes (per the compliance RFC):
 
 - **Periodic.** Default 30s. Tunable per-channel via `reconcileIntervalMinutes` (RFC-0001 §2.3) for slow channels like `edge-slow`.
 - **Event-driven.**
-  - Agent check-in with status delta → reconcile tick within ≤1s.
-  - Git ref change (webhook or poll) → immediate tick.
-  - Operator CLI command (`deploy`, `rollout cancel`, etc.) → immediate tick.
+  - Agent check-in with status delta -> reconcile tick within ≤1s.
+  - Git ref change (webhook or poll) -> immediate tick.
+  - Operator CLI command (`deploy`, `rollout cancel`, etc.) -> immediate tick.
 
 Debouncing: multiple events arriving within a small window (configurable, default 500ms) collapse to a single tick. Avoids thrashing under high check-in rates.
 
@@ -221,7 +221,7 @@ Every decision writes a structured event:
   "rollout": "stable@abc123",
   "wave": 2,
   "host": "attic-01",
-  "transition": "Queued → Dispatched",
+  "transition": "Queued -> Dispatched",
   "reason": "edge predecessor db-primary reached Converged",
   "budgets": { "etcd": "not-applicable", "always-on": "3/10 in flight" }
 }

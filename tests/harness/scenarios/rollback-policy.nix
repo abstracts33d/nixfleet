@@ -133,7 +133,7 @@ in
           unit="nixfleet-control-plane.service",
           pattern="RollbackTriggered: host_rollout_state Failed . Reverted",
           timeout=60,
-          label="Failed → Reverted transition",
+          label="Failed -> Reverted transition",
       )
       print("step 5: Failed -> Reverted transition observed")
 
@@ -199,8 +199,8 @@ in
 
       print(
           "fleet-harness-rollback-policy: rollback-and-halt round-trip "
-          "holds - Failed → CP RollbackSignal → agent rollback → "
-          "RollbackTriggered → Reverted → emission stops."
+          "holds - Failed -> CP RollbackSignal -> agent rollback -> "
+          "RollbackTriggered -> Reverted -> emission stops."
       )
     '';
   }

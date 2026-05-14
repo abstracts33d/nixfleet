@@ -225,7 +225,7 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Both flags Some → build; both None → None; mixed → bail with `name` in the message.
+/// Both flags Some -> build; both None -> None; mixed -> bail with `name` in the message.
 fn paired_source<A, B, T, F>(
     name: &str,
     a: Option<A>,

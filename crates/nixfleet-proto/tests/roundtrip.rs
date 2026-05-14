@@ -1,4 +1,4 @@
-//! Proto round-trip tests: parse → re-serialize → JCS canonicalize →
+//! Proto round-trip tests: parse -> re-serialize -> JCS canonicalize ->
 //! assert byte-equality with golden.
 
 use nixfleet_canonicalize::canonicalize;
@@ -66,7 +66,7 @@ fn stream_b_empty_selector_parses_and_canonicalizes() {
 #[test]
 fn meta_signature_algorithm_absent_round_trips_as_none() {
     // docs/design/contracts.md §V Pattern A: absent ≡ "ed25519" within schemaVersion 1.
-    // The fixture omits signatureAlgorithm; parse → None; helper resolves
+    // The fixture omits signatureAlgorithm; parse -> None; helper resolves
     // to "ed25519"; re-serialize keeps it absent (skip_serializing_if).
     let input = load("every-nullable.json");
     let parsed: FleetResolved = serde_json::from_str(&input).expect("parse");

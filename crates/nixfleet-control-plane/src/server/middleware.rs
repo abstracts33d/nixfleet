@@ -119,7 +119,7 @@ pub(super) async fn require_ready_layer(
     response
 }
 
-/// Forward-compat: missing header accepted; mismatched major → 426. Strict mode rejects missing.
+/// Forward-compat: missing header accepted; mismatched major -> 426. Strict mode rejects missing.
 pub(super) async fn protocol_version_middleware(
     strict: bool,
     req: HttpRequest<Body>,

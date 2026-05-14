@@ -53,7 +53,7 @@ pub struct CheckinRequest {
     pub health_probes: Vec<ProbeResult>,
 
     /// Per-host gate mode for the probes above. `Enforce` blocks the
-    /// `Healthy → Soaked` transition on failures; `Permissive`/`None` are
+    /// `Healthy -> Soaked` transition on failures; `Permissive`/`None` are
     /// visibility-only; `Disabled` means probe execution is suppressed and
     /// `health_probes` will be empty.
     #[serde(default)]
@@ -149,7 +149,7 @@ pub struct EvaluatedTarget {
     /// agent's defense-in-depth freshness check.
     pub signed_at: DateTime<Utc>,
     pub freshness_window_secs: u32,
-    /// `disabled` | `permissive` | `enforce` | `auto`. None → agent auto-detects.
+    /// `disabled` | `permissive` | `enforce` | `auto`. None -> agent auto-detects.
     #[serde(default)]
     pub compliance_mode: Option<String>,
 }

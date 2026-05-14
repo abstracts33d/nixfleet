@@ -1,5 +1,5 @@
-//! Full-cycle integration: POST /v1/agent/checkin → /v1/agent/confirm
-//! → GET /v1/rollouts/{id}/trace. Closes the deferred test from e549f63.
+//! Full-cycle integration: POST /v1/agent/checkin -> /v1/agent/confirm
+//! -> GET /v1/rollouts/{id}/trace. Closes the deferred test from e549f63.
 
 mod common;
 
@@ -179,7 +179,7 @@ async fn dispatch_then_confirm_then_trace_round_trips() {
 
     let client = build_mtls_client(&ca, &client_cert, &client_key);
 
-    // ---- 1. Checkin: agent's current ≠ declared → CP dispatches a target. ----
+    // ---- 1. Checkin: agent's current ≠ declared -> CP dispatches a target. ----
     let resp = client
         .post(format!("https://localhost:{port}/v1/agent/checkin"))
         .json(&checkin_request(AGENT_CURRENT))
@@ -195,7 +195,7 @@ async fn dispatch_then_confirm_then_trace_round_trips() {
     assert_eq!(target.closure_hash, DECLARED_CLOSURE);
     assert_eq!(rollout_id.len(), 64, "rolloutId is sha256-hex");
 
-    // ---- 2. Confirm: flips host_dispatch_state → confirmed; transitions to Healthy. ----
+    // ---- 2. Confirm: flips host_dispatch_state -> confirmed; transitions to Healthy. ----
     let confirm = ConfirmRequest {
         hostname: HOST.into(),
         rollout: rollout_id.clone(),
@@ -253,7 +253,7 @@ async fn dispatch_then_confirm_then_trace_round_trips() {
     // is contract; just sanity-check non-empty rather than parse.
     assert!(!event.dispatched_at.is_empty(), "dispatched_at populated");
 
-    // ---- 4. Trace: unknown rollout_id → 404 (per route handler contract). ----
+    // ---- 4. Trace: unknown rollout_id -> 404 (per route handler contract). ----
     let unknown = "0".repeat(64);
     let resp = client
         .get(format!(

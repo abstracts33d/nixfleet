@@ -1,4 +1,4 @@
-//! Success path: runtime gate → confirm → persist; CP-410 triggers rollback.
+//! Success path: runtime gate -> confirm -> persist; CP-410 triggers rollback.
 
 use nixfleet_proto::agent_wire::ReportEvent;
 
@@ -29,7 +29,7 @@ async fn confirm_and_finalize<R: Reporter>(
 ) {
     let boot_id = nixfleet_agent::host_facts::boot_id().unwrap_or_else(|_| "unknown".to_string());
     let rollout = &ctx.target.channel_ref;
-    // wave_index None → 0: channels without an explicit wave plan (single-wave / coordinator).
+    // wave_index None -> 0: channels without an explicit wave plan (single-wave / coordinator).
     let wave: u32 = ctx.target.wave_index.unwrap_or(0);
     match nixfleet_agent::activation::confirm_target(
         client_handle,

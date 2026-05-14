@@ -1,4 +1,4 @@
-//! Pure projection: fleet.resolved + channel context → RolloutManifest.
+//! Pure projection: fleet.resolved + channel context -> RolloutManifest.
 //! Producer (nixfleet-release) and CP (re-derivation) share this fn.
 
 use anyhow::{anyhow, Result};

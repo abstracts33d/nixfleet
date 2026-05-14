@@ -17,14 +17,14 @@ mkFleet {
       configuration = import ./_stub-configuration.nix {};
       tags = ["infra"];
       channel = "stable";
-      # No host pin → tag-level "infra-freeze" pin applies.
+      # No host pin -> tag-level "infra-freeze" pin applies.
     };
     edge-01 = {
       system = "x86_64-linux";
       configuration = import ./_stub-configuration.nix {};
       tags = [];
       channel = "stable";
-      # No host or tag pin → channel-level pin applies.
+      # No host or tag pin -> channel-level pin applies.
     };
   };
   tags.infra.pin = {

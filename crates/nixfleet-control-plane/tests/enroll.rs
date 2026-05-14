@@ -634,7 +634,7 @@ async fn enroll_rejects_when_nonce_not_in_allowlist() {
     rand::rngs::OsRng.fill_bytes(&mut h_seed);
     let openssh = openssh_pubkey_from_seed(&h_seed);
 
-    // Spawn with an EMPTY allowlist (None → default empty view).
+    // Spawn with an EMPTY allowlist (None -> default empty view).
     let (_dir, harness) =
         setup_enroll_harness_with_declared_host("test-host", Some(&openssh), None).await;
 

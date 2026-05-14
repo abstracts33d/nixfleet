@@ -257,7 +257,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
     // Stamp / clear deferral state BEFORE the DB gate below - deferrals are
     // pure-journal and the debounce must work even on a CP started without
     // --db. OpenRollout for a previously-deferred channel clears the entry
-    // so a same-ref re-block (rare: predecessor converges → fresh rollout
+    // so a same-ref re-block (rare: predecessor converges -> fresh rollout
     // opens on it before this channel starts) re-emits as a transition
     // rather than being silenced by stale state.
     {
@@ -303,7 +303,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                             target: "soak",
                             hostname = %host,
                             rollout = %rollout,
-                            "soak: transition Healthy → Soaked no-op (host not in Healthy)",
+                            "soak: transition Healthy -> Soaked no-op (host not in Healthy)",
                         );
                     }
                     Ok(_) => {
@@ -312,7 +312,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                             target: "soak",
                             hostname = %host,
                             rollout = %rollout,
-                            "soak: host transitioned Healthy → Soaked",
+                            "soak: host transitioned Healthy -> Soaked",
                         );
                         // A newly-Soaked host can flip the predecessor's
                         // `is_active_for_ordering()` to false; channelEdges
@@ -325,7 +325,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                             hostname = %host,
                             rollout = %rollout,
                             error = %err,
-                            "soak: transition Healthy → Soaked failed",
+                            "soak: transition Healthy -> Soaked failed",
                         );
                     }
                 }
@@ -352,7 +352,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                         );
                     }
                 }
-                // Settle host_rollout_state: Soaked → Converged for every
+                // Settle host_rollout_state: Soaked -> Converged for every
                 // host in this rollout. The reconciler's wave-staging only
                 // takes hosts as far as Soaked (via SoakHost actions);
                 // ConvergeRollout is the final transition that stamps the
@@ -374,14 +374,14 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                             rollout = %rollout,
                             history_rows_marked = 0,
                             host_rollout_state_rows_marked = n,
-                            "converge: transitioned host_rollout_state Soaked → Converged",
+                            "converge: transitioned host_rollout_state Soaked -> Converged",
                         );
                     }
                     Err(err) => {
                         tracing::warn!(
                             rollout = %rollout,
                             error = %err,
-                            "converge: host_rollout_state Soaked → Converged sweep failed",
+                            "converge: host_rollout_state Soaked -> Converged sweep failed",
                         );
                     }
                 }
@@ -390,7 +390,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                 // rollout to subsequent ticks. Without this the
                 // reconciler emits ConvergeRollout every tick for a
                 // already-converged rollout (history rows already
-                // stamped, host_rollout_state already Converged → both
+                // stamped, host_rollout_state already Converged -> both
                 // are no-ops at n=0), which is wasted work and clutters
                 // the action stream.
                 match db.rollouts().mark_terminal(rollout, chrono::Utc::now()) {
@@ -429,7 +429,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
                 // LOADBEARING: persists the advance so subsequent ticks see
                 // the new wave through `RolloutDbSnapshot.current_wave`.
                 // Without this the projection layer always reports
-                // current_wave=0 → multi-wave channels can never reach the
+                // current_wave=0 -> multi-wave channels can never reach the
                 // ConvergeRollout terminal branch.
                 let wave: u32 = (*new_wave).try_into().unwrap_or(u32::MAX);
                 match db.rollouts().set_current_wave(rollout, wave) {
@@ -470,7 +470,7 @@ async fn apply_actions(state: &AppState, out: &crate::TickOutput) {
 /// converges naturally. This sweep catches the residual case: a rollout
 /// is in-flight per the rollouts table but has no expected hosts in the
 /// current fleet snapshot, so the reconciler will never emit
-/// ConvergeRollout for it (no host_states → wave_all_soaked is vacuously
+/// ConvergeRollout for it (no host_states -> wave_all_soaked is vacuously
 /// satisfied but advance_rollout's terminal predicate doesn't fire on
 /// empty rollouts). Without this sweep the rollout sits in list_active
 /// forever, surfacing as a ghost in the deferrals view and triggering
@@ -737,7 +737,7 @@ async fn load_rollout_budgets(
     out
 }
 
-/// `None` on verify failure → caller preserves prior snapshot.
+/// `None` on verify failure -> caller preserves prior snapshot.
 /// Returns (parsed_fleet, raw_artifact_bytes) so callers can compute
 /// `fleet_resolved_hash` from the received bytes (cross-version-stable),
 /// not from a re-serialised parsed struct.

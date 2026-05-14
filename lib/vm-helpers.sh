@@ -150,7 +150,7 @@ compute_extra_hostfwd_args() {
   local raw
   raw=$(nix eval ".#nixosConfigurations.${host}.config.hostSpec.vmPortForwards" --apply 'builtins.toJSON' --raw 2>/dev/null) || return 0
   [ -z "$raw" ] || [ "$raw" = "{}" ] && return 0
-  # Tiny sed extraction over the nix-emitted JSON (a flat string→int
+  # Tiny sed extraction over the nix-emitted JSON (a flat string->int
   # map). Avoids growing `basePkgs` for one helper; the input shape is
   # constrained by the option's `attrsOf port` type so the parse is
   # robust enough.

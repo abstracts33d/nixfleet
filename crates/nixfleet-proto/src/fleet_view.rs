@@ -64,7 +64,7 @@ pub struct HostsResponse {
 }
 
 /// Wave-by-wave dispatch trace for a single rollout. One entry per
-/// dispatch_history row, ordered wave 0, 1, 2…
+/// dispatch_history row, ordered wave 0, 1, 2...
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RolloutTrace {
     pub rollout_id: String,

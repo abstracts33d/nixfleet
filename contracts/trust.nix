@@ -68,7 +68,7 @@
           verifiers during the rotation overlap window (now < `retireAt`).
           Past `retireAt`, the reconciler emits
           `Action::RotateTrustRoot`; the operator's tooling rotates
-          `current → previous`, `successor → current` in the next
+          `current -> previous`, `successor -> current` in the next
           fleet commit.
 
           Must be set together with `retireAt` (paired-options

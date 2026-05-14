@@ -39,7 +39,7 @@ pub(super) async fn self_correct_profile(expected_store_path: &str) -> Result<()
     Ok(())
 }
 
-// GOTCHA: profile is two-level symlink: profile → `system-<N>-link` → `/nix/store/<basename>`.
+// GOTCHA: profile is two-level symlink: profile -> `system-<N>-link` -> `/nix/store/<basename>`.
 fn profile_matches(expected_store_path: &str, profile_path: &str) -> bool {
     let Ok(gen_link) = std::fs::read_link(profile_path) else {
         return false;

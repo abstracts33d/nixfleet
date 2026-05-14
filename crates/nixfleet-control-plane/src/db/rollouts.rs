@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn finished_rollout_ids_unions_superseded_and_terminal() {
         let db = fresh_db();
-        // r1 → r2 same channel: r1 superseded.
+        // r1 -> r2 same channel: r1 superseded.
         db.rollouts().record_active_rollout("r1", "stable").unwrap();
         db.rollouts().record_active_rollout("r2", "stable").unwrap();
         // r3 standalone, then marked terminal.
@@ -590,7 +590,7 @@ mod tests {
 
     /// `GateRollouts.into_ui()` filters out terminal rollouts  -
     /// a caller that has the gate-flavored view but needs the UI
-    /// view can demote safely. Reverse direction (UI → Gate) does
+    /// view can demote safely. Reverse direction (UI -> Gate) does
     /// NOT exist by design: the UI view is a strict subset.
     #[test]
     fn gate_rollouts_into_ui_filters_terminal() {

@@ -31,7 +31,7 @@ pub enum Action {
         host: String,
         target_ref: String,
     },
-    /// Healthy → Soaked transition (host has been Healthy for `soak_minutes`).
+    /// Healthy -> Soaked transition (host has been Healthy for `soak_minutes`).
     SoakHost {
         rollout: String,
         host: String,

@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn wave_promotion_gate_blocks_dispatch_for_later_waves() {
-        // test-host is in wave 1; rollout's current_wave is 0 → block.
+        // test-host is in wave 1; rollout's current_wave is 0 -> block.
         let mut fleet = fleet_with("test-host", host(Some("declared-system")));
         fleet.waves.insert(
             "stable".to_string(),
@@ -603,7 +603,7 @@ mod tests {
             "wave-1 host must be held when current_wave=0; got {blocked:?}",
         );
 
-        // Same fleet, current_wave advanced to 1 → dispatch.
+        // Same fleet, current_wave advanced to 1 -> dispatch.
         let allowed = decide_target(
             "test-host",
             &req,
