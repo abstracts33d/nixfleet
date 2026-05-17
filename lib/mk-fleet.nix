@@ -295,6 +295,41 @@
     };
   };
 
+  # RFC-0010 §3.5 channel-scope compliance shorthand. Each entry is
+  # either a bare framework name (inherits compliance.mode) or
+  # `{ name; mode ? null; }` for per-framework override. Desugars to
+  # `healthChecks.evidence-<name>` entries via
+  # `channelEffectiveHealthChecks` below.
+  complianceFrameworkEntryType = types.submodule {
+    options = {
+      name = mkOption {type = types.str;};
+      mode = mkOption {
+        type = types.nullOr (types.enum ["enforce" "observe"]);
+        default = null;
+        description = ''
+          Per-framework mode. `null` inherits `compliance.mode`.
+        '';
+      };
+    };
+  };
+
+  complianceType = types.submodule {
+    options = {
+      frameworks = mkOption {
+        type = types.listOf (types.either types.str complianceFrameworkEntryType);
+        default = [];
+      };
+      mode = mkOption {
+        type = types.enum ["enforce" "observe"];
+        default = "enforce";
+        description = ''
+          Default mode for bare-string entries in `frameworks`.
+          Per-entry attrsets with `mode = "..."` override this.
+        '';
+      };
+    };
+  };
+
   channelType = types.submodule {
     options = {
       description = mkOption {
@@ -343,6 +378,39 @@
           overrides channel; channel overrides tag; tag overrides fleet
           (host > channel > tag > fleet precedence). Same merge + shadow-
           warning semantics as the other scopes.
+        '';
+      };
+      compliance = mkOption {
+        type = complianceType;
+        default = {};
+        description = ''
+          Channel-wide compliance-framework shorthand (RFC-0010 §3.5).
+          Desugars to one `evidence-<framework>` entry in
+          `healthChecks` per framework. Pure Nix expansion - no
+          proto/runtime impact; the wire layer only ever sees
+          `healthChecks`.
+
+          Two list shapes accepted, freely mixed:
+
+            compliance.frameworks = [ "anssi-bp028" "nis2" ];
+            # bare names; both inherit compliance.mode (default
+            # "enforce")
+
+            compliance.frameworks = [
+              { name = "anssi-bp028"; mode = "enforce"; }
+              { name = "nis2"; mode = "observe"; }
+            ];
+            # per-framework mode
+
+          Synthesized probe name is `evidence-<framework>` -
+          LOADBEARING for operator dashboards built against
+          `probe_failures` / Prometheus labels. Collisions with an
+          explicit `healthChecks.evidence-<framework>` entry throw at
+          eval time.
+
+          For custom evidence paths or non-default intervals, declare
+          the probe explicitly under `healthChecks` instead of using
+          this shorthand.
         '';
       };
     };
@@ -596,6 +664,63 @@
   in
     (scan nodes).cycle;
 
+  # RFC-0010 §3.5: compliance shorthand desugars to evidence-<framework>
+  # probes merged into the channel's explicit healthChecks. Two callers
+  # (checkInvariants' probeDeclSites and resolveFleet's
+  # resolveHealthChecks + healthCheckOverrideWarnings) consume the
+  # effective set, so the helper lives at file scope and takes the
+  # already-evaluated cfg.
+  #
+  # Synthesized probes carry all healthProbeType defaults explicitly
+  # because they bypass submodule evaluation (cfg.channels.<name> is
+  # already evaluated by the time this runs). If healthProbeType's
+  # defaults change, this must stay in sync.
+  normalizeComplianceEntry = defaultMode: entry:
+    if builtins.isString entry
+    then {
+      name = entry;
+      mode = defaultMode;
+    }
+    else {
+      inherit (entry) name;
+      mode =
+        if entry.mode == null
+        then defaultMode
+        else entry.mode;
+    };
+
+  channelEffectiveHealthChecks = cfg: channelName: let
+    c = cfg.channels.${channelName};
+    synthesized = lib.listToAttrs (map (raw: let
+        fw = normalizeComplianceEntry c.compliance.mode raw;
+      in {
+        name = "evidence-${fw.name}";
+        value = {
+          kind = "evidence";
+          mode = fw.mode;
+          framework = fw.name;
+          evidencePath = "/var/lib/nixfleet-compliance/evidence.json";
+          intervalSeconds = 30;
+          runOnce = false;
+          url = null;
+          expectStatus = 200;
+          host = null;
+          port = null;
+          connectTimeoutSecs = 5;
+          command = [];
+          timeoutSecs = 10;
+        };
+      })
+      c.compliance.frameworks);
+    collisions =
+      builtins.filter
+      (k: builtins.elem k (lib.attrNames c.healthChecks))
+      (lib.attrNames synthesized);
+  in
+    if collisions != []
+    then throw "channel '${channelName}': compliance.frameworks synthesizes probe(s) [${lib.concatStringsSep ", " collisions}] that collide with explicit healthChecks entries. Remove the framework from compliance.frameworks, or rename the explicit healthChecks entry."
+    else c.healthChecks // synthesized;
+
   resolveSelector = sel: hosts: let
     names = lib.attrNames hosts;
     matchHost = s: n: h:
@@ -726,7 +851,7 @@
           lib.mapAttrsToList (n: p: {
             scope = "channel:${channel}:${n}";
             probe = p;
-          }) (cfg.channels.${channel}.healthChecks or {})
+          }) (channelEffectiveHealthChecks cfg channel)
       )
       (lib.attrNames cfg.channels)
       ++ lib.concatMap (
@@ -856,7 +981,7 @@
           host.tags;
         channelScope =
           if cfg.channels ? ${host.channel}
-          then cfg.channels.${host.channel}.healthChecks or {}
+          then channelEffectiveHealthChecks cfg host.channel
           else {};
         # Precedence (lowest -> highest, later wins):
         merged = fleetScope // tagScopes // channelScope // host.healthChecks;
@@ -877,7 +1002,7 @@
               host.tags;
             channelNames =
               if cfg.channels ? ${host.channel}
-              then lib.attrNames (cfg.channels.${host.channel}.healthChecks or {})
+              then lib.attrNames (channelEffectiveHealthChecks cfg host.channel)
               else [];
             hostNames = lib.attrNames host.healthChecks;
             hostShadowsChannel =

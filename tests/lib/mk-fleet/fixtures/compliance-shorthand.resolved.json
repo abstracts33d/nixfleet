@@ -1,0 +1,148 @@
+{
+  "channelEdges": [],
+  "channels": {
+    "edge": {
+      "freshnessWindow": 180,
+      "reconcileIntervalMinutes": 30,
+      "rolloutPolicy": "all",
+      "signingIntervalMinutes": 60
+    },
+    "stable": {
+      "freshnessWindow": 180,
+      "reconcileIntervalMinutes": 30,
+      "rolloutPolicy": "all",
+      "signingIntervalMinutes": 60
+    }
+  },
+  "disruptionBudgets": [],
+  "edges": [],
+  "effectiveHealthChecks": {
+    "h-edge": {
+      "evidence-anssi-bp028": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "anssi-bp028",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      },
+      "evidence-iso27001": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "iso27001",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "observe",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      }
+    },
+    "h-stable": {
+      "evidence-anssi-bp028": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "anssi-bp028",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      },
+      "evidence-nis2": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "nis2",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      }
+    }
+  },
+  "hosts": {
+    "h-edge": {
+      "channel": "edge",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": []
+    },
+    "h-stable": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": []
+    }
+  },
+  "meta": {
+    "ciCommit": null,
+    "schemaVersion": 1,
+    "signedAt": null
+  },
+  "rolloutPolicies": {
+    "all": {
+      "healthGate": {},
+      "onHealthFailure": "rollback-and-halt",
+      "strategy": "all-at-once",
+      "waves": [
+        {
+          "selector": {
+            "all": true,
+            "and": [],
+            "channel": null,
+            "hosts": [],
+            "not": null,
+            "tags": [],
+            "tagsAny": []
+          },
+          "soakMinutes": 0
+        }
+      ]
+    }
+  },
+  "schemaVersion": 1,
+  "waves": {
+    "edge": [
+      {
+        "hosts": [
+          "h-edge",
+          "h-stable"
+        ],
+        "soakMinutes": 0
+      }
+    ],
+    "stable": [
+      {
+        "hosts": [
+          "h-edge",
+          "h-stable"
+        ],
+        "soakMinutes": 0
+      }
+    ]
+  }
+}
