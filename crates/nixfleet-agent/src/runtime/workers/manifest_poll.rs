@@ -19,7 +19,6 @@
 //! - Reducer channel closed (cancel propagated) -> exit.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::Duration;
 
 use nixfleet_proto::clock::ClockHandle;
@@ -29,7 +28,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::super::{AgentConfig, ReducerInput, ShutdownToken};
-use crate::manifest_cache::{DEFAULT_TRUST_PATH, ManifestCache};
+use crate::manifest_cache::ManifestCache;
 
 /// Poll cadence. Matches CP's `runtime::workers::manifest_poll::POLL_INTERVAL`.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -40,19 +39,15 @@ pub fn spawn(
     input_tx: mpsc::Sender<ReducerInput>,
     shutdown: ShutdownToken,
 ) -> JoinHandle<()> {
-    spawn_with_trust_path(
-        cfg,
-        Path::new(DEFAULT_TRUST_PATH).to_path_buf(),
-        clock,
-        input_tx,
-        shutdown,
-    )
+    let trust_path = cfg.trust_file.clone();
+    spawn_with_trust_path(cfg, trust_path, clock, input_tx, shutdown)
 }
 
 /// Tunable-trust-path entry point. Production code calls [`spawn`] which
-/// pins [`DEFAULT_TRUST_PATH`] (RFC-0005 §1.5 convention); integration
-/// tests under the `test-helpers` feature gate call this variant with a
-/// tempdir-rooted trust.json so the worker can run without touching
+/// threads `AgentConfig::trust_file` (the `--trust-file` CLI arg);
+/// integration tests under the `test-helpers` feature gate call this
+/// variant with a tempdir-rooted trust.json so the worker can run
+/// without touching
 /// `/etc/nixfleet/agent/`. Same convention as
 /// `nixfleet_agent::runtime::ShutdownToken::__test_only_from_rx`.
 pub fn spawn_with_trust_path(

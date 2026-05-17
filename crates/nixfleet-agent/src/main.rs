@@ -120,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
             control_plane_url: args.control_plane_url.clone(),
             machine_id: args.machine_id.clone(),
             state_dir: args.state_dir.clone(),
+            trust_file: args.trust_file.clone(),
             // mTLS paths threaded through so workers can build an
             // authenticated client via `comms::build_client`. Same
             // three paths the enrollment path at

@@ -54,7 +54,7 @@ pub fn spawn(
                 return;
             }
         };
-        let manifest_cache = ManifestCache::new_default(&cfg.state_dir);
+        let manifest_cache = ManifestCache::new(&cfg.state_dir, &cfg.trust_file);
         let url = format!(
             "{}/v1/agent/dispatch?wait={}",
             cfg.control_plane_url.trim_end_matches('/'),

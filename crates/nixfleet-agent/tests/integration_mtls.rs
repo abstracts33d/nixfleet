@@ -220,6 +220,7 @@ async fn longpoll_worker_presents_mtls_cert_on_dispatch_request() {
         control_plane_url: format!("https://localhost:{port}"),
         machine_id: "defect-003-agent".to_string(),
         state_dir: dir.path().to_path_buf(),
+        trust_file: dir.path().join("trust.json"),
         ca_cert: Some(ca_path),
         client_cert: Some(cert_path),
         client_key: Some(key_path),

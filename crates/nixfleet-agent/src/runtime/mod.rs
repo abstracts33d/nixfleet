@@ -159,6 +159,11 @@ pub struct AgentConfig {
     pub control_plane_url: String,
     pub machine_id: String,
     pub state_dir: std::path::PathBuf,
+    /// LOADBEARING: same `--trust-file` path the binary validated at
+    /// startup. Workers that fetch + verify signed manifests
+    /// (`manifest_poll`, `longpoll`) MUST read this — the startup check
+    /// alone doesn't propagate into runtime trust loading.
+    pub trust_file: std::path::PathBuf,
     pub ca_cert: Option<std::path::PathBuf>,
     pub client_cert: Option<std::path::PathBuf>,
     pub client_key: Option<std::path::PathBuf>,
