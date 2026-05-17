@@ -1,7 +1,7 @@
 //! Main activate pipeline: realise -> set-profile -> fire -> poll -> self-correct.
 
+use super::types::ActivationTarget;
 use anyhow::{Context, Result};
-use nixfleet_proto::agent_wire::EvaluatedTarget;
 use tokio::process::Command;
 
 use super::profile::self_correct_profile;
@@ -13,7 +13,7 @@ use super::verify_poll::{PollOutcome, VerifyPoll, read_current_system_basename};
 /// Tests inject a fake backend; production calls the `activate(target)` façade.
 pub async fn activate_with<B: ActivationBackend>(
     backend: &B,
-    target: &EvaluatedTarget,
+    target: &ActivationTarget,
 ) -> Result<ActivationOutcome> {
     tracing::info!(
         target_closure = %target.closure_hash,

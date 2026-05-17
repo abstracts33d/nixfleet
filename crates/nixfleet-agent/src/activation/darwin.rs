@@ -4,8 +4,8 @@
 
 use std::process::Stdio;
 
+use super::types::ActivationTarget;
 use anyhow::Result;
-use nixfleet_proto::agent_wire::EvaluatedTarget;
 
 use super::{ActivationBackend, ActivationOutcome, RollbackOutcome};
 
@@ -21,7 +21,7 @@ impl ActivationBackend for DarwinBackend {
     }
     async fn fire_switch(
         &self,
-        target: &EvaluatedTarget,
+        target: &ActivationTarget,
         store_path: &str,
     ) -> Result<Option<ActivationOutcome>> {
         fire_switch(target, store_path).await
@@ -32,7 +32,7 @@ impl ActivationBackend for DarwinBackend {
 }
 
 async fn fire_switch(
-    target: &EvaluatedTarget,
+    target: &ActivationTarget,
     store_path: &str,
 ) -> Result<Option<ActivationOutcome>> {
     use std::os::unix::process::CommandExt;

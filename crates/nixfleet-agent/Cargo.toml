@@ -16,11 +16,33 @@ path = "src/lib.rs"
 name = "nixfleet-agent"
 path = "src/main.rs"
 
+[features]
+# Exposes `ShutdownToken::__test_only_from_rx` for integration tests
+# (e.g. tests/integration_mtls.rs) that spawn a single worker in
+# isolation without going through the full `runtime::spawn`. Production
+# builds MUST NOT enable this — the contract on `ShutdownToken` is
+# that only the runtime owns the matching `oneshot::Sender<()>`; a
+# production caller constructing a token from an arbitrary receiver
+# would break the "reducer exit drops every sender" shutdown chain.
+# Same convention as `nixfleet_reconciler::Verified::unverified_for_tests`.
+# Enable strictly via the test target's `required-features`.
+test-helpers = []
+
+[[test]]
+name = "integration_mtls"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "integration_manifest_poll"
+required-features = ["test-helpers"]
+
 [dependencies]
 nixfleet-proto = { path = "../nixfleet-proto" }
 nixfleet-reconciler = { path = "../nixfleet-reconciler" }
+nixfleet-state-machine = { path = "../nixfleet-state-machine" }
 nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 reqwest = { workspace = true }
 # PR-5: rcgen mints CSRs for /v1/enroll and /v1/agent/renew.
 rcgen = { workspace = true }
@@ -61,3 +83,20 @@ libc = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 wiremock = { workspace = true }
+# Enable Verified::unverified_for_tests so agent integration tests can
+# synthesise SignedManifestSet without driving the full signing pipeline.
+# Production builds do NOT enable this feature; the trust contract on
+# Verified<T> (RFC-0009 §3) holds.
+nixfleet-reconciler = { path = "../nixfleet-reconciler", features = ["test-helpers"] }
+# Workspace builder for fleet.resolved fixtures.
+# `test-helpers` enables `RolloutId::from_raw_for_tests` + `From<&str>` /
+# `From<String>` impls for test ergonomics (RFC-0012 §6.3 + D-007).
+nixfleet-proto = { path = "../nixfleet-proto", features = ["testing", "test-helpers"] }
+# integration_mtls.rs spins up a minimal axum-server with rustls
+# `WebPkiClientVerifier` to prove DEFECT-003: the post-enroll workers
+# build an mTLS client via comms::build_client (not a bare reqwest
+# builder). The agent's enrollment cert presents on the handshake.
+axum = { workspace = true }
+axum-server = { workspace = true, features = ["tls-rustls"] }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }

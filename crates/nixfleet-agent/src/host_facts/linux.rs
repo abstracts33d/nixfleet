@@ -5,7 +5,7 @@ use std::fs;
 use anyhow::{Context, Result};
 use nixfleet_proto::agent_wire::PendingGeneration;
 
-use crate::checkin_state::{closure_hash_from_path, current_closure_hash};
+use super::{closure_hash_from_path, current_closure_hash};
 
 const BOOTED_SYSTEM: &str = "/run/booted-system";
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";

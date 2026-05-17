@@ -64,7 +64,9 @@ pub async fn rollback_with<B: ActivationBackend>(backend: &B) -> Result<Rollback
                 target = %target_basename,
                 "agent: rollback fire-and-forget complete",
             );
-            Ok(RollbackOutcome::FiredAndPolled)
+            Ok(RollbackOutcome::FiredAndPolled {
+                reverted_to_closure: target_basename,
+            })
         }
         PollOutcome::Timeout { last_observed } => {
             let exit_code = backend

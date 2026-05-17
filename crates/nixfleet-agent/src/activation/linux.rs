@@ -3,8 +3,8 @@
 
 use std::path::Path;
 
+use super::types::ActivationTarget;
 use anyhow::{Context, Result};
-use nixfleet_proto::agent_wire::EvaluatedTarget;
 use tokio::process::Command;
 
 use super::{ActivationBackend, ActivationOutcome, RollbackOutcome};
@@ -21,7 +21,7 @@ impl ActivationBackend for LinuxBackend {
     }
     async fn fire_switch(
         &self,
-        target: &EvaluatedTarget,
+        target: &ActivationTarget,
         store_path: &str,
     ) -> Result<Option<ActivationOutcome>> {
         fire_switch(target, store_path).await
@@ -112,7 +112,7 @@ const CURRENT_SYSTEM_PATH: &str = "/run/current-system";
 // FOOTGUN: --scope / --pipe --wait inherit the caller's cgroup; agent
 // SIGTERM would kill the switch mid-run. Use --unit for cgroup isolation.
 async fn fire_switch(
-    target: &EvaluatedTarget,
+    target: &ActivationTarget,
     store_path: &str,
 ) -> Result<Option<ActivationOutcome>> {
     if let Some(component) =

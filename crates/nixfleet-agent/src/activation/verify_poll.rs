@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow};
 
 use super::types::{POLL_BUDGET, POLL_INTERVAL};
 
-pub(super) async fn read_current_system_basename() -> Result<String> {
+pub async fn read_current_system_basename() -> Result<String> {
     let target = tokio::fs::read_link("/run/current-system")
         .await
         .with_context(|| "readlink /run/current-system")?;

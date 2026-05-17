@@ -5,10 +5,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::agent_wire::{PROTOCOL_MAJOR_VERSION, PROTOCOL_VERSION_HEADER, ReportEvent};
+use nixfleet_proto::agent_wire::{PROTOCOL_MAJOR_VERSION, PROTOCOL_VERSION_HEADER};
 use nixfleet_proto::enroll_wire::{
-    BootstrapEventRequest, BootstrapToken, EnrollRequest, EnrollResponse, RenewRequest,
-    RenewResponse,
+    BootstrapToken, EnrollRequest, EnrollResponse, RenewRequest, RenewResponse,
 };
 use rcgen::{CertificateParams, DnType, KeyPair};
 use reqwest::Client;
@@ -147,44 +146,6 @@ pub async fn renew(
         not_after = %body.not_after.to_rfc3339(),
         "renewed - wrote cert (key unchanged: ssh host key)"
     );
-    Ok(())
-}
-
-/// Best-effort pre-mTLS failure post (`TrustError` / `EnrollmentFailed`) via
-/// `/v1/agent/bootstrap-report`. Always returns Ok - agent is already on a
-/// fatal path; a posting failure mustn't mask the underlying error.
-pub async fn post_bootstrap_event(
-    client: &Client,
-    cp_url: &str,
-    agent_version: &str,
-    token_file: &Path,
-    event: ReportEvent,
-) -> Result<()> {
-    let token_raw = std::fs::read_to_string(token_file)
-        .with_context(|| format!("read bootstrap token {}", token_file.display()))?;
-    let token: BootstrapToken =
-        serde_json::from_str(&token_raw).context("parse bootstrap token")?;
-
-    let url = format!("{}/v1/agent/bootstrap-report", cp_url.trim_end_matches('/'));
-    let req = BootstrapEventRequest {
-        token,
-        agent_version: agent_version.to_string(),
-        occurred_at: Utc::now(),
-        event: serde_json::to_value(&event).context("serialise ReportEvent")?,
-    };
-    let resp = client
-        .post(&url)
-        .header(PROTOCOL_VERSION_HEADER, PROTOCOL_MAJOR_VERSION.to_string())
-        .json(&req)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        anyhow::bail!(
-            "{url}: {}: {}",
-            resp.status(),
-            resp.text().await.unwrap_or_default()
-        );
-    }
     Ok(())
 }
 

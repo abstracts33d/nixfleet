@@ -9,7 +9,22 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use nixfleet_proto::agent_wire::EvaluatedTarget;
+
+/// Pipeline input. Replaces the legacy `nixfleet_proto::agent_wire::EvaluatedTarget`
+/// that was deleted in Phase 8d-2 (`0e220c63`) alongside the rest of the v0.1
+/// wire surface. Carries the minimum the pipeline needs: the target closure
+/// hash (drives realise + set-profile + verify-poll) and the channel_ref (for
+/// tracing-only correlation with CP's rollout records).
+///
+/// Constructed from `runtime::wire::ActivationIntent` at the worker entry
+/// (`runtime::workers::activation::handle_intent`); shape is intentionally
+/// minimal so future wire-format evolutions don't ripple through the
+/// activation internals.
+#[derive(Debug, Clone)]
+pub struct ActivationTarget {
+    pub closure_hash: String,
+    pub channel_ref: String,
+}
 
 // LOADBEARING: 300s must stay inside CP's DEFAULT_CONFIRM_DEADLINE_SECS=360 - exceeding splits state.
 pub const POLL_BUDGET: Duration = Duration::from_secs(300);
@@ -47,7 +62,13 @@ pub enum ActivationOutcome {
 
 #[derive(Debug)]
 pub enum RollbackOutcome {
-    FiredAndPolled,
+    /// Rollback subprocess returned, `/run/current-system` settled on
+    /// `reverted_to_closure` (the basename of the post-rollback symlink
+    /// target, read by `verify_poll`). The worker uses this value to
+    /// emit `Event::LocalRollbackCompleted` which drives the reducer
+    /// `Failed → Reverted` transition and populates
+    /// `state.reverted_to` (D-031 fix).
+    FiredAndPolled { reverted_to_closure: String },
     Failed {
         phase: String,
         exit_code: Option<i32>,
@@ -56,18 +77,18 @@ pub enum RollbackOutcome {
 
 impl RollbackOutcome {
     pub fn success(&self) -> bool {
-        matches!(self, RollbackOutcome::FiredAndPolled)
+        matches!(self, RollbackOutcome::FiredAndPolled { .. })
     }
     pub fn exit_code(&self) -> Option<i32> {
         match self {
             RollbackOutcome::Failed { exit_code, .. } => *exit_code,
-            RollbackOutcome::FiredAndPolled => None,
+            RollbackOutcome::FiredAndPolled { .. } => None,
         }
     }
     pub fn phase(&self) -> Option<&str> {
         match self {
             RollbackOutcome::Failed { phase, .. } => Some(phase.as_str()),
-            RollbackOutcome::FiredAndPolled => None,
+            RollbackOutcome::FiredAndPolled { .. } => None,
         }
     }
 }
@@ -95,7 +116,7 @@ pub trait ActivationBackend: Send + Sync {
     ) -> impl std::future::Future<Output = Option<i32>> + Send;
     fn fire_switch(
         &self,
-        target: &EvaluatedTarget,
+        target: &ActivationTarget,
         store_path: &str,
     ) -> impl std::future::Future<Output = Result<Option<ActivationOutcome>>> + Send;
     fn fire_rollback(

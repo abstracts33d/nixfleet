@@ -1,0 +1,777 @@
+//! Reducer task body. Sole `nixfleet_state_machine::step` caller per
+//! invariant (1) in `runtime::mod`.
+//!
+//! State held in-task:
+//!   - per-rollout `HostRolloutState` keyed by `rollout_id` (the agent
+//!     owns its own host's state, so the key is just the rollout id)
+//!   - cached `SignedManifestSet` (refreshed by the `manifest_poll`
+//!     worker per RFC-0011 §1 invariant #1 — single signed source of
+//!     truth fetched + verified once per tick; the reducer reads
+//!     rollout policy from it for `step()` calls)
+//!
+//! Seq assignment: workers emit events with `seq = 0`. The reducer
+//! rewrites it to `state.last_event_seq + 1` before calling step()
+//! — single mutator owns the per-rollout monotonic counter, so
+//! cross-worker ordering can't race.
+
+use std::collections::HashMap;
+
+use nixfleet_proto::RolloutPolicy;
+use nixfleet_proto::clock::ClockHandle;
+use nixfleet_reconciler::planner_types::SignedManifestSet;
+use nixfleet_state_machine::{Event, HostRolloutState, HostState};
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
+
+use std::sync::Arc;
+
+use super::applier::apply_effect;
+use super::outbound_queue::OutboundQueue;
+use super::{
+    ActivationIntentTx, AgentConfig, ApplierCtx, OutboundKickTx, ProbeResetTx, ReducerInput,
+    ShutdownGuard,
+};
+
+/// Sustained-failure window cap. RFC-0008 §6 — the agent transitions
+/// Soaking → Failed when a probe has been failing continuously past
+/// this threshold.
+///
+/// TODO(v0.2.1): wire from `services.nixfleet-agent.healthChecks` via
+/// the NixOS module → agent CLI arg → runtime config struct, per
+/// RFC-0008 §6 + §9.1 ("each agent reads it from
+/// services.nixfleet-agent.healthChecks"). Bigger than v0.2 scope
+/// because it touches the NixOS module surface; v0.2 ships with the
+/// hardcoded floor.
+///
+/// Tracking issue: open on `abstracts33d/nixfleet` (Forgejo `origin`
+/// or GitHub `upstream`, operator's call) — title "Wire
+/// SUSTAINED_FAILURE_THRESHOLD_SECS from NixOS module config (v0.2.1)".
+///
+/// The hardcoded 120s is twice RFC-0008 §6's documented default
+/// (60s), so under-shooting safely: real probe-failure detection
+/// still fires, just 60s later than a tuned deployment would. Safe
+/// for v0.2 demo + lab work; not appropriate for production fleets
+/// with tight SLOs.
+///
+/// **Do NOT delete this comment without the NixOS-module wire-through
+/// landing**. The Tier-1 deletion in Phase 8 only removes scar
+/// tissue from defunct architecture; this is a known gap with a
+/// dated deferral and explicit operator-facing impact.
+const SUSTAINED_FAILURE_THRESHOLD_SECS: i64 = 120;
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run(
+    cancel: CancellationToken,
+    cfg: AgentConfig,
+    clock: ClockHandle,
+    mut input_rx: mpsc::Receiver<ReducerInput>,
+    input_tx: mpsc::Sender<ReducerInput>,
+    activation_tx: ActivationIntentTx,
+    probe_reset_tx: ProbeResetTx,
+    outbound_queue: Arc<OutboundQueue>,
+    outbound_kick: OutboundKickTx,
+    shutdown_senders: Vec<oneshot::Sender<()>>,
+) {
+    let _shutdown_guard = ShutdownGuard(shutdown_senders);
+
+    let mut host_states: HashMap<nixfleet_proto::RolloutId, HostRolloutState> = HashMap::new();
+    // Cached signed manifests. Populated by the longpoll worker after
+    // each `verify_rollout_manifest` succeeds (and the boot-recovery
+    // handshake in 7f); the reducer reads it to find `RolloutPolicy`
+    // for step() calls. None at startup; events that arrive before
+    // the cache is warm are dropped with a warn (RFC-0008 §9.5's
+    // "agent can't act on unverified state").
+    let mut manifests: Option<SignedManifestSet> = None;
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                tracing::info!(
+                    target: "shutdown",
+                    task = "agent_reducer",
+                    "task shut down",
+                );
+                return;
+            }
+            maybe_input = input_rx.recv() => {
+                let Some(input) = maybe_input else { return };
+                let ctx = ApplierCtx {
+                    cfg: &cfg,
+                    clock: &clock,
+                    input_tx: &input_tx,
+                    activation_tx: &activation_tx,
+                    probe_reset_tx: &probe_reset_tx,
+                    outbound_queue: &outbound_queue,
+                    outbound_kick: &outbound_kick,
+                };
+                handle_input(&mut host_states, &mut manifests, &clock, &ctx, input).await;
+            }
+        }
+    }
+}
+
+async fn handle_input(
+    host_states: &mut HashMap<nixfleet_proto::RolloutId, HostRolloutState>,
+    manifests: &mut Option<SignedManifestSet>,
+    clock: &ClockHandle,
+    ctx: &ApplierCtx<'_>,
+    input: ReducerInput,
+) {
+    match input {
+        ReducerInput::HostEvent { rollout_id, event } => {
+            run_host_event(host_states, manifests, clock, ctx, rollout_id, event).await;
+        }
+        ReducerInput::AgentAdvanceTick => {
+            run_advance_tick(host_states, manifests, clock, ctx).await;
+        }
+        ReducerInput::ManifestSetUpdated(set) => {
+            *manifests = Some(*set);
+            tracing::info!(
+                target: "agent_reducer",
+                "manifest cache refreshed",
+            );
+        }
+    }
+}
+
+async fn run_host_event(
+    host_states: &mut HashMap<nixfleet_proto::RolloutId, HostRolloutState>,
+    manifests: &Option<SignedManifestSet>,
+    clock: &ClockHandle,
+    ctx: &ApplierCtx<'_>,
+    rollout_id: nixfleet_proto::RolloutId,
+    event: Event,
+) {
+    // Bootstrap from LocalActivate: when no state exists yet, the
+    // event must be a fresh dispatch. `target_closure` is carried on
+    // the event payload, having been validated by the longpoll
+    // worker's `manifest_cache.ensure_for_dispatch` call against the
+    // freshly-fetched per-rollout manifest. The reducer's own
+    // `manifests` cache is NOT consulted at bootstrap (D-024): that
+    // cache is fed by `agent_manifest_poll` on a slower cadence and
+    // can be stale immediately after a new rollout's channel_ref is
+    // published, producing a TOCTOU between longpoll's verify and
+    // the reducer's snapshot read. Carrying the validated value with
+    // the event makes the trust chain explicit: longpoll verifies
+    // against the signed manifest, longpoll passes the value forward,
+    // reducer consumes it without re-derivation. RFC-0011 §1
+    // invariant 1.
+    let prior = host_states.get(&rollout_id).cloned();
+    let (state, policy_channel) = match (prior, &event) {
+        (Some(s), _) => {
+            let ch = s.channel.clone();
+            (s, ch)
+        }
+        (
+            None,
+            Event::LocalActivate {
+                target_closure,
+                soak_due_at,
+                ..
+            },
+        ) => {
+            let now = clock.now();
+            let state = bootstrap_pending_state(&rollout_id, target_closure, *soak_due_at, now);
+            (state, "<bootstrap>".to_string())
+        }
+        (None, _) => {
+            tracing::warn!(
+                target: "agent_reducer",
+                %rollout_id,
+                ?event,
+                "HostEvent for unknown rollout (no LocalActivate seen yet); dropping",
+            );
+            return;
+        }
+    };
+
+    let Some(policy) = resolve_policy(manifests, &state.channel) else {
+        tracing::warn!(
+            target: "agent_reducer",
+            %rollout_id,
+            channel = %state.channel,
+            policy_channel,
+            "HostEvent: rollout policy not cached yet; dropping event (longpoll will refill)",
+        );
+        return;
+    };
+
+    // Rewrite seq so workers can emit with seq=0 and the reducer owns
+    // the per-rollout monotonic counter (single mutator → no race).
+    let next_seq = state.last_event_seq + 1;
+    let event = with_seq(event, next_seq);
+
+    let now = clock.now();
+    let (next_state, effects) = match nixfleet_state_machine::step(state, event, now, &policy) {
+        Ok(out) => out,
+        Err(err) => {
+            tracing::warn!(
+                target: "agent_reducer",
+                %rollout_id,
+                error = %err,
+                "step() rejected event — illegal transition or invariant violation",
+            );
+            return;
+        }
+    };
+    host_states.insert(rollout_id, next_state);
+
+    // Effects carry their own `rollout_id` per RFC-0009 §9. Applier
+    // reads directly from the effect variant.
+    for effect in effects {
+        apply_effect(ctx, effect).await;
+    }
+}
+
+async fn run_advance_tick(
+    host_states: &mut HashMap<nixfleet_proto::RolloutId, HostRolloutState>,
+    manifests: &Option<SignedManifestSet>,
+    clock: &ClockHandle,
+    ctx: &ApplierCtx<'_>,
+) {
+    let now = clock.now();
+    // Collect synthesised events first so we don't mutate the map
+    // while iterating.
+    let mut synth: Vec<(nixfleet_proto::RolloutId, Event)> = Vec::new();
+
+    // Fail-gate: Soaking → Failed via LocalSustainedFailureCrossed. Mode
+    // filter on the failing-probe set per RFC-0010 §3.3 (ProbeMode
+    // docstring): only Enforce-mode probes contribute to sustained-failure.
+    for (rollout_id, state) in host_states.iter() {
+        if state.state != HostState::Soaking {
+            continue;
+        }
+        let Some(first_failed) = state.probe_failure_first_at else {
+            continue;
+        };
+        if (now - first_failed).num_seconds() < SUSTAINED_FAILURE_THRESHOLD_SECS {
+            continue;
+        }
+        let failing_probes = collect_failing_enforce_probes(&state.probes);
+        if failing_probes.is_empty() {
+            continue;
+        }
+        let policy_applied = resolve_policy(manifests, &state.channel)
+            .map(|p| p.on_health_failure)
+            .unwrap_or(nixfleet_proto::OnHealthFailure::Halt);
+        synth.push((
+            rollout_id.clone(),
+            Event::LocalSustainedFailureCrossed {
+                failed_at: now,
+                sustained_duration_secs: (now - first_failed).num_seconds() as u64,
+                failing_probes,
+                policy_applied,
+                seq: 0, // run_host_event rewrites
+            },
+        ));
+    }
+
+    // Pass-gate: Soaking → Converged via LocalConvergedReached. Three
+    // RFC-0008 §4.2 invariants: current==target, soak_due_at elapsed, all
+    // enforce-mode probes Pass. Mode filter on the probe-pass check
+    // brings convergence into parity with the fail-gate above per
+    // RFC-0010 §3.3 (ProbeMode docstring). The shared verifier
+    // (state-machine soaking::verify_converged_invariants) re-checks
+    // these at step() time before transitioning.
+    for (rollout_id, state) in host_states.iter() {
+        if state.state != HostState::Soaking {
+            continue;
+        }
+        let Some(soak_due_at) = state.soak_due_at else {
+            continue;
+        };
+        if now < soak_due_at {
+            continue;
+        }
+        let Some(current) = state.current_closure.as_ref() else {
+            continue;
+        };
+        if *current != state.target_closure {
+            continue;
+        }
+        if !all_enforce_probes_pass(&state.probes) {
+            continue;
+        }
+        synth.push((
+            rollout_id.clone(),
+            Event::LocalConvergedReached {
+                converged_at: now,
+                current_closure: current.clone(),
+                seq: 0, // run_host_event rewrites
+            },
+        ));
+    }
+
+    for (rollout_id, event) in synth {
+        run_host_event(host_states, manifests, clock, ctx, rollout_id, event).await;
+    }
+}
+
+/// First-touch bootstrap for a fresh `LocalActivate` event. Pure: derives
+/// channel from the canonical `RolloutId` composite (RFC-0012 §6.3); the
+/// caller threads in the manifest-looked-up `target_closure` for this
+/// host (selecting by `hostname == cfg.machine_id`, NOT
+/// `host_set.first()` — that was the SR-2 bug) and the CP-resolved
+/// `soak_due_at` carried by the `LocalActivate` event from
+/// `DispatchResponse.soak_due_at` (D-019 fix — pre-fix this was
+/// hardcoded to `now + 5min` on the agent side, ignoring CP's
+/// policy-resolved window per RFC-0011 §1 invariant 1). Caller also
+/// threads `now` so the helper stays clock-injection-free.
+fn bootstrap_pending_state(
+    rollout_id: &nixfleet_proto::RolloutId,
+    target_closure: &str,
+    soak_due_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> HostRolloutState {
+    let channel = rollout_id.channel().to_string();
+    HostRolloutState::new_pending(
+        rollout_id.clone(),
+        "self".to_string(),
+        channel,
+        target_closure.to_string(),
+        now,
+        soak_due_at,
+    )
+}
+
+/// Collect probe names that are currently failing AND declared with
+/// `mode = Enforce`. Per RFC-0010 §3.4, only `Enforce`-mode probes
+/// participate in the soak gate; `Observe` and `Disabled` records
+/// events but does not gate. The pre-fix builder filtered only by
+/// `status == Fail`, which silently included failing `Observe`-mode
+/// probes in `LocalSustainedFailureCrossed.failing_probes` and gated
+/// soak promotion against the documented contract.
+fn collect_failing_enforce_probes(
+    probes: &HashMap<String, nixfleet_state_machine::ProbeRecord>,
+) -> Vec<String> {
+    probes
+        .iter()
+        .filter(|(_, r)| {
+            r.status == nixfleet_state_machine::ProbeStatus::Fail
+                && matches!(r.mode, nixfleet_state_machine::ProbeMode::Enforce)
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// All enforce-mode probes have status `Pass`. Observe and Disabled are
+/// ignored per RFC-0010 §3.3 (ProbeMode docstring, state.rs); they do not
+/// gate convergence. Mirror of `collect_failing_enforce_probes` on the
+/// Soaking → Converged exit path. Empty enforce set trivially satisfies
+/// — matches the shared verifier's "empty probe map acceptable" semantic
+/// in `verify_converged_invariants`.
+fn all_enforce_probes_pass(probes: &HashMap<String, nixfleet_state_machine::ProbeRecord>) -> bool {
+    probes
+        .values()
+        .filter(|r| matches!(r.mode, nixfleet_state_machine::ProbeMode::Enforce))
+        .all(|r| r.status == nixfleet_state_machine::ProbeStatus::Pass)
+}
+
+fn resolve_policy(manifests: &Option<SignedManifestSet>, channel: &str) -> Option<RolloutPolicy> {
+    let m = manifests.as_ref()?;
+    let fleet = m.fleet();
+    let channel_entry = fleet.channels.get(channel)?;
+    fleet
+        .rollout_policies
+        .get(&channel_entry.rollout_policy)
+        .cloned()
+}
+
+/// Rewrite the `seq` field on a `Local*` event. The reducer owns the
+/// monotonic counter (single mutator) so workers can emit with `seq = 0`
+/// and let this function fill it in.
+fn with_seq(event: Event, seq: u64) -> Event {
+    match event {
+        Event::LocalActivate {
+            current_closure_at_dispatch,
+            target_closure,
+            received_at,
+            soak_due_at,
+            ..
+        } => Event::LocalActivate {
+            current_closure_at_dispatch,
+            target_closure,
+            received_at,
+            soak_due_at,
+            seq,
+        },
+        Event::LocalActivationStarted {
+            started_at,
+            switch_method,
+            ..
+        } => Event::LocalActivationStarted {
+            started_at,
+            switch_method,
+            seq,
+        },
+        Event::LocalActivationCompleted {
+            observed_current_closure,
+            exit_code,
+            completed_at,
+            ..
+        } => Event::LocalActivationCompleted {
+            observed_current_closure,
+            exit_code,
+            completed_at,
+            seq,
+        },
+        Event::LocalActivationFailed {
+            exit_code,
+            stderr_tail,
+            failed_at,
+            ..
+        } => Event::LocalActivationFailed {
+            exit_code,
+            stderr_tail,
+            failed_at,
+            seq,
+        },
+        Event::LocalProbeObservedFirst {
+            probe_name,
+            mode,
+            observed_at,
+            ..
+        } => Event::LocalProbeObservedFirst {
+            probe_name,
+            mode,
+            observed_at,
+            seq,
+        },
+        Event::LocalProbeResult {
+            probe_name,
+            mode,
+            status,
+            observed_at,
+            failure_reason,
+            ..
+        } => Event::LocalProbeResult {
+            probe_name,
+            mode,
+            status,
+            observed_at,
+            failure_reason,
+            seq,
+        },
+        Event::LocalProbeFailureFirst {
+            probe_name,
+            mode,
+            first_failed_at,
+            ..
+        } => Event::LocalProbeFailureFirst {
+            probe_name,
+            mode,
+            first_failed_at,
+            seq,
+        },
+        Event::LocalSustainedFailureCrossed {
+            failed_at,
+            sustained_duration_secs,
+            failing_probes,
+            policy_applied,
+            ..
+        } => Event::LocalSustainedFailureCrossed {
+            failed_at,
+            sustained_duration_secs,
+            failing_probes,
+            policy_applied,
+            seq,
+        },
+        Event::LocalRollbackCompleted {
+            reverted_to_closure,
+            exit_code,
+            completed_at,
+            ..
+        } => Event::LocalRollbackCompleted {
+            reverted_to_closure,
+            exit_code,
+            completed_at,
+            seq,
+        },
+        Event::LocalConvergedReached {
+            converged_at,
+            current_closure,
+            ..
+        } => Event::LocalConvergedReached {
+            converged_at,
+            current_closure,
+            seq,
+        },
+        Event::LocalProbeTopologyDeclared {
+            probes,
+            declared_at,
+            ..
+        } => Event::LocalProbeTopologyDeclared {
+            probes,
+            declared_at,
+            seq,
+        },
+        // Remote* events should never reach the agent reducer's
+        // run_host_event path. Return as-is; the upstream layer will
+        // log + drop via the applier's Remote* arm.
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn fixed_now() -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.with_ymd_and_hms(2026, 5, 17, 12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn bootstrap_extracts_channel_from_canonical_rollout_id() {
+        // SR-1 regression guard: the bootstrap derives `channel` from
+        // the canonical RolloutId composite, not from a scan over
+        // manifests.rollouts. Verified directly against the pure helper.
+        let rid = nixfleet_proto::RolloutId::new("stable", "abc1234deadbeef");
+        let soak = fixed_now() + chrono::Duration::minutes(5);
+        let state = bootstrap_pending_state(&rid, "closure-X", soak, fixed_now());
+        assert_eq!(
+            state.channel, "stable",
+            "channel derived from rollout_id.channel(), not from manifest scan",
+        );
+    }
+
+    #[test]
+    fn bootstrap_uses_caller_provided_target_closure_not_host_set_first() {
+        // SR-2 regression guard: target_closure is resolved by the
+        // caller from a hostname-aware manifest lookup
+        // (`hw.hostname == cfg.machine_id`). The pre-fix shape used
+        // `host_set.first()` which silently produced the wrong closure
+        // on any host whose hostname did not sort first in host_set.
+        // The bootstrap helper is now a pure function over the
+        // caller-resolved target; this test pins the helper's
+        // pass-through behaviour against any future drift that would
+        // re-introduce a manifest-scan inside the helper.
+        let rid = nixfleet_proto::RolloutId::new("stable", "abc1234deadbeef");
+        let soak = fixed_now() + chrono::Duration::minutes(5);
+        let state = bootstrap_pending_state(&rid, "RIGHT-closure", soak, fixed_now());
+        assert_eq!(
+            state.target_closure, "RIGHT-closure",
+            "target_closure comes from the caller (manifest by-hostname lookup), not from inside the helper",
+        );
+    }
+
+    #[test]
+    fn bootstrap_uses_caller_provided_soak_due_at_not_hardcoded() {
+        // D-019 regression guard: soak_due_at is the CP-resolved value
+        // carried by the LocalActivate event (from
+        // DispatchResponse.soak_due_at, computed by CP from the manifest's
+        // rollout_policies[policy].waves[wave_index].soak_minutes). The
+        // pre-fix bootstrap hardcoded `now + 5min` here, ignoring CP's
+        // resolution and causing every host to soak 5 minutes regardless
+        // of policy. Demo's all-at-once policy with soak_minutes=0
+        // (via D-017's normalize_rollout_policies) was the surfacing case.
+        let rid = nixfleet_proto::RolloutId::new("stable", "abc1234deadbeef");
+        let now = fixed_now();
+        let dispatched_soak = now + chrono::Duration::seconds(0);
+        let state = bootstrap_pending_state(&rid, "closure-X", dispatched_soak, now);
+        assert_eq!(state.state, HostState::Pending);
+        assert_eq!(
+            state.soak_due_at,
+            Some(dispatched_soak),
+            "soak_due_at comes from the caller (CP-dispatched value), not a hardcoded default",
+        );
+
+        // And confirm a non-zero value passes through faithfully too —
+        // proves the helper is genuinely caller-driven, not coincidentally
+        // matching the old 5-minute default.
+        let custom_soak = now + chrono::Duration::minutes(17);
+        let state2 = bootstrap_pending_state(&rid, "closure-X", custom_soak, now);
+        assert_eq!(state2.soak_due_at, Some(custom_soak));
+    }
+
+    #[test]
+    fn bootstrap_target_closure_independent_of_manifests_snapshot() {
+        // D-024 regression guard. The pre-fix run_host_event bootstrap
+        // arm read target_closure from
+        // `manifests.rollouts.get(channel).host_set[hostname].target_closure`
+        // — a snapshot fed by `agent_manifest_poll` on a slower cadence
+        // than longpoll's dispatch arrival. When a new rollout's
+        // channel_ref had just been published, this snapshot could
+        // still hold the OLD per-rollout manifest (the per-rollout
+        // fetch hadn't completed inside manifest_poll's next tick yet),
+        // so the bootstrap stamped state.target_closure with the OLD
+        // value even though longpoll's `ensure_for_dispatch` had just
+        // verified a FRESH dispatch target against the NEW per-rollout
+        // manifest. The race produced agents stuck in Soaking against
+        // an OLD target while CP knew the canonical target was NEW
+        // — Converged events would be rejected by CP's verifier.
+        //
+        // Lab observation (2026-05-17 ~19:09): edge channel_ref changed
+        // from one signing run to the next. Agent's longpoll fetched +
+        // verified the NEW per-rollout manifest, but the reducer's
+        // manifests.rollouts["edge"] still held the OLD set at bootstrap
+        // time → state.target_closure = OLD → permanent stuck state.
+        //
+        // The lift carries the longpoll-validated target_closure on the
+        // LocalActivate event itself. The bootstrap pure helper here is
+        // caller-driven; the call site in run_host_event extracts the
+        // field from the event and passes it through. No manifests
+        // lookup involved in the target_closure decision. This test
+        // pins the pure helper's caller-driven shape; the call-site
+        // change in run_host_event is what relies on it.
+        let rid = nixfleet_proto::RolloutId::new("edge", "f8c46e472deadbeef");
+        let now = fixed_now();
+        let soak = now;
+
+        // Simulate "manifest snapshot has STALE-X cached but longpoll
+        // just validated FRESH-Y". Both values exercise the helper;
+        // neither comes from any manifest snapshot.
+        let stale_from_cache = "STALE-target-from-old-manifest".to_string();
+        let fresh_from_dispatch = "FRESH-target-from-just-verified-dispatch".to_string();
+
+        let state_stale = bootstrap_pending_state(&rid, &stale_from_cache, soak, now);
+        assert_eq!(state_stale.target_closure, stale_from_cache);
+
+        let state_fresh = bootstrap_pending_state(&rid, &fresh_from_dispatch, soak, now);
+        assert_eq!(state_fresh.target_closure, fresh_from_dispatch);
+
+        // The two values differ deliberately. The helper produces what
+        // the caller asks for; neither path consults any global state.
+        assert_ne!(state_stale.target_closure, state_fresh.target_closure);
+    }
+
+    fn probe_record(
+        status: nixfleet_state_machine::ProbeStatus,
+        mode: nixfleet_state_machine::ProbeMode,
+    ) -> nixfleet_state_machine::ProbeRecord {
+        nixfleet_state_machine::ProbeRecord {
+            status,
+            mode,
+            last_observed_at: fixed_now(),
+            last_pass_at: None,
+            failure_reason: None,
+        }
+    }
+
+    #[test]
+    fn collect_failing_enforce_probes_includes_failing_enforce() {
+        let mut probes = HashMap::new();
+        probes.insert(
+            "enforce-fail".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Fail,
+                nixfleet_state_machine::ProbeMode::Enforce,
+            ),
+        );
+        let failing = collect_failing_enforce_probes(&probes);
+        assert_eq!(
+            failing,
+            vec!["enforce-fail".to_string()],
+            "failing enforce-mode probe MUST gate per RFC-0010 §3.4",
+        );
+    }
+
+    #[test]
+    fn collect_failing_enforce_probes_excludes_failing_observe_and_disabled() {
+        // RFC-0010 §3.4 regression guard: a failing observe-mode probe
+        // (e.g. an evidence-kind compliance probe with mode = "observe"
+        // that triggers an audit failure) records the event but MUST
+        // NOT gate soak promotion. Same for disabled mode. The pre-fix
+        // builder filtered only on `status == Fail` and let observe +
+        // disabled failures gate, contradicting the documented contract
+        // and tripping lab's edge soak window on anssi-bp028.
+        let mut probes = HashMap::new();
+        probes.insert(
+            "observe-fail".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Fail,
+                nixfleet_state_machine::ProbeMode::Observe,
+            ),
+        );
+        probes.insert(
+            "disabled-fail".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Fail,
+                nixfleet_state_machine::ProbeMode::Disabled,
+            ),
+        );
+        probes.insert(
+            "enforce-pass".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Pass,
+                nixfleet_state_machine::ProbeMode::Enforce,
+            ),
+        );
+        let failing = collect_failing_enforce_probes(&probes);
+        assert!(
+            failing.is_empty(),
+            "observe + disabled failures and passing enforce probes MUST NOT gate; got: {failing:?}",
+        );
+    }
+
+    #[test]
+    fn all_enforce_probes_pass_with_empty_map_is_true() {
+        let probes: HashMap<String, nixfleet_state_machine::ProbeRecord> = HashMap::new();
+        assert!(
+            all_enforce_probes_pass(&probes),
+            "empty probe map satisfies convergence vacuously — matches shared verifier semantic",
+        );
+    }
+
+    #[test]
+    fn all_enforce_probes_pass_with_passing_enforce_only_is_true() {
+        let mut probes = HashMap::new();
+        probes.insert(
+            "nginx-version".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Pass,
+                nixfleet_state_machine::ProbeMode::Enforce,
+            ),
+        );
+        assert!(all_enforce_probes_pass(&probes));
+    }
+
+    #[test]
+    fn all_enforce_probes_pass_ignores_failing_observe_and_disabled() {
+        // RFC-0010 §3.3 regression guard for the convergence-emission
+        // path (D-016 demo symptom: web-02 with passing nginx enforce +
+        // failing evidence-nis2 observe stayed stuck in Soaking because
+        // no emission path existed; even with one, an unfiltered probe
+        // loop would gate on the observe failure). Mirror of the
+        // collect_failing_enforce_probes filter on the soak-fail side.
+        let mut probes = HashMap::new();
+        probes.insert(
+            "nginx-version".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Pass,
+                nixfleet_state_machine::ProbeMode::Enforce,
+            ),
+        );
+        probes.insert(
+            "evidence-nis2".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Fail,
+                nixfleet_state_machine::ProbeMode::Observe,
+            ),
+        );
+        probes.insert(
+            "suppressed-probe".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Fail,
+                nixfleet_state_machine::ProbeMode::Disabled,
+            ),
+        );
+        assert!(
+            all_enforce_probes_pass(&probes),
+            "observe + disabled failures MUST NOT gate convergence per RFC-0010 §3.3",
+        );
+    }
+
+    #[test]
+    fn all_enforce_probes_pass_with_failing_enforce_is_false() {
+        let mut probes = HashMap::new();
+        probes.insert(
+            "nginx-version".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Fail,
+                nixfleet_state_machine::ProbeMode::Enforce,
+            ),
+        );
+        assert!(!all_enforce_probes_pass(&probes));
+    }
+}

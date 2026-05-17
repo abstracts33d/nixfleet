@@ -11,9 +11,9 @@ use serde::Serialize;
 
 pub use nixfleet_proto::evidence_signing::{
     ActivationFailedSignedPayload, ClosureSignatureMismatchSignedPayload,
-    ComplianceFailureSignedPayload, ManifestMismatchSignedPayload, ManifestMissingSignedPayload,
-    ManifestVerifyFailedSignedPayload, RealiseFailedSignedPayload, RollbackTriggeredSignedPayload,
-    RuntimeGateErrorSignedPayload, StaleTargetSignedPayload, VerifyMismatchSignedPayload,
+    ManifestMismatchSignedPayload, ManifestMissingSignedPayload, ManifestVerifyFailedSignedPayload,
+    RealiseFailedSignedPayload, RollbackTriggeredSignedPayload, StaleTargetSignedPayload,
+    VerifyMismatchSignedPayload,
 };
 
 pub const DEFAULT_SSH_HOST_KEY_PATH: &str = "/etc/ssh/ssh_host_ed25519_key";
@@ -133,14 +133,12 @@ mod tests {
             .expect("load")
             .expect("signer present");
 
-        let payload = ComplianceFailureSignedPayload {
+        let payload = ActivationFailedSignedPayload {
             hostname: "host-05",
             rollout: Some("edge-slow@abc"),
-            control_id: "auditLogging",
-            status: "non-compliant",
-            framework_articles: &["nis2:21(b)".to_string()],
-            evidence_collected_at: chrono::Utc::now(),
-            evidence_snippet_sha256: "deadbeef".to_string(),
+            phase: "switch-to-configuration",
+            exit_code: Some(2),
+            stderr_tail_sha256: "deadbeef".to_string(),
         };
 
         let sig_b64 = signer.sign(&payload).expect("sign");
@@ -163,17 +161,15 @@ mod tests {
             .expect("load")
             .expect("signer present");
 
-        let p1 = ComplianceFailureSignedPayload {
+        let p1 = ActivationFailedSignedPayload {
             hostname: "host-05",
             rollout: Some("edge-slow@abc"),
-            control_id: "auditLogging",
-            status: "non-compliant",
-            framework_articles: &[],
-            evidence_collected_at: chrono::Utc::now(),
-            evidence_snippet_sha256: "aaa".to_string(),
+            phase: "switch-to-configuration",
+            exit_code: Some(2),
+            stderr_tail_sha256: "aaa".to_string(),
         };
         let mut p2 = p1.clone();
-        p2.control_id = "backupRetention";
+        p2.phase = "build-derivation";
 
         let s1 = signer.sign(&p1).expect("sign 1");
         let s2 = signer.sign(&p2).expect("sign 2");
