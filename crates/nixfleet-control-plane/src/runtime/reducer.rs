@@ -109,7 +109,18 @@ async fn handle_input(
             at,
             reply,
         } => {
-            handle_heartbeat(state, rs, &host, rollout_id, current_closure, at, reply).await;
+            handle_heartbeat(
+                state,
+                clock,
+                event_log_tx,
+                rs,
+                &host,
+                rollout_id,
+                current_closure,
+                at,
+                reply,
+            )
+            .await;
         }
         ReducerInput::PlanTick => {
             run_plan(state, clock, event_log_tx, rs).await;
@@ -280,8 +291,16 @@ async fn handle_host_event(
     }
 }
 
+// Threads the same reducer-task dependencies (state, clock,
+// event_log_tx, rs) as handle_host_event, plus the heartbeat envelope
+// (host, rollout_id, current_closure, at, reply). Refactoring to a
+// context struct would obscure the call site at handle_input where the
+// reducer dispatches inputs. The lint is fine to suppress here.
+#[allow(clippy::too_many_arguments)]
 async fn handle_heartbeat(
     state: &Arc<AppState>,
+    clock: &ClockHandle,
+    event_log_tx: &EventLogTx,
     rs: &mut ReducerState,
     host: &str,
     rollout_id: Option<nixfleet_proto::RolloutId>,
@@ -298,7 +317,109 @@ async fn handle_heartbeat(
         current_closure.as_deref(),
     );
 
+    // Reply BEFORE the synthesis call: the heartbeat HTTP handler is
+    // waiting on this oneshot and the agent expects the response within
+    // the route's REDUCER_REPLY_TIMEOUT. Synthesis runs after; it has
+    // its own DB + event_log work that shouldn't block the agent.
     let _ = reply.send(HeartbeatReply { replay_from });
+
+    // Boot-recovery retroactive confirmation (RFC-0008 §9.5).
+    // Closes the "agent restart mid-Activating leaves CP forever stuck
+    // at Activating" defect. The flow: an agent's
+    // `nixfleet-agent.service` restart kills the in-flight verify_poll
+    // before it can emit LocalActivationCompleted. The new agent's
+    // boot-recovery handshake reports `current_closure` (read from
+    // /run/current-system) but no rollout_id, so the steady-state
+    // replay_from path above can't match. Here we scan active
+    // host_rollout_records for this hostname; if any record's
+    // target_closure matches the agent's current_closure AND state is
+    // Activating, we synthesize `Event::RemoteActivationCompleted` and
+    // feed it through `handle_host_event` — same path the wire-borne
+    // version takes. CP transitions Activating → Soaking, populates
+    // activation_completed_at, the planner unblocks, the cascade
+    // continues. Recovery.rs:45-51 documented this design intent ("CP
+    // synthesises an ActivationCompleted-shaped Replay-From event"); the
+    // wiring was deferred to a follow-up that never landed pre-v0.2.
+    if let Some(agent_current) = current_closure.as_deref() {
+        maybe_synthesize_recovery_completion(
+            state,
+            clock,
+            event_log_tx,
+            rs,
+            host,
+            agent_current,
+            at,
+        )
+        .await;
+    }
+}
+
+/// Scan active host_rollout_records for `host`; for each record in
+/// `Activating` state whose `target_closure` matches the agent's
+/// reported `current_closure`, synthesize a `RemoteActivationCompleted`
+/// event and feed it through `handle_host_event`. Idempotent: if the
+/// state has already advanced past Activating (e.g. a concurrent agent
+/// emit beat us to it), the record won't match and the synthesis is a
+/// no-op. The synthesized event uses `last_event_seq + 1` so it lands
+/// at the head of the per-host event stream; subsequent agent events
+/// for the same rollout will use higher seqs on the agent's durable
+/// queue and won't conflict.
+async fn maybe_synthesize_recovery_completion(
+    state: &Arc<AppState>,
+    clock: &ClockHandle,
+    event_log_tx: &EventLogTx,
+    rs: &mut ReducerState,
+    host: &str,
+    agent_current: &str,
+    at: DateTime<Utc>,
+) {
+    let Some(db) = state.db.as_ref() else {
+        return;
+    };
+    let records = match db.host_rollout_records().active_for_host(host) {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(
+                target: "cp_reducer",
+                host,
+                error = %err,
+                "boot-recovery synthesis: active_for_host load failed; skipping",
+            );
+            return;
+        }
+    };
+    for record in records {
+        if record.state != nixfleet_state_machine::HostState::Activating {
+            continue;
+        }
+        if record.target_closure != agent_current {
+            continue;
+        }
+        tracing::info!(
+            target: "cp_reducer",
+            host,
+            rollout_id = %record.rollout_id,
+            target = %record.target_closure,
+            "boot-recovery: synthesizing RemoteActivationCompleted (agent reports current_closure == target while CP records Activating; retroactive confirmation per RFC-0008 §9.5 scenario 3)",
+        );
+        let synth_event = nixfleet_state_machine::Event::RemoteActivationCompleted {
+            observed_current_closure: agent_current.to_string(),
+            exit_code: 0,
+            completed_at: at,
+            seq: record.last_event_seq + 1,
+        };
+        let rollout_id = record.rollout_id.clone();
+        handle_host_event(
+            state,
+            clock,
+            event_log_tx,
+            rs,
+            host,
+            &rollout_id,
+            synth_event,
+        )
+        .await;
+    }
 }
 
 fn compute_replay_from(

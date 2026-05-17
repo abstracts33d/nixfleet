@@ -59,6 +59,34 @@ impl<'a> HostRolloutRecords<'a> {
         }
         Ok(out)
     }
+
+    /// Active (non-terminal) records for a hostname across all rollouts.
+    /// Used by the heartbeat handler to drive boot-recovery retroactive
+    /// confirmation (RFC-0008 §9.5): when an agent restart drops the
+    /// in-memory verify-poll loop, the next heartbeat carries
+    /// `current_closure` but no `rollout_id` — CP scans active records
+    /// for this host to find the one whose `target_closure` matches.
+    pub fn active_for_host(&self, hostname: &str) -> Result<Vec<HostRolloutState>> {
+        let conn = super::lock_conn(self.conn)?;
+        let mut stmt = conn.prepare(
+            "SELECT rollout_id, hostname, channel, state, target_closure,
+                    current_closure_at_dispatch, current_closure, reverted_to,
+                    dispatched_at, dispatch_acked_at, activation_started_at,
+                    activation_completed_at, activation_failed_at,
+                    probe_observed_first_at, probe_failure_first_at,
+                    soak_due_at, converged_at, failed_at, policy_applied,
+                    reverted_at, probes_json, last_event_seq
+             FROM host_rollout_records
+             WHERE hostname = ?1
+               AND state IN ('Pending', 'Activating', 'Soaking')",
+        )?;
+        let rows = stmt.query_map(params![hostname], row_to_state)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
 }
 
 fn upsert_inner(conn: &Connection, s: &HostRolloutState) -> Result<()> {

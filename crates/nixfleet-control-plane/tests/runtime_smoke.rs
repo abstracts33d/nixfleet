@@ -361,6 +361,237 @@ async fn heartbeat_with_closure_mismatch_returns_replay_from_seq() {
 //   planner_gates::compliance_wave → PlanAction::DeferDispatch →
 //   event_log GateDecision row.
 
+/// LIFT #1: boot-recovery retroactive confirmation. The regression
+/// pinned here: an agent restart mid-Activating (e.g. framework upgrade
+/// restarts nixfleet-agent.service mid verify_poll) drops the in-memory
+/// event stream. The new agent's boot-recovery heartbeat reports
+/// `current_closure = target_closure` (read from /run/current-system)
+/// but no rollout_id — so the steady-state replay_from drift detector
+/// can't match. Pre-fix CP did nothing; host_rollout_records.state
+/// stayed Activating forever, the planner never re-dispatched, the
+/// cascade halted. Post-fix CP scans active_for_host, sees the match,
+/// synthesizes RemoteActivationCompleted, transitions Activating →
+/// Soaking, and the cascade resumes.
+///
+/// Test shape: open a rollout, advance h1 to Activating, then send a
+/// heartbeat with current_closure == target_closure AND rollout_id =
+/// None (the boot-recovery shape). Assert h1 is now in Soaking with
+/// activation_completed_at populated and observed_current_closure
+/// stamped on host_rollout_records.current_closure.
+#[tokio::test]
+async fn heartbeat_synthesizes_activation_completed_when_agent_reports_target_in_activating() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    // Seed: open rollout, advance h1 Pending → Activating via
+    // RemoteDispatchAck. Same flow real CP-side mirror takes.
+    let set = signed_manifest_set_one_host("target-closure-X");
+    let rollout_id = nixfleet_proto::RolloutId::new(
+        "stable",
+        &set.rollouts.get("stable").unwrap().inner().channel_ref,
+    );
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await;
+    }
+    rt.input_tx
+        .send(ReducerInput::HostEvent {
+            host: "h1".to_string(),
+            rollout_id: rollout_id.clone(),
+            event: Event::RemoteDispatchAck {
+                current_closure_at_dispatch: "previous-closure".to_string(),
+                received_at: Utc::now(),
+                seq: 1,
+            },
+        })
+        .await
+        .unwrap();
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .map(|s| s.state == nixfleet_state_machine::HostState::Activating)
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    // Boot-recovery shape: heartbeat carries current_closure but no
+    // rollout_id (agent's reducer is fresh post-restart). Pre-fix this
+    // would compute replay_from = None (no rollout_id → early return)
+    // and do nothing else; host stays Activating forever.
+    let (reply_tx, reply_rx) = oneshot::channel::<HeartbeatReply>();
+    rt.input_tx
+        .send(ReducerInput::HeartbeatReceived {
+            host: "h1".to_string(),
+            rollout_id: None,
+            current_closure: Some("target-closure-X".to_string()),
+            at: Utc::now(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+
+    // Reply lands first (synthesis is post-reply so the route doesn't
+    // hold the agent waiting on DB work). replay_from is None because
+    // the agent didn't supply a rollout_id; the synthesis path below
+    // is what actually progresses state.
+    let reply = tokio::time::timeout(Duration::from_secs(3), reply_rx)
+        .await
+        .expect("heartbeat reply within timeout")
+        .expect("reducer must send the reply");
+    assert_eq!(
+        reply.replay_from, None,
+        "boot-recovery heartbeat with rollout_id=None ⇒ replay_from path can't match ⇒ None",
+    );
+
+    // The synthesis path runs after the reply. Wait for the state
+    // transition to land. If this times out, the fix has regressed.
+    let db_for_poll = db.clone();
+    let rollout_for_poll = rollout_id.clone();
+    wait_for(Duration::from_secs(3), move || {
+        db_for_poll
+            .host_rollout_records()
+            .load(rollout_for_poll.as_str(), "h1")
+            .ok()
+            .flatten()
+            .map(|s| {
+                s.state == nixfleet_state_machine::HostState::Soaking
+                    && s.activation_completed_at.is_some()
+                    && s.current_closure.as_deref() == Some("target-closure-X")
+            })
+            .unwrap_or(false)
+    })
+    .await;
+
+    cancel.cancel();
+    drop(rt);
+}
+
+/// Negative case for LIFT #1: when the agent's `current_closure` does
+/// NOT match the host_rollout_records.target_closure, no synthesis
+/// happens. Pinned because the synthesis MUST be idempotent on
+/// non-matching states and MUST NOT corrupt state when the agent reports
+/// an unrelated closure (e.g. a host that's at the wrong closure
+/// entirely — operator-level intervention case).
+#[tokio::test]
+async fn heartbeat_does_not_synthesize_when_current_closure_does_not_match_target() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    let set = signed_manifest_set_one_host("target-closure-X");
+    let rollout_id = nixfleet_proto::RolloutId::new(
+        "stable",
+        &set.rollouts.get("stable").unwrap().inner().channel_ref,
+    );
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await;
+    }
+    rt.input_tx
+        .send(ReducerInput::HostEvent {
+            host: "h1".to_string(),
+            rollout_id: rollout_id.clone(),
+            event: Event::RemoteDispatchAck {
+                current_closure_at_dispatch: "previous-closure".to_string(),
+                received_at: Utc::now(),
+                seq: 1,
+            },
+        })
+        .await
+        .unwrap();
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .map(|s| s.state == nixfleet_state_machine::HostState::Activating)
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    let (reply_tx, reply_rx) = oneshot::channel::<HeartbeatReply>();
+    rt.input_tx
+        .send(ReducerInput::HeartbeatReceived {
+            host: "h1".to_string(),
+            rollout_id: None,
+            // Agent reports a DIFFERENT closure than the target. This is
+            // the "operator forced a wrong closure" case; no synthesis.
+            current_closure: Some("unrelated-closure".to_string()),
+            at: Utc::now(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(3), reply_rx)
+        .await
+        .expect("heartbeat reply within timeout")
+        .expect("reducer must send the reply");
+
+    // Settle: drain any pending tasks.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let state_after = db
+        .host_rollout_records()
+        .load(rollout_id.as_str(), "h1")
+        .unwrap()
+        .expect("h1 record still present");
+    assert_eq!(
+        state_after.state,
+        nixfleet_state_machine::HostState::Activating,
+        "non-matching current_closure must NOT advance state",
+    );
+    assert!(
+        state_after.activation_completed_at.is_none(),
+        "non-matching current_closure must NOT stamp activation_completed_at",
+    );
+
+    cancel.cancel();
+    drop(rt);
+}
+
 #[tokio::test]
 async fn current_wave_advances_when_every_wave_zero_host_converges() {
     // Regression for the wave-promotion bump. Without it,
