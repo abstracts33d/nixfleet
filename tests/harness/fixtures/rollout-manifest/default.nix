@@ -50,8 +50,11 @@ in
     cp "${signed}/canonical.json.sig"  "$out/manifest.canonical.json.sig"
     cp "${signed}/pubkey.b64"          "$out/pubkey.b64"
 
-    sha256sum "$out/manifest.canonical.json" \
-      | cut -d' ' -f1 > "$out/rollout-id"
+    # RFC-0012 §6.3 canonical RolloutId: "{channel}@{channel_ref}". The
+    # CP routes + agent parser both expect this shape (D-007). v0.1's
+    # content-address form (sha256 of canonical bytes) was retired with
+    # the RolloutId newtype unification.
+    printf '%s@%s' '${manifestPayload.channel}' '${manifestPayload.channelRef}' > "$out/rollout-id"
 
     pubkey=$(cat "$out/pubkey.b64")
     cat > "$out/trust.json" <<EOF
