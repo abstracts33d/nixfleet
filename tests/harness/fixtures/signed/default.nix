@@ -80,10 +80,6 @@
       reconcileIntervalMinutes = 30;
       signingIntervalMinutes = 60;
       freshnessWindow = freshnessWindowMinutes;
-      compliance = {
-        mode = "permissive";
-        frameworks = [];
-      };
     };
     rolloutPolicies.all-at-once = {
       strategy = "all-at-once";

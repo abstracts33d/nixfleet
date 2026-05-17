@@ -8,9 +8,7 @@ use base64::Engine as _;
 use chrono::Utc;
 use ed25519_dalek::ed25519::signature::rand_core::OsRng;
 use ed25519_dalek::{Signer, SigningKey};
-use nixfleet_proto::{
-    Channel, Compliance, FleetResolved, Host, KeySlot, Meta, TrustConfig, TrustedPubkey,
-};
+use nixfleet_proto::{Channel, FleetResolved, Host, KeySlot, Meta, TrustConfig, TrustedPubkey};
 
 fn dummy_resolved() -> FleetResolved {
     let mut hosts = std::collections::HashMap::new();
@@ -33,10 +31,6 @@ fn dummy_resolved() -> FleetResolved {
             reconcile_interval_minutes: 5,
             freshness_window: 60,
             signing_interval_minutes: 30,
-            compliance: Compliance {
-                frameworks: vec![],
-                mode: "disabled".to_string(),
-            },
         },
     );
     FleetResolved {
@@ -93,7 +87,8 @@ fn end_to_end_sign_then_verify_artifact_accepts() {
         Duration::from_secs(86400 * 365 * 10),
         None,
     )
-    .expect("verify_artifact accepts real signature");
+    .expect("verify_artifact accepts real signature")
+    .into_inner();
 
     assert_eq!(
         parsed.hosts["test-host"].closure_hash.as_deref(),

@@ -1,33 +1,8 @@
-//! Shared signing-payload shapes for host probe-output evidence. Adding a
+//! Shared signing-payload shapes for host event-stream payloads. Adding a
 //! field invalidates existing signatures - bump signing version.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-
-/// `evidence_snippet_sha256` hashes the JCS bytes of the snippet to keep the
-/// signed payload bounded.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ComplianceFailureSignedPayload<'a> {
-    pub hostname: &'a str,
-    pub rollout: Option<&'a str>,
-    pub control_id: &'a str,
-    pub status: &'a str,
-    pub framework_articles: &'a [String],
-    pub evidence_collected_at: DateTime<Utc>,
-    pub evidence_snippet_sha256: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeGateErrorSignedPayload<'a> {
-    pub hostname: &'a str,
-    pub rollout: Option<&'a str>,
-    pub reason: &'a str,
-    pub collector_exit_code: Option<i32>,
-    pub evidence_collected_at: Option<DateTime<Utc>>,
-    pub activation_completed_at: DateTime<Utc>,
-}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -164,21 +164,6 @@
         agentPubkeys = {inherit (agentPubkeys) agent-01 agent-02;};
       };
 
-  # Signed far enough in the past that the agent's per-channel freshness
-  # check fires while CP (with a huge --freshness-window-secs) still dispatches.
-  staleFixture =
-    if nixfleet-canonicalize == null
-    then null
-    else
-      import ./fixtures/signed {
-        inherit lib pkgs nixfleet-canonicalize;
-        signedAt = "2025-01-01T00:00:00Z";
-        # Smallest mk-fleet-permissible window (2 x signingInterval=60).
-        freshnessWindowMinutes = 120;
-        seedSalt = "nixfleet-harness-stale-fixture-2025";
-        derivationName = "nixfleet-harness-stale-fixture";
-      };
-
   signedRoundtripScenario =
     if nixfleet-verify-artifact == null
     then
@@ -227,22 +212,6 @@
           signedFixture = convergedSignedFixture;
           closureHash = convergedClosureHash;
           inherit agenixFixture;
-          cpPkg = nixfleet-control-plane;
-          agentPkg = nixfleet-agent;
-        });
-
-  staleTargetScenario =
-    if nixfleet-control-plane == null || nixfleet-agent == null || staleFixture == null
-    then
-      throw ''
-        tests/harness: fleet-harness-stale-target requires
-        `nixfleet-control-plane`, `nixfleet-agent`, and
-        `nixfleet-canonicalize` (for staleFixture) to be passed in.
-      ''
-    else
-      import ./scenarios/stale-target.nix (scenarioArgs
-        // {
-          staleFixture = staleFixture;
           cpPkg = nixfleet-control-plane;
           agentPkg = nixfleet-agent;
         });
@@ -365,20 +334,6 @@
         cpPkg = nixfleet-control-plane;
       };
 
-  deadlineExpiryScenario =
-    if nixfleet-control-plane == null
-    then
-      throw ''
-        tests/harness: fleet-harness-deadline-expiry requires
-        `nixfleet-control-plane` to be passed in.
-      ''
-    else
-      import ./scenarios/deadline-expiry.nix (scenarioArgs
-        // {
-          inherit signedFixture;
-          cpPkg = nixfleet-control-plane;
-        });
-
   rollbackPolicyScenario =
     if nixfleet-control-plane == null || nixfleet-agent == null
     then
@@ -432,11 +387,7 @@ in {
 
   fleet-harness-teardown = teardownScenario;
 
-  fleet-harness-stale-target = staleTargetScenario;
-
   fleet-harness-boot-recovery = bootRecoveryScenario;
-
-  fleet-harness-deadline-expiry = deadlineExpiryScenario;
 
   fleet-harness-auditor-chain = auditorChainScenario;
 

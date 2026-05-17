@@ -1,15 +1,14 @@
 //! Fluent FleetResolved builder for tests across reconciler/CP/release.
 //!
 //! Defaults: `system = "x86_64-linux"`, `closure_hash = Some("{host}-closure")`,
-//! channel `compliance.mode = "disabled"`, policy strategy `all-at-once` with one
-//! `Selector::default` wave at 5 min soak, `OnHealthFailure::Halt`. Override via
-//! `host_*` / `channel_*` / `policy_*` setters.
+//! policy strategy `all-at-once` with one `Selector::default` wave at 5 min soak,
+//! `OnHealthFailure::Halt`. Override via `host_*` / `channel_*` / `policy_*` setters.
 
 use std::collections::HashMap;
 
 use crate::{
-    Channel, ChannelEdge, Compliance, DisruptionBudget, Edge, FleetResolved, HealthGate, Host,
-    Meta, OnHealthFailure, PolicyWave, RolloutPolicy, Selector, Wave,
+    Channel, ChannelEdge, DisruptionBudget, Edge, FleetResolved, HealthGate, Host, Meta,
+    OnHealthFailure, PolicyWave, RolloutPolicy, Selector, Wave,
 };
 
 const DEFAULT_POLICY: &str = "p";
@@ -122,18 +121,6 @@ impl FleetBuilder {
         self.channels
             .entry(name.to_string())
             .or_insert_with(|| default_channel(policy));
-        self
-    }
-
-    pub fn channel_compliance(mut self, name: &str, mode: &str, frameworks: &[&str]) -> Self {
-        let c = self
-            .channels
-            .get_mut(name)
-            .unwrap_or_else(|| panic!("FleetBuilder.channel_compliance: unknown channel {name}"));
-        c.compliance = Compliance {
-            mode: mode.to_string(),
-            frameworks: frameworks.iter().map(|s| s.to_string()).collect(),
-        };
         self
     }
 
@@ -255,10 +242,6 @@ fn default_channel(policy: &str) -> Channel {
         reconcile_interval_minutes: 30,
         signing_interval_minutes: 60,
         freshness_window: 1440,
-        compliance: Compliance {
-            mode: "disabled".into(),
-            frameworks: Vec::new(),
-        },
     }
 }
 

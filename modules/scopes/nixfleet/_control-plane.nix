@@ -285,6 +285,19 @@ in {
       '';
     };
 
+    allowFileCaKey = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Permit the file-backed CA-issuance backend under `strict = true`.
+        Without this, strict mode refuses to start when only `fleetCaKey`
+        is configured (i.e., neither `tpmCaPubkeyRaw` nor `tpmCaSignWrapper`
+        is set). Production deployments SHOULD use the TPM backend; set
+        this to `true` only for dev fleets where TPM hardware is
+        unavailable. See RFC-0005 §1.5.1.
+      '';
+    };
+
     agentCnSuffix = lib.mkOption {
       type = lib.types.str;
       example = "fleet.example.com";
@@ -610,6 +623,9 @@ in {
             ++ lib.optionals (cfg.tpmCaSignWrapper != null) [
               "--tpm-ca-sign-wrapper"
               (lib.escapeShellArg cfg.tpmCaSignWrapper)
+            ]
+            ++ lib.optionals cfg.allowFileCaKey [
+              "--allow-file-ca-key"
             ]
             ++ [
               "--audit-log"

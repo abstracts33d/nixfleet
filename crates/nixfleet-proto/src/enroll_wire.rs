@@ -57,20 +57,3 @@ pub struct RenewResponse {
     pub cert_pem: String,
     pub not_after: DateTime<Utc>,
 }
-
-/// `POST /v1/agent/bootstrap-report` - token-authed event channel for failures
-/// hit before the agent has a client cert. CP validates the token signature
-/// but does NOT consume the nonce, so the agent can still enroll afterwards.
-/// Only `EnrollmentFailed` / `TrustError` variants are accepted (everything
-/// else is 422).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BootstrapEventRequest {
-    pub token: BootstrapToken,
-    pub agent_version: String,
-    pub occurred_at: DateTime<Utc>,
-    /// Carried opaquely; CP unwraps the discriminator to enforce the
-    /// pre-cert-only allowlist and routes into the same per-host report
-    /// store as mTLS-authed reports.
-    pub event: serde_json::Value,
-}

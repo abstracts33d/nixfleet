@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::{HostStatusEntry, HostsResponse, RolloutTrace};
+use nixfleet_proto::{HostStatusEntry, HostsResponse, RolloutEvents, RolloutHosts};
 use reqwest::{Certificate, Identity};
 
 pub mod color;
@@ -120,10 +120,12 @@ pub async fn run_status(cfg: &ResolvedClientConfig, json: bool, color: bool) -> 
     Ok(render_status_table_with_color(&inputs, color))
 }
 
-pub async fn run_trace(cfg: &ResolvedClientConfig, rollout_id: &str, json: bool) -> Result<String> {
+/// `GET /v1/rollouts/{id}/hosts` — per-host summary. CLI subcommand:
+/// `nixfleet rollout hosts <id>`.
+pub async fn run_hosts(cfg: &ResolvedClientConfig, rollout_id: &str, json: bool) -> Result<String> {
     let cp_url = cfg.cp_url.trim_end_matches('/');
     let client = build_client(cfg)?;
-    let url = format!("{cp_url}/v1/rollouts/{}/trace", rollout_id);
+    let url = format!("{cp_url}/v1/rollouts/{}/hosts", rollout_id);
     let resp = client
         .get(&url)
         .send()
@@ -131,18 +133,80 @@ pub async fn run_trace(cfg: &ResolvedClientConfig, rollout_id: &str, json: bool)
         .with_context(|| format!("GET {url}"))?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         anyhow::bail!(
-            "rollout {rollout_id} has no dispatch history (never dispatched, or pruned past 90d retention)",
+            "rollout {rollout_id} has no host_rollout_records (never dispatched, or rollout id unknown)",
         );
     }
-    let trace: RolloutTrace = resp
+    let hosts: RolloutHosts = resp
         .error_for_status()?
         .json()
         .await
-        .context("parse /v1/rollouts/{id}/trace response")?;
+        .context("parse /v1/rollouts/{id}/hosts response")?;
     if json {
-        return serde_json::to_string_pretty(&trace).context("serialize RolloutTrace to JSON");
+        return serde_json::to_string_pretty(&hosts).context("serialize RolloutHosts to JSON");
     }
-    Ok(render_trace_table(&trace))
+    Ok(render_hosts_table(&hosts))
+}
+
+/// `GET /v1/rollouts/{id}/events` — chronological event_log stream.
+/// CLI subcommand: `nixfleet rollout events <id>`. Default output is
+/// JSON because payload shapes vary by `kind` — a single rendered
+/// table would mislead. `json = false` falls back to a compact
+/// summary (seq / ts / kind / host).
+pub async fn run_events(
+    cfg: &ResolvedClientConfig,
+    rollout_id: &str,
+    limit: Option<i64>,
+    json: bool,
+) -> Result<String> {
+    let cp_url = cfg.cp_url.trim_end_matches('/');
+    let client = build_client(cfg)?;
+    let mut url = format!("{cp_url}/v1/rollouts/{}/events", rollout_id);
+    if let Some(n) = limit {
+        url.push_str(&format!("?limit={n}"));
+    }
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!("rollout {rollout_id} unknown");
+    }
+    let events: RolloutEvents = resp
+        .error_for_status()?
+        .json()
+        .await
+        .context("parse /v1/rollouts/{id}/events response")?;
+    if json {
+        return serde_json::to_string_pretty(&events).context("serialize RolloutEvents to JSON");
+    }
+    Ok(render_events_summary(&events))
+}
+
+/// Compact summary table for `--no-json` mode. One line per event:
+/// `seq  ts  kind  host`. The full payload is only available via
+/// the default JSON output.
+pub fn render_events_summary(events: &RolloutEvents) -> String {
+    let mut s = String::new();
+    s.push_str(&format!(
+        "rollout {} — {} event(s)\n",
+        events.rollout_id,
+        events.events.len()
+    ));
+    s.push_str(&format!(
+        "{:>8} {:24} {:18} {}\n",
+        "SEQ", "TS", "KIND", "HOST"
+    ));
+    for e in &events.events {
+        s.push_str(&format!(
+            "{:>8} {:24} {:18} {}\n",
+            e.seq,
+            e.ts,
+            e.kind,
+            e.host.as_deref().unwrap_or("-"),
+        ));
+    }
+    s
 }
 
 pub struct StatusInputs {
@@ -318,113 +382,81 @@ fn base_status_label(
 ) -> String {
     use nixfleet_proto::HostRolloutState;
 
-    // Failed/Reverted ranks above closure-match: the state machine remembers
-    // failures even after operator-driven recovery - keep surfacing them.
-    //
-    // Failed splits into two displayed flavors using existing primitives:
-    //   * Failed + agent still on the declared (bad) closure  -> "✗ failed"
-    //     (rollback has not fired yet, or the policy is Halt-only)
-    //   * Failed + agent has moved off declared (current != declared) ->
-    //     "→ reverting" (agent rolled back, CP just hasn't transitioned to
-    //     Reverted yet - transient, the next checkin will resolve it)
-    //
-    // Issue #5: when the host has ALSO seen a ClosureQuarantined event, append
-    // the channel-halt hint so the operator sees the actionable next step
-    // ("push a new closure to clear") rather than just the failure label.
-    if let Some(state) = host.rollout_state
-        && state.is_failed()
-    {
-        let off_declared = match (
-            host.declared_closure_hash.as_deref(),
-            host.current_closure_hash.as_deref(),
-        ) {
-            (Some(declared), Some(current)) => declared != current,
-            _ => false,
-        };
-        let base = match state {
-            HostRolloutState::Failed if off_declared => "\u{2192} reverting".to_string(),
-            HostRolloutState::Failed => "\u{2717} failed".to_string(),
-            HostRolloutState::Reverted => "\u{2717} reverted".to_string(),
-            _ => format!("\u{2717} {}", state.as_db_str().to_lowercase()),
-        };
-        return if host.quarantined_closure.is_some() {
-            format!("{base} - channel halted, push fix")
-        } else {
-            base
+    // 6-state machine per RFC-0008 §3. The pre-v0.2 conditional ladder
+    // (Failed+current!=declared → "→ reverting", Healthy/Soaked → label
+    // soaking, etc.) collapsed into one match arm per variant because the
+    // new state machine forbids the shapes that ladder masked.
+    let quarantined = host.quarantined_closure.is_some();
+
+    // Stale check trumps in-flight labels: a host stuck in `Activating`
+    // for 3 days isn't activating, it's offline. Failures + Reverted
+    // remain operator-visible (they're not "in flight") so stale only
+    // applies to in-flight states.
+    let stale_label = host
+        .last_checkin_at
+        .zip(freshness_minutes)
+        .and_then(|(last, window)| {
+            let age = now.signed_duration_since(last);
+            let stale_threshold = chrono::Duration::minutes(i64::from(window) * 2);
+            (age > stale_threshold).then(|| format!("\u{26A0} stale ({})", format_age(age)))
+        });
+
+    if let Some(state) = host.rollout_state {
+        if state.is_in_flight()
+            && let Some(label) = stale_label
+        {
+            return label;
+        }
+        return match state {
+            HostRolloutState::Pending => "\u{2192} in progress".to_string(),
+            HostRolloutState::Activating => "\u{2192} activating".to_string(),
+            HostRolloutState::Soaking => {
+                // Probe failures during soak are operator-visible even
+                // though the state itself is non-terminal.
+                if host.outstanding_health_failures > 0 {
+                    "\u{26A0} probes failing".to_string()
+                } else {
+                    "\u{2192} soaking".to_string()
+                }
+            }
+            HostRolloutState::Converged => "\u{2713} converged".to_string(),
+            HostRolloutState::Failed => {
+                if quarantined {
+                    "\u{2717} failed - channel halted, push fix".to_string()
+                } else {
+                    "\u{2717} failed".to_string()
+                }
+            }
+            HostRolloutState::Reverted => {
+                if quarantined {
+                    "\u{2717} reverted - channel halted, push fix".to_string()
+                } else {
+                    "\u{2717} reverted".to_string()
+                }
+            }
         };
     }
 
-    // Quarantined ranks above pending-reboot (CI-side fix vs operator reboot).
-    // Issue #5: same channel-halt hint applies here too -- when CP has
-    // recorded a quarantine but the host hasn't transitioned to a failure
-    // state yet (e.g., quarantine inserted on a host still mid-rollback),
-    // the label needs to convey the channel-level action.
-    if host.quarantined_closure.is_some() {
+    // No rollout_state recorded: fall through to the "did the closure
+    // match anyway?" + freshness ladder. Quarantine still surfaces; the
+    // pending-reboot hint stays as an operator carve-out.
+    if quarantined {
         return "\u{2717} quarantined - channel halted, push fix".to_string();
     }
-
-    // Pending-reboot ranks above in-flight: critical-component swap forced a
-    // reboot, operator-actionable, shouldn't be lost in the noise.
     if host.pending_reboot {
         return "\u{27F3} pending reboot".to_string();
     }
-
-    // Closure activated cleanly (converged) but probes still failing -
-    // covers both rollout-states where this divergence can occur: Healthy
-    // (pre-soak window) and Soaked (post-soak, pre-B's threshold). Without
-    // this check the closure-hash match short-circuits to a misleading
-    // "converged" green check.
-    if host.converged
-        && matches!(
-            host.rollout_state,
-            Some(HostRolloutState::Healthy | HostRolloutState::Soaked)
-        )
-        && host.outstanding_health_failures > 0
-    {
-        return "\u{26A0} probes failing".to_string();
-    }
-
-    // Closure-hash match ("converged") is necessary but not sufficient for the
-    // "✓ converged" label. The rollout state machine carries the authoritative
-    // lifecycle position: Healthy = activated + in soak window, Soaked =
-    // post-soak waiting on convergence, Converged = fully done. Only the
-    // last (or `None`: no rollout recorded for this host) earns the green
-    // check; Healthy / Soaked fall through to the rollout-state fallback below
-    // so the table reflects rollout progress rather than just hash-match.
-    if host.converged
-        && matches!(host.rollout_state, Some(HostRolloutState::Converged) | None)
-    {
+    if host.converged {
         return "\u{2713} converged".to_string();
     }
 
-    let Some(last) = host.last_checkin_at else {
+    if host.last_checkin_at.is_none() {
         return "\u{2717} never".to_string();
-    };
-
-    // Stale-checkin trumps in-flight state - a host stuck in `Activating` for
-    // 3 days isn't "activating", it's offline.
-    if let Some(window) = freshness_minutes {
-        let age = now.signed_duration_since(last);
-        let stale_threshold = chrono::Duration::minutes(i64::from(window) * 2);
-        if age > stale_threshold {
-            return format!("\u{26A0} stale ({})", format_age(age));
-        }
     }
-
-    match host.rollout_state {
-        Some(s) if s.is_terminal_for_ordering() => {
-            format!("\u{2713} {}", s.as_db_str().to_lowercase(),)
-        }
-        // Healthy is in `is_in_flight`, but the operator-facing label
-        // "→ healthy" reads as a terminal state. The host IS in the soak
-        // window between confirm and Soaked -- relabel to make that
-        // transient nature explicit. The state machine still calls it
-        // Healthy; the display layer just stops lying about it.
-        Some(HostRolloutState::Healthy) => "\u{2192} soaking".to_string(),
-        Some(s) if s.is_in_flight() => format!("\u{2192} {}", s.as_db_str().to_lowercase(),),
-        Some(HostRolloutState::Queued) => "\u{2026} queued".to_string(),
-        _ => "\u{2192} in progress".to_string(),
+    if let Some(label) = stale_label {
+        return label;
     }
+    "\u{2192} in progress".to_string()
 }
 
 fn format_age(d: chrono::Duration) -> String {
@@ -447,10 +479,10 @@ fn compliance_label(host: &HostStatusEntry) -> String {
     format!("{total} outstanding")
 }
 
-/// Render `nixfleet rollout trace`: wave-major listing of every
-/// dispatch_history row. Open dispatches show `<open>` in TERMINAL.
-pub fn render_trace_table(trace: &RolloutTrace) -> String {
-    let mut rows: Vec<[String; 5]> = Vec::with_capacity(trace.events.len() + 1);
+/// Render `nixfleet rollout hosts`: wave-major listing of per-host
+/// dispatch state. Open dispatches show `<open>` in TERMINAL.
+pub fn render_hosts_table(rollout: &RolloutHosts) -> String {
+    let mut rows: Vec<[String; 5]> = Vec::with_capacity(rollout.hosts.len() + 1);
     rows.push([
         "WAVE".into(),
         "HOST".into(),
@@ -458,13 +490,13 @@ pub fn render_trace_table(trace: &RolloutTrace) -> String {
         "TERMINAL".into(),
         "AT".into(),
     ]);
-    for ev in &trace.events {
+    for h in &rollout.hosts {
         rows.push([
-            ev.wave.to_string(),
-            ev.host.clone(),
-            short_ts(&ev.dispatched_at),
-            ev.terminal_state.clone().unwrap_or_else(|| "<open>".into()),
-            ev.terminal_at.as_deref().map(short_ts).unwrap_or_default(),
+            h.wave.to_string(),
+            h.host.clone(),
+            short_ts(&h.dispatched_at),
+            h.terminal_state.clone().unwrap_or_else(|| "<open>".into()),
+            h.terminal_at.as_deref().map(short_ts).unwrap_or_default(),
         ]);
     }
 
@@ -475,7 +507,7 @@ pub fn render_trace_table(trace: &RolloutTrace) -> String {
         }
     }
 
-    let mut out = format!("rollout {}\n", trace.rollout_id);
+    let mut out = format!("rollout {}\n", rollout.rollout_id);
     for row in &rows {
         for (i, col) in row.iter().enumerate() {
             if i > 0 {
@@ -745,12 +777,15 @@ mod tests {
     /// transitioned to Reverted yet. Render as "→ reverting" so the operator
     /// knows recovery is in flight rather than seeing a stale "✗ failed".
     #[test]
-    fn rollout_state_failed_off_declared_renders_reverting() {
+    fn rollout_state_failed_renders_as_failed_under_new_state_machine() {
+        // RFC-0008 §3 forbids the v0.1 "Failed + current != declared →
+        // → reverting" shape. The agent owns its own rollback; CP sees
+        // either Failed or Reverted as terminal-but-stuck. The label
+        // collapsed accordingly in Phase 7h.
         use nixfleet_proto::HostRolloutState;
         let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
         let mut h = fixture_host("a", "stable", false, Some(1), 0);
         h.rollout_state = Some(HostRolloutState::Failed);
-        // fixture_host already sets declared != current; keep as-is.
         let inputs = StatusInputs {
             now,
             hosts: vec![h],
@@ -758,12 +793,12 @@ mod tests {
         };
         let out = render_status_table(&inputs);
         assert!(
-            out.contains("\u{2192} reverting"),
-            "Failed off-declared must show reverting: {out}",
+            out.contains("\u{2717} failed"),
+            "Failed renders as '✗ failed' regardless of agent's current closure: {out}",
         );
         assert!(
-            !out.contains("\u{2717} failed"),
-            "must not show '✗ failed' when the agent has moved off declared: {out}",
+            !out.contains("\u{2192} reverting"),
+            "v0.1 '→ reverting' transition label is gone: {out}",
         );
     }
 
@@ -772,7 +807,7 @@ mod tests {
         use nixfleet_proto::HostRolloutState;
         let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
         let mut h = fixture_host("a", "stable", true, Some(1), 0);
-        h.rollout_state = Some(HostRolloutState::Soaked);
+        h.rollout_state = Some(HostRolloutState::Soaking);
         h.outstanding_health_failures = 1;
         let inputs = StatusInputs {
             now,
@@ -797,7 +832,7 @@ mod tests {
         // Pre-soak window: closure activated, host still in Healthy, probes
         // already failing. Same misleading-display bug as the Soaked case.
         let mut h = fixture_host("a", "stable", true, Some(1), 0);
-        h.rollout_state = Some(HostRolloutState::Healthy);
+        h.rollout_state = Some(HostRolloutState::Soaking);
         h.outstanding_health_failures = 1;
         let inputs = StatusInputs {
             now,
@@ -816,15 +851,13 @@ mod tests {
     }
 
     #[test]
-    fn soaked_with_no_failing_probes_renders_soaked_not_converged() {
-        // Issue #4: STATUS reflects rollout-state lifecycle, not just
-        // closure-hash match. A host at Soaked is on the right closure with
-        // passing probes but has NOT been swept to Converged yet -- show
-        // "soaked" so the operator sees rollout progress accurately.
+    fn soaking_with_no_failing_probes_renders_soaking_not_converged() {
+        // A host in Soaking has activated cleanly but the soak window
+        // hasn't elapsed yet — distinct from Converged.
         use nixfleet_proto::HostRolloutState;
         let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
         let mut h = fixture_host("a", "stable", true, Some(1), 0);
-        h.rollout_state = Some(HostRolloutState::Soaked);
+        h.rollout_state = Some(HostRolloutState::Soaking);
         let inputs = StatusInputs {
             now,
             hosts: vec![h],
@@ -832,12 +865,12 @@ mod tests {
         };
         let out = render_status_table(&inputs);
         assert!(
-            out.contains("\u{2713} soaked"),
-            "soaked+passing must render as soaked, not converged: {out}",
+            out.contains("\u{2192} soaking"),
+            "soaking+passing must render as '→ soaking': {out}",
         );
         assert!(
             !out.contains("\u{2713} converged"),
-            "must not collapse soaked into converged: {out}",
+            "must not collapse soaking into converged: {out}",
         );
     }
 
@@ -853,7 +886,7 @@ mod tests {
         use nixfleet_proto::HostRolloutState;
         let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
         let mut h = fixture_host("a", "stable", true, Some(1), 0);
-        h.rollout_state = Some(HostRolloutState::Healthy);
+        h.rollout_state = Some(HostRolloutState::Soaking);
         let inputs = StatusInputs {
             now,
             hosts: vec![h],
@@ -972,11 +1005,14 @@ mod tests {
     }
 
     #[test]
-    fn rollout_state_soaked_renders_as_terminal() {
+    fn rollout_state_soaking_renders_in_flight_not_converged() {
+        // RFC-0008 §3 collapsed Soaked into Soaking and made Converged
+        // the sole terminal-for-ordering state. Soaking must render as
+        // in-flight (→ soaking), not as ✓.
         use nixfleet_proto::HostRolloutState;
         let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
         let mut h = fixture_host("a", "stable", false, Some(1), 0);
-        h.rollout_state = Some(HostRolloutState::Soaked);
+        h.rollout_state = Some(HostRolloutState::Soaking);
         let inputs = StatusInputs {
             now,
             hosts: vec![h],
@@ -984,17 +1020,23 @@ mod tests {
         };
         let out = render_status_table(&inputs);
         assert!(
-            out.contains("\u{2713} soaked"),
-            "expected soaked terminal label: {out}"
+            out.contains("\u{2192} soaking"),
+            "Soaking must render in-flight: {out}",
+        );
+        assert!(
+            !out.contains("\u{2713}"),
+            "Soaking is not terminal-for-ordering in v0.2: {out}",
         );
     }
 
     #[test]
-    fn rollout_state_queued_renders_distinctly() {
+    fn rollout_state_pending_renders_in_progress() {
+        // v0.1 Queued + Dispatched + ConfirmWindow all collapsed into
+        // Pending. The label collapsed with them.
         use nixfleet_proto::HostRolloutState;
         let now = Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap();
         let mut h = fixture_host("a", "stable", false, Some(1), 0);
-        h.rollout_state = Some(HostRolloutState::Queued);
+        h.rollout_state = Some(HostRolloutState::Pending);
         let inputs = StatusInputs {
             now,
             hosts: vec![h],
@@ -1002,17 +1044,17 @@ mod tests {
         };
         let out = render_status_table(&inputs);
         assert!(
-            out.contains("\u{2026} queued"),
-            "expected queued label: {out}"
+            out.contains("\u{2192} in progress"),
+            "Pending must render '→ in progress': {out}",
         );
     }
 
-    fn trace_event(
+    fn host_entry(
         host: &str,
         wave: u32,
         terminal: Option<&str>,
-    ) -> nixfleet_proto::RolloutTraceEvent {
-        nixfleet_proto::RolloutTraceEvent {
+    ) -> nixfleet_proto::RolloutHostEntry {
+        nixfleet_proto::RolloutHostEntry {
             host: host.into(),
             channel: "stable".into(),
             wave,
@@ -1025,15 +1067,15 @@ mod tests {
     }
 
     #[test]
-    fn render_trace_table_shows_open_dispatches_distinctly() {
-        let trace = RolloutTrace {
+    fn render_hosts_table_shows_open_dispatches_distinctly() {
+        let rollout = RolloutHosts {
             rollout_id: "stable@trace1".into(),
-            events: vec![
-                trace_event("host-05", 0, Some("converged")),
-                trace_event("host-01", 1, None),
+            hosts: vec![
+                host_entry("host-05", 0, Some("converged")),
+                host_entry("host-01", 1, None),
             ],
         };
-        let out = render_trace_table(&trace);
+        let out = render_hosts_table(&rollout);
         assert!(
             out.contains("rollout stable@trace1"),
             "missing header: {out}"

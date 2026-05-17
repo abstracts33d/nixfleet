@@ -20,10 +20,20 @@
       environment.systemPackages = [pkgs.mesa];
     })
   ];
+  # mk-host now requires `fleetResolved`. Test rigs typically don't
+  # have a full fleet eval in hand; stub with an empty resolved-shape
+  # so the agent module gets `effectiveHealthChecks = {}` (which is
+  # what the test rig wants anyway — no probes in a VM smoke test).
+  emptyResolvedStub = {effectiveHealthChecks = {};};
 in
-  args @ {modules ? [], ...}:
+  args @ {
+    modules ? [],
+    fleetResolved ? emptyResolvedStub,
+    ...
+  }:
     mkHost (args
       // {
         modules = qemuTestRigModules ++ modules;
         isVm = true;
+        inherit fleetResolved;
       })

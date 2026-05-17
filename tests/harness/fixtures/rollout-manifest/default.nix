@@ -26,7 +26,6 @@
       }
     ];
     healthGate = {};
-    complianceFrameworks = ["anssi-bp028"];
     meta = {
       schemaVersion = 1;
       signedAt = signedAt;

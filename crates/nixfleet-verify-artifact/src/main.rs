@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use nixfleet_proto::TrustConfig;
+use nixfleet_proto::{RolloutId, TrustConfig};
 use nixfleet_reconciler::evidence::{SignatureStatus, verify_canonical_payload};
 use nixfleet_reconciler::{verify_artifact, verify_rollout_manifest};
 
@@ -33,7 +33,7 @@ enum Cmd {
         #[arg(long)]
         freshness_window_secs: u64,
     },
-    /// Verify a signed manifest; recompute hash matches `--rollout-id`.
+    /// Verify a signed manifest; parsed identity matches `--rollout-id`.
     RolloutManifest {
         #[arg(long)]
         manifest: PathBuf,
@@ -45,7 +45,10 @@ enum Cmd {
         now: DateTime<Utc>,
         #[arg(long)]
         freshness_window_secs: u64,
-        /// Catches mix-and-match / rename attacks: filename ≠ content hash.
+        /// Canonical RFC-0012 §6.3 RolloutId `"channel@channel_ref"`.
+        /// Catches mix-and-match / rename attacks: a manifest signed
+        /// under one identity served at a different filename fails this
+        /// discriminator before the bytes reach a downstream consumer.
         #[arg(long)]
         rollout_id: String,
     },
@@ -140,25 +143,19 @@ fn run_rollout_manifest(
         Duration::from_secs(freshness_window_secs),
         trust.ci_release_key.reject_before,
     ) {
-        Ok(m) => m,
+        Ok(v) => v.into_inner(),
         Err(err) => {
             eprintln!("{err}");
             return ExitCode::from(1);
         }
     };
 
-    // LOADBEARING: hash the bytes the auditor was handed, NOT a re-serialised
-    // parse. An older verifier with a missing-field proto would otherwise hash
-    // differently and reject valid manifests, breaking additive-evolution.
-    let recomputed = match nixfleet_reconciler::rollout_id_from_bytes(&manifest_bytes) {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("rollout_id_from_bytes failed: {err}");
-            return ExitCode::from(1);
-        }
-    };
-    if recomputed != expected_rollout_id {
-        eprintln!("rolloutId mismatch: expected {expected_rollout_id}, recomputed {recomputed}");
+    let parsed_id = RolloutId::new(&manifest.channel, &manifest.channel_ref);
+    if parsed_id.as_str() != expected_rollout_id {
+        eprintln!(
+            "rolloutId mismatch: expected {expected_rollout_id}, parsed {parsed}",
+            parsed = parsed_id.as_str(),
+        );
         return ExitCode::from(1);
     }
 
@@ -168,7 +165,7 @@ fn run_rollout_manifest(
         manifest.channel,
         manifest.host_set.len(),
         manifest.fleet_resolved_hash,
-        recomputed,
+        parsed_id.as_str(),
     );
     ExitCode::SUCCESS
 }
@@ -212,7 +209,8 @@ fn run_artifact(
         Duration::from_secs(freshness_window_secs),
         trust.ci_release_key.reject_before,
     ) {
-        Ok(fleet) => {
+        Ok(verified) => {
+            let fleet = verified.into_inner();
             println!(
                 "schemaVersion={} hosts={}",
                 fleet.schema_version,

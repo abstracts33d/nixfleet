@@ -16,7 +16,19 @@
     pname = "nixfleet-workspace-deps";
   };
 
-  # Per-crate source: always includes the three shared library crates; `extraFiles` for non-Rust files (e.g. SQL migrations).
+  # Per-crate source: always includes the four shared library crates that
+  # every workspace member transitively depends on through the new
+  # event-driven runtime (RFC-0008 / RFC-0009). `extraFiles` for non-Rust
+  # files (e.g. SQL migrations).
+  #
+  # Crate-set rationale:
+  #   - nixfleet-proto         — wire types, Verified<T> consumers, host_key
+  #   - nixfleet-canonicalize  — JCS canonicalisation primitive
+  #   - nixfleet-reconciler    — verify_* + planner + planner_gates
+  #   - nixfleet-state-machine — pure step() reducer (Phase 3a); pulled into
+  #                              every consumer's manifest graph by
+  #                              nixfleet-reconciler::planner_types and by
+  #                              the agent + CP runtimes directly.
   fileSetForCrate = {
     crate,
     extraFiles ? [],
@@ -28,6 +40,7 @@
           ./Cargo.lock
           (craneLib.fileset.commonCargoSources ./crates/nixfleet-proto)
           (craneLib.fileset.commonCargoSources ./crates/nixfleet-canonicalize)
+          (craneLib.fileset.commonCargoSources ./crates/nixfleet-state-machine)
           (craneLib.fileset.commonCargoSources ./crates/nixfleet-reconciler)
           (craneLib.fileset.commonCargoSources crate)
         ]

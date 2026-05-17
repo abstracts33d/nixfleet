@@ -31,6 +31,23 @@ in
     isVm ? false,
     # LOADBEARING: extraInputs merged BENEATH framework inputs so framework wins (inputs.self -> nixfleet).
     extraInputs ? {},
+    # `mkFleet`'s `.resolved` attrset, ALWAYS supplied by the framework
+    # `mkFleet` wrapper in `lib/default.nix` (never by the operator).
+    # The wrapper iterates `cfg.hosts` and calls `mkHost` with this
+    # value pre-bound; operators consume the result as
+    # `fleet.nixosConfigurations` and never name `fleetResolved`
+    # themselves. This closes DEFECT-001/-002: an entire class of
+    # silent no-op bugs ("operator forgot to wire fleetResolved →
+    # probes silently disappear") is impossible by design
+    # (RFC-0011 §2.2 + §3 anti-pattern #4).
+    #
+    # If you find yourself calling `mkHost` directly with
+    # `fleetResolved = ...`, you're outside the framework path —
+    # consider whether `mkFleet { hosts = {...}; }` would work
+    # instead. Direct `mkHost` is supported for one-off / test rigs
+    # (tests/lib/mk-test-host.nix uses it that way) but is not the
+    # operator path.
+    fleetResolved,
   }: let
     isDarwin = isDarwinPlatform platform;
 
@@ -38,6 +55,18 @@ in
       {inherit hostName;}
       // hostSpec
       // lib.optionalAttrs isDarwin {inherit isDarwin;};
+
+    # RFC-0010 §4 closure-driven probe topology. The resolved set lives
+    # at `fleet.resolved.effectiveHealthChecks.<hostName>` per
+    # `lib/mk-fleet.nix`'s `resolveHealthChecks` (host > tag > fleet
+    # precedence). The framework wrapper passes `fleet.resolved` here;
+    # `_agent.nix` reads the resulting attrset to render the on-disk
+    # `/etc/nixfleet/agent/health-checks.json`.
+    effectiveHealthChecks = fleetResolved.effectiveHealthChecks.${hostName} or {};
+
+    healthChecksModule = {
+      services.nixfleet-agent.effectiveHealthChecks = effectiveHealthChecks;
+    };
 
     frameworkNixosModules =
       [
@@ -49,6 +78,7 @@ in
         persistenceModule
         coreNixos
         agentModule
+        healthChecksModule
         controlPlaneModule
         cacheModule
         microvmHostModule
@@ -77,6 +107,7 @@ in
       {hostSpec.isDarwin = true;}
       coreDarwin
       agentDarwinModule
+      healthChecksModule
       operatorModule
     ];
 

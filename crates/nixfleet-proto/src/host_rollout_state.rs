@@ -1,6 +1,9 @@
-//! Per-host rollout state machine. LOADBEARING: single source of truth for
-//! both CP (SQL CHECK round-trip) and reconciler decision-procedure - adding
-//! a state requires updating the SQL CHECK constraint in the CP migration.
+//! Wire-side per-host rollout state. Mirrors RFC-0008 §3's 6-state machine.
+//!
+//! The CP's internal source of truth lives in
+//! [`nixfleet_state_machine::HostState`]; this proto type exists for
+//! HTTP / JSON serialization on the legacy `/v1/hosts` view layer. The
+//! six variants are 1:1 with the state-machine enum.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,72 +20,60 @@ impl std::fmt::Display for HostRolloutStateParseError {
 
 impl std::error::Error for HostRolloutStateParseError {}
 
+/// 6-state machine per RFC-0008 §3. Pre-v0.2 carried `Queued`,
+/// `Dispatched`, `ConfirmWindow`, `Healthy`, `Soaked` — those are gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HostRolloutState {
-    Queued,
-    Dispatched,
+    Pending,
     Activating,
-    ConfirmWindow,
-    Healthy,
-    Soaked,
+    Soaking,
     Converged,
-    Reverted,
     Failed,
+    Reverted,
 }
 
 impl HostRolloutState {
-    /// Canonical literal - matches the SQL CHECK and `observed.json`.
+    /// Canonical literal — matches the SQL CHECK on
+    /// `host_rollout_records.state` and the RFC-0008 §3 wire shape.
     pub fn as_db_str(&self) -> &'static str {
         match self {
-            HostRolloutState::Queued => "Queued",
-            HostRolloutState::Dispatched => "Dispatched",
+            HostRolloutState::Pending => "Pending",
             HostRolloutState::Activating => "Activating",
-            HostRolloutState::ConfirmWindow => "ConfirmWindow",
-            HostRolloutState::Healthy => "Healthy",
-            HostRolloutState::Soaked => "Soaked",
+            HostRolloutState::Soaking => "Soaking",
             HostRolloutState::Converged => "Converged",
-            HostRolloutState::Reverted => "Reverted",
             HostRolloutState::Failed => "Failed",
+            HostRolloutState::Reverted => "Reverted",
         }
     }
 
     pub fn from_db_str(s: &str) -> Result<Self, HostRolloutStateParseError> {
         match s {
-            "Queued" => Ok(HostRolloutState::Queued),
-            "Dispatched" => Ok(HostRolloutState::Dispatched),
+            "Pending" => Ok(HostRolloutState::Pending),
             "Activating" => Ok(HostRolloutState::Activating),
-            "ConfirmWindow" => Ok(HostRolloutState::ConfirmWindow),
-            "Healthy" => Ok(HostRolloutState::Healthy),
-            "Soaked" => Ok(HostRolloutState::Soaked),
+            "Soaking" => Ok(HostRolloutState::Soaking),
             "Converged" => Ok(HostRolloutState::Converged),
-            "Reverted" => Ok(HostRolloutState::Reverted),
             "Failed" => Ok(HostRolloutState::Failed),
+            "Reverted" => Ok(HostRolloutState::Reverted),
             other => Err(HostRolloutStateParseError {
                 got: other.to_string(),
             }),
         }
     }
 
-    /// Host has cleared its observable activation (soak window passed or
-    /// rollout reached Converged). Both Soaked and Converged count: treating
-    /// only Converged as terminal would hold the successor across the gap
-    /// between SoakHost and the next reconcile tick. `Failed`/`Reverted` are
-    /// NOT terminal-for-ordering - successor must wait for operator action.
+    /// Terminal-for-ordering: predecessor channels can release once every
+    /// host hits this state. RFC-0008 §3 collapses Soaked into Soaking —
+    /// only Converged stays terminal.
     pub fn is_terminal_for_ordering(&self) -> bool {
-        matches!(self, Self::Soaked | Self::Converged)
+        matches!(self, Self::Converged)
     }
 
-    /// Host is consuming a disruption-budget slot.
+    /// Host is consuming a disruption-budget slot (still moving through
+    /// activation / soak).
     pub fn is_in_flight(&self) -> bool {
-        matches!(
-            self,
-            Self::Dispatched | Self::Activating | Self::ConfirmWindow | Self::Healthy
-        )
+        matches!(self, Self::Pending | Self::Activating | Self::Soaking)
     }
 
-    /// Stuck and staying stuck; needs operator action. Distinct from
-    /// `is_terminal_for_ordering` because Failed/Reverted hosts must hold
-    /// their successor.
+    /// Stuck and staying stuck; needs operator action.
     pub fn is_failed(&self) -> bool {
         matches!(self, Self::Failed | Self::Reverted)
     }
@@ -114,25 +105,31 @@ mod tests {
     #[test]
     fn round_trip_known_values() {
         for v in [
-            HostRolloutState::Queued,
-            HostRolloutState::Dispatched,
+            HostRolloutState::Pending,
             HostRolloutState::Activating,
-            HostRolloutState::ConfirmWindow,
-            HostRolloutState::Healthy,
-            HostRolloutState::Soaked,
+            HostRolloutState::Soaking,
             HostRolloutState::Converged,
-            HostRolloutState::Reverted,
             HostRolloutState::Failed,
+            HostRolloutState::Reverted,
         ] {
             assert_eq!(HostRolloutState::from_db_str(v.as_db_str()).unwrap(), v);
         }
     }
 
     #[test]
+    fn legacy_variants_no_longer_parse() {
+        for legacy in ["Queued", "Dispatched", "ConfirmWindow", "Healthy", "Soaked"] {
+            assert!(
+                HostRolloutState::from_db_str(legacy).is_err(),
+                "v0.1 variant {legacy} must not parse against v0.2 wire shape",
+            );
+        }
+    }
+
+    #[test]
     fn unknown_strings_error() {
         assert!(HostRolloutState::from_db_str("").is_err());
-        assert!(HostRolloutState::from_db_str("healthy").is_err());
-        assert!(HostRolloutState::from_db_str("soaked").is_err());
-        assert!(HostRolloutState::from_db_str("Healhty").is_err());
+        assert!(HostRolloutState::from_db_str("pending").is_err());
+        assert!(HostRolloutState::from_db_str("Pendng").is_err());
     }
 }

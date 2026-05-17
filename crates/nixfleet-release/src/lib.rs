@@ -10,7 +10,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::{FleetResolved, RevocationEntry, Revocations};
+use nixfleet_proto::{FleetResolved, RevocationEntry, Revocations, RolloutId};
 use nixfleet_reconciler::project_manifest;
 use sha2::{Digest, Sha256};
 
@@ -301,15 +301,21 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
             .with_context(|| format!("serialise manifest for channel {channel_name}"))?;
         let manifest_canonical = nixfleet_canonicalize::canonicalize(&manifest_json)
             .with_context(|| format!("canonicalize manifest for channel {channel_name}"))?;
-        let rollout_id = nixfleet_reconciler::compute_rollout_id(&manifest)
-            .with_context(|| format!("compute rolloutId for channel {channel_name}"))?;
+        // LOADBEARING: rolloutId is the canonical RFC-0012 §6.3 composite,
+        // built from the FULL channel_ref. Not display_name, which truncates
+        // to a 7-char short ref for operator-facing labels. Identical
+        // (channel, channel_ref) inputs produce identical rolloutId, so
+        // identical content still hits the same path on republish.
+        let rollout_id = RolloutId::new(&manifest.channel, &manifest.channel_ref)
+            .as_str()
+            .to_string();
 
         let artifact_name = format!("{rollout_id}.json");
         let manifest_path = rollouts_dir.join(&artifact_name);
         let sig_path = rollouts_dir.join(format!("{artifact_name}.sig"));
 
-        // rolloutId IS the content hash, so identical bytes ⇒ identical path.
-        // Reuse on-disk signature when bytes match.
+        // Reuse on-disk signature when canonical bytes match (idempotent
+        // republish; mTLS + signature gate authenticates the bytes).
         let sig_bytes = if manifest_path.exists()
             && sig_path.exists()
             && std::fs::read(&manifest_path).ok().as_deref() == Some(manifest_canonical.as_bytes())
@@ -835,7 +841,7 @@ mod bootstrap_nonces_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nixfleet_proto::{Channel, Compliance, Host, Meta};
+    use nixfleet_proto::{Channel, Host, Meta};
 
     fn dummy_resolved() -> FleetResolved {
         let mut hosts = std::collections::HashMap::new();
@@ -869,10 +875,6 @@ mod tests {
                 reconcile_interval_minutes: 5,
                 freshness_window: 60,
                 signing_interval_minutes: 30,
-                compliance: Compliance {
-                    frameworks: vec![],
-                    mode: "disabled".to_string(),
-                },
             },
         );
         FleetResolved {
@@ -996,10 +998,6 @@ mod tests {
                 reconcile_interval_minutes: 5,
                 freshness_window: 60,
                 signing_interval_minutes: 30,
-                compliance: Compliance {
-                    frameworks: vec!["anssi-bp028".into()],
-                    mode: "permissive".to_string(),
-                },
             },
         );
         let mut rollout_policies = std::collections::HashMap::new();
@@ -1073,7 +1071,6 @@ mod tests {
         assert_eq!(m.display_name, "stable@def45678");
         assert_eq!(m.channel_ref, "def45678");
         assert_eq!(m.meta.signed_at, Some(ts));
-        assert_eq!(m.compliance_frameworks, vec!["anssi-bp028".to_string()]);
     }
 
     #[test]

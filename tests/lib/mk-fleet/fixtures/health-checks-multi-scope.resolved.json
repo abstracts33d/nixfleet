@@ -1,0 +1,161 @@
+{
+  "channelEdges": [],
+  "channels": {
+    "stable": {
+      "freshnessWindow": 180,
+      "reconcileIntervalMinutes": 30,
+      "rolloutPolicy": "all",
+      "signingIntervalMinutes": 60
+    }
+  },
+  "disruptionBudgets": [],
+  "edges": [],
+  "effectiveHealthChecks": {
+    "h-infra": {
+      "cp-tls-self-check": {
+        "command": [
+          "/usr/bin/openssl",
+          "s_client",
+          "-connect",
+          "cp:8443"
+        ],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": null,
+        "host": null,
+        "intervalSeconds": 600,
+        "kind": "exec",
+        "mode": "observe",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      },
+      "heartbeat": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": null,
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "http",
+        "mode": "observe",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": "http://localhost/health"
+      }
+    },
+    "h-web": {
+      "cache-disk-space": {
+        "command": [
+          "/usr/bin/df",
+          "-h",
+          "/"
+        ],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": null,
+        "host": null,
+        "intervalSeconds": 300,
+        "kind": "exec",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      },
+      "heartbeat": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": null,
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "http",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": "http://localhost/health"
+      },
+      "nginx-version": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": null,
+        "host": null,
+        "intervalSeconds": 15,
+        "kind": "http",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": "http://localhost/version"
+      }
+    }
+  },
+  "hosts": {
+    "h-infra": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": [
+        "infra"
+      ]
+    },
+    "h-web": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": [
+        "web"
+      ]
+    }
+  },
+  "meta": {
+    "ciCommit": null,
+    "schemaVersion": 1,
+    "signedAt": null
+  },
+  "rolloutPolicies": {
+    "all": {
+      "healthGate": {},
+      "onHealthFailure": "rollback-and-halt",
+      "strategy": "all-at-once",
+      "waves": [
+        {
+          "selector": {
+            "all": true,
+            "and": [],
+            "channel": null,
+            "hosts": [],
+            "not": null,
+            "tags": [],
+            "tagsAny": []
+          },
+          "soakMinutes": 0
+        }
+      ]
+    }
+  },
+  "schemaVersion": 1,
+  "waves": {
+    "stable": [
+      {
+        "hosts": [
+          "h-infra",
+          "h-web"
+        ],
+        "soakMinutes": 0
+      }
+    ]
+  }
+}

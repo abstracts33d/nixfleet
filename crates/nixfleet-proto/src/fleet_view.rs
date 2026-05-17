@@ -63,17 +63,22 @@ pub struct HostsResponse {
     pub hosts: Vec<HostStatusEntry>,
 }
 
-/// Wave-by-wave dispatch trace for a single rollout. One entry per
-/// dispatch_history row, ordered wave 0, 1, 2...
+/// Per-host summary of a single rollout — one entry per `(rollout, host)`
+/// pair, sorted by wave then hostname. Operator-facing view: "what
+/// state is each host in for this rollout?"
+///
+/// Distinct from [`RolloutEvents`], which projects the chronological
+/// `event_log` stream for the same rollout (engineer-facing replay
+/// surface; RFC-0008 §10.5 + Plan 04).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RolloutTrace {
+pub struct RolloutHosts {
     pub rollout_id: String,
-    pub events: Vec<RolloutTraceEvent>,
+    pub hosts: Vec<RolloutHostEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct RolloutTraceEvent {
+pub struct RolloutHostEntry {
     pub host: String,
     pub channel: String,
     pub wave: u32,
@@ -87,4 +92,39 @@ pub struct RolloutTraceEvent {
     pub terminal_state: Option<String>,
     #[serde(default)]
     pub terminal_at: Option<String>,
+}
+
+/// Chronological event-log stream for a single rollout — every row in
+/// `event_log WHERE rollout_id = ? ORDER BY seq ASC`. Engineer-facing
+/// replay surface (RFC-0008 §10.5 + Plan 04 §"Event log schema"):
+/// reproduces the per-host state evolution by replaying these entries
+/// through `nixfleet_state_machine::step`.
+///
+/// `payload` is parsed JSON (not the escaped string the DB stores). The
+/// shape inside `payload` is determined by `kind`:
+/// - `kind = "agent_event"` → an `OutboundAgentEvent` variant payload
+/// - `kind = "plan_action"` → a `PlanAction` variant
+/// - `kind = "effect"`      → an `Effect` variant
+/// - `kind = "gate_decision"` → `{ host, rollout, gate, reason }`
+/// - `kind = "verify_outcome"` / `"manifest_poll"` → producer-side shapes
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RolloutEvents {
+    pub rollout_id: String,
+    pub events: Vec<RolloutEventEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutEventEntry {
+    pub seq: i64,
+    /// RFC3339, caller-supplied (no SQL DEFAULT — see Phase 4 fix
+    /// `f3fcb213`).
+    pub ts: String,
+    pub kind: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Parsed JSON. The `event_log` column stores a JSON-validated
+    /// string; the route parses on-read so consumers get structured
+    /// data without a second deserialise step.
+    pub payload: serde_json::Value,
 }

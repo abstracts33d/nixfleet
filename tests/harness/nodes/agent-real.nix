@@ -8,7 +8,6 @@
   agentHostName,
   agentPkg,
   signedFixture,
-  pollIntervalSecs ? 10,
   # Optional OpenSSH-format ed25519 private key for /etc/ssh/ssh_host_ed25519_key.
   # When provided, the agent's evidence_signer reads it and signs
   # last_confirmed_at attestations with a pubkey matching the host's
@@ -60,7 +59,6 @@
     package = agentPkg;
     controlPlaneUrl = "https://cp:${toString controlPlanePort}";
     machineId = agentHostName;
-    pollInterval = pollIntervalSecs;
     trustFile = "/etc/nixfleet-agent/test-trust.json";
     stateDir = "/var/lib/nixfleet-agent";
     tls = {

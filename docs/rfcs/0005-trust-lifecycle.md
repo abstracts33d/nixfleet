@@ -33,6 +33,23 @@ Declarations live under `nixfleet.trust.{ciReleaseKey,atticCacheKey,orgRootKey}`
 
 At runtime the CP deserialises the file into `proto::TrustConfig`, and on every `fleet.resolved` load calls `slot.active_keys()` to get the `&[TrustedPubkey]` slice handed to `reconciler::verify_artifact`. The verify function iterates the slice and matches on each entry's `algorithm` tag, which is what makes cross-algorithm rotation work end-to-end - the same call site verifies ed25519-signed and ecdsa-p256-signed artifacts as long as both keys are present in the active slot pair. The CP never holds trust private keys; the org root, CI release key, and attic signing key all live with operator hardware or CI signing tooling outside the CP host. Rotation happens declaratively in `fleet.nix` and reaches the CP via the normal nixos-rebuild activation path; no separate trust-state replication channel exists, and the CP is reconstructible from git plus agent check-ins by design (docs/design/contracts.md §IV).
 
+### 1.5.1 Amendment (2026-05-17) — CA-issuance signing key
+
+The three trust roots above (`ciReleaseKey`, `atticCacheKey`, `orgRootKey`) remain outside the CP host. A **fourth signing key** has since been added to CP's responsibility surface: the **fleet CA issuance key**, used by `/v1/enroll` and `/v1/agent/renew-cert` to sign agent mTLS client certs. This key was introduced in `feat(cp,trust): cert issuance` (commit `4808d4dc`) but the trust-model wording in this section, in RFC-0008 §2.1, and in RFC-0009 §6 N5/N6 was not amended at the time. This subsection is the canonical statement; the other RFCs reference it.
+
+CP supports two backends for this key, selected at startup by `build_signer_from_args` (`crates/nixfleet-control-plane/src/auth/issuance.rs:264`):
+
+| Backend | Flags | In-memory key material |
+|---|---|---|
+| **TPM-backed** (production-grade) | `--tpm-ca-pubkey-raw` + `--tpm-ca-sign-wrapper` | None. CP holds a 64-byte raw P-256 **pubkey** + a path to a `tpm-sign-<name>` wrapper. Each signing op shells out to `tpm2_sign`; the TPM key is created with `fixedtpm \| fixedparent \| sensitivedataorigin \| sign` attributes — non-exportable, optionally PCR-bound (see `impls/keyslots/tpm/default.nix`). |
+| **File-backed** (dev / fallback) | `--fleet-ca-key` | An agenix-decrypted PEM. `make_key_pair()` reads + parses the file per issuance; the private key transits CP memory at each call. |
+
+The runtime precedence in `build_signer_from_args` is **TPM wins** when both flag triples are supplied. With the TPM backend, the §3.3 blast-radius claim ("SSH access to the CP host has the same blast radius as SSH access to any production NixOS box") holds in full — compromising the CP filesystem yields no usable signing material; the attacker would additionally need to subvert the TPM hardware policy. With the file backend, that blast radius extends to the agenix-encrypted CA key PEM, whose at-rest protection reduces to the operator's age/SOPS posture; the activated key plus the agenix identity together yield a working fleet-CA forge.
+
+Production fleets SHOULD configure the TPM backend. The runtime precedence enforces it whenever both backends are present, but does not refuse-to-start when only the file backend is configured. Per RFC-0011 §1 invariant 3 (mechanical trust over advisory trust), v0.2.x adds an additive `--strict` enforcement gate that refuses file-only CA configurations without an explicit `--allow-file-ca-key` opt-in. This converts the operator-facing recommendation above into a build-time check, in the same shape as `--strict`'s existing gates on `revocations_required` and `bootstrap_nonces_required`.
+
+The CA-issuance key never appears in `TrustConfig`; it is not a verifier key. It is a signer key, and that distinction is why the original "CP never holds trust private keys" claim was not literally violated by `4808d4dc` (the key is not a *trust* private key in the original sense — it does not appear in any trust slot, does not sign artifacts, and the manifest pipeline does not consult it). The amendment is necessary because operator-facing language ("CP signs nothing", "CP holds no signing key") read as a stronger universal than the original technical claim warranted; the universal must now be qualified or made mechanical via `--strict`.
+
 ## 2. Design principle
 
 Every authorization in the system has an explicit lifecycle: who creates it, where it lives, how long it lasts, how it is revoked, what happens when it is lost. No silent state, no implicit trust, no procedure that exists only in a single operator's head.

@@ -1,10 +1,14 @@
 //! Signed per-channel rollout manifest (`releases/rollouts/<rolloutId>.json`).
-//! LOADBEARING: rolloutId is the SHA-256 of canonical received bytes (not a
-//! label) - verifiers MUST canonicalize the received bytes and assert the
-//! hash before consuming any other field. They MUST NOT hash a re-serialised
-//! parsed `RolloutManifest`: re-serialisation drops fields the verifier's
-//! proto doesn't know about, breaking content-addressing across additive
-//! schema changes.
+//! LOADBEARING: per RFC-0012 §6.3, `rolloutId` is the canonical semantic
+//! identifier `RolloutId::new(&m.channel, &m.channel_ref)` (i.e.
+//! `"{channel}@{channel_ref}"`), not a content hash. Verifiers MUST (1)
+//! cryptographically verify the signed sidecar via
+//! `verify_rollout_manifest`, then (2) discriminate the parsed manifest's
+//! reconstructed `RolloutId` against the advertised identifier they
+//! requested. Authenticity comes from the signature; identity-substitution
+//! defense comes from the parsed-id equality check. Both checks together
+//! replace the prior content-addressed `sha256(bytes) == rolloutId`
+//! tautology, which has no anchor under the semantic identifier.
 
 use serde::{Deserialize, Serialize};
 
@@ -32,9 +36,6 @@ pub struct RolloutManifest {
     pub host_set: Vec<HostWave>,
 
     pub health_gate: HealthGate,
-
-    /// Mirrored from `channels[channel].compliance.frameworks`.
-    pub compliance_frameworks: Vec<String>,
 
     /// Disruption-budget snapshot resolved against `fleet.hosts.tags` at
     /// projection time and frozen for the rollout's life - mid-rollout
@@ -109,7 +110,6 @@ mod tests {
                 },
             ],
             health_gate: HealthGate::default(),
-            compliance_frameworks: vec!["anssi-bp028".into()],
             disruption_budgets: vec![],
             meta: meta_v1(),
         }

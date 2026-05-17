@@ -9,8 +9,6 @@
   (lib.escapeShellArg cfg.controlPlaneUrl)
   "--machine-id"
   (lib.escapeShellArg cfg.machineId)
-  "--poll-interval"
-  (toString cfg.pollInterval)
   "--trust-file"
   (lib.escapeShellArg (toString cfg.trustFile))
 ]
@@ -37,20 +35,6 @@
 ++ [
   "--state-dir"
   (lib.escapeShellArg cfg.stateDir)
-  "--compliance-gate-mode"
-  (lib.escapeShellArg cfg.complianceGate.mode)
   "--ssh-host-key-file"
   (lib.escapeShellArg cfg.sshHostKeyFile)
-]
-# Issue #86: only pass --health-checks-config when probes are declared.
-# Empty/absent -> agent runs without a probe scheduler (no checkin field
-# overhead, no /etc file written).
-++ lib.optionals (
-  cfg.healthChecks.http
-  != []
-  || cfg.healthChecks.tcp != []
-  || cfg.healthChecks.exec != []
-) [
-  "--health-checks-config"
-  (lib.escapeShellArg "/etc/nixfleet/agent/health-checks.json")
 ]

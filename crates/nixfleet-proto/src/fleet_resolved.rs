@@ -70,7 +70,6 @@ pub struct Channel {
     /// Convert via [`Channel::freshness_window_duration`].
     pub freshness_window: u32,
     pub signing_interval_minutes: u32,
-    pub compliance: Compliance,
 }
 
 impl Channel {
@@ -79,14 +78,6 @@ impl Channel {
     pub fn freshness_window_duration(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.freshness_window as u64 * 60)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Compliance {
-    pub frameworks: Vec<String>,
-    /// `disabled` / `permissive` / `enforce`. Default `enforce`.
-    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,7 +117,7 @@ pub struct PolicyWave {
     pub soak_minutes: u32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct Selector {
     #[serde(default)]
@@ -217,20 +208,12 @@ impl Selector {
 pub struct HealthGate {
     #[serde(default)]
     pub systemd_failed_units: Option<SystemdFailedUnits>,
-    #[serde(default)]
-    pub compliance_probes: Option<ComplianceProbes>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemdFailedUnits {
     pub max: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ComplianceProbes {
-    pub required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -311,6 +294,54 @@ impl Meta {
     }
 }
 
+/// Canonical strategy string for the all-at-once rollout shape.
+///
+/// Operators declare it terse: `rolloutPolicies.all-at-once.strategy =
+/// "all-at-once";` — typically with no explicit `waves` because the
+/// strategy's semantic name is "ship everywhere, no staging." Without
+/// post-deserialization normalization the applier's per-wave soak
+/// lookup falls through to `DEFAULT_SOAK_MINUTES = 60`, contradicting
+/// the strategy.
+pub const STRATEGY_ALL_AT_ONCE: &str = "all-at-once";
+
+/// Post-deserialization normalization for `FleetResolved.rollout_policies`.
+///
+/// Synthesizes an implicit single match-all wave (soak_minutes=0) for any
+/// `all-at-once` policy declared without explicit waves. Operator's
+/// most-common form is `{strategy = "all-at-once";}` with empty waves;
+/// without this synthesis, the applier's per-wave soak lookup
+/// (`crates/nixfleet-control-plane/src/runtime/applier.rs:198` +
+/// `:655`) returns None and falls back to `DEFAULT_SOAK_MINUTES = 60`,
+/// silently producing a 1-hour soak hold on a strategy whose semantic
+/// name is "ship everywhere with no staging."
+///
+/// Strategies other than `all-at-once` declared without explicit waves
+/// are left untouched — a canary or custom strategy without waves IS
+/// malformed, and the applier's `DEFAULT_SOAK_MINUTES` fallback (with
+/// its warn log) remains the right behaviour as a safety net.
+///
+/// Invariant preserved: policies that already declare waves are not
+/// modified; operator's explicit declaration always wins.
+///
+/// Called from `nixfleet_reconciler::verify::verify_artifact`
+/// post-deserialization so every consumer of `Verified<FleetResolved>`
+/// (CP reducer + agent manifest cache) sees the canonical shape. Signed
+/// bytes are not modified — the signature covers the wire form (empty
+/// waves), the in-memory form is post-normalization.
+pub fn normalize_rollout_policies(fleet: &mut FleetResolved) {
+    for policy in fleet.rollout_policies.values_mut() {
+        if policy.strategy == STRATEGY_ALL_AT_ONCE && policy.waves.is_empty() {
+            policy.waves.push(PolicyWave {
+                selector: Selector {
+                    all: true,
+                    ..Default::default()
+                },
+                soak_minutes: 0,
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +413,143 @@ mod tests {
 
         // Explicit "unknown" sentinel keeps a Prometheus label queryable.
         assert_eq!(Selector::default().summary(), "unknown");
+    }
+
+    fn fleet_with_policy(policy_name: &str, policy: RolloutPolicy) -> FleetResolved {
+        let mut rollout_policies = HashMap::new();
+        rollout_policies.insert(policy_name.to_string(), policy);
+        FleetResolved {
+            schema_version: 1,
+            hosts: HashMap::new(),
+            channels: HashMap::new(),
+            rollout_policies,
+            waves: HashMap::new(),
+            edges: Vec::new(),
+            channel_edges: Vec::new(),
+            disruption_budgets: Vec::new(),
+            meta: Meta {
+                schema_version: 1,
+                signed_at: None,
+                ci_commit: None,
+                signature_algorithm: None,
+            },
+        }
+    }
+
+    #[test]
+    fn normalize_synthesizes_implicit_wave_for_all_at_once_without_waves() {
+        // D-017 regression guard. Demo's fleet.nix declares
+        // `rolloutPolicies.all-at-once = {strategy = "all-at-once";};`
+        // — terse form with no explicit waves. Pre-normalization, the
+        // applier's `waves.get(wave_index)` returned None, falling
+        // through to `DEFAULT_SOAK_MINUTES = 60` — a 1-hour soak hold
+        // on a strategy whose semantic name is "ship everywhere with no
+        // staging." Normalization synthesizes the implicit match-all
+        // zero-soak wave.
+        let mut fleet = fleet_with_policy(
+            "all-at-once",
+            RolloutPolicy {
+                strategy: STRATEGY_ALL_AT_ONCE.into(),
+                waves: Vec::new(),
+                health_gate: HealthGate::default(),
+                on_health_failure: OnHealthFailure::Halt,
+            },
+        );
+
+        normalize_rollout_policies(&mut fleet);
+
+        let policy = fleet
+            .rollout_policies
+            .get("all-at-once")
+            .expect("policy present");
+        assert_eq!(policy.waves.len(), 1, "implicit wave synthesized");
+        assert!(policy.waves[0].selector.all, "match-all selector");
+        assert_eq!(
+            policy.waves[0].soak_minutes, 0,
+            "zero soak — all-at-once means no staging hold",
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_explicit_waves_on_all_at_once() {
+        // Operator explicitly declared waves on an all-at-once policy:
+        // normalization MUST NOT clobber the declaration. The
+        // declared shape wins — synthesis only fires for the empty
+        // case.
+        let explicit_wave = PolicyWave {
+            selector: Selector {
+                hosts: vec!["web-01".into()],
+                ..Default::default()
+            },
+            soak_minutes: 15,
+        };
+        let mut fleet = fleet_with_policy(
+            "all-at-once",
+            RolloutPolicy {
+                strategy: STRATEGY_ALL_AT_ONCE.into(),
+                waves: vec![explicit_wave.clone()],
+                health_gate: HealthGate::default(),
+                on_health_failure: OnHealthFailure::Halt,
+            },
+        );
+
+        normalize_rollout_policies(&mut fleet);
+
+        let policy = fleet
+            .rollout_policies
+            .get("all-at-once")
+            .expect("policy present");
+        assert_eq!(policy.waves.len(), 1);
+        assert_eq!(policy.waves[0], explicit_wave);
+    }
+
+    #[test]
+    fn normalize_does_not_touch_canary_without_waves() {
+        // Canary without waves IS malformed (canary requires staging).
+        // Normalization leaves it alone so the applier's
+        // DEFAULT_SOAK_MINUTES fallback fires with the warn log it's
+        // designed to emit. This pins the safety-net semantic.
+        let mut fleet = fleet_with_policy(
+            "canary",
+            RolloutPolicy {
+                strategy: "canary".into(),
+                waves: Vec::new(),
+                health_gate: HealthGate::default(),
+                on_health_failure: OnHealthFailure::Halt,
+            },
+        );
+
+        normalize_rollout_policies(&mut fleet);
+
+        let policy = fleet
+            .rollout_policies
+            .get("canary")
+            .expect("policy present");
+        assert!(
+            policy.waves.is_empty(),
+            "normalization is all-at-once-only; canary stays as declared",
+        );
+    }
+
+    #[test]
+    fn normalize_handles_empty_rollout_policies_map() {
+        let mut fleet = FleetResolved {
+            schema_version: 1,
+            hosts: HashMap::new(),
+            channels: HashMap::new(),
+            rollout_policies: HashMap::new(),
+            waves: HashMap::new(),
+            edges: Vec::new(),
+            channel_edges: Vec::new(),
+            disruption_budgets: Vec::new(),
+            meta: Meta {
+                schema_version: 1,
+                signed_at: None,
+                ci_commit: None,
+                signature_algorithm: None,
+            },
+        };
+        normalize_rollout_policies(&mut fleet);
+        assert!(fleet.rollout_policies.is_empty());
     }
 }

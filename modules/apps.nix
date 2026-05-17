@@ -139,6 +139,53 @@
           echo "=== Rust Lint ==="
           check "cargo clippy --workspace -D warnings" \
             nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+
+          echo ""
+          echo "=== Pure-crate dependency contract (RFC-0009 §11) ==="
+          # The pure crates MUST NOT pull tokio / reqwest / rusqlite /
+          # hyper. The boundary is the safety contract of the
+          # functional-core architecture (RFC-0009 §3 + §8). A
+          # transitive leak — a new helper crate that brings tokio
+          # in, a feature flag that activates rusqlite — would silently
+          # bring I/O surface into the reducer's compilation unit and
+          # is exactly the disease the v0.2 fold is designed to prevent.
+          # This guard is the mechanical enforcement; force-test by
+          # adding tokio to nixfleet-state-machine/Cargo.toml in a
+          # throwaway commit and verifying the guard fails red.
+          check "purity: nixfleet-state-machine" \
+            nix develop --command bash -c '
+              set -euo pipefail
+              if cargo tree -p nixfleet-state-machine --depth=20 \
+                   | grep -E "^[│ ├└─]*\b(tokio|reqwest|rusqlite|hyper)\b"; then
+                echo "FORBIDDEN dependency in nixfleet-state-machine"
+                exit 1
+              fi
+            '
+          check "purity: nixfleet-reconciler" \
+            nix develop --command bash -c '
+              set -euo pipefail
+              if cargo tree -p nixfleet-reconciler --depth=20 \
+                   | grep -E "^[│ ├└─]*\b(tokio|reqwest|rusqlite|hyper)\b"; then
+                echo "FORBIDDEN dependency in nixfleet-reconciler"
+                exit 1
+              fi
+            '
+
+          echo ""
+          echo "=== Fresh-checkout build sanity ==="
+          # Phase 7h caught an untracked load-bearing module
+          # (runtime/wire.rs) that built locally but would fail any
+          # clean checkout. This guard runs `cargo clean && cargo
+          # check` in a fresh build tree — any file missing from git
+          # tracking but referenced by `mod ...` declarations surfaces
+          # as a compile error. Cheap; runs after the other guards
+          # because clean wipes their build artifacts.
+          check "fresh-checkout cargo check" \
+            nix develop --command bash -c '
+              set -euo pipefail
+              cargo clean
+              cargo check --workspace --all-targets
+            '
         fi
 
         echo ""
@@ -177,9 +224,9 @@
               # Match every `fleet-harness-*` flake check - pure-runCommand
               # auditor scenarios (auditor-chain, corruption-rejection,
               # manifest-tamper-rejection) and microvm-based scenarios
-              # (smoke, teardown, signed-roundtrip, deadline-expiry,
-              # secret-hygiene, stale-target, boot-recovery,
-              # module-rollouts-wire, rollback-policy, fleet-N).
+              # (smoke, teardown, signed-roundtrip, secret-hygiene,
+              # boot-recovery, module-rollouts-wire, rollback-policy,
+              # fleet-N).
               # The previous `vm-.*` regex matched zero scenarios.
               VM_TESTS=$(nix eval ".#checks.${system}" \
                   --apply 'cs: builtins.concatStringsSep " " (builtins.filter (n: builtins.match "fleet-harness-.*" n != null) (builtins.attrNames cs))' \

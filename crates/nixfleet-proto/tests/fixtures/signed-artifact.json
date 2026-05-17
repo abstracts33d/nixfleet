@@ -1,12 +1,6 @@
 {
   "channels": {
     "stable": {
-      "compliance": {
-        "frameworks": [
-          "anssi-bp028"
-        ],
-        "mode": "enforce"
-      },
       "freshnessWindow": 180,
       "reconcileIntervalMinutes": 30,
       "rolloutPolicy": "none",
@@ -65,5 +59,6 @@
         "soakMinutes": 0
       }
     ]
-  }
+  },
+  "channelEdges": []
 }

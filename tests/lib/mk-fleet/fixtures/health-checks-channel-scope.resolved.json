@@ -1,21 +1,43 @@
 {
+  "channelEdges": [],
   "channels": {
     "stable": {
       "freshnessWindow": 180,
       "reconcileIntervalMinutes": 30,
-      "rolloutPolicy": "none",
+      "rolloutPolicy": "all",
       "signingIntervalMinutes": 60
     }
   },
   "disruptionBudgets": [],
   "edges": [],
+  "effectiveHealthChecks": {
+    "h-web": {
+      "heartbeat": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": null,
+        "host": null,
+        "intervalSeconds": 15,
+        "kind": "http",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": "http://localhost/health-from-channel"
+      }
+    }
+  },
   "hosts": {
-    "h1": {
+    "h-web": {
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": []
+      "tags": [
+        "web"
+      ]
     }
   },
   "meta": {
@@ -24,16 +46,18 @@
     "signedAt": null
   },
   "rolloutPolicies": {
-    "none": {
+    "all": {
       "healthGate": {},
-      "onHealthFailure": "halt",
+      "onHealthFailure": "rollback-and-halt",
       "strategy": "all-at-once",
       "waves": [
         {
           "selector": {
             "all": true,
+            "and": [],
             "channel": null,
             "hosts": [],
+            "not": null,
             "tags": [],
             "tagsAny": []
           },
@@ -47,11 +71,10 @@
     "stable": [
       {
         "hosts": [
-          "h1"
+          "h-web"
         ],
         "soakMinutes": 0
       }
     ]
-  },
-  "channelEdges": []
+  }
 }

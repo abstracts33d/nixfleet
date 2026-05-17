@@ -10,20 +10,17 @@
   trustConfig = import ./_trust-json.nix {trust = config.nixfleet.trust;};
   trustJson = pkgs.writers.writeJSON "trust.json" trustConfig;
 
-  # Issue #86: per-host probe declaration is too rich for CLI flags
-  # (variable lists of nested objects), so we materialise the
-  # `services.nixfleet-agent.healthChecks` value to a JSON file in
-  # /etc/ and pass `--health-checks-config <path>` instead. Mirrors
-  # the trust.json convention.
-  healthChecksConfig = {
-    inherit (cfg.healthChecks) mode http tcp exec;
-  };
-  healthChecksJson = pkgs.writers.writeJSON "health-checks.json" healthChecksConfig;
-  hasHealthChecks =
-    cfg.healthChecks.http
-    != []
-    || cfg.healthChecks.tcp != []
-    || cfg.healthChecks.exec != [];
+  # RFC-0010 §4 — render the mkFleet-resolved effective probe set
+  # (host > tag > fleet) into `/etc/nixfleet/agent/health-checks.json`
+  # at a hardcoded path. The agent reads from this path directly (no
+  # `--health-checks-config` flag); the closure hash chain transitively
+  # signs the topology, so the agent trusts the file because it trusts
+  # the closure it's running. Operators do not edit
+  # `services.nixfleet-agent.effectiveHealthChecks` — declare probes at
+  # the fleet / tag / host scope in fleet.nix; the framework plumbs
+  # the resolved set into this option via `mkHost`.
+  healthChecksJson = pkgs.writers.writeJSON "health-checks.json" cfg.effectiveHealthChecks;
+  hasHealthChecks = cfg.effectiveHealthChecks != {};
 in {
   imports = [./_agent-options.nix];
 

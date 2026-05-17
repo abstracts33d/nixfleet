@@ -26,6 +26,7 @@ libc = "0.2"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 p256 = { version = "0.13", features = ["ecdsa"] }
+proptest = "1"
 rand = "0.9"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "x509-parser", "aws_lc_rs", "crypto"] }
 refinery = { version = "0.8", features = ["rusqlite"] }

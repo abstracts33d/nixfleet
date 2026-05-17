@@ -1,10 +1,6 @@
 {
   "channels": {
     "stable": {
-      "compliance": {
-        "frameworks": [],
-        "mode": "enforce"
-      },
       "freshnessWindow": 180,
       "reconcileIntervalMinutes": 30,
       "rolloutPolicy": "emptyish",

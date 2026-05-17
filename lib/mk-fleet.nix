@@ -85,8 +85,23 @@
     options = {
       system = mkOption {type = types.str;};
       configuration = mkOption {
-        type = types.unspecified;
-        description = "A nixosConfiguration.";
+        type = types.nullOr types.unspecified;
+        default = null;
+        description = ''
+          Test-fixture stub-injection slot. Operators leave this at
+          the `null` default; the framework builds the per-host
+          nixosConfiguration from `nixosArgs` via
+          `lib/default.nix`'s `mkFleet` wrapper and exposes the
+          result at `fleet.nixosConfigurations`.
+
+          Fixtures under `tests/lib/mk-fleet/` set this to a stub
+          attrset carrying `config.system.build.toplevel` so the
+          `configurationErrors` invariant has something to inspect
+          without spinning up a real NixOS evaluation. See
+          `tests/lib/mk-fleet/fixtures/_stub-configuration.nix` for
+          the canonical stub. The invariant skips when this is
+          `null`, so production fleets never need to populate it.
+        '';
       };
       tags = mkOption {
         type = types.listOf types.str;
@@ -111,6 +126,45 @@
           Per-host commit pin (issue #88). Most-specific level: when set,
           overrides any tag- or channel-level pin the host is otherwise
           eligible for. See `mkFleet`'s pin precedence: host > tag > channel.
+        '';
+      };
+      nixosArgs = mkOption {
+        type = types.attrs;
+        default = {};
+        description = ''
+          Per-host arguments forwarded to `mkHost` by the framework.
+          Free-form attrset; `lib/default.nix`'s `mkFleet` wrapper
+          merges this with the framework-supplied
+          `{ hostName, platform = system, fleetResolved }` and hands
+          the result to `mkHost`. Typical keys: `hostSpec`, `modules`,
+          `stateVersion`, `isVm`, `extraInputs`.
+
+          Operator pattern (RFC-0011 §2.2 — framework owns the wiring):
+
+            fleet = mkFleet {
+              hosts.cp = {
+                system = "x86_64-linux";
+                channel = "stable";
+                nixosArgs.modules = [./hosts/cp];
+              };
+            };
+            nixosConfigurations = fleet.nixosConfigurations;
+
+          The wrapper sets `platform = system` so operators don't repeat
+          the platform string. `fleetResolved` is always `fleet.resolved` —
+          operators never name it (DEFECT-002 closure-by-framework-design
+          per RFC-0011 §3 anti-pattern #4).
+        '';
+      };
+      healthChecks = mkOption {
+        type = types.attrsOf healthProbeType;
+        default = {};
+        description = ''
+          Host-scoped probe declarations (RFC-0010 §3.2). Most-specific
+          scope: collisions on probe name with tag/fleet scopes resolve
+          to the host's value (host > tag > fleet). The agent on this
+          host runs the effective probe set; the wave gate consults
+          `mode == "enforce"` results.
         '';
       };
     };
@@ -200,6 +254,16 @@
           moving one pin to a host-level declaration).
         '';
       };
+      healthChecks = mkOption {
+        type = types.attrsOf healthProbeType;
+        default = {};
+        description = ''
+          Tag-scoped probe declarations (RFC-0010 §3.2). Applies to every
+          host carrying this tag. Overridden by a host-level declaration
+          with the same probe name; overrides a fleet-level declaration
+          with the same probe name (host > tag > fleet precedence).
+        '';
+      };
     };
   };
 
@@ -269,32 +333,104 @@
           single missed signing run does not strand agents.
         '';
       };
-      compliance = mkOption {
-        type = types.submodule {
-          options = {
-            mode = mkOption {
-              type = types.enum ["disabled" "permissive" "enforce"];
-              default = "enforce";
-              description = ''
-                Compliance gate policy shared by the static gate
-                (mk-fleet eval) and the runtime gate (agent
-                post-activation).
-
-                - `disabled`: gate not run.
-                - `permissive`: failing static evidence emits a
-                  `lib.warn` per failing host/control; eval succeeds.
-                - `enforce`: failing static evidence throws at fleet
-                  eval. Default - matches the prior `strict = true`
-                  semantics.
-              '';
-            };
-            frameworks = mkOption {
-              type = types.listOf types.str;
-              default = [];
-            };
-          };
-        };
+      healthChecks = mkOption {
+        type = types.attrsOf healthProbeType;
         default = {};
+        description = ''
+          Channel-scoped probe declarations (RFC-0010 §3.5). Applies to
+          every host whose `channel` field equals this channel's name.
+          Sits between tag and host in the resolution order: host scope
+          overrides channel; channel overrides tag; tag overrides fleet
+          (host > channel > tag > fleet precedence). Same merge + shadow-
+          warning semantics as the other scopes.
+        '';
+      };
+    };
+  };
+
+  # Per-probe declaration (RFC-0010 §3.1). The `kind` enum:
+  #   http     — GET <url>; Pass iff response status == expectStatus.
+  #   tcp      — connect host:port; Pass iff connect succeeds within
+  #              connectTimeoutSecs.
+  #   exec     — exec command (argv); Pass iff exit 0 within timeoutSecs.
+  #   evidence — read /var/lib/nixfleet-compliance/evidence.json + verify
+  #              ed25519 signature against host SSH host pubkey
+  #              (RFC-0004 §5); Pass iff signature valid AND framework's
+  #              controls all pass. Decoupled from collector cadence.
+  #
+  # `mode` (RFC-0010 §3.4) is per-probe:
+  #   enforce  — wave gate consults latest result; Fail blocks promotion.
+  #   observe  — result recorded in event_log; gate ignores it.
+  #   disabled — declared but agent does not run it (operator suppression).
+  #
+  # `intervalSeconds` vs `runOnce`: mutually exclusive. `runOnce = true`
+  # means "run on activation, never again" (one-shot evidence collection).
+  # `intervalSeconds = 0` is rejected at fleet-eval time (ambiguous).
+  healthProbeType = types.submodule {
+    options = {
+      kind = mkOption {
+        type = types.enum ["http" "tcp" "exec" "evidence"];
+      };
+      mode = mkOption {
+        type = types.enum ["enforce" "observe" "disabled"];
+        default = "enforce";
+      };
+      intervalSeconds = mkOption {
+        type = types.int;
+        default = 30;
+        description = ''
+          Run cadence in seconds. Lower bound 5s. `0` is rejected at
+          fleet-eval time (ambiguous); use `runOnce = true` for
+          one-shot semantics.
+        '';
+      };
+      runOnce = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Run once on activation, never again. Mutually exclusive with
+          `intervalSeconds` (eval rejects when both set non-default).
+        '';
+      };
+      # http
+      url = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      expectStatus = mkOption {
+        type = types.int;
+        default = 200;
+      };
+      # tcp
+      host = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      port = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+      };
+      connectTimeoutSecs = mkOption {
+        type = types.int;
+        default = 5;
+      };
+      # exec
+      command = mkOption {
+        type = types.listOf types.str;
+        default = [];
+      };
+      timeoutSecs = mkOption {
+        type = types.int;
+        default = 10;
+      };
+      # evidence
+      framework = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      evidencePath = mkOption {
+        type = types.str;
+        default = "/var/lib/nixfleet-compliance/evidence.json";
       };
     };
   };
@@ -540,31 +676,88 @@
       )
       normalizedChannelEdges;
 
+    # v0.1 path: operator pre-builds the nixosConfiguration and passes
+    # it as `configuration`; we verify the contract before mkFleet
+    # consumes it. v0.2 path: operator declares `nixosArgs`, the
+    # framework `mkFleet` wrapper builds via `mkHost` itself, and
+    # `configuration` stays at its `null` default — this branch
+    # skips when null (mkHost's own evaluation catches structural
+    # errors downstream).
     configurationErrors =
       lib.concatMap (
         n: let
           h = cfg.hosts.${n};
           isValid =
-            builtins.isAttrs h.configuration
-            && h.configuration ? config
-            && h.configuration.config ? system
-            && h.configuration.config.system ? build
-            && h.configuration.config.system.build ? toplevel;
+            h.configuration
+            == null
+            || (
+              builtins.isAttrs h.configuration
+              && h.configuration ? config
+              && h.configuration.config ? system
+              && h.configuration.config.system ? build
+              && h.configuration.config.system.build ? toplevel
+            );
         in
           lib.optional (!isValid)
-          "host '${n}' configuration is not a valid nixosConfiguration (missing config.system.build.toplevel)"
+          "host '${n}' configuration is not a valid nixosConfiguration (missing config.system.build.toplevel) and `nixosArgs` is not set"
       )
       hostNames;
 
-    complianceErrors =
-      lib.concatMap (
-        channelName: let
-          c = cfg.channels.${channelName};
-          bad = lib.filter (f: !(builtins.elem f cfg.complianceFrameworks)) c.compliance.frameworks;
-        in
-          map (f: "channel '${channelName}' references unknown compliance framework '${f}'") bad
+    # RFC-0010 §10: validate probe declarations across all four scopes.
+    # `intervalSeconds = 0` is ambiguous; the runner uses `runOnce = true`
+    # for one-shot semantics. `runOnce + intervalSeconds` set together is
+    # also ambiguous.
+    probeDeclSites =
+      lib.mapAttrsToList (n: p: {
+        scope = "fleet:${n}";
+        probe = p;
+      })
+      cfg.healthChecks
+      ++ lib.concatMap (
+        tag:
+          lib.mapAttrsToList (n: p: {
+            scope = "tag:${tag}:${n}";
+            probe = p;
+          }) (cfg.tags.${tag}.healthChecks or {})
       )
-      (lib.attrNames cfg.channels);
+      (lib.attrNames cfg.tags)
+      ++ lib.concatMap (
+        channel:
+          lib.mapAttrsToList (n: p: {
+            scope = "channel:${channel}:${n}";
+            probe = p;
+          }) (cfg.channels.${channel}.healthChecks or {})
+      )
+      (lib.attrNames cfg.channels)
+      ++ lib.concatMap (
+        host:
+          lib.mapAttrsToList (n: p: {
+            scope = "host:${host}:${n}";
+            probe = p;
+          })
+          cfg.hosts.${host}.healthChecks
+      )
+      (lib.attrNames cfg.hosts);
+
+    probeDeclErrors =
+      lib.concatMap (
+        site: let
+          p = site.probe;
+          intervalZero = p.intervalSeconds == 0 && !p.runOnce;
+          runOnceConflict = p.runOnce && p.intervalSeconds != 30; # 30 is the option default
+          httpMissingUrl = p.kind == "http" && p.url == null;
+          tcpMissingPort = p.kind == "tcp" && p.port == null;
+          execMissingCommand = p.kind == "exec" && p.command == [];
+          evidenceMissingFramework = p.kind == "evidence" && p.framework == null;
+        in
+          lib.optional intervalZero "probe ${site.scope}: intervalSeconds = 0 is ambiguous; use runOnce = true for one-shot semantics"
+          ++ lib.optional runOnceConflict "probe ${site.scope}: runOnce = true conflicts with non-default intervalSeconds"
+          ++ lib.optional httpMissingUrl "probe ${site.scope}: kind=http requires url"
+          ++ lib.optional tcpMissingPort "probe ${site.scope}: kind=tcp requires port"
+          ++ lib.optional execMissingCommand "probe ${site.scope}: kind=exec requires non-empty command"
+          ++ lib.optional evidenceMissingFramework "probe ${site.scope}: kind=evidence requires framework"
+      )
+      probeDeclSites;
 
     # `hasCycle` expects edges with `gates`/`gated`. Host-level `edges`
     # already use that schema; channelEdges flow through
@@ -583,45 +776,6 @@
           "channel '${channelName}': freshnessWindow (${toString c.freshnessWindow}) must be ≥ 2 × signingIntervalMinutes (${toString c.signingIntervalMinutes})"
       )
       (lib.attrNames cfg.channels);
-
-    resolvedComplianceMode = channelName: cfg.channels.${channelName}.compliance.mode;
-
-    # LOADBEARING: shared by enforce + permissive; only the action on failures differs (throw vs lib.warn).
-    staticFailuresForChannels = channelNames: let
-      hostsOnChannels =
-        lib.filter (n: builtins.elem cfg.hosts.${n}.channel channelNames) (lib.attrNames cfg.hosts);
-    in
-      lib.concatMap (
-        hostName: let
-          host = cfg.hosts.${hostName};
-          probes = host.configuration.config.compliance.evidence.probes or {};
-          probeNames = lib.attrNames probes;
-          # LOADBEARING: only static + both controls participate in the build-time gate.
-          staticOrBoth =
-            lib.filter (
-              p: let
-                t = probes.${p}.type or "runtime";
-              in
-                t == "static" || t == "both"
-            )
-            probeNames;
-          failures =
-            lib.filter (
-              p: let
-                ev = probes.${p}.staticEvidence or null;
-              in
-                ev != null && (ev.passed or true) == false
-            )
-            staticOrBoth;
-          mode = resolvedComplianceMode host.channel;
-        in
-          map (p: "host '${hostName}' (channel '${host.channel}', ${mode}): static control '${p}' failed - ${lib.generators.toPretty {} (probes.${p}.staticEvidence.evidence or {})}") failures
-      )
-      hostsOnChannels;
-
-    enforceChannels =
-      lib.filter (n: resolvedComplianceMode n == "enforce") (lib.attrNames cfg.channels);
-    staticComplianceErrors = staticFailuresForChannels enforceChannels;
 
     # Issue #88: ambiguity error when a host carries 2+ tags whose pins
     # both resolve. Eager: lives in checkInvariants so the harness's
@@ -645,7 +799,7 @@
       )
       (lib.attrNames cfg.hosts);
 
-    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ channelEdgeShapeErrors ++ channelEdgeErrors ++ configurationErrors ++ complianceErrors ++ cycleErrors ++ channelCycleErrors ++ freshnessErrors ++ staticComplianceErrors ++ pinTagConflictErrors;
+    errs = hostChannelErrors ++ channelPolicyErrors ++ edgeErrors ++ channelEdgeShapeErrors ++ channelEdgeErrors ++ configurationErrors ++ probeDeclErrors ++ cycleErrors ++ channelCycleErrors ++ freshnessErrors ++ pinTagConflictErrors;
   in
     if errs == []
     then true
@@ -683,37 +837,73 @@
         )
         cfg.disruptionBudgets;
 
-      compliancePermissiveWarnings = let
-        permissiveChannels =
-          lib.filter (n: cfg.channels.${n}.compliance.mode == "permissive") (lib.attrNames cfg.channels);
-        hostsOnChannels =
-          lib.filter (n: builtins.elem cfg.hosts.${n}.channel permissiveChannels) (lib.attrNames cfg.hosts);
+      # RFC-0010 §3.5 + §4 — resolve effective probe set per host with
+      # host > channel > tag > fleet precedence + collision warnings.
+      # The merged set flows into each host's closure via
+      # `effectiveHealthChecks` in the resolved output; the host module
+      # renders it as `/etc/nixfleet/agent/health-checks.json`.
+      resolveHealthChecks = hostName: let
+        host = cfg.hosts.${hostName};
+        fleetScope = cfg.healthChecks;
+        tagScopes =
+          lib.foldl' (
+            acc: tag:
+              if cfg.tags ? ${tag}
+              then acc // (cfg.tags.${tag}.healthChecks or {})
+              else acc
+          )
+          {}
+          host.tags;
+        channelScope =
+          if cfg.channels ? ${host.channel}
+          then cfg.channels.${host.channel}.healthChecks or {}
+          else {};
+        # Precedence (lowest -> highest, later wins):
+        merged = fleetScope // tagScopes // channelScope // host.healthChecks;
       in
-        lib.concatMap (
-          hostName: let
-            host = cfg.hosts.${hostName};
-            probes = host.configuration.config.compliance.evidence.probes or {};
-            probeNames = lib.attrNames probes;
-            staticOrBoth =
-              lib.filter (
-                p: let
-                  t = probes.${p}.type or "runtime";
-                in
-                  t == "static" || t == "both"
+        merged;
+
+      healthCheckOverrideWarnings = lib.concatLists (
+        lib.mapAttrsToList (
+          hostName: host: let
+            fleetNames = lib.attrNames cfg.healthChecks;
+            tagNames =
+              lib.concatMap (
+                tag:
+                  if cfg.tags ? ${tag}
+                  then lib.attrNames (cfg.tags.${tag}.healthChecks or {})
+                  else []
               )
-              probeNames;
-            failures =
-              lib.filter (
-                p: let
-                  ev = probes.${p}.staticEvidence or null;
-                in
-                  ev != null && (ev.passed or true) == false
-              )
-              staticOrBoth;
+              host.tags;
+            channelNames =
+              if cfg.channels ? ${host.channel}
+              then lib.attrNames (cfg.channels.${host.channel}.healthChecks or {})
+              else [];
+            hostNames = lib.attrNames host.healthChecks;
+            hostShadowsChannel =
+              lib.filter (n: builtins.elem n channelNames) hostNames;
+            hostShadowsTag =
+              lib.filter (n: builtins.elem n tagNames) hostNames;
+            hostShadowsFleet =
+              lib.filter (n: builtins.elem n fleetNames) hostNames;
+            channelShadowsTag =
+              lib.filter (n: builtins.elem n tagNames) channelNames;
+            channelShadowsFleet =
+              lib.filter (n: builtins.elem n fleetNames) channelNames;
+            tagShadowsFleet =
+              lib.filter (n: builtins.elem n fleetNames) tagNames;
+            messages =
+              map (n: "[healthChecks] host '${hostName}' overrides channel-scoped probe '${n}' (channel '${host.channel}')") hostShadowsChannel
+              ++ map (n: "[healthChecks] host '${hostName}' overrides tag-scoped probe '${n}'") hostShadowsTag
+              ++ map (n: "[healthChecks] host '${hostName}' overrides fleet-scoped probe '${n}'") hostShadowsFleet
+              ++ map (n: "[healthChecks] channel-scoped probe '${n}' (channel '${host.channel}') on host '${hostName}' overrides tag-scoped probe of same name") channelShadowsTag
+              ++ map (n: "[healthChecks] channel-scoped probe '${n}' (channel '${host.channel}') on host '${hostName}' overrides fleet-scoped probe of same name") channelShadowsFleet
+              ++ map (n: "[healthChecks] tag-scoped probe '${n}' on host '${hostName}' overrides fleet-scoped probe of same name") tagShadowsFleet;
           in
-            map (p: "[compliance:permissive] host '${hostName}' (channel '${host.channel}'): static control '${p}' failed - ${lib.generators.toPretty {} (probes.${p}.staticEvidence.evidence or {})}") failures
+            messages
         )
-        hostsOnChannels;
+        cfg.hosts
+      );
 
       # Issue #88: most-specific-wins pin resolution (host > tag > channel).
       # Multi-tag-conflict is rejected eagerly in `checkInvariants`, so by
@@ -742,7 +932,7 @@
       allWarnings =
         emptySelectorWarnings
         ++ budgetWarnings
-        ++ compliancePermissiveWarnings;
+        ++ healthCheckOverrideWarnings;
 
       # LOADBEARING: builtins.seq below forces the warning side-effect before return.
       emittedWarnings =
@@ -774,9 +964,18 @@
           cfg.hosts;
         channels =
           lib.mapAttrs (_: c: {
-            inherit (c) rolloutPolicy reconcileIntervalMinutes signingIntervalMinutes freshnessWindow compliance;
+            inherit (c) rolloutPolicy reconcileIntervalMinutes signingIntervalMinutes freshnessWindow;
           })
           cfg.channels;
+        # Per-host effective probe set, host > tag > fleet precedence
+        # (RFC-0010 §3.2). NOT part of the signed manifest schema — the
+        # closure hash chain transitively signs the topology via the
+        # host's NixOS module rendering this into
+        # `/etc/nixfleet/agent/health-checks.json`. The CP never reads
+        # this map; it's exposed here so `nixfleet-release` /
+        # `mkHost` can plumb the resolved set into each host's closure.
+        effectiveHealthChecks =
+          lib.mapAttrs (n: _: resolveHealthChecks n) cfg.hosts;
         rolloutPolicies = cfg.rolloutPolicies;
         waves =
           lib.mapAttrs (
@@ -872,12 +1071,28 @@
               type = types.listOf budgetType;
               default = [];
             };
-            complianceFrameworks = mkOption {
-              type = types.listOf types.str;
-              default = ["anssi-bp028" "nis2" "dora" "iso27001"];
+            healthChecks = mkOption {
+              type = types.attrsOf healthProbeType;
+              default = {};
               description = ''
-                Known compliance frameworks accepted by channel.compliance.frameworks.
-                Override only if using an out-of-tree compliance extension.
+                Fleet-scoped probe declarations (RFC-0010 §3.2 + §4).
+                Applies to every host in the fleet, unless overridden
+                at the tag or host scope. Operator pattern:
+
+                  # Every host runs heartbeat
+                  nixfleet.healthChecks.heartbeat = {
+                    kind = "http";
+                    url = "http://localhost/health";
+                    intervalSeconds = 30;
+                    mode = "observe";
+                  };
+
+                Resolved at fleet-eval time into each host's effective
+                set with precedence host > tag > fleet; rendered into
+                the host's closure as
+                `/etc/nixfleet/agent/health-checks.json` (transitively
+                signed via the closure hash chain — no manifest schema
+                expansion).
               '';
             };
             revocations = mkOption {
@@ -928,7 +1143,7 @@
       bootstrapNonces = evaluated.config.bootstrapNonces;
     };
 
-  # LOADBEARING: hosts/tags/channels strict-merge (collision throws); rolloutPolicies later-wins; edges/channelEdges/disruptionBudgets concat; complianceFrameworks union.
+  # LOADBEARING: hosts/tags/channels strict-merge (collision throws); rolloutPolicies later-wins; edges/channelEdges/disruptionBudgets concat.
   mergeFleets = fleetInputs: let
     mergeStrict = kind: a: b:
       lib.foldl' (
@@ -957,14 +1172,8 @@
       disruptionBudgets = [];
     };
     merged = lib.foldl' step empty fleetInputs;
-    specifiedFrameworks = lib.concatMap (i: i.complianceFrameworks or []) fleetInputs;
   in
-    mkFleet (
-      merged
-      // lib.optionalAttrs (specifiedFrameworks != []) {
-        complianceFrameworks = lib.unique specifiedFrameworks;
-      }
-    );
+    mkFleet merged;
 in {
   inherit mkFleet mergeFleets withSignature;
 }

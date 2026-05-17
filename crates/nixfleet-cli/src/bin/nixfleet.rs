@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use nixfleet_cli::{ResolvedClientConfig, run_status, run_trace};
+use nixfleet_cli::{ResolvedClientConfig, run_events, run_hosts, run_status};
 
 #[derive(Parser, Debug)]
 #[command(name = "nixfleet", about = "NixFleet operator CLI", version)]
@@ -34,8 +34,12 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum RolloutCommands {
-    /// Wave-by-wave dispatch history for a rollout.
-    Trace(TraceArgs),
+    /// Per-host summary for a rollout (one row per host).
+    Hosts(HostsArgs),
+    /// Chronological event-log stream for a rollout (engineer-facing
+    /// replay surface; feed through `nixfleet_state_machine::step` to
+    /// reproduce per-host state evolution).
+    Events(EventsArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -79,12 +83,27 @@ struct StatusArgs {
 }
 
 #[derive(clap::Args, Debug)]
-struct TraceArgs {
+struct HostsArgs {
     rollout_id: String,
     #[command(flatten)]
     conn: ConnArgs,
-    /// Emit JSON of the raw RolloutTrace instead of a rendered table.
+    /// Emit JSON of the raw RolloutHosts instead of a rendered table.
     #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct EventsArgs {
+    rollout_id: String,
+    #[command(flatten)]
+    conn: ConnArgs,
+    /// Cap on event count. Default 1000.
+    #[arg(long)]
+    limit: Option<i64>,
+    /// Emit raw RolloutEvents JSON (default). Use `--no-json` for a
+    /// compact summary (seq, ts, kind, host) — payload shapes vary by
+    /// kind so a single rendered table would mislead.
+    #[arg(long, default_value_t = true)]
     json: bool,
 }
 
@@ -140,9 +159,17 @@ async fn main() -> Result<()> {
             print!("{}", run_status(&cfg, args.json, color).await?);
             Ok(())
         }
-        Commands::Rollout(RolloutCommands::Trace(args)) => {
+        Commands::Rollout(RolloutCommands::Hosts(args)) => {
             let cfg = args.conn.resolve()?;
-            print!("{}", run_trace(&cfg, &args.rollout_id, args.json).await?);
+            print!("{}", run_hosts(&cfg, &args.rollout_id, args.json).await?);
+            Ok(())
+        }
+        Commands::Rollout(RolloutCommands::Events(args)) => {
+            let cfg = args.conn.resolve()?;
+            print!(
+                "{}",
+                run_events(&cfg, &args.rollout_id, args.limit, args.json).await?
+            );
             Ok(())
         }
         Commands::Config(ConfigCommands::Init(args)) => {
