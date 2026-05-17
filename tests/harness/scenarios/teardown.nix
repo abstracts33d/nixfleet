@@ -72,26 +72,17 @@ in
 
       assertSoakStateRecovered = ''
 
-        # Verifies post-wipe recovery via the host_rollout_state row, not
-        # a specific log line. Two CP paths can populate
-        # host_rollout_state.last_healthy_since:
-        # (1) recover_soak_state_from_attestation - signed attestation
-        #     path; requires the agent's checkin to carry a
-        #     `last_evaluated_target` whose rollout_id matches the CP's
-        #     compute_rollout_id_for_channel output.
-        # (2) record_converged_at_dispatch - fires on every checkin where
-        #     the agent's current closure equals the fleet's declared
-        #     target. Materialises the same row with
-        #     last_healthy_since = now.
-        # The LOADBEARING property at the top of this file ("CP wipe
-        # doesn't lose rollout state") is satisfied by either path, so
-        # the SQL probe accepts either. Path (1) - attestation-specific
-        # - requires the harness to precompute a rollout_id matching the
-        # CP's projection (project_manifest + sha256 of canonical bytes)
-        # so the agent can preseed last_evaluated_target with it; that
-        # plumbing isn't here yet and is the right scope for a dedicated
-        # follow-up. Until then, path (2) carries the assertion.
-        print("step 5: waiting for soak-state recovery (host_rollout_state row + last_healthy_since)...")
+        # Verifies post-wipe recovery via host_rollout_records (v0.2
+        # canonical state table — replaces v0.1's host_rollout_state).
+        # The LOADBEARING property is unchanged: after CP wipe + agent
+        # heartbeats, CP rebuilds per-host state from received events.
+        # The v0.2 equivalent of v0.1's `last_healthy_since` is the
+        # `converged_at` column: both mark the moment the host was last
+        # observed at the target closure. Recovery path is event-driven
+        # (RFC-0008 §4.3 + RFC-0009 §5): post-wipe agent heartbeats
+        # carry current_closure → reducer creates/updates the row →
+        # LocalConvergedReached event → applier populates converged_at.
+        print("step 5: waiting for state recovery (host_rollout_records row + converged_at)...")
         soak_deadline = time.monotonic() + 60
         recovered: set[str] = set()
         agents_set: set[str] = set(${builtins.toJSON agentNames})
@@ -99,9 +90,9 @@ in
             for hostname in list(agents_set - recovered):
                 rc, out = host.execute(
                     "sqlite3 /var/lib/nixfleet-cp/state.db "
-                    "\"SELECT last_healthy_since FROM host_rollout_state "
+                    "\"SELECT converged_at FROM host_rollout_records "
                     f"WHERE hostname='{hostname}' "
-                    "AND last_healthy_since IS NOT NULL;\""
+                    "AND converged_at IS NOT NULL;\""
                 )
                 if rc == 0 and out.strip():
                     recovered.add(hostname)
@@ -124,10 +115,10 @@ in
                 print(vm_dump)
                 print(f"=== end {missing_host} microvm journal ===")
             raise Exception(
-                f"post-wipe host_rollout_state row + last_healthy_since "
+                f"post-wipe host_rollout_records row + converged_at "
                 f"not present for {missing} within 60s after CP wipe"
             )
-        print(f"step 5: host_rollout_state recovered for {len(recovered)} agents")
+        print(f"step 5: host_rollout_records recovered for {len(recovered)} agents")
       '';
     in ''
       start_all()
@@ -142,8 +133,11 @@ in
 
 
       def wait_for_checkins_since(cursor: str, timeout_s: int) -> dict:
-          """Block until each agent has a 'checkin received' line in the
-          CP journal after `cursor`. Returns hostname -> seen-at."""
+          """Block until each agent has a 'heartbeat received' line in
+          the CP journal after `cursor`. v0.1's `/v1/agent/checkin`
+          endpoint is gone — v0.2 agents establish liveness via
+          POST /v1/agent/heartbeat (RFC-0008 §4.3) on a periodic
+          ticker. Returns hostname -> seen-at."""
           deadline = time.monotonic() + timeout_s
           pending = set(${builtins.toJSON agentNames})
           seen_at = {}
@@ -152,7 +146,7 @@ in
                   rc, _ = host.execute(
                       f"journalctl -u nixfleet-control-plane.service "
                       f"--since='{cursor}' --no-pager "
-                      f"| grep -E 'checkin received.*{hostname}'"
+                      f"| grep -E 'heartbeat received.*{hostname}'"
                   )
                   if rc == 0:
                       seen_at[hostname] = time.monotonic()
@@ -214,8 +208,8 @@ in
       print(
           "fleet-harness-teardown: every agent re-checked-in within "
           "one reconcile cycle after CP DB wipe; revocations sidecar "
-          "replayed and soak-state attestation recovery stamped "
-          "host_rollout_state (ARCHITECTURE.md §8)."
+          "replayed and state-recovery stamped host_rollout_records "
+          "(RFC-0008 §4.3 + RFC-0009 §5)."
       )
     '';
   }

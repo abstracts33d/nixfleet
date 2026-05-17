@@ -143,6 +143,15 @@ pub(in crate::server) async fn heartbeat(
         }
     };
 
+    tracing::info!(
+        target: "heartbeat",
+        hostname = %req.hostname,
+        rollout_id = ?req.rollout_id,
+        current_closure = ?req.current_closure,
+        replay_from = ?reply.replay_from,
+        "heartbeat received",
+    );
+
     let mut headers = HeaderMap::new();
     if let Some(seq) = reply.replay_from {
         // The agent's MUST-honor header: on drift, it re-POSTs events

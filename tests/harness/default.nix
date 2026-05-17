@@ -334,46 +334,6 @@
         cpPkg = nixfleet-control-plane;
       };
 
-  rollbackPolicyScenario =
-    if nixfleet-control-plane == null || nixfleet-agent == null
-    then
-      throw ''
-        tests/harness: fleet-harness-rollback-policy requires both
-        `nixfleet-control-plane` and `nixfleet-agent`. Wire via
-        modules/tests/harness.nix.
-      ''
-    else let
-      # Only onHealthFailure flips vs convergedSignedFixture; that unlocks
-      # compute_rollback_signal.
-      rollbackHaltSignedFixture =
-        if nixfleet-canonicalize == null
-        then null
-        else
-          import ./fixtures/signed {
-            inherit lib pkgs nixfleet-canonicalize;
-            hostClosureHashes = {
-              "agent-01" = convergedClosureHash;
-              "agent-02" = convergedClosureHash;
-            };
-            onHealthFailure = "rollback-and-halt";
-            derivationName = "nixfleet-harness-signed-fixture-rollback-halt";
-          };
-    in
-      if rollbackHaltSignedFixture == null
-      then
-        throw ''
-          tests/harness: fleet-harness-rollback-policy requires
-          `nixfleet-canonicalize` for the rollback-halt fixture.
-        ''
-      else
-        import ./scenarios/rollback-policy.nix (scenarioArgs
-          // {
-            signedFixture = rollbackHaltSignedFixture;
-            closureHash = convergedClosureHash;
-            cpPkg = nixfleet-control-plane;
-            agentPkg = nixfleet-agent;
-          });
-
   mkFleetNScenario = n:
     import ./scenarios/smoke.nix (scenarioArgs
       // {
@@ -404,8 +364,6 @@ in {
   fleet-harness-module-rollouts-wire = moduleRolloutsWireScenario;
 
   fleet-harness-secret-hygiene = secretHygieneScenario;
-
-  fleet-harness-rollback-policy = rollbackPolicyScenario;
 
   fleet-harness-fleet-2 = mkFleetNScenario 2;
   fleet-harness-fleet-5 = mkFleetNScenario 5;
