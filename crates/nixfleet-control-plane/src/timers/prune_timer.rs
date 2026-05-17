@@ -10,12 +10,7 @@ use crate::db::Db;
 
 const TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const TOKEN_REPLAY_RETENTION_HOURS: i64 = 24;
-const DISPATCH_HISTORY_RETENTION_HOURS: i64 = 24 * 90;
-const HOST_REPORTS_RETENTION_HOURS: i64 = 24 * 7;
-/// Match `dispatch_history` (90d) - the rollouts table is the
-/// other side of the same audit story. Operators investigating a
-/// 60-day-old release on host-05 still want to see the per-host
-/// states it produced, not just the dispatch records.
+/// Operator's 60-day-back release investigation window.
 const FINISHED_ROLLOUTS_RETENTION_HOURS: i64 = 24 * 90;
 const BACKUP_RETENTION_DAYS: u64 = 14;
 const BACKUP_FILENAME_PREFIX: &str = "state.db.pre-";
@@ -41,22 +36,14 @@ pub fn spawn(
             let token_pruned = try_prune("token_replay", || {
                 db.tokens().prune_token_replay(TOKEN_REPLAY_RETENTION_HOURS)
             });
-            let history_pruned = try_prune("dispatch_history", || {
-                db.dispatch_history()
-                    .prune_history(DISPATCH_HISTORY_RETENTION_HOURS)
-            });
-            let reports_pruned = try_prune("host_reports", || {
-                db.reports()
-                    .prune_host_reports(HOST_REPORTS_RETENTION_HOURS)
-            });
-            let (hrs_pruned, rollouts_pruned) = match db
+            let rollouts_pruned = match db
                 .rollouts()
                 .prune_finished_rollouts(FINISHED_ROLLOUTS_RETENTION_HOURS)
             {
-                Ok(pair) => pair,
+                Ok((_hrs_pruned, rollouts_pruned)) => rollouts_pruned,
                 Err(err) => {
                     tracing::warn!(error = %err, "prune timer: finished_rollouts failed");
-                    (0, 0)
+                    0
                 }
             };
             let backups_pruned = db_path
@@ -71,9 +58,6 @@ pub fn spawn(
             tracing::info!(
                 target: "prune",
                 token_replay = token_pruned,
-                dispatch_history = history_pruned,
-                host_reports = reports_pruned,
-                host_rollout_state = hrs_pruned,
                 rollouts = rollouts_pruned,
                 state_db_backups = backups_pruned,
                 "prune timer: hourly sweep complete",

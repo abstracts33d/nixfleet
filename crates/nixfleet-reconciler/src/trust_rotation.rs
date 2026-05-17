@@ -6,16 +6,24 @@
 use chrono::{DateTime, Utc};
 use nixfleet_proto::trust::{KeySlot, TrustConfig};
 
-use crate::action::Action;
+/// Operator-visible "rotate this slot now" hint. The CP never self-mutates
+/// trust roots — this struct is informational telemetry only. The legacy
+/// `Action::RotateTrustRoot` (in the deleted reconciler `action.rs`) was
+/// the same shape; this is the moved-in-place definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RotateTrustRoot {
+    pub which: String,
+    pub retire_at: DateTime<Utc>,
+}
 
 /// One `Action::RotateTrustRoot` per slot with `retire_at <= now` AND
 /// `successor.is_some()`. Idempotent: re-emitted every tick until the operator
 /// rotates the slot (after which `successor` clears and the predicate stops).
 /// Pure arithmetic - safe in the reconcile hot path.
-pub fn check_trust_rotations(trust: &TrustConfig, now: DateTime<Utc>) -> Vec<Action> {
+pub fn check_trust_rotations(trust: &TrustConfig, now: DateTime<Utc>) -> Vec<RotateTrustRoot> {
     let mut out = Vec::new();
     if let Some(retire_at) = is_rotation_due(&trust.ci_release_key, now) {
-        out.push(Action::RotateTrustRoot {
+        out.push(RotateTrustRoot {
             which: "ciReleaseKey".to_string(),
             retire_at,
         });
@@ -23,7 +31,7 @@ pub fn check_trust_rotations(trust: &TrustConfig, now: DateTime<Utc>) -> Vec<Act
     if let Some(org_root) = trust.org_root_key.as_ref()
         && let Some(retire_at) = is_rotation_due(org_root, now)
     {
-        out.push(Action::RotateTrustRoot {
+        out.push(RotateTrustRoot {
             which: "orgRootKey".to_string(),
             retire_at,
         });
@@ -90,16 +98,12 @@ mod tests {
         let slot = slot_with(Some(key("CCCC")), Some(retire_at));
         let actions = check_trust_rotations(&trust_with(slot, None), now);
         assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::RotateTrustRoot {
-                which,
-                retire_at: r,
-            } => {
-                assert_eq!(which, "ciReleaseKey");
-                assert_eq!(*r, retire_at);
-            }
-            other => panic!("expected RotateTrustRoot, got {other:?}"),
-        }
+        let RotateTrustRoot {
+            which,
+            retire_at: r,
+        } = &actions[0];
+        assert_eq!(which, "ciReleaseKey");
+        assert_eq!(*r, retire_at);
     }
 
     #[test]
@@ -128,10 +132,7 @@ mod tests {
         let org_slot = slot_with(Some(key("DDDD")), Some(retire_at));
         let actions = check_trust_rotations(&trust_with(ci_slot, Some(org_slot)), now);
         assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::RotateTrustRoot { which, .. } => assert_eq!(which, "orgRootKey"),
-            other => panic!("expected RotateTrustRoot orgRootKey, got {other:?}"),
-        }
+        assert_eq!(actions[0].which, "orgRootKey");
     }
 
     #[test]
@@ -142,13 +143,7 @@ mod tests {
         let org_slot = slot_with(Some(key("DDDD")), Some(retire_at));
         let actions = check_trust_rotations(&trust_with(ci_slot, Some(org_slot)), now);
         assert_eq!(actions.len(), 2);
-        let whiches: Vec<&str> = actions
-            .iter()
-            .map(|a| match a {
-                Action::RotateTrustRoot { which, .. } => which.as_str(),
-                _ => panic!("expected RotateTrustRoot"),
-            })
-            .collect();
+        let whiches: Vec<&str> = actions.iter().map(|a| a.which.as_str()).collect();
         assert!(whiches.contains(&"ciReleaseKey"));
         assert!(whiches.contains(&"orgRootKey"));
     }

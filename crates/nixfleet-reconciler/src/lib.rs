@@ -1,27 +1,25 @@
 #![allow(clippy::doc_lazy_continuation)]
-//! Pure-function rollout reconciler + sidecar verification. Stateless.
+//! Pure planner + verification primitives for the RFC-0009 runtime.
 
-pub mod action;
 pub mod evidence;
-pub mod gates;
-pub mod host_state;
 pub mod manifest;
-pub mod observed;
-pub mod reconcile;
-pub mod rollout_state;
+pub mod planner;
+pub mod planner_gates;
+pub mod planner_types;
 pub mod trust_rotation;
 pub mod verify;
 
-pub use action::Action;
-pub use host_state::HostRolloutState;
 pub use manifest::{compute_rollout_id_for_channel, current_rollout_ids, project_manifest};
 pub use nixfleet_proto::FleetResolved;
-pub use observed::{HostState, Observed, Rollout};
-pub use reconcile::{reconcile, topological_channel_order};
-pub use rollout_state::RolloutState;
 pub use trust_rotation::check_trust_rotations;
 pub use verify::{
-    SignedSidecar, VerifyError, canonical_hash_from_bytes, compute_canonical_hash,
-    compute_rollout_id, rollout_id_from_bytes, verify_artifact, verify_bootstrap_nonces,
+    SignedSidecar, Verified, VerifiedFleet, VerifiedRolloutManifest, VerifyError,
+    canonical_hash_from_bytes, compute_canonical_hash, verify_artifact, verify_bootstrap_nonces,
     verify_revocations, verify_rollout_manifest, verify_signed_sidecar,
+};
+
+pub use planner::{active_rollout_for_host, compute_soak_due_at, plan_next};
+pub use planner_types::{
+    ChannelId, ClosureHash, FleetState, GateBlock, HostId, PlanAction, QuarantineSet, RolloutId,
+    RolloutSummary, SignedManifestSet,
 };

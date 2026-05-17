@@ -1,4 +1,0 @@
-[
-  { "action": "skip", "host": "h1", "reason": "host-edge: gating host 'h2' not yet Soaked/Converged" },
-  { "action": "dispatch_host", "rollout": "stable@r2", "host": "h2", "target_ref": "r2" }
-]

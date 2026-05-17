@@ -1,0 +1,988 @@
+//! End-to-end smoke test for the new RFC-0009 runtime.
+//!
+//! Spins up `runtime::spawn` against an in-memory DB, feeds inputs through
+//! the MPSC, observes the side effects (DB rows, event_log entries,
+//! heartbeat replies). Proves the integration of:
+//!   - manifest_poll ⇒ ManifestSetUpdated ⇒ plan_next ⇒ OpenRollout applier
+//!   - HostEvent ⇒ state_machine::step ⇒ apply_effect ⇒ host_rollout_records
+//!     + event_log writes
+//!   - HeartbeatReceived ⇒ drift compare ⇒ Replay-From reply
+//!   - compliance_wave gate ⇒ DeferDispatch ⇒ event_log GateDecision
+//!
+//! The runtime is async; assertions poll the DB on a tight timeout. If a
+//! test hangs the harness times out — better than relying on hard-coded
+//! sleeps.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::Utc;
+use nixfleet_control_plane::db::Db;
+use nixfleet_control_plane::runtime::{self, HeartbeatReply, ReducerInput};
+use nixfleet_control_plane::server::AppState;
+use nixfleet_proto::clock::SystemClock;
+use nixfleet_proto::testing::FleetBuilder;
+use nixfleet_proto::{HealthGate, HostWave, Meta, RolloutBudget, RolloutManifest, Selector};
+use nixfleet_reconciler::planner_types::SignedManifestSet;
+use nixfleet_reconciler::verify::Verified;
+use nixfleet_state_machine::Event;
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+
+/// Bounded wait for a predicate to become true. Returns on first satisfied
+/// poll or panics on timeout. The runtime is async; without bounded polling
+/// a flaky DB schedule could deadlock the test.
+async fn wait_for<F>(timeout: Duration, mut predicate: F)
+where
+    F: FnMut() -> bool,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if predicate() {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("wait_for: timed out after {:?}", timeout);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn make_state() -> Arc<AppState> {
+    let db = Db::open_in_memory().expect("open in-memory db");
+    db.migrate().expect("migrate");
+    Arc::new(AppState {
+        db: Some(Arc::new(db)),
+        ..Default::default()
+    })
+}
+
+/// Build a fleet with one channel "stable" and one host "h1" closure-pinned.
+/// Default compliance is "disabled" so gates won't intercept QueueDispatch.
+fn fleet_one_host(host_closure: &str) -> nixfleet_proto::FleetResolved {
+    FleetBuilder::new()
+        .host("h1", "stable")
+        .host_closure("h1", host_closure)
+        .build()
+}
+
+/// Synthesise the rollout manifest for "stable" that manifest_poll would
+/// have produced. This smoke harness doesn't exercise the real poller
+/// (no forge in the test); we hand-build the equivalent SignedManifestSet.
+fn rollout_manifest_one_host(channel: &str, host: &str, closure: &str) -> RolloutManifest {
+    RolloutManifest {
+        schema_version: 1,
+        display_name: format!("{channel}@test"),
+        channel: channel.to_string(),
+        channel_ref: format!("{channel}-rollout"),
+        fleet_resolved_hash: "test-hash".to_string(),
+        host_set: vec![HostWave {
+            hostname: host.to_string(),
+            wave_index: 0,
+            target_closure: closure.to_string(),
+        }],
+        health_gate: HealthGate::default(),
+        disruption_budgets: Vec::new(),
+        meta: Meta {
+            schema_version: 1,
+            signed_at: Some(Utc::now()),
+            ci_commit: Some("test-ci-commit".to_string()),
+            signature_algorithm: None,
+        },
+    }
+}
+
+fn signed_manifest_set_one_host(host_closure: &str) -> SignedManifestSet {
+    let fleet = fleet_one_host(host_closure);
+    let manifest = rollout_manifest_one_host("stable", "h1", host_closure);
+    let mut rollouts = HashMap::new();
+    rollouts.insert(
+        "stable".to_string(),
+        Verified::unverified_for_tests(manifest, Utc::now()),
+    );
+    SignedManifestSet {
+        fleet: Verified::unverified_for_tests(fleet, Utc::now()),
+        rollouts,
+    }
+}
+
+#[tokio::test]
+async fn manifest_set_updated_opens_rollout_and_creates_pending_record() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    // Feed a SignedManifestSet. Plan_next emits OpenRollout, the applier
+    // creates a Pending host_rollout_records row for h1.
+    let set = signed_manifest_set_one_host("target-closure");
+    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // `RolloutId::new(channel, channel_ref)` composite. Reconstruct
+    // here so the test's lookups by rollout_id match what
+    // `build_fleet_state` + the planner produce.
+    let rollout_id = nixfleet_proto::RolloutId::new(
+        "stable",
+        &set.rollouts.get("stable").unwrap().inner().channel_ref,
+    );
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .expect("send ManifestSetUpdated");
+
+    // Poll for the Pending row.
+    let db_for_poll = db.clone();
+    let rollout_for_poll = rollout_id.clone();
+    wait_for(Duration::from_secs(3), || {
+        db_for_poll
+            .host_rollout_records()
+            .load(rollout_for_poll.as_str(), "h1")
+            .ok()
+            .flatten()
+            .is_some()
+    })
+    .await;
+
+    let loaded = db
+        .host_rollout_records()
+        .load(rollout_id.as_str(), "h1")
+        .unwrap()
+        .expect("Pending row must exist after OpenRollout applier");
+    assert_eq!(loaded.target_closure, "target-closure");
+    assert_eq!(
+        loaded.state,
+        nixfleet_state_machine::HostState::Pending,
+        "first OpenRollout ⇒ host_rollout_records row at HostState::Pending",
+    );
+
+    cancel.cancel();
+    drop(rt);
+}
+
+#[tokio::test]
+async fn host_event_drives_state_transition_and_writes_event_log() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    // Same as the previous test: seed the rollout.
+    let set = signed_manifest_set_one_host("target-closure");
+    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // `RolloutId::new(channel, channel_ref)` composite. Reconstruct
+    // here so the test's lookups by rollout_id match what
+    // `build_fleet_state` + the planner produce.
+    let rollout_id = nixfleet_proto::RolloutId::new(
+        "stable",
+        &set.rollouts.get("stable").unwrap().inner().channel_ref,
+    );
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .expect("send ManifestSetUpdated");
+
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await;
+    }
+
+    // Drive a state transition via RemoteDispatchAck. From Pending this
+    // moves the host to Activating + emits RecordTransition +
+    // RemoteAppendEventLog effects.
+    rt.input_tx
+        .send(ReducerInput::HostEvent {
+            host: "h1".to_string(),
+            rollout_id: rollout_id.clone(),
+            event: Event::RemoteDispatchAck {
+                current_closure_at_dispatch: "previous-closure".to_string(),
+                received_at: Utc::now(),
+                seq: 1,
+            },
+        })
+        .await
+        .expect("send HostEvent");
+
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .map(|s| s.state == nixfleet_state_machine::HostState::Activating)
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    let after = db
+        .host_rollout_records()
+        .load(rollout_id.as_str(), "h1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.state, nixfleet_state_machine::HostState::Activating);
+    assert_eq!(after.last_event_seq, 1);
+    assert_eq!(
+        after.current_closure_at_dispatch.as_deref(),
+        Some("previous-closure"),
+    );
+
+    // Event log should have an AgentEvent (from RemoteAppendEventLog) and an
+    // Effect (RecordTransition). Poll because the writer task is async.
+    {
+        let db_for_poll = db.clone();
+        wait_for(Duration::from_secs(3), || {
+            let rows = db_for_poll
+                .event_log()
+                .query_by_host("h1", 100)
+                .unwrap_or_default();
+            rows.iter().any(|r| r.kind == "agent_event") && rows.iter().any(|r| r.kind == "effect")
+        })
+        .await;
+    }
+
+    cancel.cancel();
+    drop(rt);
+}
+
+#[tokio::test]
+async fn heartbeat_with_closure_mismatch_returns_replay_from_seq() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    // Seed: rollout open, host advances to Activating (sets last_event_seq=1).
+    let set = signed_manifest_set_one_host("target-closure");
+    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // `RolloutId::new(channel, channel_ref)` composite. Reconstruct
+    // here so the test's lookups by rollout_id match what
+    // `build_fleet_state` + the planner produce.
+    let rollout_id = nixfleet_proto::RolloutId::new(
+        "stable",
+        &set.rollouts.get("stable").unwrap().inner().channel_ref,
+    );
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await;
+    }
+    rt.input_tx
+        .send(ReducerInput::HostEvent {
+            host: "h1".to_string(),
+            rollout_id: rollout_id.clone(),
+            event: Event::RemoteDispatchAck {
+                current_closure_at_dispatch: "previous-closure".to_string(),
+                received_at: Utc::now(),
+                seq: 1,
+            },
+        })
+        .await
+        .unwrap();
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .map(|s| s.last_event_seq == 1)
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    // Heartbeat with a current_closure that disagrees with the CP-mirror
+    // (the mirror has current_closure = None at this point; the drift
+    // detector treats anything ≠ "what CP knows" as drift and replies
+    // with last_event_seq for Replay-From). RFC-0008 §4.3 semantics.
+    let (reply_tx, reply_rx) = oneshot::channel::<HeartbeatReply>();
+    rt.input_tx
+        .send(ReducerInput::HeartbeatReceived {
+            host: "h1".to_string(),
+            rollout_id: Some(rollout_id.clone()),
+            current_closure: Some("agent-says-this-other-closure".to_string()),
+            at: Utc::now(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+
+    let reply = tokio::time::timeout(Duration::from_secs(3), reply_rx)
+        .await
+        .expect("heartbeat reply within timeout")
+        .expect("reducer must send the reply (oneshot Sender must not drop)");
+
+    assert_eq!(
+        reply.replay_from,
+        Some(1),
+        "drift detected (CP has no current_closure recorded yet) ⇒ Replay-From should equal last_event_seq",
+    );
+
+    cancel.cancel();
+    drop(rt);
+}
+
+// Compliance-wave gate end-to-end test deferred to v0.2.1 (see
+// `.claude/plans/v0.2.1-followups.md` item 10 — per-worker integration
+// tests). Shape:
+//
+//   agent ProbeResult event → /v1/agent/events ingest →
+//   applier RemoteAppendEventLog → event_log row + probe_failures rows
+//   (one txn) → build_fleet_state.outstanding_failing_enforce_probes →
+//   planner_gates::compliance_wave → PlanAction::DeferDispatch →
+//   event_log GateDecision row.
+
+#[tokio::test]
+async fn current_wave_advances_when_every_wave_zero_host_converges() {
+    // Regression for the wave-promotion bump. Without it,
+    // `rollouts.current_wave` stays at 0 forever — wave_promotion
+    // blocks every wave-1+ host on every plan_next, multi-wave rollouts
+    // never progress.
+    //
+    // Setup: 2-wave fleet, h1 in wave 0, h2 in wave 1. After OpenRollout
+    // creates Pending rows for both, force h1 to Converged via a direct
+    // host_rollout_records.upsert (the test isolates the applier wiring,
+    // not the full state-machine path which is covered separately). Fire
+    // a PlanTick. Expect:
+    //   1. rollouts.current_wave bumps from 0 → 1.
+    //   2. plan_next emits QueueDispatch for h2 (wave_promotion no longer
+    //      blocks h2 since current_wave is now 1, matching h2's wave_index).
+
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    let fleet = FleetBuilder::new()
+        .host("h1", "stable")
+        .host_closure("h1", "h1-closure")
+        .host("h2", "stable")
+        .host_closure("h2", "h2-closure")
+        .wave("stable", &["h1"])
+        .wave("stable", &["h2"])
+        .build();
+
+    let manifest = RolloutManifest {
+        schema_version: 1,
+        display_name: "stable@wave-test".into(),
+        channel: "stable".into(),
+        channel_ref: "stable".into(),
+        fleet_resolved_hash: "test-hash".into(),
+        host_set: vec![
+            HostWave {
+                hostname: "h1".into(),
+                wave_index: 0,
+                target_closure: "h1-closure".into(),
+            },
+            HostWave {
+                hostname: "h2".into(),
+                wave_index: 1,
+                target_closure: "h2-closure".into(),
+            },
+        ],
+        health_gate: HealthGate::default(),
+        disruption_budgets: Vec::new(),
+        meta: Meta {
+            schema_version: 1,
+            signed_at: Some(Utc::now()),
+            ci_commit: Some("test-ci-commit".to_string()),
+            signature_algorithm: None,
+        },
+    };
+    let mut rollouts = HashMap::new();
+    rollouts.insert(
+        "stable".to_string(),
+        Verified::unverified_for_tests(manifest, Utc::now()),
+    );
+    let set = SignedManifestSet {
+        fleet: Verified::unverified_for_tests(fleet, Utc::now()),
+        rollouts,
+    };
+
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+
+    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // `RolloutId::new(channel, channel_ref)` composite. This fixture
+    // uses `channel: "stable"` and `channel_ref: "stable"` so the
+    // composite is `"stable@stable"`.
+    let rollout_id = nixfleet_proto::RolloutId::new("stable", "stable");
+    {
+        let db_for_poll = db.clone();
+        let rollout_id_clone = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_id_clone.as_str(), "h1")
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await;
+    }
+
+    // Force h1 to Converged. Bypasses the agent-driven state machine to
+    // isolate the applier's wave-promotion logic.
+    let mut h1 = db
+        .host_rollout_records()
+        .load(rollout_id.as_str(), "h1")
+        .unwrap()
+        .expect("h1 Pending row");
+    h1.state = nixfleet_state_machine::HostState::Converged;
+    h1.current_closure = Some("h1-closure".into());
+    h1.converged_at = Some(Utc::now());
+    db.host_rollout_records().upsert(&h1).unwrap();
+
+    rt.input_tx.send(ReducerInput::PlanTick).await.unwrap();
+
+    let db_for_poll = db.clone();
+    let rollout_id_clone = rollout_id.clone();
+    wait_for(Duration::from_secs(3), || {
+        db_for_poll
+            .rollouts()
+            .current_wave(rollout_id_clone.as_str())
+            .ok()
+            .flatten()
+            .map(|w| w == 1)
+            .unwrap_or(false)
+    })
+    .await;
+
+    let db_for_poll = db.clone();
+    wait_for(Duration::from_secs(3), || {
+        db_for_poll
+            .dispatch_queue()
+            .peek_for_host("h2")
+            .unwrap_or(false)
+    })
+    .await;
+
+    cancel.cancel();
+    drop(rt);
+}
+
+/// **D-007 regression test.** D-006's fix made the planner use
+/// `manifest.channel_ref` as the rollout_id, which fixed the immediate
+/// mismatch but introduced a new bug: two channels sharing a
+/// `channel_ref` (the architectural point of multi-channel cascading
+/// from a single git push) would collide on the rollout PK. D-007
+/// lifted `RolloutId` to a newtype with canonical
+/// `"{channel}@{channel_ref}"` construction (RFC-0012 §6.3 amendment
+/// `0320c2fa`).
+///
+/// This test deliberately uses two channels (`stable`, `edge`) sharing
+/// a single `channel_ref` (`"deadbeef"`) — the topology D-006's
+/// fixtures missed. The fix's payoff is two distinct
+/// `rollouts.rollout_id` rows + per-host-per-rollout dispatches with
+/// no collision. Without the fix, the second `OpenRollout` would
+/// `INSERT OR IGNORE` against the first's row and h2 (on `edge`) would
+/// never get a Pending record.
+#[tokio::test]
+async fn plan_next_distinguishes_rollouts_when_two_channels_share_channel_ref() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    let fleet = FleetBuilder::new()
+        .host("h1", "stable")
+        .host_closure("h1", "h1-closure")
+        .host("h2", "edge")
+        .host_closure("h2", "h2-closure")
+        .build();
+
+    // The load-bearing piece: two channels share one channel_ref
+    // (`"deadbeef"`). D-007's RolloutId::new(channel, channel_ref)
+    // disambiguates: rollout_id becomes `"stable@deadbeef"` for one
+    // and `"edge@deadbeef"` for the other.
+    let stable_manifest = RolloutManifest {
+        schema_version: 1,
+        display_name: "stable@deadbeef".into(),
+        channel: "stable".into(),
+        channel_ref: "deadbeef".into(),
+        fleet_resolved_hash: "test-hash".into(),
+        host_set: vec![HostWave {
+            hostname: "h1".into(),
+            wave_index: 0,
+            target_closure: "h1-closure".into(),
+        }],
+        health_gate: HealthGate::default(),
+        disruption_budgets: Vec::new(),
+        meta: Meta {
+            schema_version: 1,
+            signed_at: Some(Utc::now()),
+            ci_commit: Some("test-ci-commit".to_string()),
+            signature_algorithm: None,
+        },
+    };
+    let edge_manifest = RolloutManifest {
+        schema_version: 1,
+        display_name: "edge@deadbeef".into(),
+        channel: "edge".into(),
+        channel_ref: "deadbeef".into(),
+        fleet_resolved_hash: "test-hash".into(),
+        host_set: vec![HostWave {
+            hostname: "h2".into(),
+            wave_index: 0,
+            target_closure: "h2-closure".into(),
+        }],
+        health_gate: HealthGate::default(),
+        disruption_budgets: Vec::new(),
+        meta: Meta {
+            schema_version: 1,
+            signed_at: Some(Utc::now()),
+            ci_commit: Some("test-ci-commit".to_string()),
+            signature_algorithm: None,
+        },
+    };
+    let mut rollouts = HashMap::new();
+    rollouts.insert(
+        "stable".to_string(),
+        Verified::unverified_for_tests(stable_manifest, Utc::now()),
+    );
+    rollouts.insert(
+        "edge".to_string(),
+        Verified::unverified_for_tests(edge_manifest, Utc::now()),
+    );
+    let set = SignedManifestSet {
+        fleet: Verified::unverified_for_tests(fleet, Utc::now()),
+        rollouts,
+    };
+
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+
+    // Both Pending rows must land — one per rollout, no collision.
+    // Pre-D-007 the second INSERT would `INSERT OR IGNORE` against the
+    // first (same rollout_id="deadbeef") and h2 would never get a
+    // Pending row.
+    let stable_rid = nixfleet_proto::RolloutId::new("stable", "deadbeef");
+    let edge_rid = nixfleet_proto::RolloutId::new("edge", "deadbeef");
+    {
+        let db_for_poll = db.clone();
+        let stable_rid_c = stable_rid.clone();
+        let edge_rid_c = edge_rid.clone();
+        wait_for(Duration::from_secs(3), move || {
+            db_for_poll
+                .host_rollout_records()
+                .load(stable_rid_c.as_str(), "h1")
+                .ok()
+                .flatten()
+                .is_some()
+                && db_for_poll
+                    .host_rollout_records()
+                    .load(edge_rid_c.as_str(), "h2")
+                    .ok()
+                    .flatten()
+                    .is_some()
+        })
+        .await;
+    }
+
+    // Distinct `rollouts` rows — content-addressed identity (D-007).
+    let stable_row = db
+        .rollouts()
+        .state(stable_rid.as_str())
+        .unwrap()
+        .expect("stable@deadbeef row exists");
+    let edge_row = db
+        .rollouts()
+        .state(edge_rid.as_str())
+        .unwrap()
+        .expect("edge@deadbeef row exists");
+    assert_eq!(stable_row.rollout_id.as_str(), "stable@deadbeef");
+    assert_eq!(edge_row.rollout_id.as_str(), "edge@deadbeef");
+    assert_eq!(stable_row.channel, "stable");
+    assert_eq!(edge_row.channel, "edge");
+
+    // PlanTick produces QueueDispatch for both hosts.
+    rt.input_tx.send(ReducerInput::PlanTick).await.unwrap();
+
+    let db_for_poll = db.clone();
+    wait_for(Duration::from_secs(3), move || {
+        db_for_poll
+            .dispatch_queue()
+            .peek_for_host("h1")
+            .unwrap_or(false)
+            && db_for_poll
+                .dispatch_queue()
+                .peek_for_host("h2")
+                .unwrap_or(false)
+    })
+    .await;
+
+    cancel.cancel();
+    drop(rt);
+}
+
+/// **D-008 Test A — cascade-deadlock regression (end-to-end).**
+///
+/// Topology: two channels chained by `channel_edges` (`stable → edge`),
+/// each owning one host. Both hosts share tag `"ws"` and a single
+/// disruption budget with `maxInFlight = 1`.
+///
+/// Pre-fix shape: after `OpenRollout` creates Pending rows for h1 and h2,
+/// `disruption_budget` counted `Pending` as in-flight. h1's gate check
+/// saw `in_flight = 2 > max = 1` and deferred — even though h1 is the
+/// predecessor channel's first wave-0 host and nothing else is blocking
+/// it. h1 never advanced past Pending, channel stable never converged,
+/// channel_edges kept h2 blocked too: full cascade deadlock.
+///
+/// Post-fix (`planner_gates::disruption_budget` §1): Pending is excluded
+/// from `is_in_flight`. h1 sees `in_flight = 0`, dispatches on the first
+/// tick. h2 stays deferred via `channel_edges` until stable converges —
+/// the *correct* gate, not the spurious self-block.
+#[tokio::test]
+async fn d008_cascade_predecessor_dispatches_on_first_tick() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    let fleet = FleetBuilder::new()
+        .host("h1", "stable")
+        .host_closure("h1", "h1-closure")
+        .host_tag("h1", "ws")
+        .host("h2", "edge")
+        .host_closure("h2", "h2-closure")
+        .host_tag("h2", "ws")
+        .channel_edge("stable", "edge")
+        .build();
+
+    // Same Selector across both manifests so the gate's cross-rollout
+    // in-flight sum (matched by selector equality) picks up both hosts
+    // when computing budget exhaustion (the load-bearing part of the
+    // pre-fix deadlock).
+    let selector = Selector {
+        tags: vec!["ws".into()],
+        ..Default::default()
+    };
+    let budgets = vec![RolloutBudget {
+        selector: selector.clone(),
+        hosts: vec!["h1".into(), "h2".into()],
+        max_in_flight: Some(1),
+        max_in_flight_pct: None,
+    }];
+
+    let stable_manifest = RolloutManifest {
+        schema_version: 1,
+        display_name: "stable@d008a".into(),
+        channel: "stable".into(),
+        channel_ref: "stable-ref".into(),
+        fleet_resolved_hash: "test-hash".into(),
+        host_set: vec![HostWave {
+            hostname: "h1".into(),
+            wave_index: 0,
+            target_closure: "h1-closure".into(),
+        }],
+        health_gate: HealthGate::default(),
+        disruption_budgets: budgets.clone(),
+        meta: Meta {
+            schema_version: 1,
+            signed_at: Some(Utc::now()),
+            ci_commit: Some("test-ci-commit".into()),
+            signature_algorithm: None,
+        },
+    };
+    let edge_manifest = RolloutManifest {
+        schema_version: 1,
+        display_name: "edge@d008a".into(),
+        channel: "edge".into(),
+        channel_ref: "edge-ref".into(),
+        fleet_resolved_hash: "test-hash".into(),
+        host_set: vec![HostWave {
+            hostname: "h2".into(),
+            wave_index: 0,
+            target_closure: "h2-closure".into(),
+        }],
+        health_gate: HealthGate::default(),
+        disruption_budgets: budgets,
+        meta: Meta {
+            schema_version: 1,
+            signed_at: Some(Utc::now()),
+            ci_commit: Some("test-ci-commit".into()),
+            signature_algorithm: None,
+        },
+    };
+    let mut rollouts = HashMap::new();
+    rollouts.insert(
+        "stable".to_string(),
+        Verified::unverified_for_tests(stable_manifest, Utc::now()),
+    );
+    rollouts.insert(
+        "edge".to_string(),
+        Verified::unverified_for_tests(edge_manifest, Utc::now()),
+    );
+    let set = SignedManifestSet {
+        fleet: Verified::unverified_for_tests(fleet, Utc::now()),
+        rollouts,
+    };
+
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+
+    let stable_rid = nixfleet_proto::RolloutId::new("stable", "stable-ref");
+    let edge_rid = nixfleet_proto::RolloutId::new("edge", "edge-ref");
+    {
+        let db_for_poll = db.clone();
+        let stable_rid_c = stable_rid.clone();
+        let edge_rid_c = edge_rid.clone();
+        wait_for(Duration::from_secs(3), move || {
+            db_for_poll
+                .host_rollout_records()
+                .load(stable_rid_c.as_str(), "h1")
+                .ok()
+                .flatten()
+                .is_some()
+                && db_for_poll
+                    .host_rollout_records()
+                    .load(edge_rid_c.as_str(), "h2")
+                    .ok()
+                    .flatten()
+                    .is_some()
+        })
+        .await;
+    }
+
+    rt.input_tx.send(ReducerInput::PlanTick).await.unwrap();
+
+    // Post-fix payoff: h1 dispatches on the first tick. Pre-fix it
+    // deferred forever (in_flight = 2 from Pending(h1) + Pending(h2)).
+    {
+        let db_for_poll = db.clone();
+        wait_for(Duration::from_secs(3), move || {
+            db_for_poll
+                .dispatch_queue()
+                .peek_for_host("h1")
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    // h2 is correctly blocked by channel_edges (stable hasn't converged
+    // yet) — proves the post-fix gate stack still cascades properly,
+    // not just that we widened the budget into a no-op.
+    assert!(
+        !db.dispatch_queue().peek_for_host("h2").unwrap_or(true),
+        "h2 (gated channel) must remain undispatched until predecessor converges",
+    );
+
+    cancel.cancel();
+    drop(rt);
+}
+
+/// **D-008 Test B — within-tick over-commit regression (end-to-end).**
+///
+/// Three Pending hosts on one budget with `maxInFlight = 1` in a single
+/// `plan_next` tick. With D-008 §1's `Pending`-not-in-flight fix alone,
+/// all three would have seen `in_flight = 0` (none have transitioned
+/// to Activating yet — the applier hasn't run inside the same plan_next)
+/// and all three would have been QueueDispatch'd: a 3× over-commit, a
+/// regression worse than the original deadlock.
+///
+/// The paired fix is the within-tick accumulator (D-008 §2 /
+/// `planner.rs` host loop). The first QueueDispatch increments
+/// `tick_dispatched[selector] → 1`; the next host's gate-check sees
+/// `tick_count + in_flight = 1 ≥ max = 1` and defers. Same for the
+/// third. Exactly one QueueDispatch + two DeferDispatch{gate=
+/// disruption-budget}.
+#[tokio::test]
+async fn d008_within_tick_accumulator_prevents_over_commit() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    let fleet = FleetBuilder::new()
+        .host("h1", "stable")
+        .host_closure("h1", "h1-closure")
+        .host_tag("h1", "ws")
+        .host("h2", "stable")
+        .host_closure("h2", "h2-closure")
+        .host_tag("h2", "ws")
+        .host("h3", "stable")
+        .host_closure("h3", "h3-closure")
+        .host_tag("h3", "ws")
+        .build();
+
+    let selector = Selector {
+        tags: vec!["ws".into()],
+        ..Default::default()
+    };
+    let budgets = vec![RolloutBudget {
+        selector,
+        hosts: vec!["h1".into(), "h2".into(), "h3".into()],
+        max_in_flight: Some(1),
+        max_in_flight_pct: None,
+    }];
+
+    let manifest = RolloutManifest {
+        schema_version: 1,
+        display_name: "stable@d008b".into(),
+        channel: "stable".into(),
+        channel_ref: "stable-ref".into(),
+        fleet_resolved_hash: "test-hash".into(),
+        host_set: vec![
+            HostWave {
+                hostname: "h1".into(),
+                wave_index: 0,
+                target_closure: "h1-closure".into(),
+            },
+            HostWave {
+                hostname: "h2".into(),
+                wave_index: 0,
+                target_closure: "h2-closure".into(),
+            },
+            HostWave {
+                hostname: "h3".into(),
+                wave_index: 0,
+                target_closure: "h3-closure".into(),
+            },
+        ],
+        health_gate: HealthGate::default(),
+        disruption_budgets: budgets,
+        meta: Meta {
+            schema_version: 1,
+            signed_at: Some(Utc::now()),
+            ci_commit: Some("test-ci-commit".into()),
+            signature_algorithm: None,
+        },
+    };
+    let mut rollouts = HashMap::new();
+    rollouts.insert(
+        "stable".to_string(),
+        Verified::unverified_for_tests(manifest, Utc::now()),
+    );
+    let set = SignedManifestSet {
+        fleet: Verified::unverified_for_tests(fleet, Utc::now()),
+        rollouts,
+    };
+
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+
+    let rollout_id = nixfleet_proto::RolloutId::new("stable", "stable-ref");
+    {
+        let db_for_poll = db.clone();
+        let rid_c = rollout_id.clone();
+        wait_for(Duration::from_secs(3), move || {
+            ["h1", "h2", "h3"].iter().all(|h| {
+                db_for_poll
+                    .host_rollout_records()
+                    .load(rid_c.as_str(), h)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+        })
+        .await;
+    }
+
+    rt.input_tx.send(ReducerInput::PlanTick).await.unwrap();
+
+    // Wait until all three hosts have been handled (queued or deferred).
+    // The total queued + budget-deferred must reach 3.
+    {
+        let db_for_poll = db.clone();
+        wait_for(Duration::from_secs(3), move || {
+            let queued = ["h1", "h2", "h3"]
+                .iter()
+                .filter(|h| {
+                    db_for_poll
+                        .dispatch_queue()
+                        .peek_for_host(h)
+                        .unwrap_or(false)
+                })
+                .count();
+            let deferred_budget = db_for_poll
+                .event_log()
+                .query_by_kind(
+                    nixfleet_control_plane::db::event_log::EventLogKind::GateDecision,
+                    100,
+                )
+                .map(|rows| {
+                    rows.iter()
+                        .filter(|r| r.payload.contains("\"gate\":\"disruption-budget\""))
+                        .count()
+                })
+                .unwrap_or(0);
+            queued + deferred_budget >= 3
+        })
+        .await;
+    }
+
+    let queued: Vec<&str> = ["h1", "h2", "h3"]
+        .into_iter()
+        .filter(|h| db.dispatch_queue().peek_for_host(h).unwrap_or(false))
+        .collect();
+    assert_eq!(
+        queued.len(),
+        1,
+        "exactly one QueueDispatch expected (D-008 §2 within-tick accumulator); got {queued:?}",
+    );
+
+    let gate_rows = db
+        .event_log()
+        .query_by_kind(
+            nixfleet_control_plane::db::event_log::EventLogKind::GateDecision,
+            100,
+        )
+        .expect("query gate_decision rows");
+    let deferred_budget: Vec<_> = gate_rows
+        .iter()
+        .filter(|r| r.payload.contains("\"gate\":\"disruption-budget\""))
+        .collect();
+    assert_eq!(
+        deferred_budget.len(),
+        2,
+        "exactly two DeferDispatch{{gate=disruption-budget}} expected; got payloads={:?}",
+        deferred_budget
+            .iter()
+            .map(|r| &r.payload)
+            .collect::<Vec<_>>(),
+    );
+
+    cancel.cancel();
+    drop(rt);
+}

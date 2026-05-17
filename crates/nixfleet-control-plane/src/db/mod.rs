@@ -6,20 +6,15 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 pub mod allowed_nonces;
-pub mod dispatch_history;
-pub mod host_dispatch_state;
+pub mod dispatch_queue;
+pub mod event_log;
+pub mod host_rollout_records;
+pub mod probe_failures;
 pub mod quarantined_closures;
-pub mod reports;
 pub mod revocations;
-pub mod rollout_state;
 pub mod rollouts;
 pub mod tokens;
 
-pub use dispatch_history::DispatchHistoryRow;
-pub use host_dispatch_state::{
-    DispatchInsert, ExpiredDispatch, HostDispatchStateRow, RolloutDbSnapshot,
-};
-pub use reports::{HostReportInsert, HostReportRow};
 pub use tokens::RecordTokenOutcome;
 
 mod embedded {
@@ -85,20 +80,8 @@ impl Db {
         tokens::Tokens { conn: &self.conn }
     }
 
-    pub fn host_dispatch_state(&self) -> host_dispatch_state::HostDispatchState<'_> {
-        host_dispatch_state::HostDispatchState { conn: &self.conn }
-    }
-
-    pub fn dispatch_history(&self) -> dispatch_history::DispatchHistory<'_> {
-        dispatch_history::DispatchHistory { conn: &self.conn }
-    }
-
-    pub fn rollout_state(&self) -> rollout_state::RolloutState<'_> {
-        rollout_state::RolloutState { conn: &self.conn }
-    }
-
-    pub fn reports(&self) -> reports::Reports<'_> {
-        reports::Reports { conn: &self.conn }
+    pub fn probe_failures(&self) -> probe_failures::ProbeFailures<'_> {
+        probe_failures::ProbeFailures { conn: &self.conn }
     }
 
     /// Hard state.
@@ -112,6 +95,18 @@ impl Db {
 
     pub fn rollouts(&self) -> rollouts::Rollouts<'_> {
         rollouts::Rollouts { conn: &self.conn }
+    }
+
+    pub fn dispatch_queue(&self) -> dispatch_queue::DispatchQueue<'_> {
+        dispatch_queue::DispatchQueue { conn: &self.conn }
+    }
+
+    pub fn event_log(&self) -> event_log::EventLog<'_> {
+        event_log::EventLog { conn: &self.conn }
+    }
+
+    pub fn host_rollout_records(&self) -> host_rollout_records::HostRolloutRecords<'_> {
+        host_rollout_records::HostRolloutRecords { conn: &self.conn }
     }
 }
 
@@ -166,23 +161,32 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         for expected in &[
-            "token_replay",
             "cert_revocations",
-            "host_dispatch_state",
-            "dispatch_history",
-            "host_rollout_state",
-            "host_reports",
+            "dispatch_queue",
+            "event_log",
+            "host_rollout_records",
+            "probe_failures",
+            "quarantined_closures",
             "rollouts",
+            "token_replay",
         ] {
             assert!(
                 names.contains(&expected.to_string()),
-                "migrations must create {expected}; got {names:?}",
+                "v0.2 baseline must create {expected}; got {names:?}",
             );
         }
-        for legacy in &["pending_confirms", "schema_placeholder"] {
+        // v0.1 / 9a-deleted tables must not resurface.
+        for legacy in &[
+            "host_dispatch_state",
+            "host_rollout_state",
+            "host_reports",
+            "dispatch_history",
+            "pending_confirms",
+            "schema_placeholder",
+        ] {
             assert!(
                 !names.contains(&legacy.to_string()),
-                "migrations must not carry legacy table {legacy}",
+                "v0.2 baseline must not carry legacy table {legacy}",
             );
         }
     }

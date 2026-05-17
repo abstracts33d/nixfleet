@@ -1,4 +1,4 @@
-//! `verify_rollout_manifest` + `compute_rollout_id` integration.
+//! `verify_rollout_manifest` integration + RolloutId canonical-construction discrimination.
 
 mod common;
 
@@ -6,7 +6,8 @@ use chrono::{Duration as ChronoDuration, Utc};
 use common::signing::{fresh_signing_key, sign_artifact, trust_root_for};
 use ed25519_dalek::Signer;
 use nixfleet_canonicalize::canonicalize;
-use nixfleet_reconciler::{VerifyError, compute_rollout_id, verify_rollout_manifest};
+use nixfleet_proto::RolloutId;
+use nixfleet_reconciler::{VerifyError, verify_rollout_manifest};
 use std::time::Duration;
 
 const FIXTURE_MANIFEST: &str = r#"{
@@ -43,7 +44,7 @@ fn verify_rollout_manifest_ok_returns_manifest() {
         window,
         None,
     );
-    let m = result.expect("verify_rollout_manifest_ok");
+    let m = result.expect("verify_rollout_manifest_ok").into_inner();
     assert_eq!(m.schema_version, 1);
     assert_eq!(m.channel, "stable");
     assert_eq!(m.host_set.len(), 2);
@@ -91,7 +92,12 @@ fn verify_rollout_manifest_rejects_stale() {
 }
 
 #[test]
-fn compute_rollout_id_is_64_hex_chars() {
+fn rollout_id_for_verified_manifest_is_canonical_composite() {
+    // RFC-0012 §6.3: rollout_id is `"{channel}@{channel_ref}"` derived
+    // from the parsed manifest's typed fields. Deterministic from the
+    // projection inputs (channel + channel_ref) alone; field changes
+    // outside that pair do not perturb the id (architectural distinction
+    // from a content-addressed-hash shape).
     let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_MANIFEST);
     let now = signed_at + ChronoDuration::minutes(30);
     let window = Duration::from_secs(3 * 3600);
@@ -104,64 +110,24 @@ fn compute_rollout_id_is_64_hex_chars() {
         window,
         None,
     )
-    .expect("verify ok");
+    .expect("verify ok")
+    .into_inner();
 
-    let id = compute_rollout_id(&m).expect("compute_rollout_id");
-    assert_eq!(id.len(), 64, "sha256 hex must be 64 chars: {id}");
-    assert!(
-        id.chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-        "id must be hex lowercase only: {id}"
+    let id = RolloutId::new(&m.channel, &m.channel_ref);
+    assert_eq!(
+        id.as_str(),
+        "stable@def4567abc123def4567abc123def4567abc123d",
+        "rollout_id is the canonical channel@channel_ref composite",
     );
-}
 
-#[test]
-fn compute_rollout_id_stable_across_round_trip() {
-    let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_MANIFEST);
-    let now = signed_at + ChronoDuration::minutes(30);
-    let window = Duration::from_secs(3 * 3600);
-
-    let m = verify_rollout_manifest(
-        &bytes,
-        &sig,
-        std::slice::from_ref(&trust),
-        now,
-        window,
-        None,
-    )
-    .expect("verify ok");
-
-    let id1 = compute_rollout_id(&m).unwrap();
-    let raw = serde_json::to_string(&m).unwrap();
-    let m2: nixfleet_proto::RolloutManifest = serde_json::from_str(&raw).unwrap();
-    let id2 = compute_rollout_id(&m2).unwrap();
-
-    assert_eq!(id1, id2, "id must survive serialize/parse round-trip");
-}
-
-#[test]
-fn compute_rollout_id_changes_with_field_change() {
-    let (bytes, sig, trust, signed_at) = sign_artifact(FIXTURE_MANIFEST);
-    let now = signed_at + ChronoDuration::minutes(30);
-    let window = Duration::from_secs(3 * 3600);
-
-    let m = verify_rollout_manifest(
-        &bytes,
-        &sig,
-        std::slice::from_ref(&trust),
-        now,
-        window,
-        None,
-    )
-    .expect("verify ok");
-    let id1 = compute_rollout_id(&m).unwrap();
-
+    // Perturbing a field outside (channel, channel_ref) leaves the
+    // identifier intact. The id is a content-addressable name for the
+    // rollout's identity, not a hash of its bytes.
     let mut m2 = m.clone();
     m2.host_set[0].target_closure =
         "9999999999999999999999999999999999999999-perturbed".to_string();
-    let id2 = compute_rollout_id(&m2).unwrap();
-
-    assert_ne!(id1, id2);
+    let id2 = RolloutId::new(&m2.channel, &m2.channel_ref);
+    assert_eq!(id, id2, "id depends only on (channel, channel_ref)");
 }
 
 #[test]
@@ -253,70 +219,5 @@ fn verify_rollout_manifest_reject_before_rejects_pre_compromise() {
     assert!(
         matches!(err, VerifyError::RejectedBeforeTimestamp { .. }),
         "reject_before must apply to rollout manifest; got {err:?}"
-    );
-}
-
-#[test]
-fn rollout_id_from_bytes_is_cross_version_stable_across_additive_changes() {
-    // Regression for the agent-bricking failure where an older agent's
-    // RolloutManifest proto missed a field the producer added (the
-    // disruption_budgets snapshot) and therefore re-serialised to a
-    // smaller canonical payload, producing a different sha256 from
-    // the producer's advertised rolloutId.
-    //
-    // The fix: verifiers MUST hash the bytes they received, never a
-    // re-serialised parsed struct. We simulate the cross-version case
-    // by handing both functions a JSON object with a forward-compatible
-    // "futureField" the proto's RolloutManifest doesn't know about.
-    use nixfleet_reconciler::{
-        canonical_hash_from_bytes, compute_rollout_id, rollout_id_from_bytes,
-    };
-
-    // Producer-canonical bytes including a hypothetical future additive field.
-    let producer_bytes = canonicalize(
-        r#"{
-            "schemaVersion": 1,
-            "displayName": "stable@deadbeef",
-            "channel": "stable",
-            "channelRef": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            "fleetResolvedHash": "1111111111111111111111111111111111111111111111111111111111111111",
-            "hostSet": [],
-            "healthGate": {},
-            "complianceFrameworks": [],
-            "disruptionBudgets": [],
-            "futureField": {"v0_3_property": "value"},
-            "meta": {
-                "schemaVersion": 1,
-                "signedAt": "2026-04-30T12:00:00Z",
-                "ciCommit": "deadbeef",
-                "signatureAlgorithm": "ed25519"
-            }
-        }"#,
-    )
-    .expect("canonicalize")
-    .into_bytes();
-
-    let from_bytes = rollout_id_from_bytes(&producer_bytes).expect("from_bytes");
-
-    // Round-trip via parsed struct (the LOSSY path the agent used to take).
-    let parsed: nixfleet_proto::RolloutManifest =
-        serde_json::from_slice(&producer_bytes).expect("parse");
-    let from_struct = compute_rollout_id(&parsed).expect("from_struct");
-
-    assert_ne!(
-        from_bytes, from_struct,
-        "Sanity check: round-tripping a manifest with unknown fields through \
-         the typed proto LOSES those fields, producing a different hash. \
-         If this assertion ever fails it means RolloutManifest gained a \
-         catch-all map and the regression's premise no longer holds.",
-    );
-
-    // The producer would also have computed the bytes-hash. Verify the
-    // hash that the verifier computes from raw bytes matches the canonical
-    // bytes (it's a tautology - that's exactly the property we want).
-    let recomputed = canonical_hash_from_bytes(&producer_bytes).expect("recompute");
-    assert_eq!(
-        from_bytes, recomputed,
-        "rollout_id_from_bytes is a thin alias for canonical_hash_from_bytes",
     );
 }

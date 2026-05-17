@@ -1,3 +1,0 @@
-[
-  { "action": "soak_host", "rollout": "stable@r2", "host": "h1" }
-]

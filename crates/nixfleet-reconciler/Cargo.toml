@@ -12,9 +12,19 @@ authors.workspace = true
 name = "nixfleet_reconciler"
 path = "src/lib.rs"
 
+[features]
+# Exposes `Verified::unverified_for_tests` for downstream crates' tests
+# (e.g. nixfleet-control-plane's applier integration tests). Production
+# builds MUST NOT enable this — the safety contract of `Verified<T>`
+# (RFC-0009 §3, RFC-0002 §3) is that the only path to a `Verified<T>`
+# in production is through a real signature-checking `verify_*` call.
+# Enable strictly via [dev-dependencies] in the downstream crate.
+test-helpers = []
+
 [dependencies]
 nixfleet-proto = { path = "../nixfleet-proto" }
 nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }
+nixfleet-state-machine = { path = "../nixfleet-state-machine" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -29,4 +39,4 @@ ssh-key = { workspace = true }
 
 [dev-dependencies]
 # Enable the shared FleetBuilder fixture API for tests.
-nixfleet-proto = { path = "../nixfleet-proto", features = ["testing"] }
+nixfleet-proto = { path = "../nixfleet-proto", features = ["testing", "test-helpers"] }

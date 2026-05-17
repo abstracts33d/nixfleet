@@ -1,16 +1,11 @@
 //! Long-running TLS server: router + listener + reconcile loop + polls.
 
-mod checkin_pipeline;
 mod middleware;
-mod reconcile;
 mod route_error;
 mod routes;
 mod state;
 
-pub use state::{
-    AppState, ClosureUpstream, HostCheckinRecord, IssuancePaths, ReportRecord, ServeArgs,
-    VerifiedFleetSnapshot,
-};
+pub use state::{AppState, ClosureUpstream, IssuancePaths, ServeArgs, VerifiedFleetSnapshot};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,10 +15,8 @@ use axum::body::Body;
 use axum::http::Request as HttpRequest;
 use axum::middleware::Next;
 use axum::routing::{get, post};
-use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
-use crate::TickInputs;
 use crate::auth::auth_cn::MtlsAcceptor;
 
 /// 30s = systemd `TimeoutStopSec=` default; stay under to avoid SIGKILL.
@@ -40,19 +33,16 @@ fn build_router(state: Arc<AppState>) -> Router {
     let auth_state = state.clone();
     let ready_state = state.clone();
 
-    let anonymous_v1 = Router::new()
-        .route("/v1/enroll", post(routes::enrollment::enroll))
-        .route(
-            "/v1/agent/bootstrap-report",
-            post(routes::bootstrap_report::bootstrap_report),
-        );
+    let anonymous_v1 = Router::new().route("/v1/enroll", post(routes::enrollment::enroll));
 
     let authenticated_v1 = Router::new()
         .route("/v1/whoami", get(routes::status::whoami))
-        .route("/v1/agent/checkin", post(checkin_pipeline::checkin))
-        .route("/v1/agent/report", post(routes::reports::report))
-        .route("/v1/host-reports", get(routes::reports::list_recent))
-        .route("/v1/agent/confirm", post(checkin_pipeline::confirm))
+        // RFC-0008 §4 wire protocol (replaces the v0.1 checkin / confirm
+        // pull pipeline — agents now POST events as they happen and
+        // long-poll for dispatches).
+        .route("/v1/agent/events", post(routes::events::events))
+        .route("/v1/agent/heartbeat", post(routes::heartbeat::heartbeat))
+        .route("/v1/agent/dispatch", get(routes::dispatch::dispatch))
         .route(
             "/v1/agent/closure/{hash}",
             get(routes::status::closure_proxy),
@@ -63,6 +53,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/metrics", get(routes::metrics::metrics_handler))
         .route("/v1/rollouts", get(routes::rollouts::list_active))
         .route("/v1/deferrals", get(routes::deferrals::list))
+        .route("/v1/fleet.resolved", get(routes::fleet::artifact))
+        .route("/v1/fleet.resolved/sig", get(routes::fleet::signature))
         .route("/v1/rollouts/{rolloutId}", get(routes::rollouts::manifest))
         .route(
             "/v1/rollouts/{rolloutId}/sig",
@@ -73,8 +65,12 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(routes::rollouts::lifecycle),
         )
         .route(
-            "/v1/rollouts/{rolloutId}/trace",
-            get(routes::rollouts::trace),
+            "/v1/rollouts/{rolloutId}/hosts",
+            get(routes::rollouts::hosts),
+        )
+        .route(
+            "/v1/rollouts/{rolloutId}/events",
+            get(routes::rollouts::events),
         )
         .layer(axum::middleware::from_fn(move |req, next| {
             let s = auth_state.clone();
@@ -117,6 +113,13 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         if args.bootstrap_nonces.is_none() {
             missing.push("--bootstrap-nonces-{artifact,signature}-url (bootstrap-nonces polling disabled - replay-after-DB-wipe protection absent, nixfleet#96)");
         }
+        // RFC-0005 §1.5.1: file-backed CA leaves signing material on disk;
+        // production deployments MUST use the TPM backend or opt-in explicitly.
+        let tpm_configured = args.tpm_ca_pubkey_raw.is_some() && args.tpm_ca_sign_wrapper.is_some();
+        let file_only = args.fleet_ca_key.is_some() && !tpm_configured;
+        if file_only && !args.allow_file_ca_key {
+            missing.push("--tpm-ca-pubkey-raw + --tpm-ca-sign-wrapper (file-backed --fleet-ca-key keeps signing material on disk; pass --allow-file-ca-key to opt out, RFC-0005 §1.5.1)");
+        }
         if !missing.is_empty() {
             anyhow::bail!(
                 "--strict refuses to start: the following security flags are unset:\n  - {}\n\
@@ -155,6 +158,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         closure_upstream,
         rollouts_dir: args.rollouts_dir.clone(),
         rollouts_source: args.rollouts_source.clone(),
+        channel_refs_source: args.channel_refs.clone(),
         strict: args.strict,
         agent_cn_suffix: args.agent_cn_suffix.clone(),
         agent_cert_validity: args.agent_cert_validity,
@@ -184,84 +188,11 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let mut bg_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     if let Some(db_arc) = db.clone() {
-        bg_handles.push(crate::timers::rollback_timer::spawn(
-            cancel.clone(),
-            db_arc.clone(),
-        ));
         bg_handles.push(crate::timers::prune_timer::spawn(
             cancel.clone(),
             db_arc,
             args.db_path.clone(),
         ));
-    }
-
-    // Hydrate the host_reports ring at boot so wave-gate state survives CP restart.
-    if let Some(db_arc) = db.clone() {
-        match db_arc.reports().host_reports_known_hostnames() {
-            Ok(hostnames) => {
-                let mut total = 0usize;
-                let mut reports_w = state.host_reports.write().await;
-                for hostname in &hostnames {
-                    match db_arc.reports().host_reports_recent_per_host(
-                        hostname,
-                        crate::server::state::REPORT_RING_CAP,
-                    ) {
-                        Ok(rows) => {
-                            for row in rows {
-                                let req: nixfleet_proto::agent_wire::ReportRequest =
-                                    match serde_json::from_str(&row.report_json) {
-                                        Ok(r) => r,
-                                        Err(err) => {
-                                            tracing::warn!(
-                                                hostname = %hostname,
-                                                event_id = %row.event_id,
-                                                error = %err,
-                                                "host_reports hydration: unparseable row, skipping"
-                                            );
-                                            continue;
-                                        }
-                                    };
-                                let signature_status = row.signature_status.and_then(|s| {
-                                    serde_json::from_value::<
-                                        nixfleet_reconciler::evidence::SignatureStatus,
-                                    >(serde_json::Value::String(
-                                        s,
-                                    ))
-                                    .ok()
-                                });
-                                let buf = reports_w.entry(hostname.clone()).or_default();
-                                buf.push_back(crate::server::ReportRecord {
-                                    event_id: row.event_id,
-                                    received_at: row.received_at,
-                                    report: req,
-                                    signature_status,
-                                });
-                                total += 1;
-                            }
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                hostname = %hostname,
-                                error = %err,
-                                "host_reports hydration: per-host query failed",
-                            );
-                        }
-                    }
-                }
-                tracing::info!(
-                    target: "boot",
-                    hosts = hostnames.len(),
-                    rows_loaded = total,
-                    "host_reports hydration complete",
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "host_reports hydration: failed to enumerate hostnames; ring buffer starts empty",
-                );
-            }
-        }
     }
 
     *state.issuance_paths.write().await = IssuancePaths {
@@ -282,74 +213,70 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         *state.ca_signer.write().await = signer;
     }
 
-    // Pre-listener prime: bundled artifact is always older than upstream (CI commits release after build).
-    // #95: success here flips `artifact_primed` so the listener can serve `/v1/*` immediately.
-    // Failure leaves the daemon in not-ready state - the spawned channel-refs / reconcile loops
-    // are responsible for flipping `artifact_primed` once they verify a snapshot.
-    if let Some(channel_refs_source) = args.channel_refs.as_ref() {
+    // Pre-listener prime via manifest_poll. Synchronous one-shot fetch +
+    // verify so the routes that read `state.verified_fleet` (channel_status,
+    // enrollment) see a populated snapshot on the first request. After
+    // this, the manifest_poll worker (spawned by runtime::spawn below)
+    // keeps the snapshot fresh on its 30 s tick.
+    {
+        let clock: nixfleet_proto::clock::ClockHandle =
+            std::sync::Arc::new(nixfleet_proto::clock::SystemClock::new());
         match tokio::time::timeout(
             Duration::from_secs(20),
-            crate::polling::channel_refs_poll::prime_once(channel_refs_source),
+            crate::runtime::workers::manifest_poll::prime_blocking(&state, &clock),
         )
         .await
         {
-            Ok(Ok((fleet, fleet_hash))) => {
-                let host_count = fleet.hosts.len();
-                *state.verified_fleet.write().await = Some(crate::server::VerifiedFleetSnapshot {
-                    fleet: Arc::new(fleet),
-                    fleet_resolved_hash: fleet_hash,
-                });
-                state
-                    .artifact_primed
-                    .store(true, std::sync::atomic::Ordering::Release);
+            Ok(Ok(true)) => {
                 tracing::info!(
-                    target: "reconcile",
-                    host_count,
+                    target: "cp_boot",
                     "primed verified-fleet from channel-refs source before opening listener",
                 );
+            }
+            Ok(Ok(false)) => {
+                // No channel_refs_source configured — fall through to file
+                // fallback below.
             }
             Ok(Err(err)) => {
                 tracing::warn!(
                     error = %err,
-                    "channel-refs prime failed; daemon will keep retrying via the polling loop",
+                    "manifest_poll prime failed; daemon will keep retrying via the worker loop",
                 );
             }
             Err(_) => {
                 tracing::warn!(
-                    "channel-refs prime timed out; daemon will keep retrying via the polling loop",
+                    "manifest_poll prime timed out; daemon will keep retrying via the worker loop",
                 );
             }
         }
     }
 
-    let tick_inputs = TickInputs {
-        artifact_path: args.artifact_path.clone(),
-        signature_path: args.signature_path.clone(),
-        trust_path: args.trust_path.clone(),
-        observed_path: args.observed_path.clone(),
-        now: Utc::now(),
-        freshness_window: args.freshness_window,
-    };
-    bg_handles.push(reconcile::spawn_reconcile_loop(
-        cancel.clone(),
-        state.clone(),
-        tick_inputs,
-    ));
-
-    if let Some(channel_refs_source) = args.channel_refs.clone() {
-        bg_handles.push(crate::polling::channel_refs_poll::spawn(
-            cancel.clone(),
-            state.channel_refs_cache.clone(),
-            state.verified_fleet.clone(),
-            state.db.clone(),
-            state.last_deferrals.clone(),
-            channel_refs_source,
-            // Reconciler-driven event kick - closes the timing window
-            // between channelEdges releasing and the rollouts table
-            // reflecting the new successor. See AppState::channel_refs_kick.
-            Some(state.channel_refs_kick.subscribe()),
-            state.artifact_primed.clone(),
-        ));
+    // File-fallback prime: when no upstream channel-refs source is
+    // configured (or its prime failed), verify the bundled --artifact /
+    // --signature pair and populate verified_fleet. Keeps the offline-boot
+    // + test fixture paths alive.
+    if state.verified_fleet.read().await.is_none()
+        && let Some((fleet, fleet_hash, artifact_bytes, signature_bytes)) =
+            prime_from_artifact_files(
+                &args.artifact_path,
+                &args.signature_path,
+                &args.trust_path,
+                args.freshness_window,
+            )
+    {
+        *state.verified_fleet.write().await = Some(VerifiedFleetSnapshot {
+            fleet: Arc::new(fleet),
+            fleet_resolved_hash: fleet_hash,
+            artifact_bytes,
+            signature_bytes,
+        });
+        state
+            .artifact_primed
+            .store(true, std::sync::atomic::Ordering::Release);
+        tracing::info!(
+            target: "cp_boot",
+            "primed verified-fleet from --artifact / --signature files",
+        );
     }
 
     if let (Some(revocations_source), Some(db)) = (args.revocations.clone(), state.db.clone()) {
@@ -368,6 +295,25 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             bootstrap_nonces_source,
             state.bootstrap_nonces_primed.clone(),
         ));
+    }
+
+    // RFC-0009 §7.2 runtime: MPSC reducer + applier + workers + event_log
+    // writer. Sole CP-side processing path; the v0.1 reconcile loop is
+    // gone.
+    {
+        let clock: nixfleet_proto::clock::ClockHandle =
+            std::sync::Arc::new(nixfleet_proto::clock::SystemClock::new());
+        let rt = crate::runtime::spawn(cancel.clone(), state.clone(), clock);
+        // Publish channels for the new /v1/agent/{events,heartbeat,dispatch}
+        // route handlers. `set` returns Err if already set; that's
+        // impossible during normal startup (called exactly once) but if a
+        // future test harness double-initialises, we just drop the second
+        // call.
+        let _ = state.runtime_input_tx.set(rt.input_tx.clone());
+        let _ = state.runtime_event_log_tx.set(rt.event_log_tx.clone());
+        for handle in rt.into_join_handles() {
+            bg_handles.push(handle);
+        }
     }
 
     // Process-global Prometheus recorder. Installs once; counter macros
@@ -429,6 +375,38 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tracing::warn!(error = %err, "background task drain incomplete");
     }
     Ok(())
+}
+
+/// File-fallback verify+parse for the --artifact / --signature CLI args.
+/// Synchronous; called once at startup before the listener opens. Hash is
+/// computed against the received bytes (not a re-serialised parsed struct)
+/// so additive schema changes the CP's proto doesn't yet know about don't
+/// shift the rolloutId anchor — same load-bearing reason as in
+/// `manifest_poll::poll_once`.
+fn prime_from_artifact_files(
+    artifact_path: &std::path::Path,
+    signature_path: &std::path::Path,
+    trust_path: &std::path::Path,
+    freshness_window: Duration,
+) -> Option<(nixfleet_proto::FleetResolved, String, Vec<u8>, Vec<u8>)> {
+    let artifact = std::fs::read(artifact_path).ok()?;
+    let signature = std::fs::read(signature_path).ok()?;
+    let trust_raw = std::fs::read_to_string(trust_path).ok()?;
+    let trust: nixfleet_proto::TrustConfig = serde_json::from_str(&trust_raw).ok()?;
+    let now = chrono::Utc::now();
+    let trusted_keys = trust.ci_release_key.active_keys_at(now);
+    let reject_before = trust.ci_release_key.reject_before;
+    let verified = nixfleet_reconciler::verify_artifact(
+        &artifact,
+        &signature,
+        &trusted_keys,
+        now,
+        freshness_window,
+        reject_before,
+    )
+    .ok()?;
+    let fleet_hash = nixfleet_reconciler::canonical_hash_from_bytes(&artifact).ok()?;
+    Some((verified.into_inner(), fleet_hash, artifact, signature))
 }
 
 /// Tasks past `TASK_SHUTDOWN_DEADLINE` are abandoned (handles dropped -> abort).
@@ -531,6 +509,87 @@ mod strict_mode_tests {
         assert!(
             !msg.contains("--strict refuses to start"),
             "non-strict mode should not emit the strict-mode error; got: {msg}",
+        );
+    }
+
+    /// Fixture: minimal args that satisfy every existing strict gate
+    /// EXCEPT the CA backend gate. Lets each CA test isolate its assertion.
+    fn args_satisfying_existing_strict_gates(strict: bool) -> ServeArgs {
+        let mut args = minimal_serve_args(strict, Some(PathBuf::from("/dev/null")));
+        args.revocations = Some(crate::polling::revocations_poll::RevocationsSource {
+            artifact_url: "http://localhost/revocations.json".into(),
+            signature_url: "http://localhost/revocations.json.sig".into(),
+            token_file: None,
+            trust_path: PathBuf::from("/dev/null"),
+            freshness_window: std::time::Duration::from_secs(3600),
+        });
+        args.bootstrap_nonces = Some(
+            crate::polling::bootstrap_nonces_poll::BootstrapNoncesSource {
+                artifact_url: "http://localhost/bootstrap-nonces.json".into(),
+                signature_url: "http://localhost/bootstrap-nonces.json.sig".into(),
+                token_file: None,
+                trust_path: PathBuf::from("/dev/null"),
+                freshness_window: std::time::Duration::from_secs(3600),
+            },
+        );
+        args
+    }
+
+    /// RFC-0005 §1.5.1: `--strict` + file-only CA + no opt-in must refuse to start.
+    #[tokio::test]
+    async fn strict_bails_when_file_ca_only_without_opt_in() {
+        let mut args = args_satisfying_existing_strict_gates(true);
+        args.fleet_ca_key = Some(PathBuf::from("/dev/null"));
+        let err = serve(args).await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--tpm-ca-pubkey-raw"),
+            "expected TPM hint in strict bail; got: {msg}",
+        );
+        assert!(
+            msg.contains("RFC-0005 §1.5.1"),
+            "expected RFC pointer in strict bail; got: {msg}",
+        );
+        assert!(
+            msg.contains("--strict refuses to start"),
+            "expected strict-prefixed message; got: {msg}",
+        );
+    }
+
+    /// RFC-0005 §1.5.1: explicit opt-in lets file-only CA pass `--strict`.
+    /// Other startup paths may still fail; this test only asserts the CA
+    /// gate does NOT contribute to the bail message.
+    #[tokio::test]
+    async fn strict_passes_ca_gate_when_file_ca_with_opt_in() {
+        let mut args = args_satisfying_existing_strict_gates(true);
+        args.fleet_ca_key = Some(PathBuf::from("/dev/null"));
+        args.allow_file_ca_key = true;
+        let err = serve(args)
+            .await
+            .err()
+            .map(|e| format!("{e}"))
+            .unwrap_or_default();
+        assert!(
+            !err.contains("--tpm-ca-pubkey-raw"),
+            "opt-in should bypass the CA gate; got: {err}",
+        );
+    }
+
+    /// RFC-0005 §1.5.1: TPM backend satisfies the CA gate without opt-in.
+    #[tokio::test]
+    async fn strict_passes_ca_gate_when_tpm_configured() {
+        let mut args = args_satisfying_existing_strict_gates(true);
+        args.tpm_ca_pubkey_raw = Some(PathBuf::from("/dev/null"));
+        args.tpm_ca_sign_wrapper = Some(PathBuf::from("/dev/null"));
+        // fleet_ca_key intentionally None: TPM is the only backend.
+        let err = serve(args)
+            .await
+            .err()
+            .map(|e| format!("{e}"))
+            .unwrap_or_default();
+        assert!(
+            !err.contains("--tpm-ca-pubkey-raw"),
+            "TPM backend should satisfy the gate; got: {err}",
         );
     }
 }

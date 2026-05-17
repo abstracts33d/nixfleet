@@ -5,9 +5,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use chrono::Utc;
 use clap::{Parser, Subcommand};
-use nixfleet_control_plane::{TickInputs, VerifyOutcome, render_plan, server, tick};
+use nixfleet_control_plane::server;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -24,7 +23,6 @@ struct Args {
 enum Command {
     /// Boxed: ServeFlags is ~470 bytes.
     Serve(Box<ServeFlags>),
-    Tick(TickFlags),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -169,24 +167,15 @@ struct ServeFlags {
     /// Refuse to start when any security-relevant flag is unset.
     #[arg(long, env = "NIXFLEET_CP_STRICT")]
     strict: bool,
-}
 
-#[derive(Parser, Debug, Clone)]
-struct TickFlags {
-    #[arg(long)]
-    artifact: PathBuf,
-
-    #[arg(long)]
-    signature: PathBuf,
-
-    #[arg(long, default_value = "/etc/nixfleet/cp/trust.json")]
-    trust_file: PathBuf,
-
-    #[arg(long)]
-    observed: PathBuf,
-
-    #[arg(long, default_value_t = 2592000)]
-    freshness_window_secs: u64,
+    /// Permit the file-backed CA-issuance backend under `--strict`. Without
+    /// this flag, `--strict` refuses to start when only `--fleet-ca-key` is
+    /// configured (i.e., neither `--tpm-ca-pubkey-raw` nor
+    /// `--tpm-ca-sign-wrapper` is set). Production deployments SHOULD use
+    /// the TPM backend; this opt-in exists for dev fleets where TPM
+    /// hardware is unavailable. See RFC-0005 §1.5.1.
+    #[arg(long, env = "NIXFLEET_CP_ALLOW_FILE_CA_KEY")]
+    allow_file_ca_key: bool,
 }
 
 fn install_crypto_provider() {
@@ -221,7 +210,6 @@ async fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Command::Tick(flags) => run_tick(flags),
     }
 }
 
@@ -263,7 +251,7 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         flags.channel_refs_signature_url,
         |artifact_url, signature_url| {
             Ok(
-                nixfleet_control_plane::polling::channel_refs_poll::ChannelRefsSource {
+                nixfleet_control_plane::runtime::workers::manifest_poll::ChannelRefsSource {
                     artifact_url,
                     signature_url,
                     token_file: flags.channel_refs_token_file.clone(),
@@ -355,40 +343,9 @@ async fn run_serve(flags: ServeFlags) -> anyhow::Result<()> {
         closure_upstream: flags.closure_upstream,
         rollouts_dir: flags.rollouts_dir,
         strict: flags.strict,
+        allow_file_ca_key: flags.allow_file_ca_key,
         mark_ready_at_startup: false,
         initial_nonces: None,
     })
     .await
-}
-
-fn run_tick(flags: TickFlags) -> ExitCode {
-    let inputs = TickInputs {
-        artifact_path: flags.artifact,
-        signature_path: flags.signature,
-        trust_path: flags.trust_file,
-        observed_path: flags.observed,
-        now: Utc::now(),
-        freshness_window: Duration::from_secs(flags.freshness_window_secs),
-    };
-
-    let result = match tick(&inputs) {
-        Ok(r) => r,
-        Err(err) => {
-            eprintln!("tick: {err:#}");
-            return ExitCode::from(2);
-        }
-    };
-
-    print!("{}", render_plan(&result));
-
-    match &result.verify {
-        VerifyOutcome::Ok(ok) => {
-            tracing::info!(actions = ok.actions.len(), "tick ok");
-            ExitCode::SUCCESS
-        }
-        VerifyOutcome::Failed { reason } => {
-            tracing::warn!(%reason, "verify failed");
-            ExitCode::from(1)
-        }
-    }
 }

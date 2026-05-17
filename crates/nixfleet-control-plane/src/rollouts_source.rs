@@ -1,10 +1,16 @@
-//! On-demand HTTP-fetched rollout manifests; CP only checks `sha256(manifest)==rolloutId`, agent verifies signature.
+//! On-demand HTTP-fetched rollout manifests. This module is a thin
+//! signed-pair fetcher: it substitutes the canonical RolloutId
+//! (`{channel}@{channel_ref}` per RFC-0012 §6.3) into the URL templates
+//! and returns the raw (manifest, signature) byte pair. It performs no
+//! identifier validation. The caller (manifest_poll) is responsible for
+//! signature verification (`verify_rollout_manifest`) and identifier
+//! discrimination (parsed `RolloutId` equality against the requested id);
+//! both checks are mandated by the `verify_rollout_manifest` docstring.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use sha2::{Digest, Sha256};
 
 use crate::polling::signed_fetch;
 
@@ -46,7 +52,12 @@ impl RolloutsSource {
         })
     }
 
-    /// Recomputes `sha256(manifest_bytes)` against `rolloutId`; agent verifies signature.
+    /// Substitutes `rollout_id` into the URL templates and returns the
+    /// (manifest, signature) byte pair. Performs no identifier validation;
+    /// the caller is contractually required to invoke
+    /// `verify_rollout_manifest` (authenticity) and then assert that the
+    /// parsed manifest's `RolloutId::new(&m.channel, &m.channel_ref)` equals
+    /// the `rollout_id` passed here (identity-substitution defense).
     pub async fn fetch_pair(&self, rollout_id: &str) -> Result<(Vec<u8>, Vec<u8>)> {
         let artifact_url = self
             .artifact_url_template
@@ -62,26 +73,9 @@ impl RolloutsSource {
             .build()
             .context("build rollouts-source client")?;
 
-        let (manifest_bytes, signature_bytes) = signed_fetch::fetch_signed_pair(
-            &client,
-            &artifact_url,
-            &signature_url,
-            token.as_deref(),
-        )
-        .await
-        .with_context(|| format!("fetch rollout pair for {rollout_id}"))?;
-
-        let mut hasher = Sha256::new();
-        hasher.update(&manifest_bytes);
-        let computed = format!("{:x}", hasher.finalize());
-        if computed != rollout_id {
-            return Err(anyhow!(
-                "rollouts source: content-address mismatch - \
-                 url claimed {rollout_id} but sha256(bytes) = {computed}",
-            ));
-        }
-
-        Ok((manifest_bytes, signature_bytes))
+        signed_fetch::fetch_signed_pair(&client, &artifact_url, &signature_url, token.as_deref())
+            .await
+            .with_context(|| format!("fetch rollout pair for {rollout_id}"))
     }
 }
 

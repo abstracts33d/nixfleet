@@ -1,3 +1,0 @@
-[
-  { "action": "skip", "host": "h1", "reason": "channel stable closure bad-sha quarantined (sustained probe failures); push a new closure to clear" }
-]

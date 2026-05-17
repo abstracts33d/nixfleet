@@ -3,7 +3,7 @@
 
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
-use nixfleet_proto::{FleetResolved, HostWave, Meta, RolloutBudget, RolloutManifest};
+use nixfleet_proto::{FleetResolved, HostWave, Meta, RolloutBudget, RolloutId, RolloutManifest};
 
 /// RolloutIds the current fleet snapshot expects across all channels. Filters
 /// `host_dispatch_state` snapshots to "this rev's rollouts only" so stale
@@ -27,7 +27,9 @@ pub fn current_rollout_ids(
 }
 
 /// CP-side rolloutId for a host on `channel`. `Ok(None)` when the channel
-/// has no host with a declared closure.
+/// has no host with a declared closure. The id is the canonical RFC-0012 §6.3
+/// composite `"{channel}@{channel_ref}"`, deterministic from the projection
+/// inputs; producer and CP derive the same string for the same inputs.
 pub fn compute_rollout_id_for_channel(
     fleet: &FleetResolved,
     fleet_resolved_hash: &str,
@@ -49,9 +51,11 @@ pub fn compute_rollout_id_for_channel(
         Some(m) => m,
         None => return Ok(None),
     };
-    let id = crate::verify::compute_rollout_id(&manifest)
-        .map_err(|e| anyhow!("compute_rollout_id: {e:?}"))?;
-    Ok(Some(id))
+    Ok(Some(
+        RolloutId::new(&manifest.channel, &manifest.channel_ref)
+            .as_str()
+            .to_string(),
+    ))
 }
 
 /// Project one channel out of fleet.resolved. `Ok(None)` when no host on
@@ -147,7 +151,6 @@ pub fn project_manifest(
         fleet_resolved_hash: fleet_resolved_hash.to_string(),
         host_set,
         health_gate: policy.health_gate.clone(),
-        compliance_frameworks: channel_def.compliance.frameworks.clone(),
         disruption_budgets,
         meta: Meta {
             schema_version: 1,

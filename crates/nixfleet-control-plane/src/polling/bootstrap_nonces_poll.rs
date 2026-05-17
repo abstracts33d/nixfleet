@@ -104,5 +104,6 @@ async fn poll_once(
         config.freshness_window,
         reject_before,
     )
+    .map(|v| v.into_inner())
     .map_err(|e| anyhow::anyhow!("verify_bootstrap_nonces (bootstrap-nonces poll): {e:?}"))
 }

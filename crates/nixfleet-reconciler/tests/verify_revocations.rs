@@ -41,7 +41,7 @@ fn verify_revocations_ok_returns_revocations() {
         window,
         None,
     );
-    let revs = result.expect("verify_revocations_ok");
+    let revs = result.expect("verify_revocations_ok").into_inner();
     assert_eq!(revs.schema_version, 1);
     assert_eq!(revs.revocations.len(), 1);
     assert_eq!(revs.revocations[0].hostname, "old-laptop");
@@ -131,7 +131,8 @@ fn verify_revocations_empty_list_is_valid() {
         Duration::from_secs(3600),
         None,
     )
-    .expect("empty list verifies");
+    .expect("empty list verifies")
+    .into_inner();
     assert!(revs.revocations.is_empty());
 }
 

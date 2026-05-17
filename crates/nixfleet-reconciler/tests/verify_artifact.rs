@@ -28,7 +28,7 @@ fn verify_ok_returns_fleet() {
         None,
     );
 
-    let fleet = result.expect("verify_ok");
+    let fleet = result.expect("verify_ok").into_inner();
     assert_eq!(fleet.schema_version, 1);
     assert!(fleet.hosts.contains_key("h1"));
 }
@@ -562,7 +562,8 @@ fn accepts_artifact_signed_at_after_reject_before() {
         freshness,
         Some(reject_before),
     )
-    .expect("accepts artifact signed after rejectBefore");
+    .expect("accepts artifact signed after rejectBefore")
+    .into_inner();
     assert_eq!(fleet.schema_version, 1);
 }
 

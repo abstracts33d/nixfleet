@@ -1,132 +1,182 @@
-//! Per-rollout supersession state (soft state; reconstructible after rebuild
-//! from channel-refs polling + on-dispatch inserts). Source of truth for
-//! "is this rollout still in flight, or has a newer rollout for the same
-//! channel replaced it?"
+//! Rollouts derived-view table (RFC-0012 §6.3). The applier is the sole
+//! writer; every state-mutating method takes an
+//! `event_log_seq: Option<i64>` so the row's `last_transition_event_log_seq`
+//! FK can be populated.
+//!
+//! Phase 10a baseline: the rollout reducer (Phase 10b) is unimplemented
+//! and the applier still drives transitions via the legacy PlanAction
+//! path. The new method shape (event_log_seq arg, state enum, target_ref)
+//! is ready; Phase 10b lights up the reducer that drives them through the
+//! `RolloutEffect` interpretation in the applier.
+//!
+//! `event_log_seq` is NULL-able under the v0.2.1 baseline (RFC-0012 §6.1
+//! item 3 + `.claude/plans/v0.2.1-followups.md` #1); same as
+//! `probe_failures.event_log_seq` (RFC-0010 §7.2).
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::Mutex;
 
+use nixfleet_proto::RolloutId;
+use nixfleet_state_machine::rollout::RolloutState;
+
+/// Raw tuple shape of a `rollouts` row, as read by rusqlite. Fields:
+/// `(rollout_id, channel, target_ref, state, current_wave,
+///   opened_event_log_seq, last_transition_event_log_seq, opened_at,
+///   terminal_at, superseded_at)`. Aliased so clippy doesn't flag the
+/// type complexity on the inline closure.
+type RolloutRowTuple = (
+    RolloutId,
+    String,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    Option<i64>,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
 pub struct Rollouts<'a> {
     pub(super) conn: &'a Mutex<Connection>,
 }
 
+/// Typed projection of a single `rollouts` row. Replaces the v0.1-era
+/// `SupersedeStatus` (which only carried `superseded_at`/`superseded_by`/
+/// `terminal_at`) with the full row shape so callers can read `state`
+/// directly without ad-hoc boolean derivation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SupersedeStatus {
-    pub superseded_at: Option<DateTime<Utc>>,
-    pub superseded_by: Option<String>,
+pub struct RolloutRow {
+    pub rollout_id: RolloutId,
+    pub channel: String,
+    pub target_ref: String,
+    pub state: RolloutState,
+    pub current_wave: u32,
+    pub opened_event_log_seq: Option<i64>,
+    pub last_transition_event_log_seq: Option<i64>,
+    pub opened_at: DateTime<Utc>,
     pub terminal_at: Option<DateTime<Utc>>,
-}
-
-impl SupersedeStatus {
-    pub fn is_superseded(&self) -> bool {
-        self.superseded_at.is_some()
-    }
-
-    pub fn is_terminal(&self) -> bool {
-        self.terminal_at.is_some()
-    }
-
-    /// Single predicate for "this rollout is no longer in flight" - the
-    /// reconciler and dispatch path treat both as equivalent (don't
-    /// advance, don't include in gate observed). Terminal vs superseded
-    /// is only useful for diagnostic/audit surfaces.
-    pub fn is_finished(&self) -> bool {
-        self.is_superseded() || self.is_terminal()
-    }
+    pub superseded_at: Option<DateTime<Utc>>,
 }
 
 impl Rollouts<'_> {
-    /// Idempotent insert + same-channel supersede in one txn. LOADBEARING:
-    /// INSERT OR IGNORE for concurrent dispatches, `WHERE rollout_id != ?`
-    /// prevents self-supersede, supersession is intra-channel only.
-    pub fn record_active_rollout(&self, rollout_id: &str, channel: &str) -> Result<()> {
-        let now_rfc = Utc::now().to_rfc3339();
-        super::txn(self.conn, "record_active_rollout", |t| {
-            t.execute(
-                "INSERT OR IGNORE INTO rollouts(rollout_id, channel, created_at)
-                 VALUES (?1, ?2, ?3)",
-                params![rollout_id, channel, now_rfc],
-            )
-            .context("INSERT OR IGNORE rollouts")?;
-            t.execute(
-                "UPDATE rollouts
-                 SET superseded_at = ?3,
-                     superseded_by = ?2
-                 WHERE channel = ?1
-                   AND rollout_id != ?2
-                   AND superseded_at IS NULL",
-                params![channel, rollout_id, now_rfc],
-            )
-            .context("UPDATE rollouts supersede prior")?;
-            Ok(())
-        })
-    }
-
-    /// `Ok(None)` for untracked rollout ids; callers don't fabricate
-    /// supersession state.
-    pub fn supersede_status(&self, rollout_id: &str) -> Result<Option<SupersedeStatus>> {
-        super::read(self.conn, |c| {
-            let row = c
-                .query_row(
-                    "SELECT superseded_at, superseded_by, terminal_at
-                     FROM rollouts
-                     WHERE rollout_id = ?1",
-                    params![rollout_id],
-                    |row| {
-                        let at: Option<String> = row.get(0)?;
-                        let by: Option<String> = row.get(1)?;
-                        let term: Option<String> = row.get(2)?;
-                        Ok((at, by, term))
-                    },
-                )
-                .optional()
-                .context("query rollouts.supersede_status")?;
-            row.map(|(at_raw, by, term_raw)| -> Result<SupersedeStatus> {
-                let parse_ts =
-                    |raw: Option<String>, field: &str| -> Result<Option<DateTime<Utc>>> {
-                        match raw {
-                            Some(s) => Ok(Some(
-                                s.parse::<DateTime<Utc>>()
-                                    .with_context(|| format!("parse rollouts.{field}: {s}"))?,
-                            )),
-                            None => Ok(None),
-                        }
-                    };
-                Ok(SupersedeStatus {
-                    superseded_at: parse_ts(at_raw, "superseded_at")?,
-                    superseded_by: by,
-                    terminal_at: parse_ts(term_raw, "terminal_at")?,
-                })
-            })
-            .transpose()
-        })
-    }
-
-    /// Idempotent terminal stamp. Triggered by `ConvergeRollout` and the
-    /// orphan sweep.
-    pub fn mark_terminal(&self, rollout_id: &str, now: DateTime<Utc>) -> Result<usize> {
+    /// Pure-insert of a new `Opening`-state rollout row. Idempotent on
+    /// `rollout_id` PK (INSERT OR IGNORE) — no side effects on other
+    /// rows.
+    ///
+    /// Supersession of prior in-flight rollouts on the same channel is
+    /// driven through the rollout reducer (Phase 10c): the applier
+    /// snapshots in-flight predecessors, calls this method, then routes
+    /// a `RolloutEvent::SuccessorOpened` per predecessor through
+    /// `process_rollout_event`. The reducer transitions each predecessor
+    /// from its current state to `Superseded` and emits a
+    /// `RolloutEffect::RecordRolloutTransition` that the applier writes
+    /// via `record_rollout_transition`. Closes the last RFC-0011 §3
+    /// "implicit side effect" anti-pattern in Phase 10.
+    pub fn record_rollout_opened(
+        &self,
+        rollout_id: &str,
+        channel: &str,
+        target_ref: &str,
+        opened_at: DateTime<Utc>,
+        opened_event_log_seq: Option<i64>,
+    ) -> Result<()> {
+        let opened_rfc = opened_at.to_rfc3339();
         super::read(self.conn, |c| {
             c.execute(
-                "UPDATE rollouts
-                 SET terminal_at = ?2
-                 WHERE rollout_id = ?1 AND terminal_at IS NULL",
-                params![rollout_id, now.to_rfc3339()],
+                "INSERT OR IGNORE INTO rollouts(
+                     rollout_id, channel, target_ref, state, current_wave,
+                     opened_event_log_seq, last_transition_event_log_seq,
+                     opened_at)
+                 VALUES (?1, ?2, ?3, 'Opening', 0, ?4, ?4, ?5)",
+                params![
+                    rollout_id,
+                    channel,
+                    target_ref,
+                    opened_event_log_seq,
+                    opened_rfc
+                ],
             )
-            .context("UPDATE rollouts terminal_at")
+            .context("INSERT OR IGNORE rollouts")
+            .map(|_| ())
+        })
+    }
+
+    /// Record a state transition on an existing rollout row. Stamps the
+    /// `state` column, the appropriate timestamp side-effect
+    /// (`terminal_at` / `superseded_at`), and the
+    /// `last_transition_event_log_seq` FK.
+    ///
+    /// Idempotent on `(rollout_id, target_state)`: if the row is already
+    /// at `to`, the UPDATE no-ops via the `WHERE state != ?` guard.
+    pub fn record_rollout_transition(
+        &self,
+        rollout_id: &str,
+        to: RolloutState,
+        at: DateTime<Utc>,
+        event_log_seq: Option<i64>,
+    ) -> Result<usize> {
+        let at_rfc = at.to_rfc3339();
+        let to_str = to.as_db_str();
+        // SQLite has no enum; choose the timestamp side-effect by
+        // matching on `to` in Rust and building the SQL accordingly.
+        let (sql, bind_terminal, bind_superseded): (&str, bool, bool) = match to {
+            RolloutState::Terminal => (
+                "UPDATE rollouts
+                 SET state = ?2,
+                     last_transition_event_log_seq = ?3,
+                     terminal_at = ?4
+                 WHERE rollout_id = ?1 AND state != ?2",
+                true,
+                false,
+            ),
+            RolloutState::Superseded => (
+                "UPDATE rollouts
+                 SET state = ?2,
+                     last_transition_event_log_seq = ?3,
+                     superseded_at = ?4
+                 WHERE rollout_id = ?1 AND state != ?2",
+                false,
+                true,
+            ),
+            _ => (
+                "UPDATE rollouts
+                 SET state = ?2,
+                     last_transition_event_log_seq = ?3
+                 WHERE rollout_id = ?1 AND state != ?2",
+                false,
+                false,
+            ),
+        };
+        super::read(self.conn, |c| {
+            if bind_terminal || bind_superseded {
+                c.execute(sql, params![rollout_id, to_str, event_log_seq, at_rfc])
+                    .context("UPDATE rollouts state (with timestamp side-effect)")
+            } else {
+                c.execute(sql, params![rollout_id, to_str, event_log_seq])
+                    .context("UPDATE rollouts state")
+            }
         })
     }
 
     /// Monotonic wave-index advance; `WHERE current_wave < ?2` blocks
-    /// concurrent ticks from racing backwards.
-    pub fn set_current_wave(&self, rollout_id: &str, wave: u32) -> Result<usize> {
+    /// concurrent ticks from racing backwards. Stamps the
+    /// `last_transition_event_log_seq` FK alongside.
+    pub fn set_current_wave(
+        &self,
+        rollout_id: &str,
+        wave: u32,
+        event_log_seq: Option<i64>,
+    ) -> Result<usize> {
         super::read(self.conn, |c| {
             c.execute(
                 "UPDATE rollouts
-                 SET current_wave = ?2
+                 SET current_wave = ?2,
+                     last_transition_event_log_seq = COALESCE(?3, last_transition_event_log_seq)
                  WHERE rollout_id = ?1 AND current_wave < ?2",
-                params![rollout_id, wave as i64],
+                params![rollout_id, wave as i64, event_log_seq],
             )
             .context("set_current_wave")
         })
@@ -144,56 +194,95 @@ impl Rollouts<'_> {
         })
     }
 
-    /// Set of superseded ids to exclude from snapshots without a join.
-    pub fn superseded_rollout_ids(&self) -> Result<Vec<String>> {
+    /// Full row projection, or `None` if the rollout is unknown. Callers
+    /// project `state` directly; the v0.1 `is_superseded`/`is_terminal`/
+    /// `is_finished` boolean derivations are gone (use `state ==
+    /// RolloutState::X` reads).
+    pub fn state(&self, rollout_id: &str) -> Result<Option<RolloutRow>> {
         super::read(self.conn, |c| {
-            let mut stmt =
-                c.prepare("SELECT rollout_id FROM rollouts WHERE superseded_at IS NOT NULL")?;
-            let ids = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(ids)
+            let row = c
+                .query_row(
+                    "SELECT rollout_id, channel, target_ref, state, current_wave,
+                            opened_event_log_seq, last_transition_event_log_seq,
+                            opened_at, terminal_at, superseded_at
+                     FROM rollouts
+                     WHERE rollout_id = ?1",
+                    params![rollout_id],
+                    |row| -> rusqlite::Result<RolloutRowTuple> {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                            row.get(9)?,
+                        ))
+                    },
+                )
+                .optional()
+                .context("query rollouts.state")?;
+            row.map(|t| -> Result<RolloutRow> {
+                let parse_ts =
+                    |raw: Option<String>, field: &str| -> Result<Option<DateTime<Utc>>> {
+                        match raw {
+                            Some(s) => Ok(Some(
+                                s.parse::<DateTime<Utc>>()
+                                    .with_context(|| format!("parse rollouts.{field}: {s}"))?,
+                            )),
+                            None => Ok(None),
+                        }
+                    };
+                let state = RolloutState::from_db_str(&t.3).ok_or_else(|| {
+                    anyhow::anyhow!("unknown rollouts.state value: {} (CHECK violation?)", t.3)
+                })?;
+                Ok(RolloutRow {
+                    rollout_id: t.0,
+                    channel: t.1,
+                    target_ref: t.2,
+                    state,
+                    current_wave: t.4 as u32,
+                    opened_event_log_seq: t.5,
+                    last_transition_event_log_seq: t.6,
+                    opened_at: t
+                        .7
+                        .parse::<DateTime<Utc>>()
+                        .with_context(|| format!("parse rollouts.opened_at: {}", t.7))?,
+                    terminal_at: parse_ts(t.8, "terminal_at")?,
+                    superseded_at: parse_ts(t.9, "superseded_at")?,
+                })
+            })
+            .transpose()
         })
     }
 
-    /// Rollouts no longer in flight (superseded OR terminal). Both paths
-    /// treat the two states equivalently.
-    pub fn finished_rollout_ids(&self) -> Result<Vec<String>> {
-        super::read(self.conn, |c| {
-            let mut stmt = c.prepare(
-                "SELECT rollout_id FROM rollouts
-                 WHERE superseded_at IS NOT NULL OR terminal_at IS NOT NULL",
-            )?;
-            let ids = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(ids)
-        })
-    }
-
-    /// Gate-observed source. Filters superseded only - terminal rollouts
-    /// stay visible so channelEdges can detect "predecessor converged" via
-    /// host_states. UI consumers should use `list_in_flight`.
+    /// Gate-observed source. Filters `Superseded` and `Pruned` only —
+    /// terminal rollouts stay visible so channel-edges can detect
+    /// "predecessor converged". UI consumers should use `list_in_flight`.
     pub fn list_active(&self) -> Result<GateRollouts> {
         Ok(GateRollouts(self.list_filtered(false)?))
     }
 
-    /// UI source. Filters superseded AND terminal (operator's "done" view).
+    /// UI source. Filters `Superseded`, `Pruned`, AND `Terminal`
+    /// (operator's "done" view).
     pub fn list_in_flight(&self) -> Result<UiRollouts> {
         Ok(UiRollouts(self.list_filtered(true)?))
     }
 
     fn list_filtered(&self, exclude_terminal: bool) -> Result<Vec<ActiveRollout>> {
         let sql = if exclude_terminal {
-            "SELECT rollout_id, channel, current_wave, created_at, terminal_at
+            "SELECT rollout_id, channel, current_wave, opened_at, terminal_at
              FROM rollouts
-             WHERE superseded_at IS NULL AND terminal_at IS NULL
-             ORDER BY created_at DESC, rollout_id"
+             WHERE state NOT IN ('Superseded', 'Pruned', 'Terminal')
+             ORDER BY opened_at DESC, rollout_id"
         } else {
-            "SELECT rollout_id, channel, current_wave, created_at, terminal_at
+            "SELECT rollout_id, channel, current_wave, opened_at, terminal_at
              FROM rollouts
-             WHERE superseded_at IS NULL
-             ORDER BY created_at DESC, rollout_id"
+             WHERE state NOT IN ('Superseded', 'Pruned')
+             ORDER BY opened_at DESC, rollout_id"
         };
         let rows: Vec<(ActiveRollout, Option<String>)> = super::read(self.conn, |c| {
             let mut stmt = c.prepare(sql)?;
@@ -228,47 +317,58 @@ impl Rollouts<'_> {
             .collect()
     }
 
-    /// Prune finished (superseded OR terminal) rollouts past `max_age_hours`
-    /// + their hrs rows. Returns `(hrs_pruned, rollouts_pruned)`.
-    /// LOADBEARING: only finished rollouts are candidates - in-flight ones
-    /// are kept regardless of `created_at` age.
+    /// Prune finished (Superseded | Terminal | Failed | Reverted)
+    /// rollouts past `max_age_hours` AND their `host_rollout_records`
+    /// rows. Returns `(host_rollout_records_pruned, rollouts_pruned)`.
+    ///
+    /// Phase 10b: this physical-deletion pass becomes a
+    /// `RetentionExpired` event emission instead, transitioning the row
+    /// to `Pruned` (the row persists for audit; v0.3 retention-
+    /// compaction handles physical deletion per RFC-0012 §3 + §13).
+    /// For 10a we keep the physical prune so the existing operator
+    /// workflow stays unchanged while the rollout reducer is
+    /// unimplemented.
     pub fn prune_finished_rollouts(&self, max_age_hours: i64) -> Result<(usize, usize)> {
         let cutoff_str = (Utc::now() - chrono::Duration::hours(max_age_hours)).to_rfc3339();
         super::txn(self.conn, "prune_finished_rollouts", |t| {
-            // hrs rows first, then rollouts: ordering matters for crash safety
-            // (deleted rollouts before hrs would leave dangling FK-less hrs rows).
-            let hrs_pruned = t
+            let records_pruned = t
                 .execute(
-                    "DELETE FROM host_rollout_state
+                    "DELETE FROM host_rollout_records
                      WHERE rollout_id IN (
                          SELECT rollout_id FROM rollouts
-                         WHERE (superseded_at IS NOT NULL AND superseded_at < ?1)
-                            OR (terminal_at IS NOT NULL AND terminal_at < ?1)
+                         WHERE state IN ('Superseded', 'Terminal', 'Failed', 'Reverted')
+                           AND (
+                               (superseded_at IS NOT NULL AND superseded_at < ?1)
+                               OR (terminal_at IS NOT NULL AND terminal_at < ?1)
+                           )
                      )",
                     params![&cutoff_str],
                 )
-                .context("DELETE host_rollout_state for finished rollouts")?;
+                .context("DELETE host_rollout_records for finished rollouts")?;
             let rollouts_pruned = t
                 .execute(
                     "DELETE FROM rollouts
-                     WHERE (superseded_at IS NOT NULL AND superseded_at < ?1)
-                        OR (terminal_at IS NOT NULL AND terminal_at < ?1)",
+                     WHERE state IN ('Superseded', 'Terminal', 'Failed', 'Reverted')
+                       AND (
+                           (superseded_at IS NOT NULL AND superseded_at < ?1)
+                           OR (terminal_at IS NOT NULL AND terminal_at < ?1)
+                       )",
                     params![&cutoff_str],
                 )
                 .context("DELETE rollouts (finished + past retention)")?;
-            Ok((hrs_pruned, rollouts_pruned))
+            Ok((records_pruned, rollouts_pruned))
         })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRollout {
-    pub rollout_id: String,
+    pub rollout_id: RolloutId,
     pub channel: String,
     pub current_wave: u32,
     pub created_at: String,
-    /// Set on `ConvergeRollout` or orphan sweep; threaded into the in-memory
-    /// `Rollout` so `advance_rollout` short-circuits and `channel_edges` can
+    /// Set on terminal transition; threaded into the in-memory `Rollout`
+    /// so `advance_rollout` short-circuits and `channel_edges` can
     /// distinguish "predecessor converged" from "predecessor unknown".
     pub terminal_at: Option<DateTime<Utc>>,
 }
@@ -282,8 +382,6 @@ pub struct GateRollouts(Vec<ActiveRollout>);
 #[derive(Debug, Clone, Default)]
 pub struct UiRollouts(Vec<ActiveRollout>);
 
-// `into_inner` exists for the snapshot-merge path; downstream code
-// should otherwise stay in the typed view.
 macro_rules! rollout_view_api {
     ($t:ident) => {
         impl $t {
@@ -334,8 +432,8 @@ impl GateRollouts {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::db::Db;
-    use rusqlite::params;
 
     fn fresh_db() -> Db {
         let db = Db::open_in_memory().unwrap();
@@ -343,337 +441,226 @@ mod tests {
         db
     }
 
-    #[test]
-    fn record_active_rollout_inserts_first_one_as_active() {
-        let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-        let status = db.rollouts().supersede_status("r1").unwrap();
-        let s = status.expect("rollout present");
-        assert!(
-            !s.is_superseded(),
-            "first rollout on a channel must be active"
-        );
+    fn t0() -> DateTime<Utc> {
+        use chrono::TimeZone;
+        Utc.with_ymd_and_hms(2026, 5, 16, 1, 0, 0).unwrap()
     }
 
     #[test]
-    fn record_active_rollout_supersedes_prior_on_same_channel() {
+    fn record_rollout_opened_inserts_first_one_as_opening() {
         let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-        db.rollouts().record_active_rollout("r2", "stable").unwrap();
-
-        let r1 = db.rollouts().supersede_status("r1").unwrap().unwrap();
-        assert!(r1.is_superseded());
-        assert_eq!(r1.superseded_by.as_deref(), Some("r2"));
-
-        let r2 = db.rollouts().supersede_status("r2").unwrap().unwrap();
-        assert!(!r2.is_superseded());
-    }
-
-    #[test]
-    fn record_active_rollout_does_not_supersede_across_channels() {
-        let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
         db.rollouts()
-            .record_active_rollout("r2", "edge-slow")
+            .record_rollout_opened("r1", "stable", "ref-1", t0(), None)
             .unwrap();
-
-        // Both should be active in their own channel.
-        assert!(
-            !db.rollouts()
-                .supersede_status("r1")
-                .unwrap()
-                .unwrap()
-                .is_superseded()
-        );
-        assert!(
-            !db.rollouts()
-                .supersede_status("r2")
-                .unwrap()
-                .unwrap()
-                .is_superseded()
-        );
+        let row = db.rollouts().state("r1").unwrap().expect("rollout present");
+        assert_eq!(row.state, RolloutState::Opening);
+        assert_eq!(row.target_ref, "ref-1");
+        assert_eq!(row.channel, "stable");
+        assert!(row.superseded_at.is_none());
     }
 
+    /// Pure-insert assertion. Phase 10c deleted the inline supersession
+    /// `UPDATE` from `record_rollout_opened`; the reducer-driven
+    /// `SuccessorOpened` path now owns the predecessor → Superseded
+    /// transition (re-derivability test covers it end-to-end). This test
+    /// pins the new contract: opening a second rollout on the same
+    /// channel leaves predecessors in their pre-existing state.
     #[test]
-    fn record_active_rollout_is_idempotent_for_same_id_same_channel() {
+    fn record_rollout_opened_is_pure_insert() {
         let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-        // r1 must still be active - re-recording itself never marks it superseded.
-        assert!(
-            !db.rollouts()
-                .supersede_status("r1")
-                .unwrap()
-                .unwrap()
-                .is_superseded()
-        );
-    }
-
-    #[test]
-    fn supersede_status_returns_none_for_unknown_rollout() {
-        let db = fresh_db();
-        assert!(db.rollouts().supersede_status("ghost").unwrap().is_none());
-    }
-
-    #[test]
-    fn superseded_rollout_ids_lists_only_superseded() {
-        let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-        db.rollouts().record_active_rollout("r2", "stable").unwrap();
         db.rollouts()
-            .record_active_rollout("r3", "edge-slow")
+            .record_rollout_opened("r1", "stable", "ref-1", t0(), None)
             .unwrap();
-        let mut ids = db.rollouts().superseded_rollout_ids().unwrap();
-        ids.sort();
-        assert_eq!(ids, vec!["r1".to_string()]);
+        db.rollouts()
+            .record_rollout_opened(
+                "r2",
+                "stable",
+                "ref-2",
+                t0() + chrono::Duration::seconds(1),
+                None,
+            )
+            .unwrap();
+        // r1 stays Opening — the applier (open_rollout) is responsible
+        // for routing SuccessorOpened through process_rollout_event,
+        // which drives the reducer transition. The DB method is now
+        // pure-insert and does not side-effect on prior rows.
+        assert_eq!(
+            db.rollouts().state("r1").unwrap().unwrap().state,
+            RolloutState::Opening
+        );
+        assert_eq!(
+            db.rollouts().state("r2").unwrap().unwrap().state,
+            RolloutState::Opening
+        );
     }
 
     #[test]
-    fn list_active_returns_only_non_superseded_with_channel_and_wave() {
+    fn record_rollout_opened_does_not_supersede_across_channels() {
         let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
         db.rollouts()
-            .record_active_rollout("r2", "edge-slow")
+            .record_rollout_opened("r1", "stable", "ref-1", t0(), None)
             .unwrap();
-        // Supersede r1 with a new stable rollout r3.
-        db.rollouts().record_active_rollout("r3", "stable").unwrap();
-        // Advance r3 to wave 1 (stable's promotion).
-        db.rollouts().set_current_wave("r3", 1).unwrap();
+        db.rollouts()
+            .record_rollout_opened("r2", "edge-slow", "ref-2", t0(), None)
+            .unwrap();
+        assert_eq!(
+            db.rollouts().state("r1").unwrap().unwrap().state,
+            RolloutState::Opening
+        );
+        assert_eq!(
+            db.rollouts().state("r2").unwrap().unwrap().state,
+            RolloutState::Opening
+        );
+    }
 
-        let mut rows = db.rollouts().list_active().unwrap().into_inner();
-        rows.sort_by(|a, b| a.rollout_id.cmp(&b.rollout_id));
-        assert_eq!(rows.len(), 2, "list_active excludes superseded r1");
-        let r2 = rows.iter().find(|r| r.rollout_id == "r2").unwrap();
-        assert_eq!(r2.channel, "edge-slow");
-        assert_eq!(r2.current_wave, 0);
-        let r3 = rows.iter().find(|r| r.rollout_id == "r3").unwrap();
-        assert_eq!(r3.channel, "stable");
-        assert_eq!(r3.current_wave, 1);
+    #[test]
+    fn state_returns_none_for_unknown_rollout() {
+        let db = fresh_db();
+        assert!(db.rollouts().state("ghost").unwrap().is_none());
+    }
+
+    #[test]
+    fn record_rollout_transition_stamps_terminal() {
+        let db = fresh_db();
+        db.rollouts()
+            .record_rollout_opened("r1", "stable", "ref-1", t0(), None)
+            .unwrap();
+        let n = db
+            .rollouts()
+            .record_rollout_transition("r1", RolloutState::Terminal, t0(), None)
+            .unwrap();
+        assert_eq!(n, 1);
+        let row = db.rollouts().state("r1").unwrap().unwrap();
+        assert_eq!(row.state, RolloutState::Terminal);
+        assert!(row.terminal_at.is_some());
+        // Idempotent re-call no-ops.
+        let n2 = db
+            .rollouts()
+            .record_rollout_transition("r1", RolloutState::Terminal, t0(), None)
+            .unwrap();
+        assert_eq!(n2, 0);
     }
 
     #[test]
     fn set_current_wave_is_monotonic_no_op_on_backwards() {
         let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
+        db.rollouts()
+            .record_rollout_opened("r1", "stable", "ref-1", t0(), None)
+            .unwrap();
         assert_eq!(db.rollouts().current_wave("r1").unwrap(), Some(0));
-        let n = db.rollouts().set_current_wave("r1", 1).unwrap();
+        let n = db.rollouts().set_current_wave("r1", 1, None).unwrap();
         assert_eq!(n, 1);
         assert_eq!(db.rollouts().current_wave("r1").unwrap(), Some(1));
         // Backwards is no-op.
-        let n = db.rollouts().set_current_wave("r1", 0).unwrap();
+        let n = db.rollouts().set_current_wave("r1", 0, None).unwrap();
         assert_eq!(n, 0);
         assert_eq!(db.rollouts().current_wave("r1").unwrap(), Some(1));
     }
 
-    /// LOADBEARING regression: rebuild scenario. After a rebuild the table
-    /// starts empty; the polling tick must populate it idempotently for
-    /// each channel's current rid. Stale rids that NEVER re-enter the table
-    /// stay absent - the lifecycle endpoint returns 404 for them and
-    /// render.sh skips, no fabricated supersession state.
+    /// **Regression guard**: terminal rollouts STAY visible in
+    /// `list_active` (the gate-observed source) but are HIDDEN from
+    /// `list_in_flight` (the UI source). Same row, different views —
+    /// this is the load-bearing semantic the v0.1 lifecycle attempts
+    /// kept getting wrong.
     #[test]
-    fn rebuild_recovery_repopulates_via_repeated_record_calls() {
+    fn terminal_stays_in_list_active_but_drops_from_list_in_flight() {
         let db = fresh_db();
         db.rollouts()
-            .record_active_rollout("r-current", "stable")
+            .record_rollout_opened("r1", "stable", "ref-1", t0(), None)
             .unwrap();
         db.rollouts()
-            .record_active_rollout("r-current", "stable")
+            .record_rollout_opened("r2", "edge", "ref-2", t0(), None)
             .unwrap();
-        let s = db
-            .rollouts()
-            .supersede_status("r-current")
-            .unwrap()
-            .expect("current rid present after polling tick");
-        assert!(!s.is_superseded());
-        assert!(db.rollouts().supersede_status("r-old").unwrap().is_none());
-    }
-
-    /// **Regression guard** for the asymmetry that surfaced after the first
-    /// lifecycle attempt: filtering terminal rollouts at `list_active`
-    /// caused channelEdges to lose sight of converged predecessors, which
-    /// then disagreed with itself between dispatch (conservative) and
-    /// reconciler (non-conservative) modes. This test pins the load-
-    /// bearing semantic: terminal rollouts STAY visible in `list_active`
-    /// (the gate observed source) but are HIDDEN from `list_in_flight`
-    /// (the UI source). Same row, different views.
-    #[test]
-    fn mark_terminal_keeps_rollout_in_list_active_but_drops_from_list_in_flight() {
-        let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-        db.rollouts().record_active_rollout("r2", "edge").unwrap();
-
-        // Both visible in both views before any terminal stamp.
         assert_eq!(db.rollouts().list_active().unwrap().len(), 2);
         assert_eq!(db.rollouts().list_in_flight().unwrap().len(), 2);
 
-        // Mark r1 terminal; idempotent on re-call.
-        let now = chrono::Utc::now();
-        let n = db.rollouts().mark_terminal("r1", now).unwrap();
-        assert_eq!(n, 1);
-        let n2 = db.rollouts().mark_terminal("r1", now).unwrap();
-        assert_eq!(n2, 0, "re-marking is idempotent");
+        db.rollouts()
+            .record_rollout_transition("r1", RolloutState::Terminal, t0(), None)
+            .unwrap();
 
-        // list_active KEEPS r1 - gates need to see converged predecessors
-        // so channel_edges can return is_active_for_ordering=false.
         let active = db.rollouts().list_active().unwrap();
         assert_eq!(
             active.len(),
             2,
             "list_active must include terminal rollouts so gates can see converged predecessors"
         );
-        let r1_active = active.iter().find(|r| r.rollout_id == "r1").unwrap();
-        assert!(
-            r1_active.terminal_at.is_some(),
-            "terminal_at must populate through to ActiveRollout"
-        );
+        let r1_active = active
+            .iter()
+            .find(|r| r.rollout_id.as_str() == "r1")
+            .unwrap();
+        assert!(r1_active.terminal_at.is_some());
 
-        // list_in_flight DROPS r1 - UI shows only ongoing work.
         let in_flight = db.rollouts().list_in_flight().unwrap().into_inner();
         assert_eq!(in_flight.len(), 1);
-        assert_eq!(in_flight[0].rollout_id, "r2");
-
-        // supersede_status reflects terminal.
-        let s = db.rollouts().supersede_status("r1").unwrap().unwrap();
-        assert!(s.is_terminal());
-        assert!(!s.is_superseded(), "terminal is independent of superseded");
-        assert!(s.is_finished());
+        assert_eq!(in_flight[0].rollout_id.as_str(), "r2");
     }
 
-    /// Superseded rollouts are dropped from BOTH views regardless of
-    /// terminal_at - supersession is the stronger signal (newer
-    /// rollout for the same channel exists, gates evaluate against it).
+    /// Superseded rollouts are dropped from BOTH views — supersession is
+    /// the stronger signal (newer rollout for the same channel exists,
+    /// gates evaluate against it).
     #[test]
     fn superseded_dropped_from_both_list_active_and_list_in_flight() {
         let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-        db.rollouts().record_active_rollout("r2", "stable").unwrap(); // supersedes r1
-
+        db.rollouts()
+            .record_rollout_opened("r1", "stable", "ref-1", t0(), None)
+            .unwrap();
+        // Phase 10c: supersession is reducer-driven via the applier; in
+        // a db-level unit test we synthesize the end-state directly via
+        // record_rollout_transition. Re-derivability through the reducer
+        // is exercised in `tests/rollout_rederivability.rs`.
+        db.rollouts()
+            .record_rollout_transition(
+                "r1",
+                RolloutState::Superseded,
+                t0() + chrono::Duration::seconds(1),
+                None,
+            )
+            .unwrap();
         for rid in db.rollouts().list_active().unwrap().iter() {
-            assert_ne!(
-                rid.rollout_id, "r1",
-                "superseded must not appear in list_active"
-            );
+            assert_ne!(rid.rollout_id.as_str(), "r1");
         }
         for rid in db.rollouts().list_in_flight().unwrap().iter() {
-            assert_ne!(
-                rid.rollout_id, "r1",
-                "superseded must not appear in list_in_flight"
-            );
-        }
-
-        // Even after marking r1 terminal, it stays out of both  -
-        // superseded was already excluding it.
-        db.rollouts()
-            .mark_terminal("r1", chrono::Utc::now())
-            .unwrap();
-        for rid in db.rollouts().list_active().unwrap().iter() {
-            assert_ne!(rid.rollout_id, "r1");
+            assert_ne!(rid.rollout_id.as_str(), "r1");
         }
     }
 
-    #[test]
-    fn finished_rollout_ids_unions_superseded_and_terminal() {
-        let db = fresh_db();
-        // r1 -> r2 same channel: r1 superseded.
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-        db.rollouts().record_active_rollout("r2", "stable").unwrap();
-        // r3 standalone, then marked terminal.
-        db.rollouts().record_active_rollout("r3", "edge").unwrap();
-        db.rollouts()
-            .mark_terminal("r3", chrono::Utc::now())
-            .unwrap();
-
-        let mut ids = db.rollouts().finished_rollout_ids().unwrap();
-        ids.sort();
-        assert_eq!(ids, vec!["r1".to_string(), "r3".to_string()]);
-
-        // r2 (active, neither superseded nor terminal) absent from finished set.
-        assert!(!ids.contains(&"r2".to_string()));
-    }
-
-    /// `GateRollouts.into_ui()` filters out terminal rollouts  -
-    /// a caller that has the gate-flavored view but needs the UI
-    /// view can demote safely. Reverse direction (UI -> Gate) does
-    /// NOT exist by design: the UI view is a strict subset.
+    /// `GateRollouts.into_ui()` filters out terminal rollouts.
     #[test]
     fn gate_rollouts_into_ui_filters_terminal() {
         let db = fresh_db();
         db.rollouts()
-            .record_active_rollout("r-active", "stable")
+            .record_rollout_opened("r-active", "stable", "ref-a", t0(), None)
             .unwrap();
         db.rollouts()
-            .record_active_rollout("r-converged", "edge")
+            .record_rollout_opened("r-converged", "edge", "ref-c", t0(), None)
             .unwrap();
         db.rollouts()
-            .mark_terminal("r-converged", chrono::Utc::now())
+            .record_rollout_transition("r-converged", RolloutState::Terminal, t0(), None)
             .unwrap();
-
         let gate = db.rollouts().list_active().unwrap();
-        assert_eq!(gate.len(), 2, "gate view keeps the terminal rollout");
-
+        assert_eq!(gate.len(), 2);
         let ui = gate.into_ui();
-        assert_eq!(ui.len(), 1, "into_ui filters terminal");
-        assert_eq!(ui.into_inner()[0].rollout_id, "r-active");
+        assert_eq!(ui.len(), 1);
+        assert_eq!(ui.into_inner()[0].rollout_id.as_str(), "r-active");
     }
 
-    /// **Documentation test** - the type system should enforce that
-    /// gate-flavored and UI-flavored rollout lists are not
-    /// interchangeable. This is checked by compilation: if someone
-    /// writes a function `fn use_gate(r: GateRollouts)` and tries
-    /// to pass `db.rollouts().list_in_flight().unwrap()`, it fails
-    /// to compile. We can't write that as an `#[test]` directly
-    /// (compile-fail tests aren't trivial in stable rustc), but
-    /// the structural requirement is captured by the distinct
-    /// types and the absence of `From<UiRollouts> for GateRollouts`.
-    /// If a future commit adds such a conversion, this test's
-    /// premise breaks - keep the asymmetric `into_ui` only.
+    /// **Documentation test** — GateRollouts and UiRollouts must remain
+    /// distinct types so a future commit can't conflate them. If a `From<
+    /// UiRollouts> for GateRollouts` impl is added, the asymmetric
+    /// `into_ui` invariant breaks; keep this test as a tripwire.
     #[test]
     fn gate_and_ui_rollouts_are_distinct_types() {
         let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-
-        // Both queries return ActiveRollout data; the wrapper TYPE
-        // is what differs. Using fully-qualified type names so a
-        // future refactor that conflates them fails to compile.
+        db.rollouts()
+            .record_rollout_opened("r1", "stable", "ref-1", t0(), None)
+            .unwrap();
         let _gate: super::GateRollouts = db.rollouts().list_active().unwrap();
         let _ui: super::UiRollouts = db.rollouts().list_in_flight().unwrap();
     }
 
-    /// Supersession overrides terminal: superseded rollouts can't be
-    /// "un-marked" by a later terminal stamp, and terminal can be
-    /// stamped on a superseded rollout (idempotent - finished is the
-    /// union). Either field alone is sufficient to drop from in-flight.
-    #[test]
-    fn terminal_and_superseded_compose_independently() {
-        let db = fresh_db();
-        db.rollouts().record_active_rollout("r1", "stable").unwrap();
-        db.rollouts().record_active_rollout("r2", "stable").unwrap();
-        // r1 is now superseded by r2.
-        let s1_before = db.rollouts().supersede_status("r1").unwrap().unwrap();
-        assert!(s1_before.is_superseded());
-        assert!(!s1_before.is_terminal());
-
-        // Stamping r1 terminal too is allowed (UPDATE only fires on terminal_at IS NULL).
-        let n = db
-            .rollouts()
-            .mark_terminal("r1", chrono::Utc::now())
-            .unwrap();
-        assert_eq!(n, 1);
-
-        let s1_after = db.rollouts().supersede_status("r1").unwrap().unwrap();
-        assert!(s1_after.is_superseded());
-        assert!(s1_after.is_terminal());
-        assert!(s1_after.is_finished());
-    }
-
     /// **Regression guard**: prune drops finished rollouts past
-    /// retention AND their host_rollout_state rows; leaves
-    /// in-flight rollouts and recent finishes alone.
-    ///
-    /// This test pins the load-bearing invariant that the prune
-    /// is finished-only - if a future refactor accidentally
-    /// drops the `superseded_at IS NOT NULL OR terminal_at IS NOT NULL`
-    /// guard, this test fails (in-flight r-active disappears).
+    /// retention AND their host_rollout_records rows; leaves in-flight
+    /// rollouts and recent finishes alone.
     #[test]
     fn prune_finished_rollouts_drops_old_finished_keeps_recent_and_in_flight() {
         let db = fresh_db();
@@ -683,94 +670,69 @@ mod tests {
 
         // r-active: in-flight, never touched. Must survive prune.
         db.rollouts()
-            .record_active_rollout("r-active", "stable")
+            .record_rollout_opened("r-active", "stable", "ref-a", now, None)
             .unwrap();
 
-        // r-old-superseded: superseded long ago. Should prune.
+        // r-old-superseded: superseded long ago. Phase 10c made
+        // record_rollout_opened pure-insert; the prune scenario
+        // drives the supersession transition explicitly via
+        // record_rollout_transition (matches what the applier's
+        // reducer-driven SuccessorOpened path would do).
         db.rollouts()
-            .record_active_rollout("r-old-superseded", "edge")
+            .record_rollout_opened("r-old-superseded", "edge", "ref-os", now, None)
             .unwrap();
         db.rollouts()
-            .record_active_rollout("r-old-superseder", "edge")
-            .unwrap(); // supersedes r-old-superseded with now()
-        // Force superseded_at to the old timestamp via direct SQL  -
-        // record_active_rollout stamps `now()`, but we need a row
-        // older than 90d to verify the retention boundary.
-        {
-            let guard = crate::db::lock_conn(db.rollouts().conn).unwrap();
-            guard
-                .execute(
-                    "UPDATE rollouts SET superseded_at = ?1 WHERE rollout_id = 'r-old-superseded'",
-                    params![old.to_rfc3339()],
-                )
-                .unwrap();
-        }
+            .record_rollout_opened("r-old-superseder", "edge", "ref-osr", now, None)
+            .unwrap();
+        db.rollouts()
+            .record_rollout_transition("r-old-superseded", RolloutState::Superseded, old, None)
+            .unwrap();
 
         // r-recent-terminal: terminal recently (30d). Should NOT prune.
         db.rollouts()
-            .record_active_rollout("r-recent-terminal", "preview")
+            .record_rollout_opened("r-recent-terminal", "preview", "ref-rt", now, None)
             .unwrap();
         db.rollouts()
-            .mark_terminal("r-recent-terminal", recent)
+            .record_rollout_transition("r-recent-terminal", RolloutState::Terminal, recent, None)
             .unwrap();
 
         // r-old-terminal: terminal long ago (120d). Should prune.
         db.rollouts()
-            .record_active_rollout("r-old-terminal", "preview-old")
+            .record_rollout_opened("r-old-terminal", "preview-old", "ref-ot", now, None)
             .unwrap();
-        db.rollouts().mark_terminal("r-old-terminal", old).unwrap();
+        db.rollouts()
+            .record_rollout_transition("r-old-terminal", RolloutState::Terminal, old, None)
+            .unwrap();
 
-        // host_rollout_state rows tied to each - verify they
-        // co-prune with their rollouts.
+        // host_rollout_records rows tied to each.
         for rid in [
             "r-active",
             "r-old-superseded",
             "r-recent-terminal",
             "r-old-terminal",
         ] {
-            db.rollout_state()
-                .transition_host_state(
-                    "host-x",
-                    rid,
-                    crate::state::HostRolloutState::Healthy,
-                    crate::state::HealthyMarker::Set(now),
-                    None,
-                )
-                .unwrap();
+            let row = nixfleet_state_machine::HostRolloutState::new_pending(
+                rid.into(),
+                "host-x".to_string(),
+                "stable".to_string(),
+                format!("closure-{rid}"),
+                now,
+                now + chrono::Duration::minutes(5),
+            );
+            db.host_rollout_records().upsert(&row).unwrap();
         }
 
-        // Run prune - 90d retention.
-        let (hrs_pruned, rollouts_pruned) = db.rollouts().prune_finished_rollouts(24 * 90).unwrap();
+        let (records_pruned, rollouts_pruned) =
+            db.rollouts().prune_finished_rollouts(24 * 90).unwrap();
         assert_eq!(rollouts_pruned, 2, "r-old-superseded + r-old-terminal");
-        assert_eq!(
-            hrs_pruned, 2,
-            "host_rollout_state rows for the two pruned rollouts"
-        );
+        assert_eq!(records_pruned, 2);
 
-        // r-active and r-recent-terminal must still be present.
+        // r-active and r-recent-terminal retained.
         let active = db.rollouts().list_active().unwrap();
-        let kept_ids: Vec<&str> = active.iter().map(|r| r.rollout_id.as_str()).collect();
-        assert!(kept_ids.contains(&"r-active"), "in-flight rollout retained");
-        // r-recent-terminal stays in list_active (terminal is filtered
-        // only by list_in_flight). Confirm it's NOT pruned.
-        let status = db.rollouts().supersede_status("r-recent-terminal").unwrap();
-        assert!(
-            status.is_some(),
-            "recent terminal rollout retained inside the 90d window",
-        );
-
-        // r-old-superseded + r-old-terminal: gone from rollouts table.
-        assert!(
-            db.rollouts()
-                .supersede_status("r-old-superseded")
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            db.rollouts()
-                .supersede_status("r-old-terminal")
-                .unwrap()
-                .is_none()
-        );
+        let kept: Vec<&str> = active.iter().map(|r| r.rollout_id.as_str()).collect();
+        assert!(kept.contains(&"r-active"));
+        assert!(db.rollouts().state("r-recent-terminal").unwrap().is_some());
+        assert!(db.rollouts().state("r-old-superseded").unwrap().is_none());
+        assert!(db.rollouts().state("r-old-terminal").unwrap().is_none());
     }
 }

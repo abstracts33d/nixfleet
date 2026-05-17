@@ -32,6 +32,7 @@ metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 [dependencies]
 nixfleet-proto = { path = "../nixfleet-proto", features = ["rusqlite"] }
 nixfleet-reconciler = { path = "../nixfleet-reconciler" }
+nixfleet-state-machine = { path = "../nixfleet-state-machine" }
 chrono = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
@@ -109,7 +110,12 @@ metrics-exporter-prometheus = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Enable the shared FleetBuilder fixture API for tests.
-nixfleet-proto = { path = "../nixfleet-proto", features = ["rusqlite", "testing"] }
+nixfleet-proto = { path = "../nixfleet-proto", features = ["rusqlite", "testing", "test-helpers"] }
+# Enable `Verified::unverified_for_tests` so applier-integration tests
+# can synthesise SignedManifestSet without driving the full signing
+# pipeline. Production builds do NOT enable this feature; the trust
+# contract on `Verified<T>` (RFC-0009 §3) holds.
+nixfleet-reconciler = { path = "../nixfleet-reconciler", features = ["test-helpers"] }
 # `tokio::time::pause` + `start_paused` are gated on test-util; the
 # graceful-shutdown unit tests use them to fast-forward past the 30s
 # task-drain deadline without real wall-clock waiting.

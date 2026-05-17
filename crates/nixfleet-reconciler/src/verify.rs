@@ -55,6 +55,71 @@ impl SignedSidecar for RolloutManifest {
 
 const ACCEPTED_SCHEMA_VERSION: u32 = 1;
 
+/// Type-level witness that bytes passed signature + freshness + schema +
+/// `reject_before` gates against trust roots. No public constructor; the
+/// only way to obtain one is via a `verify_*` function in this module.
+/// `#[derive(Deserialize)]` is intentionally omitted so the witness cannot
+/// be fabricated from a serialized form.
+///
+/// A function taking `&Verified<T>` is statically guaranteed to have
+/// received a payload that was verified against the trust config; future
+/// "skip verify" shortcuts cannot compile without crossing the same gate.
+pub struct Verified<T> {
+    inner: T,
+    signed_at: DateTime<Utc>,
+}
+
+impl<T> Verified<T> {
+    pub fn inner(&self) -> &T {
+        &self.inner
+    }
+
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+
+    pub fn signed_at(&self) -> DateTime<Utc> {
+        self.signed_at
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Verified<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Verified")
+            .field("signed_at", &self.signed_at)
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<T: Clone> Clone for Verified<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            signed_at: self.signed_at,
+        }
+    }
+}
+
+/// **TEST ONLY.** Bypasses signature verification. Available only when
+/// the lib is compiled with `#[cfg(test)]` (internal tests) or with the
+/// `test-helpers` feature flag (downstream crates' tests, enabled via
+/// `[dev-dependencies]` so production builds cannot reach it).
+/// Used by gate / applier tests that need a `SignedManifestSet` but
+/// don't exercise the signature path itself.
+#[cfg(any(test, feature = "test-helpers"))]
+impl<T> Verified<T> {
+    pub fn unverified_for_tests(inner: T, signed_at: DateTime<Utc>) -> Self {
+        Self { inner, signed_at }
+    }
+}
+
+/// Concrete alias for the top-level fleet manifest.
+pub type VerifiedFleet = Verified<FleetResolved>;
+
+/// Concrete alias for the per-rollout signed manifest.
+pub type VerifiedRolloutManifest = Verified<RolloutManifest>;
+
 #[derive(Debug, Error)]
 pub enum VerifyError {
     #[error("fleet.resolved parse failed: {0}")]
@@ -118,7 +183,7 @@ pub fn verify_signed_sidecar<T: SignedSidecar + DeserializeOwned>(
     now: DateTime<Utc>,
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
-) -> Result<T, VerifyError> {
+) -> Result<Verified<T>, VerifyError> {
     let canonical = verify_signature_against_trust_roots(signed_bytes, signature, trusted_keys)?;
     finish_sidecar_verification(&canonical, now, freshness_window, reject_before)
 }
@@ -130,15 +195,25 @@ pub fn verify_artifact(
     now: DateTime<Utc>,
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
-) -> Result<FleetResolved, VerifyError> {
-    verify_signed_sidecar(
+) -> Result<VerifiedFleet, VerifyError> {
+    let mut verified: VerifiedFleet = verify_signed_sidecar(
         signed_bytes,
         signature,
         trusted_keys,
         now,
         freshness_window,
         reject_before,
-    )
+    )?;
+    // Post-deserialization normalization: synthesize the implicit
+    // match-all zero-soak wave for `all-at-once` policies declared
+    // without explicit waves. Signed bytes are not modified (signature
+    // covered the wire form with empty waves); the in-memory form
+    // every consumer sees is canonical. Inner field is module-private
+    // — direct mutation is the chosen access path so the witness type
+    // doesn't grow a public mutator. See `nixfleet_proto::normalize_
+    // rollout_policies` for the design rationale (D-017).
+    nixfleet_proto::normalize_rollout_policies(&mut verified.inner);
+    Ok(verified)
 }
 
 /// LOADBEARING: uses `verify_strict` (not `verify`) - rejects malleable
@@ -236,7 +311,7 @@ pub fn verify_revocations(
     now: DateTime<Utc>,
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
-) -> Result<Revocations, VerifyError> {
+) -> Result<Verified<Revocations>, VerifyError> {
     verify_signed_sidecar(
         signed_bytes,
         signature,
@@ -256,7 +331,7 @@ pub fn verify_bootstrap_nonces(
     now: DateTime<Utc>,
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
-) -> Result<BootstrapNonces, VerifyError> {
+) -> Result<Verified<BootstrapNonces>, VerifyError> {
     verify_signed_sidecar(
         signed_bytes,
         signature,
@@ -267,8 +342,10 @@ pub fn verify_bootstrap_nonces(
     )
 }
 
-/// Verify a signed rollout manifest. Callers MUST also call
-/// [`compute_rollout_id`] and assert it equals the advertised id.
+/// Verify a signed rollout manifest. Callers MUST additionally
+/// discriminate the parsed manifest's canonical RolloutId per RFC-0012
+/// §6.3 against the advertised identifier (`RolloutId::new(&m.channel,
+/// &m.channel_ref).as_str()`) before consuming any field.
 pub fn verify_rollout_manifest(
     signed_bytes: &[u8],
     signature: &[u8],
@@ -276,7 +353,7 @@ pub fn verify_rollout_manifest(
     now: DateTime<Utc>,
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
-) -> Result<RolloutManifest, VerifyError> {
+) -> Result<VerifiedRolloutManifest, VerifyError> {
     verify_signed_sidecar(
         signed_bytes,
         signature,
@@ -309,17 +386,6 @@ pub fn canonical_hash_from_bytes(bytes: &[u8]) -> Result<String, VerifyError> {
     let canonical = nixfleet_canonicalize::canonicalize(s).map_err(VerifyError::Canonicalize)?;
     let digest = Sha256::digest(canonical.as_bytes());
     Ok(hex_lowercase(&digest))
-}
-
-/// Producer-side rolloutId. See [`compute_canonical_hash`] caveat.
-pub fn compute_rollout_id(manifest: &RolloutManifest) -> Result<String, VerifyError> {
-    compute_canonical_hash(manifest)
-}
-
-/// Verify-side rolloutId. Cross-version safe: hashes the received bytes
-/// directly, no parse step.
-pub fn rollout_id_from_bytes(bytes: &[u8]) -> Result<String, VerifyError> {
-    canonical_hash_from_bytes(bytes)
 }
 
 fn hex_lowercase(bytes: &[u8]) -> String {
@@ -386,7 +452,7 @@ fn finish_sidecar_verification<T: SignedSidecar + DeserializeOwned>(
     now: DateTime<Utc>,
     freshness_window: Duration,
     reject_before: Option<DateTime<Utc>>,
-) -> Result<T, VerifyError> {
+) -> Result<Verified<T>, VerifyError> {
     let payload: T = serde_json::from_str(canonical)?;
     if payload.schema_version() != ACCEPTED_SCHEMA_VERSION {
         return Err(VerifyError::SchemaVersionUnsupported(
@@ -424,7 +490,10 @@ fn finish_sidecar_verification<T: SignedSidecar + DeserializeOwned>(
         });
     }
 
-    Ok(payload)
+    Ok(Verified {
+        inner: payload,
+        signed_at,
+    })
 }
 
 pub const CLOCK_SKEW_SLACK_SECS: i64 = 60;

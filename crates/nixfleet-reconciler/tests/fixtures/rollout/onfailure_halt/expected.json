@@ -1,3 +1,0 @@
-[
-  { "action": "halt_rollout", "rollout": "stable@r2", "reason": "host h1 failed (policy: halt)" }
-]

@@ -93,7 +93,7 @@ fn parse_ssh_ed25519_pubkey(line: &str) -> anyhow::Result<Option<VerifyingKey>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nixfleet_proto::evidence_signing::ComplianceFailureSignedPayload;
+    use nixfleet_proto::evidence_signing::ActivationFailedSignedPayload;
 
     /// Deterministic distinct keypairs from a seed byte.
     fn keypair_from(byte: u8) -> (ed25519_dalek::SigningKey, String) {
@@ -107,15 +107,13 @@ mod tests {
         (sk, ssh_pk.to_openssh().expect("to_openssh"))
     }
 
-    fn sample_payload() -> ComplianceFailureSignedPayload<'static> {
-        ComplianceFailureSignedPayload {
+    fn sample_payload() -> ActivationFailedSignedPayload<'static> {
+        ActivationFailedSignedPayload {
             hostname: "host-05",
             rollout: Some("edge-slow@abc"),
-            control_id: "auditLogging",
-            status: "non-compliant",
-            framework_articles: &[],
-            evidence_collected_at: chrono::DateTime::from_timestamp(1_000_000, 0).unwrap(),
-            evidence_snippet_sha256: "deadbeef".to_string(),
+            phase: "switch-to-configuration",
+            exit_code: Some(2),
+            stderr_tail_sha256: "deadbeef".to_string(),
         }
     }
 
@@ -156,7 +154,7 @@ mod tests {
         let sig = sk.sign(&serde_jcs::to_vec(&payload).unwrap());
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
         let mut tampered = sample_payload();
-        tampered.control_id = "backupRetention";
+        tampered.phase = "build-derivation";
         assert_eq!(
             verify_event(Some(&sig_b64), Some(&pubkey_str), &tampered),
             SignatureStatus::Mismatch
