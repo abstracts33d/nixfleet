@@ -1,0 +1,35 @@
+[package]
+name = "nixfleet-state-machine"
+description = "Pure per-host rollout state-machine reducer (RFC-0008 §3 + RFC-0009 §3). No I/O. No clock reads. The dependency list is the safety contract."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lib]
+name = "nixfleet_state_machine"
+path = "src/lib.rs"
+
+# LOADBEARING: this dependency list is part of the crate's safety contract
+# (RFC-0009 §8 + §11). Any addition must justify itself against the
+# "pure functional core" property:
+#   - tokio       → forbidden (no async, no I/O)
+#   - reqwest     → forbidden (no I/O)
+#   - rusqlite    → forbidden (no persistence)
+#   - chrono      → ALLOWED for types only; chrono::Utc::now MUST NOT appear
+#                   anywhere in this crate. `now` is always a parameter.
+[dependencies]
+nixfleet-proto = { path = "../nixfleet-proto" }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+# Dev-only — does NOT propagate to the production dep tree. The
+# "no I/O in production" contract is verified against `[dependencies]`.
+[dev-dependencies]
+proptest = { workspace = true }
+# `test-helpers` enables `RolloutId::from_raw_for_tests` + `From<&str>` /
+# `From<String>` impls for test ergonomics (RFC-0012 §6.3 + D-007).
+nixfleet-proto = { path = "../nixfleet-proto", features = ["test-helpers"] }

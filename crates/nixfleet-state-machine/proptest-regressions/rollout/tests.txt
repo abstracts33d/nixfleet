@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5fe2efa0356e57a7411df5a474540c0b11d15a9c32c14f71124e1ef4c3b1a305 # shrinks to events = [HostJoined { rollout_id: "r1", host_id: "h3", wave: 3, at: 2026-05-16T01:00:00Z }, WaveAdvanced { rollout_id: "r1", from_wave: 0, to_wave: 1, at: 2026-05-16T01:00:00Z }]
