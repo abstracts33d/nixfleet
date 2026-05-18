@@ -137,12 +137,27 @@ async fn handle_input(
 /// agent's in-memory reducer cache, then emit the worker re-priming
 /// effects the rehydrated state demands.
 ///
-/// Direct assignment (snapshot-shape, not event-replay) — the canonical
-/// state lives on CP, the agent's HostRolloutState is a reconstructable
-/// cache. Called from two entry points: the boot-recovery handshake
-/// before workers spawn (`recovery.rs`), and the steady-state heartbeat
-/// worker after CP signals a fresh snapshot (`workers/heartbeat.rs`).
-/// Both paths share this function so worker re-priming is consistent.
+/// Snapshot-shape, not event-replay — the canonical state lives on CP,
+/// the agent's HostRolloutState is a reconstructable cache. Called from
+/// two entry points: the boot-recovery handshake before workers spawn
+/// (`recovery.rs`), and the steady-state heartbeat worker after CP
+/// signals a fresh snapshot (`workers/heartbeat.rs`). Both paths share
+/// this function so worker re-priming is consistent.
+///
+/// LOADBEARING: the merge is asymmetric. Canonical fields (state,
+/// target_closure, dispatch/activation timestamps, last_event_seq)
+/// always come from the snapshot. Agent-local-only fields that the
+/// wire snapshot does NOT carry (probes, probe_observed_first_at,
+/// probe_failure_first_at, failed_at, converged_at, etc.) are
+/// preserved from the existing entry when one is present, defaulted
+/// when not.
+///
+/// `probe_failure_first_at` in particular MUST survive a warm
+/// heartbeat rehydration: LIFT #5 makes CP return `bootstrap_rollouts`
+/// on every steady-state heartbeat (~60s cadence), and clobbering the
+/// sustained-failure timer on each tick prevents `Soaking → Failed`
+/// from ever firing (HEALTH_FAILURE_THRESHOLD_SECS = 120s, so a
+/// 60s clobber starves the timer indefinitely).
 ///
 /// LOADBEARING: every non-Pending rehydration emits effects via
 /// `nixfleet_state_machine::rehydration_effects` and routes them through
@@ -156,6 +171,34 @@ async fn apply_bootstrap_snapshot(
     ctx: &ApplierCtx<'_>,
     snapshot: nixfleet_proto::agent_wire::HostRolloutSnapshot,
 ) {
+    let warm = host_states.contains_key(&snapshot.rollout_id);
+    let rollout_id = snapshot.rollout_id.clone();
+    let record = merge_snapshot_into_state(host_states.get(&rollout_id), snapshot);
+    tracing::info!(
+        target: "agent_reducer",
+        rollout_id = %record.rollout_id,
+        state = ?record.state,
+        target_closure = %record.target_closure,
+        warm,
+        probe_failure_first_at = ?record.probe_failure_first_at,
+        "bootstrap: rehydrating in-memory HostRolloutState from CP snapshot (LIFT #3)",
+    );
+    let effects = nixfleet_state_machine::rehydration_effects(&record);
+    host_states.insert(rollout_id, record);
+    for effect in effects {
+        apply_effect(ctx, effect).await;
+    }
+}
+
+/// Pure merge of a wire snapshot with the existing in-memory entry.
+/// Canonical fields (state, target_closure, dispatch/activation
+/// timestamps, last_event_seq) come from the snapshot. Agent-local
+/// fields not carried in the wire shape are preserved from `existing`
+/// when present, defaulted when not.
+fn merge_snapshot_into_state(
+    existing: Option<&HostRolloutState>,
+    snapshot: nixfleet_proto::agent_wire::HostRolloutSnapshot,
+) -> HostRolloutState {
     use nixfleet_proto::HostRolloutState as WireState;
     use nixfleet_state_machine::HostState;
     let internal_state = match snapshot.state {
@@ -167,45 +210,33 @@ async fn apply_bootstrap_snapshot(
         WireState::Failed => HostState::Failed,
         WireState::Reverted => HostState::Reverted,
     };
-    let record = HostRolloutState {
-        rollout_id: snapshot.rollout_id.clone(),
+    HostRolloutState {
+        // Canonical fields — always from the snapshot.
+        rollout_id: snapshot.rollout_id,
         hostname: snapshot.hostname,
         channel: snapshot.channel,
         state: internal_state,
         target_closure: snapshot.target_closure,
         current_closure_at_dispatch: snapshot.current_closure_at_dispatch,
         current_closure: snapshot.current_closure,
-        reverted_to: None,
         dispatched_at: snapshot.dispatched_at,
         dispatch_acked_at: snapshot.dispatch_acked_at,
         activation_started_at: snapshot.activation_started_at,
         activation_completed_at: snapshot.activation_completed_at,
-        activation_failed_at: None,
-        probe_observed_first_at: None,
-        probe_failure_first_at: None,
         soak_due_at: snapshot.soak_due_at,
-        converged_at: None,
-        failed_at: None,
-        policy_applied: None,
-        reverted_at: None,
-        // Probe state is NOT carried by the snapshot — the
-        // LocalResetProbeCache effect emitted below tells the probe
-        // worker to re-read health-checks.json and respawn tickers
-        // tagged with this snapshot's rollout_id.
-        probes: HashMap::new(),
         last_event_seq: snapshot.last_event_seq,
-    };
-    tracing::info!(
-        target: "agent_reducer",
-        rollout_id = %record.rollout_id,
-        state = ?record.state,
-        target_closure = %record.target_closure,
-        "bootstrap: rehydrating in-memory HostRolloutState from CP snapshot (LIFT #3)",
-    );
-    let effects = nixfleet_state_machine::rehydration_effects(&record);
-    host_states.insert(snapshot.rollout_id, record);
-    for effect in effects {
-        apply_effect(ctx, effect).await;
+        // Agent-local-only fields — preserved from the existing entry
+        // on warm rehydration, defaulted on cold rehydration. Wire
+        // snapshot does not carry these (agent_wire.rs:55-78).
+        probes: existing.map(|e| e.probes.clone()).unwrap_or_default(),
+        probe_observed_first_at: existing.and_then(|e| e.probe_observed_first_at),
+        probe_failure_first_at: existing.and_then(|e| e.probe_failure_first_at),
+        activation_failed_at: existing.and_then(|e| e.activation_failed_at),
+        failed_at: existing.and_then(|e| e.failed_at),
+        converged_at: existing.and_then(|e| e.converged_at),
+        reverted_to: existing.and_then(|e| e.reverted_to.clone()),
+        reverted_at: existing.and_then(|e| e.reverted_at),
+        policy_applied: existing.and_then(|e| e.policy_applied),
     }
 }
 
@@ -830,5 +861,128 @@ mod tests {
             ),
         );
         assert!(!all_enforce_probes_pass(&probes));
+    }
+
+    fn make_snapshot(
+        rid: &nixfleet_proto::RolloutId,
+        wire_state: nixfleet_proto::HostRolloutState,
+        last_event_seq: u64,
+    ) -> nixfleet_proto::agent_wire::HostRolloutSnapshot {
+        let now = fixed_now();
+        nixfleet_proto::agent_wire::HostRolloutSnapshot {
+            rollout_id: rid.clone(),
+            hostname: "h1".to_string(),
+            channel: "stable".to_string(),
+            state: wire_state,
+            target_closure: "target-closure-X".to_string(),
+            current_closure_at_dispatch: Some("prior-closure".to_string()),
+            current_closure: Some("target-closure-X".to_string()),
+            dispatched_at: now,
+            dispatch_acked_at: Some(now),
+            activation_started_at: Some(now),
+            activation_completed_at: Some(now),
+            soak_due_at: Some(now + chrono::Duration::minutes(5)),
+            last_event_seq,
+        }
+    }
+
+    #[test]
+    fn merge_snapshot_cold_rehydration_defaults_agent_local_fields() {
+        // No existing entry — agent-local fields must default. Mirrors
+        // the boot-recovery handshake path.
+        let rid = nixfleet_proto::RolloutId::new("stable", "abc1234deadbeef");
+        let snapshot =
+            make_snapshot(&rid, nixfleet_proto::HostRolloutState::Soaking, 7);
+        let record = merge_snapshot_into_state(None, snapshot);
+        assert_eq!(record.state, HostState::Soaking);
+        assert_eq!(record.target_closure, "target-closure-X");
+        assert_eq!(record.last_event_seq, 7);
+        assert!(record.probes.is_empty(), "cold rehydration starts with empty probe map");
+        assert_eq!(record.probe_failure_first_at, None);
+        assert_eq!(record.probe_observed_first_at, None);
+        assert_eq!(record.failed_at, None);
+        assert_eq!(record.converged_at, None);
+    }
+
+    #[test]
+    fn merge_snapshot_warm_rehydration_preserves_probe_failure_timer() {
+        // LOADBEARING: Bug D regression guard. Under LIFT #5, CP returns
+        // bootstrap_rollouts on every steady-state heartbeat (~60s). If
+        // `probe_failure_first_at` got clobbered on each tick, the
+        // sustained-failure threshold (120s) would never cross and
+        // Soaking → Failed could never fire (BT-04). The merge MUST
+        // preserve the timer from the existing entry.
+        let rid = nixfleet_proto::RolloutId::new("stable", "abc1234deadbeef");
+        let failure_stamp = fixed_now() - chrono::Duration::seconds(90);
+        let mut existing = HostRolloutState::new_pending(
+            rid.clone(),
+            "h1".to_string(),
+            "stable".to_string(),
+            "target-closure-X".to_string(),
+            fixed_now() - chrono::Duration::minutes(2),
+            fixed_now() + chrono::Duration::minutes(5),
+        );
+        existing.state = HostState::Soaking;
+        existing.probe_failure_first_at = Some(failure_stamp);
+        existing.probe_observed_first_at = Some(failure_stamp);
+        existing.probes.insert(
+            "tcp-fail".to_string(),
+            probe_record(
+                nixfleet_state_machine::ProbeStatus::Fail,
+                nixfleet_state_machine::ProbeMode::Enforce,
+            ),
+        );
+
+        let snapshot =
+            make_snapshot(&rid, nixfleet_proto::HostRolloutState::Soaking, 12);
+        let record = merge_snapshot_into_state(Some(&existing), snapshot);
+
+        assert_eq!(record.state, HostState::Soaking, "canonical state still comes from snapshot");
+        assert_eq!(record.last_event_seq, 12, "last_event_seq still comes from snapshot");
+        assert_eq!(
+            record.probe_failure_first_at,
+            Some(failure_stamp),
+            "probe_failure_first_at MUST survive warm rehydration so sustained-failure timer can accumulate",
+        );
+        assert_eq!(
+            record.probe_observed_first_at,
+            Some(failure_stamp),
+            "probe_observed_first_at also preserved (agent-local, not in wire snapshot)",
+        );
+        assert!(
+            record.probes.contains_key("tcp-fail"),
+            "existing probe map preserved so probe scheduler doesn't lose mid-flight tracking",
+        );
+    }
+
+    #[test]
+    fn merge_snapshot_warm_rehydration_advances_state_but_preserves_probes() {
+        // Symmetric to the BT-04 case: when CP synthesises a state
+        // advance (e.g. LIFT #5 Pending → Soaking after wipe), the
+        // record's state must update to match CP's view AND probe
+        // state survives. Pinned so future drift can't trade one bug
+        // for the other.
+        let rid = nixfleet_proto::RolloutId::new("stable", "abc1234deadbeef");
+        let mut existing = HostRolloutState::new_pending(
+            rid.clone(),
+            "h1".to_string(),
+            "stable".to_string(),
+            "target-closure-X".to_string(),
+            fixed_now(),
+            fixed_now() + chrono::Duration::minutes(5),
+        );
+        existing.state = HostState::Pending;
+        existing.probe_failure_first_at = Some(fixed_now() - chrono::Duration::seconds(30));
+
+        let snapshot =
+            make_snapshot(&rid, nixfleet_proto::HostRolloutState::Soaking, 5);
+        let record = merge_snapshot_into_state(Some(&existing), snapshot);
+
+        assert_eq!(record.state, HostState::Soaking);
+        assert_eq!(
+            record.probe_failure_first_at,
+            existing.probe_failure_first_at,
+            "probe timer survives state advance",
+        );
     }
 }
