@@ -72,7 +72,7 @@ pub(super) async fn run(
 }
 
 /// Reducer-task-private state. The DB-backed CP-mirror lives in
-/// `host_rollout_records` (Phase 4); this struct holds only the data the
+/// `host_rollout_records`; this struct holds only the data the
 /// reducer can't or shouldn't go back to SQLite for on every input.
 struct ReducerState {
     manifests: Option<SignedManifestSet>,
@@ -328,11 +328,11 @@ async fn handle_heartbeat(
     // continues. Recovery.rs:45-51 documented this design intent ("CP
     // synthesises an ActivationCompleted-shaped Replay-From event").
     //
-    // Synthesis runs BEFORE bootstrap + reply (LIFT #3 ordering): the
-    // bootstrap reflects post-synthesis state (e.g. Soaking, not
-    // Activating). The reducer is single-threaded so the read-modify-
-    // read is race-free; synthesis is in-process and well under the
-    // route's REDUCER_REPLY_TIMEOUT.
+    // Synthesis runs BEFORE bootstrap + reply: the bootstrap reflects
+    // post-synthesis state (e.g. Soaking, not Activating). The reducer
+    // is single-threaded so the read-modify-read is race-free;
+    // synthesis is in-process and well under the route's
+    // REDUCER_REPLY_TIMEOUT.
     if let Some(agent_current) = current_closure.as_deref() {
         maybe_synthesize_recovery_completion(
             state,
@@ -353,14 +353,14 @@ async fn handle_heartbeat(
         current_closure.as_deref(),
     );
 
-    // LIFT #3: when the agent's heartbeat carried no rollout_id (the
-    // boot-recovery shape — agent's reducer is empty post-restart), but
-    // CP holds non-terminal records for the host, build a bootstrap
-    // snapshot per record. The agent's runtime applies each snapshot to
-    // its in-memory HostRolloutState before workers spawn, restoring
-    // the cache so probe runners + advance-ticker resume work
-    // post-restart. Steady-state heartbeats (rollout_id populated)
-    // skip this — the agent's reducer already knows.
+    // When the agent's heartbeat carried no rollout_id (the
+    // boot-recovery shape — agent's reducer is empty post-restart),
+    // but CP holds non-terminal records for the host, build a
+    // bootstrap snapshot per record. The agent's runtime applies each
+    // snapshot to its in-memory HostRolloutState before workers spawn,
+    // restoring the cache so probe runners + advance-ticker resume
+    // work post-restart. Steady-state heartbeats (rollout_id
+    // populated) skip this — the agent's reducer already knows.
     let bootstrap_rollouts = if rollout_id.is_none() {
         build_bootstrap_for_host(state, host)
     } else {
@@ -373,11 +373,11 @@ async fn handle_heartbeat(
     });
 }
 
-/// LIFT #3: scan active records for `host` and produce a
-/// `HostRolloutSnapshot` per record. Called only on boot-recovery-shaped
-/// heartbeats (rollout_id=None). Order is deterministic by
-/// (rollout_id, hostname) PK in SQL; the agent applies them
-/// in arrival order.
+/// Scan active records for `host` and produce a
+/// `HostRolloutSnapshot` per record. Called only on
+/// boot-recovery-shaped heartbeats (rollout_id=None). Order is
+/// deterministic by (rollout_id, hostname) PK in SQL; the agent
+/// applies them in arrival order.
 fn build_bootstrap_for_host(
     state: &Arc<AppState>,
     host: &str,
@@ -435,34 +435,43 @@ fn host_rollout_state_to_snapshot(
 }
 
 /// Scan active host_rollout_records for `host`; for each record whose
-/// `target_closure` matches the agent's reported `current_closure`,
+/// observed closure on the wire identifies a missed transition,
 /// synthesize the event chain that advances the row to a state
-/// consistent with the agent's observation. Idempotent: if the state
-/// has already advanced (e.g. concurrent agent emit), the record won't
+/// consistent with the agent's reality. Idempotent: if the state has
+/// already advanced (e.g. concurrent agent emit), the record won't
 /// match and the synthesis is a no-op.
 ///
 /// LOADBEARING: this is the CP-side half of architecture.md §305
-/// acceptance gate 1 ("destroying the CP database and rebuilding from
-/// empty state results in full fleet visibility within one reconcile
-/// cycle, with zero operator intervention beyond restarting the
-/// service"). The agent's heartbeat carries `current_closure` (LIFT
-/// #5) on every tick; CP rebuilds soft-state HRR rows from those
-/// inputs.
+/// acceptance gate 1 ("destroying the CP database and rebuilding
+/// from empty state results in full fleet visibility within one
+/// reconcile cycle, with zero operator intervention beyond restarting
+/// the service"). The agent's heartbeat carries `current_closure` on
+/// every tick; CP rebuilds soft-state HRR rows from those inputs.
 ///
-/// Three reachable starting states:
-///   - `Activating` — LIFT #1: agent restarted mid-rollout, boot
-///     observed `current == target`. Synthesise `RemoteActivationCompleted`.
-///   - `Deferred`   — Option C: operator rebooted to finish a
-///     critical-component activation. Same synthesis.
-///   - `Pending`    — LIFT #5: CP itself was wiped, planner re-opened
-///     the rollout in `Pending`, but the agent has been running the
-///     target closure all along. Synthesise the full
-///     `RemoteDispatchAck → RemoteActivationCompleted → RemoteConverged`
-///     chain. `RemoteConverged`'s soak-elapsed invariant is satisfied
-///     by stamping `converged_at = max(at, record.soak_due_at)` — the
-///     soak window's purpose (give probes time to fail) was exercised
-///     pre-wipe, so the post-wipe row's freshly-stamped `soak_due_at`
-///     does not gate convergence.
+/// Four reachable recovery cases:
+///   - `Activating` + `current == target`: agent restarted
+///     mid-rollout, post-boot observed the activation took.
+///     Synthesise `RemoteActivationCompleted`.
+///   - `Deferred`   + `current == target`: operator rebooted to
+///     finish a critical-component activation. Same synthesis.
+///   - `Pending`    + `current == target`: CP itself was wiped, the
+///     planner re-opened the rollout in `Pending`, but the agent has
+///     been running the target closure all along. Synthesise the
+///     full `RemoteDispatchAck → RemoteActivationCompleted →
+///     RemoteConverged` chain. `RemoteConverged`'s soak-elapsed
+///     invariant is satisfied by stamping `converged_at = max(at,
+///     record.soak_due_at)` — the soak window's purpose (give probes
+///     time to fail) was exercised pre-wipe. Gated by
+///     `evaluate_synth_gates` so a fleet bump that opens a Pending
+///     row for a host whose closure already matches doesn't bypass
+///     channel-edges or wave-promotion ordering.
+///   - `Failed`     + `current == current_closure_at_dispatch`: the
+///     rollback's switch-to-configuration restarted the agent
+///     mid-VerifyPoll, dropping `LocalRollbackCompleted`. Synthesise
+///     `RemoteRollbackComplete` on the heartbeat that observes the
+///     rolled-back closure; the canonical `Failed` reducer arm
+///     (`failed.rs::RemoteRollbackComplete`) produces the quarantine
+///     + event_log + transition effects.
 async fn maybe_synthesize_recovery_completion(
     state: &Arc<AppState>,
     clock: &ClockHandle,
@@ -488,20 +497,19 @@ async fn maybe_synthesize_recovery_completion(
         }
     };
     for record in records {
-        if record.target_closure != agent_current {
-            continue;
-        }
         let rollout_id = record.rollout_id.clone();
         match record.state {
             nixfleet_state_machine::HostState::Activating
-            | nixfleet_state_machine::HostState::Deferred => {
+            | nixfleet_state_machine::HostState::Deferred
+                if record.target_closure == agent_current =>
+            {
                 tracing::info!(
                     target: "cp_reducer",
                     host,
                     rollout_id = %record.rollout_id,
                     target = %record.target_closure,
                     prior_state = ?record.state,
-                    "boot-recovery: synthesizing RemoteActivationCompleted (LIFT #1; RFC-0005 §9.5)",
+                    "post-restart recovery: synthesizing RemoteActivationCompleted (RFC-0005 §9.5)",
                 );
                 let synth_event = nixfleet_state_machine::Event::RemoteActivationCompleted {
                     observed_current_closure: agent_current.to_string(),
@@ -520,7 +528,9 @@ async fn maybe_synthesize_recovery_completion(
                 )
                 .await;
             }
-            nixfleet_state_machine::HostState::Pending => {
+            nixfleet_state_machine::HostState::Pending
+                if record.target_closure == agent_current =>
+            {
                 // LOADBEARING: consult the dispatch gates before
                 // synthesising the chain. The agent's heartbeat
                 // reporting `current_closure == target_closure`
@@ -566,6 +576,55 @@ async fn maybe_synthesize_recovery_completion(
                 )
                 .await;
             }
+            nixfleet_state_machine::HostState::Failed
+                if record.current_closure_at_dispatch.as_deref() == Some(agent_current) =>
+            {
+                // Agent rollback-ack is non-durable: the rollback's
+                // switch-to-configuration restarts the agent
+                // mid-VerifyPoll, SIGTERMing it before
+                // `LocalRollbackCompleted` can be emitted. The new
+                // agent PID comes up on the rolled-back closure with
+                // no memory of the pending event; the rollback
+                // completed operationally but CP keeps the HRR in
+                // `Failed` indefinitely. Detect this from the
+                // post-restart heartbeat (current_closure ==
+                // current_closure_at_dispatch, i.e. the closure the
+                // agent ran before the failed activation = the
+                // rollback target) and synthesise the missing
+                // `RemoteRollbackComplete`. The reducer's `Failed`
+                // arm in `failed.rs` produces the canonical effects:
+                // `RemoteInsertQuarantine` for the bad closure +
+                // `RemoteAppendEventLog` for the audit trail + the
+                // `Failed → Reverted` state transition.
+                //
+                // No gates apply: the agent's rollback decision was
+                // policy-driven from the signed manifest's
+                // `onHealthFailure`, not gate-driven, so there's
+                // nothing for CP to second-guess on synthesis.
+                tracing::info!(
+                    target: "cp_reducer",
+                    host,
+                    rollout_id = %record.rollout_id,
+                    reverted_to = %agent_current,
+                    "post-rollback-restart recovery: synthesizing RemoteRollbackComplete",
+                );
+                let synth_event = nixfleet_state_machine::Event::RemoteRollbackComplete {
+                    reverted_to_closure: agent_current.to_string(),
+                    exit_code: 0,
+                    completed_at: at,
+                    seq: record.last_event_seq + 1,
+                };
+                handle_host_event(
+                    state,
+                    clock,
+                    event_log_tx,
+                    rs,
+                    host,
+                    &rollout_id,
+                    synth_event,
+                )
+                .await;
+            }
             _ => continue,
         }
     }
@@ -603,7 +662,7 @@ fn evaluate_synth_gates(
     .map(|b| format!("{b:?}"))
 }
 
-/// LIFT #5: drive a `Pending` HRR row through the full lifecycle to
+/// Drive a `Pending` HRR row through the full lifecycle to
 /// `Converged` when the agent reports `current_closure == target`.
 /// The chain preserves the event-log audit trail (RFC-0004 §1):
 /// every transition emits its usual `RemoteAppendEventLog` effect
@@ -633,7 +692,7 @@ async fn synthesize_pending_to_converged(
         host,
         rollout_id = %rollout_id,
         target = %record.target_closure,
-        "post-wipe recovery: synthesizing Pending → Converged chain (LIFT #5; architecture.md §305)",
+        "post-wipe recovery: synthesizing Pending → Converged chain (architecture.md §305)",
     );
 
     // 1. Pending → Activating. `current_closure_at_dispatch` is the
@@ -809,7 +868,7 @@ async fn advance_current_waves(
         // what it can within the rollout step, so successor waves
         // should not stall waiting on it. Health verification (probes
         // + soak) still happens after operator reboot via
-        // LIFT #1's `handle_heartbeat` synthesis (Deferred → Soaking).
+        // `handle_heartbeat`'s recovery synthesis (Deferred → Soaking).
         let all_ordering_eligible = current_wave.hosts.iter().all(|host| {
             fleet_state
                 .host_states

@@ -637,3 +637,91 @@ fn local_probe_result_threads_sub_results_to_outbound_event() {
         "sub_results must thread from Event → Effect verbatim",
     );
 }
+
+/// A synthesised `RemoteRollbackComplete` from CP drives Failed →
+/// Reverted with the same state-machine effects a real agent-emitted
+/// `LocalRollbackCompleted` would have produced. This pins the
+/// reducer arm that CP's recovery-synthesis path
+/// (`maybe_synthesize_recovery_completion`) depends on when an
+/// agent-restart-during-rollback drops the wire ack: the rollback's
+/// switch-to-configuration restarts the agent mid-VerifyPoll, the
+/// new PID never re-emits the local ack, and CP would otherwise
+/// keep the HRR in `Failed` forever. The synth turns the post-restart
+/// heartbeat (current_closure == current_closure_at_dispatch) into
+/// the canonical Failed → Reverted transition with quarantine +
+/// event_log row.
+#[test]
+fn synthesised_remote_rollback_drives_failed_to_reverted() {
+    let p = policy_rollback();
+    let s = pending();
+    let (s, _) = step(
+        s,
+        Event::RemoteDispatchAck {
+            current_closure_at_dispatch: "prior-closure".into(),
+            received_at: t0() + Duration::seconds(1),
+            seq: 1,
+        },
+        t0() + Duration::seconds(1),
+        &p,
+    )
+    .unwrap();
+    let (s, _) = step(
+        s,
+        Event::RemoteActivationCompleted {
+            observed_current_closure: "target-closure-abc".into(),
+            exit_code: 0,
+            completed_at: t0() + Duration::seconds(5),
+            seq: 2,
+        },
+        t0() + Duration::seconds(5),
+        &p,
+    )
+    .unwrap();
+    let (s, _) = step(
+        s,
+        Event::RemoteFailed {
+            failed_at: t0() + Duration::seconds(125),
+            sustained_duration_secs: 60,
+            failing_probes: vec!["nginx-version".into()],
+            policy_applied: OnHealthFailure::RollbackAndHalt,
+            seq: 3,
+        },
+        t0() + Duration::seconds(125),
+        &p,
+    )
+    .unwrap();
+    assert_eq!(s.state, HostState::Failed);
+    assert_eq!(s.current_closure_at_dispatch.as_deref(), Some("prior-closure"));
+
+    // CP-side synth output: RemoteRollbackComplete with the rollback
+    // target (== current_closure_at_dispatch) as the reverted_to.
+    let (s, effects) = step(
+        s,
+        Event::RemoteRollbackComplete {
+            reverted_to_closure: "prior-closure".into(),
+            exit_code: 0,
+            completed_at: t0() + Duration::seconds(135),
+            seq: 4,
+        },
+        t0() + Duration::seconds(135),
+        &p,
+    )
+    .unwrap();
+    assert_eq!(s.state, HostState::Reverted);
+    assert_eq!(s.reverted_to.as_deref(), Some("prior-closure"));
+    assert_eq!(s.current_closure.as_deref(), Some("prior-closure"));
+
+    // The bad closure must be quarantined on the channel — same effect
+    // a real-ack-driven rollback would produce.
+    let quarantined = effects.iter().find_map(|e| match e {
+        Effect::RemoteInsertQuarantine { channel, closure } => {
+            Some((channel.clone(), closure.clone()))
+        }
+        _ => None,
+    });
+    assert_eq!(
+        quarantined,
+        Some(("stable".to_string(), "target-closure-abc".to_string())),
+        "Failed → Reverted via synth must still quarantine the bad closure",
+    );
+}
