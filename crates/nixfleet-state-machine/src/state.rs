@@ -102,6 +102,15 @@ pub struct ProbeSubResult {
     pub framework: String,
     /// Framework-specific control reference (e.g. "nis2:21(b)").
     pub article: Option<String>,
+    /// Per-control effective mode after applying the probe's
+    /// `controlOverrides` / `controls` map. The compliance_wave gate
+    /// counts only `Enforce`-mode sub_results; `Observe` is recorded
+    /// for visibility but does not gate. `Disabled` controls are
+    /// dropped from sub_results entirely at the agent runner.
+    /// `serde(default)` falls back to the probe-level mode for events
+    /// emitted by pre-override-aware agents.
+    #[serde(default)]
+    pub effective_mode: ProbeMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

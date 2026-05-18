@@ -310,6 +310,43 @@
           Per-framework mode. `null` inherits `compliance.mode`.
         '';
       };
+      controlOverrides = mkOption {
+        type = types.attrsOf (types.submodule {
+          options = {
+            mode = mkOption {
+              type = types.enum ["enforce" "observe" "disabled"];
+            };
+            reason = mkOption {
+              type = types.str;
+              default = "";
+            };
+          };
+        });
+        default = {};
+        description = ''
+          Per-control mode overrides scoped to this framework. Keys
+          are nixfleet-compliance control IDs (e.g.
+          `"access-control"`). Desugars to the same field on the
+          synthesised `evidence-<framework>` probe; the agent's
+          effective-mode resolution uses these overrides on top of
+          the per-framework `mode`.
+
+          Example:
+
+            compliance.frameworks = [
+              {
+                name = "nis2-essential";
+                mode = "enforce";
+                controlOverrides = {
+                  "agent-egress-exemption" = {
+                    mode = "observe";
+                    reason = "Phase-out window for legacy egress policy";
+                  };
+                };
+              }
+            ];
+        '';
+      };
     };
   };
 
@@ -495,10 +532,99 @@
       framework = mkOption {
         type = types.nullOr types.str;
         default = null;
+        description = ''
+          Framework name (e.g. `"nis2-essential"`). The agent
+          evaluates every control covering this framework per the
+          collector's evidence.json. Mutually exclusive with
+          `controls` — declare one or the other.
+        '';
       };
       evidencePath = mkOption {
         type = types.str;
         default = "/var/lib/nixfleet-compliance/evidence.json";
+      };
+      # Per-control mode overrides on top of probe-level `mode`. Keys
+      # are nixfleet-compliance control IDs (capability-named, e.g.
+      # `"access-control"`, `"secure-boot"`). Values are a richer
+      # attrset:
+      #
+      #   controlOverrides = {
+      #     "access-control" = { mode = "observe"; reason = "..."; };
+      #   };
+      #
+      # The agent's evidence runner resolves effective_mode per
+      # control: override > probe-level mode. A control with
+      # effective_mode = "observe" contributes to sub_results but
+      # does not gate the wave; "disabled" controls are dropped from
+      # sub_results entirely. The `reason` is operator-facing audit
+      # rationale (surfaced in event_log + dashboards).
+      controlOverrides = mkOption {
+        type = types.attrsOf (types.submodule {
+          options = {
+            mode = mkOption {
+              type = types.enum ["enforce" "observe" "disabled"];
+              description = ''
+                Effective mode for this control. Overrides the
+                probe-level `mode`. See controlOverrides docstring
+                on the parent for semantics.
+              '';
+            };
+            reason = mkOption {
+              type = types.str;
+              default = "";
+              description = ''
+                Operator-facing audit rationale. Surfaced in event_log
+                + compliance dashboards. Recommended; empty string is
+                accepted but discouraged for `disabled`/`observe`
+                overrides since auditors expect a documented
+                exemption rationale.
+              '';
+            };
+          };
+        });
+        default = {};
+        description = ''
+          Per-control mode overrides for evidence probes. Keys are
+          control IDs (e.g. `"access-control"`), values are
+          `{ mode; reason; }` attrsets. See the inline comment for
+          full semantics; the agent's per-control mode resolution
+          uses these.
+        '';
+      };
+      # Explicit per-control selection. Operators compose a custom
+      # framework by listing the controls + per-control modes. The
+      # native framework field on each control (from the collector's
+      # frameworkArticles map) stays on the wire for auditor
+      # visibility; this declaration just picks which controls to
+      # gate on. Mutually exclusive with `framework`.
+      #
+      #   controls = {
+      #     "access-control"      = { mode = "enforce"; };
+      #     "secure-boot"         = { mode = "enforce"; reason = "..."; };
+      #     "agent-egress-exemption" = { mode = "observe"; };
+      #   };
+      controls = mkOption {
+        type = types.attrsOf (types.submodule {
+          options = {
+            mode = mkOption {
+              type = types.enum ["enforce" "observe" "disabled"];
+              default = "enforce";
+            };
+            reason = mkOption {
+              type = types.str;
+              default = "";
+            };
+          };
+        });
+        default = {};
+        description = ''
+          Explicit control list with per-control modes (custom-
+          framework declaration). Each key is a control ID; each
+          value is `{ mode; reason; }`. The agent gates on this set
+          regardless of the controls' native framework affiliations.
+          Mutually exclusive with `framework`; eval rejects probes
+          that set both.
+        '';
       };
     };
   };
@@ -680,6 +806,7 @@
     then {
       name = entry;
       mode = defaultMode;
+      controlOverrides = {};
     }
     else {
       inherit (entry) name;
@@ -687,6 +814,7 @@
         if entry.mode == null
         then defaultMode
         else entry.mode;
+      controlOverrides = entry.controlOverrides or {};
     };
 
   channelEffectiveHealthChecks = cfg: channelName: let
@@ -699,6 +827,8 @@
           kind = "evidence";
           mode = fw.mode;
           framework = fw.name;
+          inherit (fw) controlOverrides;
+          controls = {};
           evidencePath = "/var/lib/nixfleet-compliance/evidence.json";
           intervalSeconds = 30;
           runOnce = false;
@@ -874,14 +1004,29 @@
           httpMissingUrl = p.kind == "http" && p.url == null;
           tcpMissingPort = p.kind == "tcp" && p.port == null;
           execMissingCommand = p.kind == "exec" && p.command == [];
-          evidenceMissingFramework = p.kind == "evidence" && p.framework == null;
+          # Evidence probes select controls one of two ways:
+          #   (a) `framework = "<name>"` — agent evaluates every
+          #       control whose frameworkArticles map contains the
+          #       framework. Optional `controlOverrides` map applies
+          #       per-control mode tweaks on top of `mode`.
+          #   (b) `controls = { ... }` — explicit custom-framework
+          #       declaration, one entry per control with mode.
+          # Exactly one must be set.
+          hasFramework = p.framework != null;
+          hasControls = (p.controls or {}) != {};
+          evidenceNeitherSet = p.kind == "evidence" && !hasFramework && !hasControls;
+          evidenceBothSet = p.kind == "evidence" && hasFramework && hasControls;
+          overridesWithoutFramework =
+            p.kind == "evidence" && !hasFramework && (p.controlOverrides or {}) != {};
         in
           lib.optional intervalZero "probe ${site.scope}: intervalSeconds = 0 is ambiguous; use runOnce = true for one-shot semantics"
           ++ lib.optional runOnceConflict "probe ${site.scope}: runOnce = true conflicts with non-default intervalSeconds"
           ++ lib.optional httpMissingUrl "probe ${site.scope}: kind=http requires url"
           ++ lib.optional tcpMissingPort "probe ${site.scope}: kind=tcp requires port"
           ++ lib.optional execMissingCommand "probe ${site.scope}: kind=exec requires non-empty command"
-          ++ lib.optional evidenceMissingFramework "probe ${site.scope}: kind=evidence requires framework"
+          ++ lib.optional evidenceNeitherSet "probe ${site.scope}: kind=evidence requires either framework or controls"
+          ++ lib.optional evidenceBothSet "probe ${site.scope}: kind=evidence accepts framework XOR controls, not both"
+          ++ lib.optional overridesWithoutFramework "probe ${site.scope}: controlOverrides only applies with framework set; use controls for explicit per-control declaration"
       )
       probeDeclSites;
 

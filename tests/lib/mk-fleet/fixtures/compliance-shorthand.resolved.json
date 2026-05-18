@@ -31,7 +31,9 @@
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": null
+        "url": null,
+        "controlOverrides": {},
+        "controls": {}
       },
       "evidence-iso27001": {
         "command": [],
@@ -46,7 +48,9 @@
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": null
+        "url": null,
+        "controlOverrides": {},
+        "controls": {}
       }
     },
     "h-stable": {
@@ -63,7 +67,9 @@
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": null
+        "url": null,
+        "controlOverrides": {},
+        "controls": {}
       },
       "evidence-nis2": {
         "command": [],
@@ -78,7 +84,9 @@
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": null
+        "url": null,
+        "controlOverrides": {},
+        "controls": {}
       }
     }
   },

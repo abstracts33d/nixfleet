@@ -8,8 +8,10 @@
 //! emit events; the probe worker handles event emission + state
 //! tracking. Each runner is `Send + 'static` so it can be `tokio::spawn`'d.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
-use nixfleet_state_machine::{ProbeStatus, ProbeSubResult};
+use nixfleet_state_machine::{ProbeMode, ProbeStatus, ProbeSubResult};
 use serde::{Deserialize, Serialize};
 
 pub mod evidence;
@@ -80,6 +82,38 @@ pub struct ProbeDecl {
     pub framework: Option<String>,
     #[serde(default = "default_evidence_path")]
     pub evidence_path: String,
+    /// Per-control mode overrides on top of `mode`, scoped to the
+    /// framework declared in `framework`. Resolved per-control at
+    /// runtime: override > probe-level mode.
+    #[serde(default)]
+    pub control_overrides: HashMap<String, ControlOverrideDecl>,
+    /// Explicit per-control selection (custom-framework declaration).
+    /// Mutually exclusive with `framework`; eval-time validation in
+    /// `lib/mk-fleet.nix` rejects probes that set both.
+    #[serde(default)]
+    pub controls: HashMap<String, ControlOverrideDecl>,
+}
+
+/// Single entry in `controlOverrides` / `controls` (RFC-0010 §3.4
+/// per-control granularity). `mode` is the effective mode for the
+/// control; `reason` is operator-facing audit rationale, surfaced in
+/// event_log + dashboards.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlOverrideDecl {
+    pub mode: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl ControlOverrideDecl {
+    pub fn resolved_mode(&self) -> ProbeMode {
+        match self.mode.as_str() {
+            "observe" => ProbeMode::Observe,
+            "disabled" => ProbeMode::Disabled,
+            _ => ProbeMode::Enforce,
+        }
+    }
 }
 
 fn default_interval_seconds() -> u64 {

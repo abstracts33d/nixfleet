@@ -471,14 +471,33 @@ pub async fn apply_effect(ctx: &ApplierCtx<'_>, effect: Effect) {
                 sub_results,
                 ..
             } = &payload
-                && matches!(mode, nixfleet_state_machine::ProbeMode::Enforce)
-                && matches!(status, nixfleet_state_machine::ProbeStatus::Fail)
                 && let Some(db) = ctx.state.db.as_ref()
             {
+                // Per-control gate (RFC-0010 §3.4 + §7.2): each
+                // sub_result carries its own `effective_mode` resolved
+                // by the agent's probe runner against the probe's
+                // `controlOverrides` / `controls` declaration. Only
+                // `Enforce`-mode failures land in `probe_failures`;
+                // `Observe`-mode failures stay in `event_log` for
+                // visibility but do not gate. `Disabled` controls
+                // are dropped at the agent before emission so they
+                // never reach here.
+                //
+                // For non-evidence probes (HTTP / TCP / exec — no
+                // sub_results) the probe-level `mode` is the
+                // effective mode. The existing pre-LIFT behaviour
+                // (probe-level Enforce + Fail → one row with
+                // control_id = NULL) holds.
                 let rows: Vec<probe_failures::ProbeFailureInsert<'_>> = match sub_results {
                     Some(srs) if !srs.is_empty() => srs
                         .iter()
-                        .filter(|sr| matches!(sr.status, nixfleet_state_machine::ProbeStatus::Fail))
+                        .filter(|sr| {
+                            matches!(sr.status, nixfleet_state_machine::ProbeStatus::Fail)
+                                && matches!(
+                                    sr.effective_mode,
+                                    nixfleet_state_machine::ProbeMode::Enforce
+                                )
+                        })
                         .map(|sr| probe_failures::ProbeFailureInsert {
                             rollout_id: rollout_id.as_str(),
                             host_id: &host,
@@ -488,14 +507,22 @@ pub async fn apply_effect(ctx: &ApplierCtx<'_>, effect: Effect) {
                             observed_at: *observed_at,
                         })
                         .collect(),
-                    _ => vec![probe_failures::ProbeFailureInsert {
-                        rollout_id: rollout_id.as_str(),
-                        host_id: &host,
-                        probe_name,
-                        control_id: None,
-                        framework: None,
-                        observed_at: *observed_at,
-                    }],
+                    _ => {
+                        if matches!(mode, nixfleet_state_machine::ProbeMode::Enforce)
+                            && matches!(status, nixfleet_state_machine::ProbeStatus::Fail)
+                        {
+                            vec![probe_failures::ProbeFailureInsert {
+                                rollout_id: rollout_id.as_str(),
+                                host_id: &host,
+                                probe_name,
+                                control_id: None,
+                                framework: None,
+                                observed_at: *observed_at,
+                            }]
+                        } else {
+                            Vec::new()
+                        }
+                    }
                 };
                 if !rows.is_empty()
                     && let Err(err) = db.probe_failures().insert_many(&rows)

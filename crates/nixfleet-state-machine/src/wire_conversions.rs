@@ -84,6 +84,7 @@ impl From<ProbeSubResultWire> for ProbeSubResult {
             status: w.status.into(),
             framework: w.framework,
             article: w.article,
+            effective_mode: w.effective_mode.into(),
         }
     }
 }
@@ -95,6 +96,7 @@ impl From<ProbeSubResult> for ProbeSubResultWire {
             status: s.status.into(),
             framework: s.framework,
             article: s.article,
+            effective_mode: s.effective_mode.into(),
         }
     }
 }

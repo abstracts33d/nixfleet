@@ -30,7 +30,9 @@
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": null
+        "url": null,
+        "controlOverrides": {},
+        "controls": {}
       },
       "heartbeat": {
         "command": [],
@@ -45,7 +47,9 @@
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": "http://localhost/health"
+        "url": "http://localhost/health",
+        "controlOverrides": {},
+        "controls": {}
       }
     },
     "h-web": {
@@ -66,7 +70,9 @@
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": null
+        "url": null,
+        "controlOverrides": {},
+        "controls": {}
       },
       "heartbeat": {
         "command": [],
@@ -81,7 +87,9 @@
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": "http://localhost/health"
+        "url": "http://localhost/health",
+        "controlOverrides": {},
+        "controls": {}
       },
       "nginx-version": {
         "command": [],
@@ -96,7 +104,9 @@
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": "http://localhost/version"
+        "url": "http://localhost/version",
+        "controlOverrides": {},
+        "controls": {}
       }
     }
   },

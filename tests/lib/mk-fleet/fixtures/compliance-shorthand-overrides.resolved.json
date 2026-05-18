@@ -11,35 +11,59 @@
   "disruptionBudgets": [],
   "edges": [],
   "effectiveHealthChecks": {
-    "h-web": {
-      "heartbeat": {
+    "h-stable": {
+      "evidence-anssi-bp028": {
         "command": [],
         "connectTimeoutSecs": 5,
+        "controlOverrides": {},
+        "controls": {},
         "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
         "expectStatus": 200,
-        "framework": null,
+        "framework": "anssi-bp028",
         "host": null,
-        "intervalSeconds": 15,
-        "kind": "http",
+        "intervalSeconds": 30,
+        "kind": "evidence",
         "mode": "enforce",
         "port": null,
         "runOnce": false,
         "timeoutSecs": 10,
-        "url": "http://localhost/health-from-channel",
-        "controlOverrides": {},
-        "controls": {}
+        "url": null
+      },
+      "evidence-nis2-essential": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "controlOverrides": {
+          "agent-egress-exemption": {
+            "mode": "observe",
+            "reason": "Phase-out window for legacy egress policy"
+          },
+          "synthetic": {
+            "mode": "disabled",
+            "reason": ""
+          }
+        },
+        "controls": {},
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "nis2-essential",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
       }
     }
   },
   "hosts": {
-    "h-web": {
+    "h-stable": {
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
       "system": "x86_64-linux",
-      "tags": [
-        "web"
-      ]
+      "tags": []
     }
   },
   "meta": {
@@ -73,7 +97,7 @@
     "stable": [
       {
         "hosts": [
-          "h-web"
+          "h-stable"
         ],
         "soakMinutes": 0
       }

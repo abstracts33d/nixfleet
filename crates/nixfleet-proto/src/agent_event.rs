@@ -163,9 +163,10 @@ pub enum ProbeStatusWire {
     Fail,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProbeModeWire {
+    #[default]
     Enforce,
     Observe,
     Disabled,
@@ -212,6 +213,14 @@ pub struct ProbeSubResultWire {
     pub framework: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub article: Option<String>,
+    /// Per-control effective mode resolved from the probe's
+    /// `controlOverrides` / `controls` declaration. The CP applier
+    /// inserts `probe_failures` rows only for `Enforce`-mode failures;
+    /// `Observe` rows are recorded in `event_log` for visibility but
+    /// do not gate the compliance_wave. `Disabled` controls are
+    /// filtered out by the agent before emission.
+    #[serde(default)]
+    pub effective_mode: ProbeModeWire,
 }
 
 #[cfg(test)]
@@ -330,6 +339,7 @@ mod tests {
                 status: ProbeStatusWire::Fail,
                 framework: "nis2".into(),
                 article: Some("21.2.h".into()),
+                effective_mode: ProbeModeWire::Enforce,
             }]),
             seq: 7,
         }));
