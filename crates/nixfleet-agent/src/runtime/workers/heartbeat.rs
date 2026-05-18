@@ -33,7 +33,7 @@ const ERROR_BACKOFF: Duration = Duration::from_secs(5);
 pub fn spawn(
     cfg: AgentConfig,
     clock: ClockHandle,
-    _input_tx: mpsc::Sender<ReducerInput>,
+    input_tx: mpsc::Sender<ReducerInput>,
     shutdown: ShutdownToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -72,7 +72,7 @@ pub fn spawn(
                     return;
                 }
                 _ = ticker.tick() => {
-                    if let Err(err) = heartbeat_once(&client, &url, &cfg, &clock).await {
+                    if let Err(err) = heartbeat_once(&client, &url, &cfg, &clock, &input_tx).await {
                         tracing::warn!(
                             target: "agent_heartbeat",
                             error = %err,
@@ -91,6 +91,7 @@ async fn heartbeat_once(
     url: &str,
     cfg: &AgentConfig,
     clock: &ClockHandle,
+    input_tx: &mpsc::Sender<ReducerInput>,
 ) -> anyhow::Result<()> {
     // For 7c the heartbeat carries the agent's identity + current
     // wallclock; the `current_closure` + `rollout_id` payload that the
@@ -122,7 +123,7 @@ async fn heartbeat_once(
     if !status.is_success() {
         anyhow::bail!("CP returned {status}");
     }
-    let _body: HeartbeatResponse = resp.json().await?;
+    let body: HeartbeatResponse = resp.json().await?;
 
     if let Some(seq) = replay_from {
         // v0.2 deferred: walk-and-replay from durable queue. Logged so
@@ -133,6 +134,36 @@ async fn heartbeat_once(
             replay_from = seq,
             "CP signaled Replay-From (walk-and-replay deferred for v0.2)",
         );
+    }
+
+    // LIFT #4: forward CP-supplied bootstrap snapshots into the reducer.
+    // CP fills `bootstrap_rollouts` on every heartbeat where the agent
+    // posted `rollout_id=None` (see CP reducer build_bootstrap_for_host).
+    // The steady-state heartbeat currently posts None unconditionally,
+    // so this path catches the case where the agent's in-memory cache
+    // got out of sync with CP between boot-recovery and now (e.g.
+    // LIFT #1 heartbeat synthesis completed post-recovery on CP). The
+    // reducer routes the resulting LocalResetProbeCache effects so
+    // probe runners re-spawn against the bootstrapped rollout_id
+    // instead of holding tickers from a prior agent process.
+    if !body.bootstrap_rollouts.is_empty() {
+        tracing::info!(
+            target: "agent_heartbeat",
+            count = body.bootstrap_rollouts.len(),
+            "heartbeat: CP returned bootstrap snapshots; forwarding to reducer",
+        );
+        for snapshot in body.bootstrap_rollouts {
+            if let Err(err) = input_tx
+                .send(ReducerInput::BootstrapHost(Box::new(snapshot)))
+                .await
+            {
+                tracing::warn!(
+                    target: "agent_heartbeat",
+                    error = %err,
+                    "bootstrap-snapshot forward failed (reducer not ready?); skipping",
+                );
+            }
+        }
     }
     Ok(())
 }

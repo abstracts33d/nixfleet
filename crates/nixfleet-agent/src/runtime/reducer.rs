@@ -128,20 +128,32 @@ async fn handle_input(
             );
         }
         ReducerInput::BootstrapHost(snapshot) => {
-            apply_bootstrap_snapshot(host_states, *snapshot).await;
+            apply_bootstrap_snapshot(host_states, ctx, *snapshot).await;
         }
     }
 }
 
-/// LIFT #3: apply a CP-supplied HostRolloutSnapshot to the agent's
-/// in-memory reducer cache. Direct assignment (snapshot-shape, not
-/// event-replay) — the canonical state lives on CP, the agent's
-/// HostRolloutState is a reconstructable cache. Called only from
-/// `runtime::spawn` after boot-recovery handshake returns snapshots,
-/// before workers spawn so probe runners + advance-ticker see populated
-/// state on first tick.
+/// LIFT #3 + LIFT #4: apply a CP-supplied HostRolloutSnapshot to the
+/// agent's in-memory reducer cache, then emit the worker re-priming
+/// effects the rehydrated state demands.
+///
+/// Direct assignment (snapshot-shape, not event-replay) — the canonical
+/// state lives on CP, the agent's HostRolloutState is a reconstructable
+/// cache. Called from two entry points: the boot-recovery handshake
+/// before workers spawn (`recovery.rs`), and the steady-state heartbeat
+/// worker after CP signals a fresh snapshot (`workers/heartbeat.rs`).
+/// Both paths share this function so worker re-priming is consistent.
+///
+/// LOADBEARING: every non-Pending rehydration emits effects via
+/// `nixfleet_state_machine::rehydration_effects` and routes them through
+/// `apply_effect` — the same channel workers consume during ordinary
+/// transitions. Without this, probe runners (and any future worker that
+/// caches per-rollout state) keep tickers tagged with stale rollout_ids
+/// from a prior process incarnation; the reducer rejects the resulting
+/// events with `LocalProbeResult not legal from state Converged`.
 async fn apply_bootstrap_snapshot(
     host_states: &mut HashMap<nixfleet_proto::RolloutId, HostRolloutState>,
+    ctx: &ApplierCtx<'_>,
     snapshot: nixfleet_proto::agent_wire::HostRolloutSnapshot,
 ) {
     use nixfleet_proto::HostRolloutState as WireState;
@@ -176,9 +188,10 @@ async fn apply_bootstrap_snapshot(
         failed_at: None,
         policy_applied: None,
         reverted_at: None,
-        // Probe state is NOT carried by the snapshot — probe runners
-        // re-emit `LocalProbeTopologyDeclared` from health-checks.json
-        // on startup and probes repopulate via fresh runs.
+        // Probe state is NOT carried by the snapshot — the
+        // LocalResetProbeCache effect emitted below tells the probe
+        // worker to re-read health-checks.json and respawn tickers
+        // tagged with this snapshot's rollout_id.
         probes: HashMap::new(),
         last_event_seq: snapshot.last_event_seq,
     };
@@ -189,7 +202,11 @@ async fn apply_bootstrap_snapshot(
         target_closure = %record.target_closure,
         "bootstrap: rehydrating in-memory HostRolloutState from CP snapshot (LIFT #3)",
     );
+    let effects = nixfleet_state_machine::rehydration_effects(&record);
     host_states.insert(snapshot.rollout_id, record);
+    for effect in effects {
+        apply_effect(ctx, effect).await;
+    }
 }
 
 async fn run_host_event(

@@ -32,6 +32,7 @@
 mod effect;
 mod error;
 mod event;
+mod rehydration;
 mod state;
 mod transitions;
 mod wire_conversions;
@@ -41,6 +42,7 @@ pub mod rollout;
 pub use effect::{Effect, LogLevel, OutboundAgentEvent};
 pub use error::TransitionError;
 pub use event::{Event, ProbeTopologyEntry};
+pub use rehydration::rehydration_effects;
 pub use state::{
     ClosureHash, HostRolloutState, HostState, ProbeMode, ProbeName, ProbeRecord, ProbeStatus,
     ProbeSubResult, RolloutId,

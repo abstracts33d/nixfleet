@@ -38,7 +38,7 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
-use nixfleet_agent::runtime::workers::longpoll;
+use nixfleet_agent::runtime::workers::{heartbeat, longpoll};
 use nixfleet_agent::runtime::{AgentConfig, ReducerInput};
 use nixfleet_proto::clock::{ClockHandle, SystemClock};
 
@@ -333,5 +333,112 @@ async fn boot_recovery_handshake_presents_mtls_cert() {
         .expect("handler did not signal request arrival")
         .unwrap();
 
+    server_handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn heartbeat_worker_forwards_bootstrap_rollouts_to_reducer() {
+    // LIFT #4 regression guard. When CP fills `bootstrap_rollouts` on
+    // a steady-state heartbeat response (every heartbeat where the
+    // agent posted `rollout_id=None`), the worker MUST forward each
+    // snapshot onto the reducer input channel via
+    // `ReducerInput::BootstrapHost`. A worker that only inspects the
+    // Replay-From header and discards the response body leaves the
+    // agent stuck whenever LIFT #1's heartbeat synthesis lands
+    // post-recovery on the CP side.
+    install_crypto_provider_once();
+    let dir = tempfile::tempdir().unwrap();
+    let certs = mint_certs();
+
+    let server_config = build_mtls_server_config(&certs);
+    let rustls_config = RustlsConfig::from_config(Arc::new(server_config));
+
+    let now = chrono::Utc::now();
+    let snapshot = nixfleet_proto::agent_wire::HostRolloutSnapshot {
+        rollout_id: nixfleet_proto::RolloutId::new("stable", "deadbeef"),
+        hostname: "lift4-agent".to_string(),
+        channel: "stable".to_string(),
+        state: nixfleet_proto::HostRolloutState::Soaking,
+        target_closure: "target-closure-hash".to_string(),
+        current_closure_at_dispatch: Some("prev-closure".to_string()),
+        current_closure: Some("target-closure-hash".to_string()),
+        dispatched_at: now,
+        dispatch_acked_at: Some(now),
+        activation_started_at: Some(now),
+        activation_completed_at: Some(now),
+        soak_due_at: Some(now + chrono::Duration::minutes(5)),
+        last_event_seq: 7,
+    };
+
+    let response_body = serde_json::json!({
+        "received_at": now.to_rfc3339(),
+        "bootstrap_rollouts": [snapshot],
+    });
+
+    let app = Router::new().route(
+        "/v1/agent/heartbeat",
+        axum::routing::post(move || {
+            let body = response_body.clone();
+            async move { (StatusCode::OK, axum::Json(body)) }
+        }),
+    );
+
+    let port = pick_free_port().await;
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let server_handle = tokio::spawn(async move {
+        let _ = axum_server::bind_rustls(addr, rustls_config)
+            .serve(app.into_make_service())
+            .await;
+    });
+
+    wait_for_listener(port).await;
+
+    let ca_path = write_pem(&dir, "ca.pem", &certs.ca_pem);
+    let cert_path = write_pem(&dir, "agent.pem", &certs.client_cert_pem);
+    let key_path = write_pem(&dir, "agent.key", &certs.client_key_pem);
+
+    let cfg = AgentConfig {
+        control_plane_url: format!("https://localhost:{port}"),
+        machine_id: "lift4-agent".to_string(),
+        state_dir: dir.path().to_path_buf(),
+        trust_file: dir.path().join("trust.json"),
+        manifest_freshness_window_secs: 3600,
+        ca_cert: Some(ca_path),
+        client_cert: Some(cert_path),
+        client_key: Some(key_path),
+    };
+
+    let (input_tx, mut input_rx) = mpsc::channel::<ReducerInput>(8);
+    let (shutdown, shutdown_tx) = make_shutdown_token();
+    let clock: ClockHandle = Arc::new(SystemClock::new());
+
+    let worker_handle = heartbeat::spawn(cfg, clock, input_tx, shutdown);
+
+    // First heartbeat tick fires immediately on interval start. Snapshot
+    // must round-trip to the reducer input channel within 5s; longer
+    // means the worker silently dropped it.
+    let input = tokio::time::timeout(Duration::from_secs(5), input_rx.recv())
+        .await
+        .expect(
+            "heartbeat worker did not forward bootstrap snapshot within 5s — \
+             LIFT #4 regressed: workers/heartbeat.rs is discarding \
+             body.bootstrap_rollouts instead of sending ReducerInput::BootstrapHost",
+        )
+        .expect("input channel closed unexpectedly");
+
+    match input {
+        ReducerInput::BootstrapHost(forwarded) => {
+            assert_eq!(forwarded.rollout_id.as_str(), "stable@deadbeef");
+            assert_eq!(forwarded.hostname, "lift4-agent");
+            assert_eq!(forwarded.last_event_seq, 7);
+        }
+        _ => panic!(
+            "expected ReducerInput::BootstrapHost — \
+             heartbeat worker forwarded the wrong input variant",
+        ),
+    }
+
+    drop(shutdown_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
     server_handle.abort();
 }
