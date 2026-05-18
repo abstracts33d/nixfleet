@@ -283,13 +283,12 @@ async fn fetch_and_verify_channel_manifest(
 }
 
 /// CP-side storage invariant: a signed rollout manifest may only be stored
-/// under the canonical RolloutId it claims via its own `(channel,
-/// channel_ref)` fields. Catches the bytes-vs-url-claim substitution that
-/// the old content-address check used to catch syntactically (under
-/// `rollout_id = sha256(bytes)`); under the semantic identifier (RFC-0012
-/// §6.3 `{channel}@{channel_ref}`), the equivalent check is parsed-id
-/// equality. Mandated by the `verify_rollout_manifest` docstring; mirrors
-/// the agent's `assert_rollout_id_matches` on the consumer side.
+/// under the canonical RolloutId (RFC-0012 §6.3 `{channel}@{channel_ref}`)
+/// it claims via its own `(channel, channel_ref)` fields. Defends against a
+/// bytes-vs-url-claim substitution where the CP receives a manifest for
+/// channel B while the request is for channel A's rollout id. Mandated by
+/// the `verify_rollout_manifest` docstring; mirrors the agent's
+/// `assert_rollout_id_matches` on the consumer side.
 fn check_rollout_id_discriminator(
     manifest_channel: &str,
     manifest_channel_ref: &str,

@@ -1154,7 +1154,9 @@ async fn plan_next_distinguishes_rollouts_when_two_channels_share_channel_ref() 
         .await;
     }
 
-    // Distinct `rollouts` rows — content-addressed identity (D-007).
+    // Distinct `rollouts` rows under the canonical `channel@channel_ref`
+    // identity (RFC-0012 §6.3): two channels sharing a channel_ref still
+    // map to disjoint rollout_id values, so each gets its own row.
     let stable_row = db
         .rollouts()
         .state(stable_rid.as_str())

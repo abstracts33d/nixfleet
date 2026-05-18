@@ -115,8 +115,10 @@ mod tests {
         }
     }
 
-    /// LOADBEARING: rolloutId = sha256(canonical(m)) depends on canonical-byte
-    /// stability across round-trips.
+    /// LOADBEARING: every signed-manifest verification recomputes the canonical
+    /// bytes from the parsed struct and re-checks the signature. A round-trip
+    /// that mutates byte order or representation would break signature
+    /// verification across every agent in the fleet.
     #[test]
     fn manifest_canonical_bytes_stable_across_round_trip() {
         let m = sample_manifest();

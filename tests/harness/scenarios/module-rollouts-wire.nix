@@ -7,7 +7,7 @@
   testCerts,
   ...
 }: let
-  # GOTCHA: CP serves <rolloutId>.json{,.sig}; rolloutId is sha256 of canonical bytes, only known at build time.
+  # GOTCHA: CP serves <rolloutId>.json{,.sig}; rolloutId is the canonical `{channel}@{channel_ref}` composite, supplied by the fixture builder.
   rolloutsDir =
     pkgs.runCommand "harness-rollouts-dir" {
       nativeBuildInputs = [pkgs.coreutils];

@@ -142,7 +142,7 @@ Detection is canonicalize-equality on four store-relative paths: `etc/systemd/sy
 | **Schema** | v1 - shape defined in `nixfleet-proto::rollout_manifest`, semantics in RFC-0002 §4.4 |
 | **Canonicalization** | JCS (RFC 8785), see §III |
 | **Signature** | CI release key (see §II #1) - same trust root as `fleet.resolved.json` and `revocations.json` |
-| **Identifier** | `rolloutId = sha256(canonicalize(manifest))`, hex lowercase. The hash IS the identity; see RFC-0002 §4.4. |
+| **Identifier** | `rolloutId = "{channel}@{channel_ref}"` per RFC-0012 §6.3 (supersedes the v0.1 content-addressed shape in RFC-0002 §4.4). Constructed only via `RolloutId::new(channel, channel_ref)`. |
 | **Anchor** | `fleetResolvedHash` - sha256 of the canonical bytes of the projecting `fleet.resolved.json`. Closes mix-and-match across snapshots at the same channel ref. |
 | **Storage** | `releases/rollouts/<rolloutId>.{json,sig}` |
 
@@ -152,7 +152,7 @@ Detection is canonicalize-equality on four store-relative paths: `etc/systemd/sy
 1. JCS bytes match the canonicalized payload.
 2. Signature verifies against the pinned `nixfleet.trust.ciReleaseKey`.
 3. `(now − meta.signedAt) ≤ channel.freshnessWindow` (units: minutes; same gate as `fleet.resolved.json`).
-4. Recomputed `sha256(canonical(received_bytes))` equals the `rolloutId` the recipient was told to fetch (rejects content-mismatched manifests). **The hash MUST be computed over the received bytes, not over a re-serialised parsed struct** - re-serialisation drops fields the verifier's proto doesn't know about, breaking content-addressing across additive schema changes and contradicting Pattern A's additive-evolution guarantee. The reconciler's `rollout_id_from_bytes` helper exists for this; producer-side `compute_rollout_id` (which has no received bytes, only the freshly-built struct) is the only legitimate caller of the parsed-struct path.
+4. Recipient recomputes `RolloutId::new(manifest.channel, manifest.channel_ref)` from the parsed manifest and asserts it equals the `rolloutId` the recipient was told to fetch (RFC-0012 §6.3). Signature verification (step 2) over the canonical bytes already binds the parsed `channel` and `channel_ref` fields to the producer's intent, so the identifier check rejects mix-and-match attempts (e.g. a manifest from channel B served under channel A's URL).
 5. `meta.schemaVersion` is within the consumer's accepted range.
 6. (Agent only) `(hostname, wave_index)` ∈ `manifest.host_set`.
 7. (CP only, on adoption) `manifest.fleetResolvedHash` matches the hash of the `fleet.resolved.json` the CP currently holds verified - refuses adoption otherwise. Same rule: hash the received bytes, not the parsed struct.

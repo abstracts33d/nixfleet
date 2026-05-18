@@ -86,13 +86,13 @@ The core of the protocol. Agent polls this on its declared interval.
 
 If the host is already at the desired generation, `target` is absent and `nextCheckinSecs` reflects idle polling.
 
-**`target.rollout` is a content hash.** It is the SHA-256 (hex, lowercase) of the canonical bytes of the rollout's `RolloutManifest` (see RFC-0002 §4.4). It is NOT a human-readable label - the human-readable `<channel>@<short-ci-commit>` annotation lives inside the manifest as `displayName`. Operator surfaces (`nixfleet status`, log lines) MAY display a short prefix paired with the annotation, but the wire field carries the full hex.
+**`target.rollout` is the canonical RolloutId.** RFC-0012 §6.3 supersedes the v0.1 content-addressed shape: the wire value is the canonical composite `"{channel}@{channel_ref}"`, validated against `[a-z0-9_-]+@[0-9a-f]+`. The legacy `displayName` field inside the manifest is now redundant with the identifier and retained only for backwards-compatible operator-facing surfaces.
 
 **Agent verification posture (mandatory).** On first sight of a `rolloutId` it has not seen before, the agent MUST:
 
 1. Fetch `GET /v1/rollouts/<rolloutId>` and the matching `.sig` (§4.6).
 2. Verify the signature against the trust roots it already holds (`ciReleaseKey`).
-3. Recompute `sha256(canonical(manifest))` and assert it equals the advertised `rolloutId`.
+3. Recompute `RolloutId::new(manifest.channel, manifest.channel_ref)` from the parsed manifest and assert it equals the advertised `rolloutId` (per RFC-0012 §6.3; supersedes the v0.1 `sha256(canonical(manifest))` recompute).
 4. Assert `(hostname, wave_index)` ∈ `manifest.host_set`.
 5. Cache the manifest bytes + signature under `<state-dir>/rollouts/<rolloutId>.{json,sig}`.
 
@@ -195,7 +195,7 @@ Agents that fail enrollment cannot use the mTLS-gated `POST /agent/report` to su
 
 Distributes the signed `RolloutManifest` (RFC-0002 §4.4) to agents. mTLS-gated like every other endpoint. The CP serves the on-disk pre-signed pair byte-for-byte; it does not re-derive, re-sign, or otherwise transform the manifest.
 
-**Path parameter.** `rolloutId` is the content hash exactly as the CP advertised it in `/agent/checkin` responses. Hex, lowercase, full SHA-256 (64 chars).
+**Path parameter.** `rolloutId` is the canonical RFC-0012 §6.3 composite `"{channel}@{channel_ref}"` exactly as the CP advertised it in `/agent/checkin` responses. The CP route validator enforces `[a-z0-9_-]+@[0-9a-f]+` to block path-traversal smuggling.
 
 **Response.** Two body shapes, served via the standard HTTP `Accept` content-negotiation pattern:
 

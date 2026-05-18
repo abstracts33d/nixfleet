@@ -161,6 +161,8 @@ Per-channel: at most one active rollout. A new ref arriving while a rollout is i
 
 ### 4.4 Rollout manifests
 
+**Identifier refinement.** RFC-0012 §6.3 supersedes the v0.1 content-addressed identifier shape used in this section. The canonical form is `rolloutId = "{channel}@{channel_ref}"`, constructed via `RolloutId::new(channel, channel_ref)`. Verification still walks the canonical-byte signature path described below (steps in §4.4 "Adoption"/"Distribution"); the difference is that the identifier is no longer the manifest's content hash, so the "recompute and compare" check is now against the parsed `(channel, channel_ref)` pair. The `fleetResolvedHash` anchor and the signed-bytes recovery property are unchanged.
+
 A `RolloutManifest` is the per-rollout signed plan: the frozen view of which hosts are in which wave, signed by CI at the same time it signs `fleet.resolved.json`. The manifest is the artifact that lets agents verify their wave assignment without trusting the CP.
 
 **Why this exists.** `fleet.resolved.json` is the desired-state snapshot - it rolls forward continuously as new CI commits land. A rollout has a different temporal scope: its plan freezes at rollout-open and stays frozen until the rollout terminates. Without a separately-named, frozen artifact, an attacker (or buggy CP) could serve host A "you're in wave 1" and host B "you're in wave 3" of the same logical rollout, and neither agent could detect the inconsistency. Content-addressing the manifest closes that gap.

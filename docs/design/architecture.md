@@ -719,7 +719,7 @@ pub fn reconcile(
 
 Inputs: verified fleet, `Observed` snapshot (channel refs, host states, active rollouts, compliance failures), current time. Output: a list of `Action`s (`OpenRollout`, `DispatchHost`, `PromoteWave`, `ConvergeRollout`, `HaltRollout`, `SoakHost`, `ChannelUnknown`, `Skip`, `WaveBlocked`).
 
-Internal modules: `host_state.rs` (`HostRolloutState` lives in `nixfleet-proto`; reconciler + CP both consume), `rollout_state.rs` (`RolloutState` + `advance_rollout()`), `budgets.rs` (disruption budget enforcement - currently scaffolded), `edges.rs` (DAG ordering - reserved for future), `verify.rs` (`verify_artifact`, `verify_rollout_manifest`, `verify_revocations`, `SignedSidecar` trait, `compute_canonical_hash`, `compute_rollout_id`), `evidence.rs` (`verify_canonical_payload` for host-signed compliance evidence using OpenSSH ed25519 pubkeys), `manifest.rs` (`project_manifest`, `compute_rollout_id_for_channel`).
+Internal modules: `host_state.rs` (`HostRolloutState` lives in `nixfleet-proto`; reconciler + CP both consume), `rollout_state.rs` (`RolloutState` + `advance_rollout()`), `budgets.rs` (disruption budget enforcement - currently scaffolded), `edges.rs` (DAG ordering - reserved for future), `verify.rs` (`verify_artifact`, `verify_rollout_manifest`, `verify_revocations`, `SignedSidecar` trait, `compute_canonical_hash`), `evidence.rs` (`verify_canonical_payload` for host-signed compliance evidence using OpenSSH ed25519 pubkeys), `manifest.rs` (`project_manifest`, `compute_rollout_id_for_channel`).
 
 ### 11.3 Runtime binaries
 
@@ -771,7 +771,7 @@ Reconcile loop (every 30s) reads inputs, calls `verify_artifact()`, projects `Ob
 
 Background tasks: `reconcile_loop` (30s), `channel_refs_poll` (60s - full `verify_artifact` on fetched bytes, update in-memory map), `revocations_poll` (60s - same trust pipeline; replay into `cert_revocations` table on every tick), `rollback_check_loop` (10s - scan `state='pending' AND confirm_deadline < now`, mark `rolled-back`, stamp `dispatch_history`), `prune_timer` (delete old `token_replay`, archive old `host_reports`). All share a `tokio::sync::CancellationToken` plumbed from `main`; `signal::ctrl_c()` triggers `axum_server::Handle::graceful_shutdown` (25s drain) followed by cancellation fan-out; `drain_background_tasks` gathers JoinHandles with a 30s deadline.
 
-**On-demand HTTP source - `rollouts_source`**: fetches a rollout manifest lazily when `GET /v1/rollouts/<rolloutId>` misses `--rollouts-dir`. URL templates with literal `{rolloutId}` token. **Trust posture**: the CP only checks `sha256(manifest) == rolloutId` (content-addressing). It does **not** verify the signature. The agent verifies the signature against `ciReleaseKey` on receipt. Even when forwarding a signed manifest, the CP never pretends to attest to it.
+**On-demand HTTP source - `rollouts_source`**: fetches a rollout manifest lazily when `GET /v1/rollouts/<rolloutId>` misses `--rollouts-dir`. URL templates with literal `{rolloutId}` token. **Trust posture**: the CP only checks `RolloutId::new(manifest.channel, manifest.channel_ref) == rolloutId` (the RFC-0012 §6.3 canonical-id discriminator). It does **not** verify the signature. The agent verifies the signature against `ciReleaseKey` on receipt. Even when forwarding a signed manifest, the CP never pretends to attest to it.
 
 #### `nixfleet-cli` - operator workstation tools
 
@@ -800,7 +800,7 @@ The hook contract is what makes signing pluggable: framework doesn't care how yo
 
 #### `nixfleet-verify-artifact` - offline auditor
 
-Three subcommands (pure verification, no network): `artifact` (verify a `fleet.resolved`), `rollout-manifest` (verify a rollout manifest, asserts `rolloutId` hash matches), `probe` (verify a host-signed probe payload against an OpenSSH host pubkey). Given just signed artifacts plus trust roots, an auditor can verify the chain without ever touching the control plane.
+Three subcommands (pure verification, no network): `artifact` (verify a `fleet.resolved`), `rollout-manifest` (verify a rollout manifest, asserts `rolloutId` equals the canonical `{channel}@{channel_ref}` per RFC-0012 §6.3), `probe` (verify a host-signed probe payload against an OpenSSH host pubkey). Given just signed artifacts plus trust roots, an auditor can verify the chain without ever touching the control plane.
 
 ---
 
@@ -860,7 +860,7 @@ CI workflows: `.github/workflows/ci.yml` - `format` job + `validate` job (`nix r
 | **Channel ref** | The git ref a channel is currently rolled out to. CI updates this when it produces a release. |
 | **Rollout** | An in-flight transition of a channel from one ref to another. Has a state machine and per-host states. |
 | **Wave** | A subset of a rollout's hosts dispatched together, with a shared soak window before the next wave proceeds. |
-| **Rollout manifest** | Signed per-channel artifact freezing the rollout plan. Identified by content-address `rolloutId = sha256(canonical(manifest))`. |
+| **Rollout manifest** | Signed per-channel artifact freezing the rollout plan. Identified by the canonical RFC-0012 §6.3 composite `rolloutId = "{channel}@{channel_ref}"`. |
 | **Soak window** | Time a host must remain Healthy before being marked Soaked. Wave promotes only when all members are Soaked. |
 | **Magic rollback** | If the agent doesn't post `/confirm` within `confirmDeadlineSecs`, the CP marks the dispatch rolled-back; the next checkin tells the agent to revert. |
 | **Freshness window** | Per-channel max age of `meta.signedAt` accepted by `verify_artifact`. Defends against stale-target replay by a compromised CP. |
