@@ -1212,6 +1212,8 @@ fn outbound_event_to_json(payload: &OutboundAgentEvent) -> Value {
                 "status": probe_status_str(sr.status),
                 "framework": sr.framework,
                 "article": sr.article,
+                "effectiveMode": probe_mode_str(sr.effective_mode),
+                "overrideReason": sr.override_reason,
             })).collect::<Vec<_>>()),
             "seq": seq,
         }),
@@ -1263,5 +1265,46 @@ fn outbound_event_to_json(payload: &OutboundAgentEvent) -> Value {
             "currentClosure": current_closure,
             "seq": seq,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use nixfleet_state_machine::{ProbeMode, ProbeStatus, ProbeSubResult};
+
+    /// Pins the audit-trail-carrying field set on the wire shape of a
+    /// `ProbeResult` row in `event_log`. Sub-results must surface
+    /// `effectiveMode` + `overrideReason` end-to-end so an auditor
+    /// inspecting signed payloads can answer "why was control X
+    /// downgraded?" from the chain alone. Drops here historically
+    /// reduced the audit-trail-recovery story to nulls — see the
+    /// architect's BT-B' blocker.
+    #[test]
+    fn probe_result_json_carries_per_control_audit_fields() {
+        let payload = OutboundAgentEvent::ProbeResult {
+            probe_name: "evidence-nis2-essential".into(),
+            mode: ProbeMode::Enforce,
+            status: ProbeStatus::Fail,
+            observed_at: chrono::Utc.with_ymd_and_hms(2026, 5, 18, 18, 5, 27).unwrap(),
+            failure_reason: Some("encryption-at-rest failed".into()),
+            sub_results: Some(vec![ProbeSubResult {
+                control_id: "encryption-at-rest".into(),
+                status: ProbeStatus::Fail,
+                framework: "nis2-essential".into(),
+                article: Some("21(h)".into()),
+                effective_mode: ProbeMode::Observe,
+                override_reason: Some("Q2 audit window: observe-mode default".into()),
+            }]),
+            seq: 7,
+        };
+        let v = outbound_event_to_json(&payload);
+        let sub = &v["subResults"][0];
+        assert_eq!(sub["controlId"], "encryption-at-rest");
+        assert_eq!(sub["framework"], "nis2-essential");
+        assert_eq!(sub["article"], "21(h)");
+        assert_eq!(sub["effectiveMode"], "observe");
+        assert_eq!(sub["overrideReason"], "Q2 audit window: observe-mode default");
     }
 }

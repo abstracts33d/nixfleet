@@ -521,6 +521,40 @@ async fn maybe_synthesize_recovery_completion(
                 .await;
             }
             nixfleet_state_machine::HostState::Pending => {
+                // LOADBEARING: consult the dispatch gates before
+                // synthesising the chain. The agent's heartbeat
+                // reporting `current_closure == target_closure`
+                // legitimately means "I've been on this closure all
+                // along" — but only safe to fast-forward to Converged
+                // when the gates that would have applied at dispatch
+                // are satisfied. Channel-edges in particular: a fleet
+                // bump that leaves a host's closure unchanged still
+                // opens a new Pending HRR for that host; without this
+                // gate check the synth races past `stable` Converging
+                // while its predecessor `edge` is still Active,
+                // silently bypassing the RFC-0002 §4.3 ordering
+                // contract. If any gate blocks, skip the synth — the
+                // host stays Pending and the next regular plan tick
+                // dispatches it when the gate clears.
+                let gate_block = match rs.manifests.as_ref() {
+                    Some(manifests) => evaluate_synth_gates(
+                        db,
+                        manifests,
+                        &rs.quarantines,
+                        &record,
+                    ),
+                    None => None,
+                };
+                if let Some(reason) = gate_block {
+                    tracing::info!(
+                        target: "cp_reducer",
+                        host,
+                        rollout_id = %record.rollout_id,
+                        gate_block = %reason,
+                        "synth-converge held: dispatch gate would block; staying Pending until next plan tick",
+                    );
+                    continue;
+                }
                 synthesize_pending_to_converged(
                     state,
                     clock,
@@ -537,12 +571,52 @@ async fn maybe_synthesize_recovery_completion(
     }
 }
 
+/// Run the dispatch-gate evaluation against a Pending HRR record so
+/// `maybe_synthesize_recovery_completion` can refuse to fast-forward
+/// Pending → Converged when an active gate (channel-edges,
+/// wave-promotion, quarantine, etc.) would still hold the host.
+///
+/// Returns `Some(reason)` when a gate blocks; the caller leaves the
+/// host in Pending and lets the next regular plan tick handle it.
+fn evaluate_synth_gates(
+    db: &Arc<Db>,
+    manifests: &SignedManifestSet,
+    quarantines: &QuarantineSet,
+    record: &nixfleet_state_machine::HostRolloutState,
+) -> Option<String> {
+    let fleet_state = build_fleet_state(db, manifests).ok()?;
+    let host_id: HostId = record.hostname.clone();
+    let channel: nixfleet_reconciler::planner_types::ChannelId =
+        record.channel.clone();
+    let target: nixfleet_reconciler::planner_types::ClosureHash =
+        record.target_closure.clone();
+    nixfleet_reconciler::planner_gates::evaluate_for_dispatch(
+        &fleet_state,
+        manifests,
+        quarantines,
+        &record.rollout_id,
+        &host_id,
+        &target,
+        &channel,
+        &std::collections::HashMap::new(),
+    )
+    .map(|b| format!("{b:?}"))
+}
+
 /// LIFT #5: drive a `Pending` HRR row through the full lifecycle to
 /// `Converged` when the agent reports `current_closure == target`.
 /// The chain preserves the event-log audit trail (RFC-0004 §1):
 /// every transition emits its usual `RemoteAppendEventLog` effect
 /// flagged with the synthesis context via the `seq` ordering relative
 /// to the pre-synthesis `last_event_seq`.
+///
+/// LOADBEARING: callers MUST first verify that the dispatch gates
+/// (channel-edges, wave-promotion, quarantine, …) wouldn't have
+/// blocked dispatch — see `evaluate_synth_gates`. Without the gate
+/// check, a fleet bump that leaves a host's closure unchanged
+/// silently fast-forwards the host to Converged on the very first
+/// post-bump heartbeat, bypassing the RFC-0002 §4.3 channel-edges
+/// ordering contract.
 async fn synthesize_pending_to_converged(
     state: &Arc<AppState>,
     clock: &ClockHandle,
