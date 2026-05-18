@@ -187,7 +187,7 @@ impl From<AgentEvent> for Event {
                 status,
                 observed_at,
                 failure_reason,
-                sub_results: _,
+                sub_results,
                 seq,
             } => Event::RemoteProbeResult {
                 probe_name,
@@ -195,6 +195,8 @@ impl From<AgentEvent> for Event {
                 status: status.into(),
                 observed_at,
                 failure_reason,
+                sub_results: sub_results
+                    .map(|v| v.into_iter().map(Into::into).collect()),
                 seq,
             },
             AgentEvent::ProbeFailureFirst {

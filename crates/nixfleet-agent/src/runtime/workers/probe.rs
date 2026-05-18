@@ -254,7 +254,12 @@ fn spawn_ticker(
             }
             last_status = Some(status);
 
-            // Per-tick ProbeResult. Carries sub_results for evidence kind.
+            // Per-tick ProbeResult. `sub_results` carries per-control
+            // accounting (effective_mode + override_reason) for
+            // evidence/custom-framework probes; the reducer threads
+            // it onto the OutboundAgentEvent so the audit trail
+            // ("why was control X downgraded?") survives in the
+            // signed event_log. `None` for non-evidence probes.
             let _ = input_tx
                 .send(ReducerInput::HostEvent {
                     rollout_id: rollout_id.clone(),
@@ -264,24 +269,11 @@ fn spawn_ticker(
                         status,
                         observed_at,
                         failure_reason: outcome.failure_reason,
+                        sub_results: outcome.sub_results,
                         seq: 0,
                     },
                 })
                 .await;
-            // sub_results are dropped between event and effect for now;
-            // they're attached in the applier when emitting the
-            // OutboundAgentEvent::ProbeResult. The reducer's event
-            // shape doesn't carry sub_results (the gate doesn't need
-            // them — it only consults aggregate status). 9b's applier
-            // co-write reads sub_results off the OutboundAgentEvent
-            // payload, not the inbound event.
-            //
-            // TODO(v0.2.1): plumb sub_results through the agent reducer
-            // so the applier can stamp them onto the outbound payload
-            // without a side-channel. For 9b they only land on the
-            // CP-side ProbeResult event via the wire serde path; the
-            // agent's local reducer doesn't need them.
-            let _ = &outcome.sub_results;
 
             if decl.run_once {
                 return;

@@ -163,6 +163,7 @@ fn event_with_seq(name: &str, seq: u64) -> Event {
             status: ProbeStatus::Pass,
             observed_at: at,
             failure_reason: None,
+            sub_results: None,
             seq,
         },
         "LocalProbeFailureFirst" => Event::LocalProbeFailureFirst {
@@ -223,6 +224,7 @@ fn event_with_seq(name: &str, seq: u64) -> Event {
             status: ProbeStatus::Pass,
             observed_at: at,
             failure_reason: None,
+            sub_results: None,
             seq,
         },
         "RemoteProbeFailureFirst" => Event::RemoteProbeFailureFirst {

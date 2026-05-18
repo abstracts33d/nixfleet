@@ -4,8 +4,8 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use nixfleet_proto::{HealthGate, OnHealthFailure, RolloutPolicy};
 use nixfleet_state_machine::{
-    Effect, Event, HostRolloutState, HostState, OutboundAgentEvent, ProbeStatus, TransitionError,
-    step,
+    Effect, Event, HostRolloutState, HostState, OutboundAgentEvent, ProbeMode, ProbeStatus,
+    ProbeSubResult, TransitionError, step,
 };
 
 fn t0() -> DateTime<Utc> {
@@ -351,6 +351,7 @@ fn probe_result_updates_map_without_state_change() {
             status: ProbeStatus::Pass,
             observed_at: t0() + Duration::seconds(10),
             failure_reason: None,
+            sub_results: None,
             seq: 3,
         },
         t0() + Duration::seconds(10),
@@ -547,4 +548,92 @@ fn deferred_then_synthesized_completion_advances_to_soaking() {
         Some("target-closure-abc"),
     );
     assert!(s_after.activation_completed_at.is_some());
+}
+
+/// Audit-trail regression: an evidence probe with per-control overrides
+/// emits `LocalProbeResult` carrying `sub_results`, and the reducer
+/// threads them onto the outbound `OutboundAgentEvent::ProbeResult` so
+/// the signed event_log payload preserves the operator's override
+/// reasons. Prior to this plumb-through the reducer dropped sub_results
+/// at the Event boundary and unconditionally emitted `sub_results:
+/// None`, leaving auditors with `subResults: null` on every signed row.
+#[test]
+fn local_probe_result_threads_sub_results_to_outbound_event() {
+    let p = policy_halt();
+    let s = pending();
+    let (s, _) = step(
+        s,
+        Event::LocalActivate {
+            current_closure_at_dispatch: "prior".into(),
+            target_closure: "target".into(),
+            received_at: t0() + Duration::seconds(1),
+            soak_due_at: t0() + Duration::minutes(5),
+            seq: 1,
+        },
+        t0() + Duration::seconds(1),
+        &p,
+    )
+    .unwrap();
+    let (s, _) = step(
+        s,
+        Event::LocalActivationCompleted {
+            observed_current_closure: "target-closure-abc".into(),
+            exit_code: 0,
+            completed_at: t0() + Duration::seconds(5),
+            seq: 2,
+        },
+        t0() + Duration::seconds(5),
+        &p,
+    )
+    .unwrap();
+
+    let subs = vec![
+        ProbeSubResult {
+            control_id: "encryption-at-rest".into(),
+            status: ProbeStatus::Fail,
+            framework: "nis2-essential".into(),
+            article: Some("21(h)".into()),
+            effective_mode: ProbeMode::Observe,
+            override_reason: Some("Q2 audit window: observe-mode default".into()),
+        },
+        ProbeSubResult {
+            control_id: "access-control".into(),
+            status: ProbeStatus::Pass,
+            framework: "nis2-essential".into(),
+            article: Some("21(i)".into()),
+            effective_mode: ProbeMode::Enforce,
+            override_reason: None,
+        },
+    ];
+    let (_s, effects) = step(
+        s,
+        Event::LocalProbeResult {
+            probe_name: "evidence-nis2-essential".into(),
+            mode: ProbeMode::Enforce,
+            status: ProbeStatus::Fail,
+            observed_at: t0() + Duration::seconds(10),
+            failure_reason: Some("encryption-at-rest failed".into()),
+            sub_results: Some(subs.clone()),
+            seq: 3,
+        },
+        t0() + Duration::seconds(10),
+        &p,
+    )
+    .unwrap();
+
+    let emitted = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::LocalEmitEvent {
+                payload: OutboundAgentEvent::ProbeResult { sub_results, .. },
+                ..
+            } => Some(sub_results.clone()),
+            _ => None,
+        })
+        .expect("LocalProbeResult must emit an OutboundAgentEvent::ProbeResult");
+    assert_eq!(
+        emitted,
+        Some(subs),
+        "sub_results must thread from Event → Effect verbatim",
+    );
 }

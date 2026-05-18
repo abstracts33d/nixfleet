@@ -11,7 +11,7 @@
 use chrono::{DateTime, Utc};
 use nixfleet_proto::OnHealthFailure;
 
-use crate::state::{ClosureHash, ProbeMode, ProbeName, ProbeStatus};
+use crate::state::{ClosureHash, ProbeMode, ProbeName, ProbeStatus, ProbeSubResult};
 
 /// One entry in a `LocalProbeTopologyDeclared` / `RemoteProbeTopologyDeclared`
 /// event. Carries the per-probe metadata CP needs to evaluate the gate
@@ -144,12 +144,22 @@ pub enum Event {
 
     /// A probe ran and produced a result. Updates the probe map. Visibility
     /// + state update on `probes` field; no `HostState` change.
+    ///
+    /// `sub_results` carries per-control accounting for evidence/custom-
+    /// framework probes (one entry per (control, framework, article) tuple
+    /// with `effective_mode` + `override_reason`). The reducer does not
+    /// consult these — gate decisions key off the aggregate `status` — but
+    /// it threads them onto the OutboundAgentEvent so the signed wire
+    /// payload + CP event_log preserve the audit trail an auditor needs
+    /// to answer "why was control X downgraded?" `None` for non-evidence
+    /// probe kinds.
     LocalProbeResult {
         probe_name: ProbeName,
         mode: ProbeMode,
         status: ProbeStatus,
         observed_at: DateTime<Utc>,
         failure_reason: Option<String>,
+        sub_results: Option<Vec<ProbeSubResult>>,
         seq: u64,
     },
 
@@ -256,6 +266,7 @@ pub enum Event {
         status: ProbeStatus,
         observed_at: DateTime<Utc>,
         failure_reason: Option<String>,
+        sub_results: Option<Vec<ProbeSubResult>>,
         seq: u64,
     },
 

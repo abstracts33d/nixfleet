@@ -127,6 +127,7 @@ pub(super) fn handle(
             status,
             observed_at,
             failure_reason,
+            sub_results,
             seq,
         } => {
             update_probe(
@@ -149,7 +150,7 @@ pub(super) fn handle(
                         status,
                         observed_at,
                         failure_reason,
-                        sub_results: None,
+                        sub_results,
                         seq,
                     },
                     durable: false,
@@ -162,6 +163,7 @@ pub(super) fn handle(
             status,
             observed_at,
             failure_reason,
+            sub_results,
             seq,
         } => {
             update_probe(
@@ -186,7 +188,7 @@ pub(super) fn handle(
                         status,
                         observed_at,
                         failure_reason,
-                        sub_results: None,
+                        sub_results,
                         seq,
                     },
                 }],

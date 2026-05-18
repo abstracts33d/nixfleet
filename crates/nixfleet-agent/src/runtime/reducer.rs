@@ -549,6 +549,7 @@ fn with_seq(event: Event, seq: u64) -> Event {
             status,
             observed_at,
             failure_reason,
+            sub_results,
             ..
         } => Event::LocalProbeResult {
             probe_name,
@@ -556,6 +557,7 @@ fn with_seq(event: Event, seq: u64) -> Event {
             status,
             observed_at,
             failure_reason,
+            sub_results,
             seq,
         },
         Event::LocalProbeFailureFirst {
