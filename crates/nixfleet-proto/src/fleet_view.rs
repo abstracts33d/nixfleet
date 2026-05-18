@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::HostRolloutState;
+use crate::{HostRolloutState, RolloutId};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -72,7 +72,7 @@ pub struct HostsResponse {
 /// surface; RFC-0008 §10.5 + Plan 04).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RolloutHosts {
-    pub rollout_id: String,
+    pub rollout_id: RolloutId,
     pub hosts: Vec<RolloutHostEntry>,
 }
 
@@ -109,7 +109,7 @@ pub struct RolloutHostEntry {
 /// - `kind = "verify_outcome"` / `"manifest_poll"` → producer-side shapes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RolloutEvents {
-    pub rollout_id: String,
+    pub rollout_id: RolloutId,
     pub events: Vec<RolloutEventEntry>,
 }
 

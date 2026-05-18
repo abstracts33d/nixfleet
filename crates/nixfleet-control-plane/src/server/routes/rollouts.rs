@@ -308,8 +308,11 @@ pub(in crate::server) async fn hosts(
     // Stable rendering order: wave asc, hostname asc.
     hosts.sort_by(|a, b| a.wave.cmp(&b.wave).then_with(|| a.host.cmp(&b.host)));
 
+    // looks_like_rollout_id has already enforced the canonical
+    // `channel@channel_ref` shape; split_once cannot return None here.
+    let (channel, channel_ref) = rollout_id.split_once('@').unwrap();
     Ok(axum::Json(nixfleet_proto::RolloutHosts {
-        rollout_id,
+        rollout_id: nixfleet_proto::RolloutId::new(channel, channel_ref),
         hosts,
     }))
 }
@@ -376,8 +379,9 @@ pub(in crate::server) async fn events(
         });
     }
 
+    let (channel, channel_ref) = rollout_id.split_once('@').unwrap();
     Ok(axum::Json(nixfleet_proto::RolloutEvents {
-        rollout_id,
+        rollout_id: nixfleet_proto::RolloutId::new(channel, channel_ref),
         events,
     }))
 }
@@ -530,7 +534,7 @@ mod tests {
             .await
             .unwrap();
         let payload = resp.0;
-        assert_eq!(payload.rollout_id, rollout);
+        assert_eq!(payload.rollout_id.as_str(), rollout);
         assert_eq!(payload.hosts.len(), 2);
         // Stable order: wave asc, hostname asc → h1 then h2.
         assert_eq!(payload.hosts[0].host, "h1");

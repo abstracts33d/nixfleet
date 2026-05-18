@@ -1076,7 +1076,7 @@ mod tests {
     #[test]
     fn render_hosts_table_shows_open_dispatches_distinctly() {
         let rollout = RolloutHosts {
-            rollout_id: "stable@trace1".into(),
+            rollout_id: nixfleet_proto::RolloutId::new("stable", "trace1"),
             hosts: vec![
                 host_entry("host-05", 0, Some("converged")),
                 host_entry("host-01", 1, None),
