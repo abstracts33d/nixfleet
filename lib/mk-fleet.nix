@@ -167,48 +167,12 @@
           `mode == "enforce"` results.
         '';
       };
-      # Per-host overrides on the channel's compliance shorthand. Keys
-      # are framework names (matching
-      # `channels.<channel>.compliance.frameworks[*].name`). Each
-      # framework attrset accepts:
-      #   - `mode`             (null|enforce|observe|disabled) —
-      #                        framework-level override; null inherits
-      #                        the broader-scope effective mode.
-      #                        `disabled` deactivates the whole probe
-      #                        for this host (closes the Aether case
-      #                        in one line vs the L4 probe-shadow
-      #                        workaround).
-      #   - `reason`           audit rationale for the framework-level
-      #                        declarations at this scope.
-      #   - `controlOverrides` per-control overrides scoped to this
-      #                        framework. Per-control entries win over
-      #                        framework-level mode.
-      #
-      # Per-host wins over channel < tag < fleet at synthesis time.
-      # Declaring an override against a framework the channel hasn't
-      # enabled is a silent no-op — operators declare the explicit
-      # probe under `healthChecks` for that case.
       compliance = mkOption {
         type = complianceScopeType;
         default = {};
         description = ''
-          Per-host compliance overrides. Same shape at every scope
-          (fleet > tag > channel > host via `resolveCompliance` at
-          synthesis time). See `complianceFrameworkScopeType` for
-          per-framework fields.
-
-          Example:
-
-            hosts.aether.compliance.frameworks.nis2-essential = {
-              mode = "disabled";
-              reason = "Darwin host, no compliance collector";
-            };
-            hosts.legacy-egress.compliance.frameworks.nis2-essential.controlOverrides = {
-              "agent-egress-exemption" = {
-                mode = "observe";
-                reason = "Phase-out window for this host only";
-              };
-            };
+          Per-host compliance refinement on the channel's shorthand.
+          See RFC-0010 §3.7 for the scope hierarchy + merge semantics.
         '';
       };
     };
@@ -312,14 +276,8 @@
         type = complianceScopeType;
         default = {};
         description = ''
-          Tag-scoped compliance overrides. Same shape as the host-scope
-          attrset; merges into a host's effective compliance with fleet
-          < tag < channel < host precedence at synthesis time. Only
-          affects frameworks the host's channel has declared under
-          `channels.<ch>.compliance.frameworks` — declaring an override
-          against a framework the channel hasn't enabled is a silent
-          no-op (channel scope is the framework-set's source of truth;
-          broader scopes only refine).
+          Tag-scoped compliance refinement. See RFC-0010 §3.7 for the
+          scope hierarchy + merge semantics.
         '';
       };
     };
@@ -374,46 +332,21 @@
   # Per-framework attrset at fleet / tag / host scope. Channel scope
   # uses the legacy `complianceFrameworkEntryType` list form for
   # RFC-0010 §3.5 backward compat; the merge code at synthesis time
-  # normalises the channel entries into this same shape.
+  # normalises the channel entries into this same shape. See RFC-0010
+  # §3.7 for `mode` / `reason` / `controlOverrides` semantics.
   complianceFrameworkScopeType = types.submodule {
     options = {
       mode = mkOption {
         type = types.nullOr (types.enum ["enforce" "observe" "disabled"]);
         default = null;
-        description = ''
-          Framework-level effective mode at this scope. `null`
-          inherits from a broader scope (precedence host > channel >
-          tag > fleet > builtin "enforce"). `disabled` deactivates
-          the whole framework probe for this host — the synthesised
-          `evidence-<framework>` is emitted with `mode = "disabled"`
-          so the agent's probe worker skips it. `enforce`/`observe`
-          flip per-control accounting by default; per-control entries
-          in `controlOverrides` win over framework-level mode for the
-          controls they list.
-        '';
       };
       reason = mkOption {
         type = types.str;
         default = "";
-        description = ''
-          Operator-facing audit rationale for the framework-level
-          declarations at this scope. Surfaces on every
-          `ProbeSubResult.override_reason` emitted by controls
-          covered by this framework that don't carry a per-control
-          reason of their own.
-        '';
       };
       controlOverrides = mkOption {
         type = types.attrsOf complianceControlOverrideType;
         default = {};
-        description = ''
-          Per-control overrides scoped to this framework. Keys are
-          `nixfleet-compliance` control IDs (capability-named, e.g.
-          `"access-control"`, `"secure-boot"`). Each entry's mode
-          wins over the framework-level mode for the control it
-          names; per-control `reason` wins over the framework-level
-          `reason`.
-        '';
       };
     };
   };
@@ -1236,70 +1169,6 @@
         )
         cfg.disruptionBudgets;
 
-      # Generic per-host scope resolution. Used by `resolvePin` and the
-      # compliance scope below; adding a new scoped surface becomes a
-      # single resolveByScope call rather than another inline copy.
-      #
-      # `resolveHealthChecks` does NOT use this helper — its channel
-      # scope calls `channelEffectiveHealthChecks` (synthesises
-      # compliance shorthand into evidence-<framework> probes) and its
-      # per-host compliance override transformation mutates the
-      # channel value mid-merge. Those special cases don't cleanly fit
-      # `getScope: scope -> value`; folding them in would push the
-      # helper toward a god-function. Healthchecks keeps its inline
-      # precedence.
-      #
-      # Precedence order is caller-supplied because nixfleet has two
-      # legitimate orderings:
-      #   - healthChecks:  fleet < tag < channel < host (channel beats
-      #     tag — channels are the host's primary identity; tags are
-      #     cross-cutting refinements that channels' default probes
-      #     trump).
-      #   - pins:          fleet < channel < tag < host (tag beats
-      #     channel — operator explicitly tags hosts for audit-window
-      #     freezes; the tag is a more deliberate signal than channel
-      #     default).
-      # Each caller passes `scopeOrder` lowest → highest precedence.
-      #
-      # Multi-tag handling: tag scopes are accumulated left-to-right via
-      # `lib.foldl'`, so later tags win on collision under
-      # most-specific-wins merges. `checkInvariants` rejects multi-tag
-      # PIN conflicts eagerly, so resolvePin's pre-extraction "first
-      # tag with a pin" semantics and resolveByScope's "last tag's
-      # value via the merge fn" semantics are equivalent in practice
-      # for the current callers.
-      resolveByScope = {
-        hostName,
-        getScope,
-        initial,
-        merge,
-        scopeOrder ? ["fleet" "tag" "channel" "host"],
-      }: let
-        host = cfg.hosts.${hostName};
-        scopeValueByName = {
-          fleet = getScope cfg;
-          tag =
-            lib.foldl' (
-              acc: tag:
-                if cfg.tags ? ${tag}
-                then merge acc (getScope cfg.tags.${tag})
-                else acc
-            )
-            initial
-            host.tags;
-          channel =
-            if cfg.channels ? ${host.channel}
-            then getScope cfg.channels.${host.channel}
-            else initial;
-          host = getScope host;
-        };
-      in
-        lib.foldl' (
-          acc: scopeName: merge acc scopeValueByName.${scopeName}
-        )
-        initial
-        scopeOrder;
-
       # Per-host effective compliance (fleet < tag < channel < host).
       # Returns a flat attrset keyed by framework name with the same
       # shape as `complianceFrameworkScopeType` (mode/reason/
@@ -1308,15 +1177,6 @@
       # against a framework the channel hasn't enabled is a silent
       # no-op (channel scope is the framework-set's source of truth
       # per RFC-0010 §3.5; broader scopes only refine).
-      #
-      # `resolveByScope` doesn't fit here cleanly: the channel scope
-      # reads from a list-shape (`compliance.frameworks` with bare
-      # strings or {name; mode; controlOverrides;}) while every other
-      # scope is an attrset-shape, and the channel's `compliance.mode`
-      # also feeds in as the fallback default for null-mode framework
-      # entries. Same reason `resolveHealthChecks` keeps its inline
-      # precedence — folding either into the generic helper would
-      # push it toward a god-function.
       resolveCompliance = hostName: let
         host = cfg.hosts.${hostName};
         emptyFw = {
@@ -1511,22 +1371,24 @@
       # the time we get here at most one tag pin can apply. `expiresAt`
       # filtering happens later in `nixfleet-release` (chrono-based RFC3339
       # comparison); pure Nix has no robust date parsing.
-      resolvePin = hostName:
-        resolveByScope {
-          inherit hostName;
-          getScope = scope: scope.pin or null;
-          initial = null;
-          # Most-specific-non-null wins. `checkInvariants` rejects
-          # multi-tag-pin conflict eagerly so the foldl across tags
-          # never sees two competing tag pins.
-          merge = acc: v:
-            if v != null
-            then v
-            else acc;
-          # Pin precedence: tag beats channel (intentional asymmetry
-          # vs healthChecks; see resolveByScope docstring).
-          scopeOrder = ["fleet" "channel" "tag" "host"];
-        };
+      resolvePin = hostName: let
+        host = cfg.hosts.${hostName};
+        pinnedTagNames =
+          lib.filter (
+            t: (cfg.tags ? ${t}) && (cfg.tags.${t}.pin or null) != null
+          )
+          host.tags;
+        tagPin =
+          if pinnedTagNames == []
+          then null
+          else cfg.tags.${builtins.head pinnedTagNames}.pin;
+        channelPin = cfg.channels.${host.channel}.pin or null;
+      in
+        if host.pin != null
+        then host.pin
+        else if tagPin != null
+        then tagPin
+        else channelPin;
 
       allWarnings =
         emptySelectorWarnings
@@ -1674,17 +1536,8 @@
               type = complianceScopeType;
               default = {};
               description = ''
-                Fleet-scoped compliance overrides. Same shape as the
-                tag- and host-scope attrset; merges into each host's
-                effective compliance with fleet < tag < channel <
-                host precedence at synthesis time. Only affects
-                frameworks the host's channel has declared under
-                `channels.<ch>.compliance.frameworks` — fleet-scope
-                here is for cross-channel policy refinements (e.g.
-                "fleet-wide observe mode for nis2-essential during
-                rollout"), not for introducing new framework probes
-                (which still must come from the channel-scope
-                shorthand).
+                Fleet-scoped compliance refinement. See RFC-0010 §3.7
+                for the scope hierarchy + merge semantics.
               '';
             };
             healthChecks = mkOption {

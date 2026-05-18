@@ -145,7 +145,7 @@ The split is deliberate. L1 is a NixOS-module capability declaration — same ch
 1. Operators enable a framework at L2 without the collector unit at L1 → agent probes for missing evidence files; reports `Fail`.
 2. Operators enable the collector at L1 without declaring the framework at L2 → evidence is produced and rotting on disk; no one consumes it, no gate effect.
 
-The framework keeps L1 and L2 deliberately separate (no auto-coupling): the NixOS module owns capability; `fleet.nix` owns policy; an operator opts into both explicitly. The L1 → L2 migration guide (see `nixfleet-compliance/docs/migration-v0.1-to-v0.2.md`) walks through the pairing for the two repos' common cases (`encryptionAtRest`, `authentication.mfaRequired`, `governance.exceptions.BH-06`/`BH-07`).
+The framework keeps L1 and L2 deliberately separate (no auto-coupling): the NixOS module owns capability; `fleet.nix` owns policy; an operator opts into both explicitly.
 
 ### 3.7 Compliance scope hierarchy (v0.2)
 
