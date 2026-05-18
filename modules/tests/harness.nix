@@ -49,7 +49,6 @@
           fleet-harness-fleet-10 = harness.fleet-harness-fleet-10;
           fleet-harness-secret-hygiene = harness.fleet-harness-secret-hygiene;
           fleet-harness-module-rollouts-wire = harness.fleet-harness-module-rollouts-wire;
-          fleet-harness-rollback-policy = harness.fleet-harness-rollback-policy;
           fleet-harness-concurrent-checkin = harness.fleet-harness-concurrent-checkin;
         }
         // lib.optionalAttrs (
