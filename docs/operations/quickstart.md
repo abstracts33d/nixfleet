@@ -4,6 +4,8 @@ The minimum path from a fresh repo to a single managed host. For multi-host flee
 
 ## A minimal host
 
+`mkFleet` is the typical path even for a single host: declare the host, channel, and rollout policy; the framework wires the per-host `nixosSystem` for you. Direct `nixfleet.lib.mkHost` is also supported for one-off setups (the rest of this section uses `mkFleet`; see `lib/mk-host.nix` for the direct primitive).
+
 ```nix
 {
   inputs = {
@@ -11,34 +13,50 @@ The minimum path from a fresh repo to a single managed host. For multi-host flee
     nixfleet.url = "github:arcanesys/nixfleet";
   };
 
-  outputs = { nixpkgs, nixfleet, ... }: {
-    nixosConfigurations.my-server = nixfleet.lib.mkHost {
-      hostName = "my-server";
-      platform = "x86_64-linux";
-      modules = [
-        nixfleet.scopes.persistence.impermanence
-        nixfleet.scopes.secrets
-
-        ./hardware-configuration.nix
-        ({ ... }: {
+  outputs = { nixpkgs, nixfleet, ... }: let
+    fleet = nixfleet.lib.mkFleet {
+      hosts.my-server = {
+        system = "x86_64-linux";
+        channel = "stable";
+        tags = [];
+        nixosArgs = {
           hostSpec.userName = "deploy";
-          users.users.deploy = {
-            isNormalUser = true;
-            extraGroups = [ "wheel" ];
-            openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAA..." ];
-          };
-          services.nixfleet-agent = {
-            enable = true;
-            controlPlane.url = "https://cp.example.com:8080";
-          };
-        })
-      ];
+          modules = [
+            nixfleet.scopes.persistence.impermanence
+            nixfleet.scopes.secrets
+
+            ./hardware-configuration.nix
+            ({ ... }: {
+              users.users.deploy = {
+                isNormalUser = true;
+                extraGroups = [ "wheel" ];
+                openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAA..." ];
+              };
+              services.nixfleet-agent = {
+                enable = true;
+                controlPlane.url = "https://cp.example.com:8080";
+              };
+            })
+          ];
+        };
+      };
+      channels.stable = {
+        rolloutPolicy = "all-at-once";
+        signingIntervalMinutes = 60;
+        freshnessWindow = 1440;
+      };
+      rolloutPolicies.all-at-once = {
+        strategy = "all-at-once";
+        waves = [{ selector.all = true; soakMinutes = 0; }];
+      };
     };
+  in {
+    nixosConfigurations = fleet.nixosConfigurations;
   };
 }
 ```
 
-`mkHost` returns a standard `nixosSystem` (or `darwinSystem` for Darwin platforms). Nothing in the result is NixFleet-specific - if you remove the agent module, the host is a vanilla NixOS configuration deployable with stock tooling.
+`fleet.nixosConfigurations.<host>` is a standard `nixosSystem` (or `darwinSystem` for Darwin platforms). Nothing in the result is NixFleet-specific — if you remove the agent module, the host is a vanilla NixOS configuration deployable with stock tooling.
 
 ## Deploy
 

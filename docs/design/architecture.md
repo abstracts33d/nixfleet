@@ -23,13 +23,15 @@ Git-tracked, hosted on a self-run Forgejo instance on the coordinator. Contains:
 
 Trust role: **primary trust root for intent.** A commit that passes review IS the desired state. No other place in the system can claim "the fleet should be X" without a corresponding commit.
 
-#### Framework Nix surface (mkHost, hostSpec, scopes)
+#### Framework Nix surface (mkFleet, mkHost, hostSpec, scopes)
 
-The framework exposes a single top-level builder, `nixfleet.lib.mkHost`, plus a typed `hostSpec` identity record and an auto-discovered set of service modules under `modules/scopes/`. `mkHost` takes a `hostSpec` plus a list of consumer modules and returns a `nixosSystem` or `darwinSystem`; it does not impose a fleet/org/role DSL above `hostSpec`. Batch hosts are plain Nix (`builtins.map` over `mkHost`); convenience layers can sit on top without changing the primitive. `mkFleet` is a separate, orthogonal function that produces the declarative `fleet` topology consumed by CI - the operational spine in §1.1 - not a wrapper that owns `mkHost`'s call sites.
+The framework exposes two builders: `nixfleet.lib.mkFleet` (declarative fleet topology — hosts + channels + rollout policies; the typical operator path) and `nixfleet.lib.mkHost` (the underlying per-host primitive, also usable directly for one-off setups). The mkFleet wrapper iterates `hosts` and calls `mkHost` per host with `hostName`, `platform`, and `fleetResolved` pre-bound; built configurations surface as `fleet.nixosConfigurations`. Operators using `mkHost` directly pass `fleetResolved` themselves (or omit it on one-off rigs where probe topology isn't load-bearing).
 
-`hostSpec` carries identity and locale data only - hostname, primary user, home directory, timezone, locale, platform marker, root access keys. Behaviour belongs to scopes: small NixOS modules in `modules/scopes/` that self-activate via `services.<name>.enable` options gated by `lib.mkIf`. `mkHost` auto-includes every scope but disabled by default, so adding a new scope requires no `mkHost` change and inactive scopes cost zero at evaluation. Roles, when used, are scope bundles defined in consuming fleets that set `enable` defaults with `lib.mkDefault`; the framework itself has no "role" concept.
+`mkHost` takes a typed `hostSpec` identity record plus a list of consumer modules and returns a `nixosSystem` or `darwinSystem`; it does not impose a fleet/org/role DSL above `hostSpec`. An auto-discovered set of service modules under `modules/scopes/` self-activate via `services.<name>.enable` options gated by `lib.mkIf`. Adding a new scope requires no `mkHost` change; inactive scopes cost zero at evaluation. Roles, when used, are scope bundles defined in consuming fleets that set `enable` defaults with `lib.mkDefault`; the framework itself has no "role" concept.
 
-The agent and control plane are themselves NixOS service modules (`services.nixfleet-agent`, `services.nixfleet-control-plane`), not opinionated profiles. Host operators stay in charge of firewall, persistence, and TLS posture; framework concerns stay in the `services.*` namespace, with secrets wired through the consumer's chosen backend (agenix, sops, vault). Fleet repos extend `hostSpec` with their own opinionated capability flags (`isGraphical`, `isDev`, `theme`) by declaring additional options in plain NixOS modules passed via `mkHost`'s `modules` parameter - the NixOS module system merges option declarations, so consumer extensions compose with framework-defined options without modifying the framework.
+`hostSpec` carries identity and locale data only — hostname, primary user, home directory, timezone, locale, platform marker, root access keys. Behaviour belongs to scopes.
+
+The agent and control plane are themselves NixOS service modules (`services.nixfleet-agent`, `services.nixfleet-control-plane`), not opinionated profiles. Host operators stay in charge of firewall, persistence, and TLS posture; framework concerns stay in the `services.*` namespace, with secrets wired through the consumer's chosen backend (agenix, sops, vault). Fleet repos extend `hostSpec` with their own opinionated capability flags (`isGraphical`, `isDev`, `theme`) by declaring additional options in plain NixOS modules passed via `nixosArgs.modules` on a host — the NixOS module system merges option declarations, so consumer extensions compose with framework-defined options without modifying the framework.
 
 ### 1.2 Continuous integration (the intent-signing oracle)
 
@@ -510,24 +512,39 @@ flake.scopes = {
 
 - **`secrets`** (`impls/secrets/default.nix`) - backend-agnostic identity-path manager. Declares where decryption identities live (`identityPaths.{hostKey, userKey, extra}`); ensures the SSH host key exists at first boot; adds those paths to the persistence contract; computes `resolvedIdentityPaths` (read-only introspection hook). Does NOT wrap agenix / sops / vault - your fleet wires those itself.
 
-Consumer pattern:
+Consumer pattern (mkFleet wraps the per-host mkHost call):
 
 ```nix
 # fleet-repo/flake.nix
-nixosConfigurations.web-01 = nixfleet.lib.mkHost {
-  hostName = "web-01";
-  platform = "x86_64-linux";
-  modules = [
-    nixfleet.scopes.persistence.impermanence
-    nixfleet.scopes.secrets
-    nixfleet.scopes.keyslots.tpm
-    ./hardware/web-01.nix
-    ({ ... }: {
-      services.nixfleet-agent = { enable = true; controlPlane.url = "https://cp.example.com:8080"; };
+let fleet = nixfleet.lib.mkFleet {
+  hosts.web-01 = {
+    system = "x86_64-linux";
+    channel = "stable";
+    tags = [];
+    nixosArgs = {
       hostSpec = { userName = "deploy"; rootSshKeys = [ "ssh-ed25519 ..." ]; };
-    })
-  ];
+      modules = [
+        nixfleet.scopes.persistence.impermanence
+        nixfleet.scopes.secrets
+        nixfleet.scopes.keyslots.tpm
+        ./hardware/web-01.nix
+        ({ ... }: {
+          services.nixfleet-agent = { enable = true; controlPlane.url = "https://cp.example.com:8080"; };
+        })
+      ];
+    };
+  };
+  channels.stable = {
+    rolloutPolicy = "all-at-once";
+    signingIntervalMinutes = 60;
+    freshnessWindow = 1440;
+  };
+  rolloutPolicies.all-at-once = {
+    strategy = "all-at-once";
+    waves = [{ selector.all = true; soakMinutes = 0; }];
+  };
 };
+in { nixosConfigurations = fleet.nixosConfigurations; }
 ```
 
 ### 10.5 Runtime service modules (`modules/scopes/nixfleet/`)
