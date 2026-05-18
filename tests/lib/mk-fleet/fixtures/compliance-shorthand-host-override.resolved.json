@@ -1,0 +1,121 @@
+{
+  "channelEdges": [],
+  "channels": {
+    "stable": {
+      "freshnessWindow": 180,
+      "reconcileIntervalMinutes": 30,
+      "rolloutPolicy": "all",
+      "signingIntervalMinutes": 60
+    }
+  },
+  "disruptionBudgets": [],
+  "edges": [],
+  "effectiveHealthChecks": {
+    "h-default": {
+      "evidence-nis2-essential": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "controlOverrides": {
+          "secure-boot": {
+            "mode": "observe",
+            "reason": "Fleet default: legacy hardware"
+          }
+        },
+        "controls": {},
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "nis2-essential",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      }
+    },
+    "h-legacy": {
+      "evidence-nis2-essential": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "controlOverrides": {
+          "agent-egress-exemption": {
+            "mode": "observe",
+            "reason": "Phase-out window for legacy egress policy"
+          },
+          "secure-boot": {
+            "mode": "enforce",
+            "reason": "TPM available on this host"
+          }
+        },
+        "controls": {},
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "nis2-essential",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      }
+    }
+  },
+  "hosts": {
+    "h-default": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": []
+    },
+    "h-legacy": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": []
+    }
+  },
+  "meta": {
+    "ciCommit": null,
+    "schemaVersion": 1,
+    "signedAt": null
+  },
+  "rolloutPolicies": {
+    "all": {
+      "healthGate": {},
+      "onHealthFailure": "rollback-and-halt",
+      "strategy": "all-at-once",
+      "waves": [
+        {
+          "selector": {
+            "all": true,
+            "and": [],
+            "channel": null,
+            "hosts": [],
+            "not": null,
+            "tags": [],
+            "tagsAny": []
+          },
+          "soakMinutes": 0
+        }
+      ]
+    }
+  },
+  "schemaVersion": 1,
+  "waves": {
+    "stable": [
+      {
+        "hosts": [
+          "h-default",
+          "h-legacy"
+        ],
+        "soakMinutes": 0
+      }
+    ]
+  }
+}

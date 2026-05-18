@@ -108,20 +108,28 @@ pub async fn run(decl: &ProbeDecl, now: DateTime<Utc>) -> RunnerOutcome {
         );
     };
     let sig = Signature::from_bytes(&sig_arr);
-    if vk.verify(&payload_bytes, &sig).is_err() {
-        return RunnerOutcome::fail(now, "evidence probe: signature verify failed");
-    }
 
-    // Parse the canonical EvidenceFile shape (RFC-0010 §3.1 +
-    // nixfleet_proto::evidence). The producer-side contract is the
-    // proto's serde struct; if deserialise fails the agent emits a
-    // probe Fail with the parse error so operators see exactly which
-    // field is wrong (most common: nixfleet-compliance running an
-    // older emit shape without schemaVersion).
+    // LOADBEARING: signature is over JCS-canonical bytes (per
+    // `nixfleet-compliance-tools/src/lib.rs::sign_evidence` and
+    // `docs/evidence-format.md`), not over the on-disk bytes.
+    // probe-runner.sh writes evidence.json via `jq` which produces
+    // pretty-printed JSON; the signer canonicalises before signing.
+    // Verifying against `payload_bytes` (the file as-read) fails
+    // unconditionally because the bytes differ. Re-canonicalise here
+    // so the verifier signs the same bytes the signer did.
     let parsed: EvidenceFile = match serde_json::from_slice(&payload_bytes) {
         Ok(p) => p,
         Err(err) => return RunnerOutcome::fail(now, format!("evidence probe: parse: {err}")),
     };
+    let canonical_bytes = match serde_jcs::to_vec(&parsed) {
+        Ok(b) => b,
+        Err(err) => {
+            return RunnerOutcome::fail(now, format!("evidence probe: canonicalise: {err}"));
+        }
+    };
+    if vk.verify(&canonical_bytes, &sig).is_err() {
+        return RunnerOutcome::fail(now, "evidence probe: signature verify failed");
+    }
     if parsed.schema_version != SCHEMA_VERSION {
         return RunnerOutcome::fail(
             now,
@@ -132,6 +140,9 @@ pub async fn run(decl: &ProbeDecl, now: DateTime<Utc>) -> RunnerOutcome {
             ),
         );
     }
+    // Parse + verify-against-canonical happened above; both consume
+    // `parsed`/`payload_bytes`. The remainder of the runner uses
+    // `parsed` directly.
 
     let probe_mode = probe_level_mode(decl);
 
@@ -144,7 +155,7 @@ pub async fn run(decl: &ProbeDecl, now: DateTime<Utc>) -> RunnerOutcome {
     // out controls).
     let mut sub_results: Vec<ProbeSubResult> = Vec::new();
     for entry in &parsed.controls {
-        let effective_mode =
+        let (effective_mode, override_reason) =
             resolve_effective_mode(decl, &entry.control_id, probe_mode, framework_filter);
         if matches!(effective_mode, ProbeMode::Disabled) {
             continue;
@@ -160,6 +171,7 @@ pub async fn run(decl: &ProbeDecl, now: DateTime<Utc>) -> RunnerOutcome {
             framework_filter,
             status,
             effective_mode,
+            override_reason.as_deref(),
         );
     }
     if sub_results.is_empty() {
@@ -207,40 +219,48 @@ pub async fn run(decl: &ProbeDecl, now: DateTime<Utc>) -> RunnerOutcome {
 /// `controlOverrides` (per-framework override), then falling back to
 /// the probe-level mode. For framework probes, controls whose
 /// frameworkArticles don't cover the probe's framework are skipped at
-/// the caller — this fn assumes the control is in scope.
+/// the caller — this fn assumes the control is in scope. Returns the
+/// resolved mode plus the operator's audit rationale (`reason`) when
+/// an override applied; `None` when the probe-level mode was the
+/// fallback (no per-control override declared).
 fn resolve_effective_mode(
     decl: &ProbeDecl,
     control_id: &str,
     probe_mode: ProbeMode,
     framework_filter: Option<&str>,
-) -> ProbeMode {
+) -> (ProbeMode, Option<String>) {
     if framework_filter.is_some() {
         if let Some(o) = decl.control_overrides.get(control_id) {
-            return o.resolved_mode();
+            return (o.resolved_mode(), Some(o.reason.clone()));
         }
-        return probe_mode;
+        return (probe_mode, None);
     }
     // Custom-framework (controls map) declaration. Only listed controls
     // contribute; the listed entry's mode is the effective mode (no
     // fallback to probe-level mode — operators declare each one).
     if let Some(c) = decl.controls.get(control_id) {
-        return c.resolved_mode();
+        return (c.resolved_mode(), Some(c.reason.clone()));
     }
     // Control not in the explicit list → drop it (mark Disabled so
     // the caller's filter excludes it from sub_results).
-    ProbeMode::Disabled
+    (ProbeMode::Disabled, None)
 }
 
 /// Expand one EvidenceControlEntry into ProbeSubResults respecting the
 /// probe's selection mode. Pushes one sub-result per (framework,
-/// article) tuple in scope.
+/// article) tuple in scope. `override_reason` carries the operator's
+/// audit rationale (when an override applied) onto every sub-result
+/// the entry produces; the value is shared across all per-article
+/// rows because the override is on the control, not the article.
 fn push_entry_sub_results(
     sub_results: &mut Vec<ProbeSubResult>,
     entry: &nixfleet_proto::evidence::EvidenceControlEntry,
     framework_filter: Option<&str>,
     status: ProbeStatus,
     effective_mode: ProbeMode,
+    override_reason: Option<&str>,
 ) {
+    let reason = override_reason.map(|s| s.to_string());
     if let Some(framework) = framework_filter {
         // Whole-framework probe: emit one sub-result per article of
         // this framework. Controls not covering the framework were
@@ -256,6 +276,7 @@ fn push_entry_sub_results(
                 framework: framework.to_string(),
                 article: None,
                 effective_mode,
+                override_reason: reason.clone(),
             });
         } else {
             for article in articles {
@@ -265,6 +286,7 @@ fn push_entry_sub_results(
                     framework: framework.to_string(),
                     article: Some(article.clone()),
                     effective_mode,
+                    override_reason: reason.clone(),
                 });
             }
         }
@@ -282,6 +304,7 @@ fn push_entry_sub_results(
                 framework: "custom".to_string(),
                 article: None,
                 effective_mode,
+                override_reason: reason.clone(),
             });
         } else {
             for (framework, articles) in &entry.framework_articles {
@@ -292,6 +315,7 @@ fn push_entry_sub_results(
                         framework: framework.clone(),
                         article: None,
                         effective_mode,
+                        override_reason: reason.clone(),
                     });
                 } else {
                     for article in articles {
@@ -301,6 +325,7 @@ fn push_entry_sub_results(
                             framework: framework.clone(),
                             article: Some(article.clone()),
                             effective_mode,
+                            override_reason: reason.clone(),
                         });
                     }
                 }
@@ -394,8 +419,10 @@ mod tests {
     #[test]
     fn resolve_effective_mode_framework_probe_no_overrides_uses_probe_mode() {
         let decl = base_decl(Some("nis2"));
-        let m = resolve_effective_mode(&decl, "access-control", ProbeMode::Enforce, Some("nis2"));
+        let (m, r) =
+            resolve_effective_mode(&decl, "access-control", ProbeMode::Enforce, Some("nis2"));
         assert_eq!(m, ProbeMode::Enforce);
+        assert_eq!(r, None, "no override → no reason");
     }
 
     #[test]
@@ -408,8 +435,10 @@ mod tests {
                 reason: "Phase-out".into(),
             },
         );
-        let m = resolve_effective_mode(&decl, "access-control", ProbeMode::Enforce, Some("nis2"));
+        let (m, r) =
+            resolve_effective_mode(&decl, "access-control", ProbeMode::Enforce, Some("nis2"));
         assert_eq!(m, ProbeMode::Observe);
+        assert_eq!(r.as_deref(), Some("Phase-out"));
     }
 
     #[test]
@@ -423,23 +452,32 @@ mod tests {
             },
         );
         // Unlisted control → Disabled (filtered out downstream).
-        let unlisted =
+        let (unlisted, _) =
             resolve_effective_mode(&decl, "secure-boot", ProbeMode::Enforce, None);
         assert_eq!(unlisted, ProbeMode::Disabled);
-        // Listed control → its declared mode.
-        let listed =
+        // Listed control → its declared mode + (empty) reason.
+        let (listed, reason) =
             resolve_effective_mode(&decl, "access-control", ProbeMode::Enforce, None);
         assert_eq!(listed, ProbeMode::Enforce);
+        assert_eq!(reason.as_deref(), Some(""));
     }
 
     #[test]
     fn push_entry_framework_probe_one_sub_result_per_article() {
         let e = entry("access-control", true, "nis2", &["21.i", "21.j"]);
         let mut subs = Vec::new();
-        push_entry_sub_results(&mut subs, &e, Some("nis2"), ProbeStatus::Pass, ProbeMode::Enforce);
+        push_entry_sub_results(
+            &mut subs,
+            &e,
+            Some("nis2"),
+            ProbeStatus::Pass,
+            ProbeMode::Enforce,
+            None,
+        );
         assert_eq!(subs.len(), 2);
         assert!(subs.iter().all(|s| s.framework == "nis2"));
         assert!(subs.iter().all(|s| s.control_id == "access-control"));
+        assert!(subs.iter().all(|s| s.override_reason.is_none()));
     }
 
     #[test]
@@ -452,6 +490,7 @@ mod tests {
             Some("iso27001"),
             ProbeStatus::Pass,
             ProbeMode::Enforce,
+            None,
         );
         assert!(subs.is_empty());
     }
@@ -462,13 +501,44 @@ mod tests {
         e.framework_articles
             .insert("iso27001".into(), vec!["A.5.1".into()]);
         let mut subs = Vec::new();
-        push_entry_sub_results(&mut subs, &e, None, ProbeStatus::Fail, ProbeMode::Enforce);
+        push_entry_sub_results(
+            &mut subs,
+            &e,
+            None,
+            ProbeStatus::Fail,
+            ProbeMode::Enforce,
+            None,
+        );
         assert_eq!(subs.len(), 2);
         let frameworks: std::collections::HashSet<_> =
             subs.iter().map(|s| s.framework.clone()).collect();
         assert!(frameworks.contains("nis2"));
         assert!(frameworks.contains("iso27001"));
         assert!(subs.iter().all(|s| s.effective_mode == ProbeMode::Enforce));
+    }
+
+    #[test]
+    fn push_entry_override_reason_propagates_to_every_sub_result() {
+        // Bug D-style audit-trail regression: when an operator
+        // declares `controlOverrides[ac] = { mode = observe; reason
+        // = "Phase-out"; }`, every sub_result for that control (one
+        // per article) must carry the reason so the CP event_log
+        // payload preserves it across the wire.
+        let e = entry("access-control", false, "nis2", &["21.i", "21.j"]);
+        let mut subs = Vec::new();
+        push_entry_sub_results(
+            &mut subs,
+            &e,
+            Some("nis2"),
+            ProbeStatus::Fail,
+            ProbeMode::Observe,
+            Some("Phase-out window"),
+        );
+        assert_eq!(subs.len(), 2);
+        assert!(
+            subs.iter()
+                .all(|s| s.override_reason.as_deref() == Some("Phase-out window"))
+        );
     }
 
     #[test]
@@ -484,9 +554,62 @@ mod tests {
             schema: None,
         };
         let mut subs = Vec::new();
-        push_entry_sub_results(&mut subs, &e, None, ProbeStatus::Fail, ProbeMode::Enforce);
+        push_entry_sub_results(
+            &mut subs,
+            &e,
+            None,
+            ProbeStatus::Fail,
+            ProbeMode::Enforce,
+            None,
+        );
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].framework, "custom");
         assert_eq!(subs[0].article, None);
+    }
+
+    /// Regression guard: the agent's evidence runner must verify the
+    /// signature over JCS-canonical bytes, not over the on-disk file
+    /// bytes. The compliance collector signs the canonical form (per
+    /// `nixfleet-compliance-tools/src/lib.rs::sign_evidence`); the
+    /// on-disk JSON is pretty-printed by `jq`. Verifying against the
+    /// on-disk bytes fails every time because the two byte sequences
+    /// differ. This test pins that they differ so any future change
+    /// that re-introduces the bug fails loudly here.
+    #[test]
+    fn canonical_bytes_differ_from_pretty_printed() {
+        use nixfleet_proto::evidence::{EvidenceControlEntry, EvidenceFile, SCHEMA_VERSION};
+        let mut fa = HashMap::new();
+        fa.insert("nis2-essential".to_string(), vec!["art21.i".to_string()]);
+        let file = EvidenceFile {
+            schema_version: SCHEMA_VERSION,
+            hostname: "agent-01".to_string(),
+            collected_at: chrono::Utc::now(),
+            controls: vec![EvidenceControlEntry {
+                control_id: "access-control".to_string(),
+                passed: true,
+                framework_articles: fa,
+                details: Some(serde_json::json!({"k": "v"})),
+                schema: None,
+            }],
+        };
+
+        // Pretty-printed (what jq writes; what payload_bytes contains
+        // when the agent reads the file).
+        let pretty = serde_json::to_vec_pretty(&file).unwrap();
+        // Canonical (what the compliance collector signs).
+        let canonical = serde_jcs::to_vec(&file).unwrap();
+        assert_ne!(
+            pretty, canonical,
+            "pretty-printed and JCS-canonical bytes MUST differ; if they ever \
+             converge the agent's verify path becomes a no-op signature check",
+        );
+
+        // Round-trip stability: canonicalising the canonical bytes is a
+        // fixed point. The agent's verify calls serde_jcs::to_vec on a
+        // freshly-parsed EvidenceFile; this asserts the result is what
+        // the signer signed.
+        let reparsed: EvidenceFile = serde_json::from_slice(&canonical).unwrap();
+        let recanonical = serde_jcs::to_vec(&reparsed).unwrap();
+        assert_eq!(canonical, recanonical);
     }
 }

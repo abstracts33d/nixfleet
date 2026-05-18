@@ -167,6 +167,65 @@
           `mode == "enforce"` results.
         '';
       };
+      # Per-host overrides on the channel's compliance shorthand. Keys
+      # are framework names (matching
+      # `channels.<channel>.compliance.frameworks[*].name`). Each
+      # entry's `controlOverrides` map is MERGED with the channel-
+      # scope `controlOverrides` for the same framework at probe-
+      # synthesis time (`channelEffectiveHealthChecks`); per-host
+      # entries win on collision.
+      #
+      # Example:
+      #
+      #   hosts.legacy-egress = {
+      #     compliance.frameworks."nis2-essential".controlOverrides = {
+      #       "agent-egress-exemption" = {
+      #         mode = "observe";
+      #         reason = "Phase-out window for this host only";
+      #       };
+      #     };
+      #   };
+      #
+      # No effect on hosts not declared under the channel's
+      # `compliance.frameworks`; declaring a per-host override against
+      # a framework the channel hasn't enabled is a silent no-op
+      # (operators should declare the explicit probe under
+      # `healthChecks` for that case).
+      compliance = mkOption {
+        type = types.submodule {
+          options = {
+            frameworks = mkOption {
+              type = types.attrsOf (types.submodule {
+                options = {
+                  controlOverrides = mkOption {
+                    type = types.attrsOf (types.submodule {
+                      options = {
+                        mode = mkOption {
+                          type = types.enum ["enforce" "observe" "disabled"];
+                        };
+                        reason = mkOption {
+                          type = types.str;
+                          default = "";
+                        };
+                      };
+                    });
+                    default = {};
+                  };
+                };
+              });
+              default = {};
+            };
+          };
+        };
+        default = {};
+        description = ''
+          Per-host overrides on the channel's compliance shorthand. The
+          structure mirrors `channels.<ch>.compliance.frameworks[*]`
+          (keyed here by framework name for ergonomic per-host
+          declaration) and merges with the channel-scope entry at
+          probe-synthesis time; per-host wins.
+        '';
+      };
     };
   };
 
@@ -1125,10 +1184,33 @@
           )
           {}
           host.tags;
-        channelScope =
+        rawChannelScope =
           if cfg.channels ? ${host.channel}
           then channelEffectiveHealthChecks cfg host.channel
           else {};
+        # Per-host compliance overrides merge into the channel-scope
+        # synthesized evidence-<framework> probes' controlOverrides
+        # maps. The host's `compliance.frameworks.<name>.controlOverrides`
+        # wins on collision (per-host > channel). Probes the host's
+        # compliance attrset doesn't reference pass through unchanged.
+        hostFrameworkOverrides = host.compliance.frameworks or {};
+        channelScope =
+          lib.mapAttrs (
+            _probeName: probe:
+              if probe.kind != "evidence" || probe.framework == null
+              then probe
+              else let
+                hostFw = hostFrameworkOverrides.${probe.framework} or null;
+              in
+                if hostFw == null
+                then probe
+                else
+                  probe
+                  // {
+                    controlOverrides = (probe.controlOverrides or {}) // hostFw.controlOverrides;
+                  }
+          )
+          rawChannelScope;
         # Precedence (lowest -> highest, later wins):
         merged = fleetScope // tagScopes // channelScope // host.healthChecks;
       in

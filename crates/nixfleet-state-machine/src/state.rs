@@ -111,6 +111,16 @@ pub struct ProbeSubResult {
     /// emitted by pre-override-aware agents.
     #[serde(default)]
     pub effective_mode: ProbeMode,
+    /// Operator-declared audit rationale for the override, sourced
+    /// from `controlOverrides[control].reason` or
+    /// `controls[control].reason` in fleet.nix. `None` when no
+    /// override applies (effective_mode equals probe-level mode);
+    /// `Some("")` when the operator declared an override but left
+    /// the rationale blank. CP writes this verbatim into event_log
+    /// payloads so auditors recover "why was this control
+    /// downgraded" from the signed event stream alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

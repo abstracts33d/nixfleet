@@ -85,6 +85,7 @@ impl From<ProbeSubResultWire> for ProbeSubResult {
             framework: w.framework,
             article: w.article,
             effective_mode: w.effective_mode.into(),
+            override_reason: w.override_reason,
         }
     }
 }
@@ -97,6 +98,7 @@ impl From<ProbeSubResult> for ProbeSubResultWire {
             framework: s.framework,
             article: s.article,
             effective_mode: s.effective_mode.into(),
+            override_reason: s.override_reason,
         }
     }
 }

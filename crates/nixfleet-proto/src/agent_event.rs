@@ -221,6 +221,13 @@ pub struct ProbeSubResultWire {
     /// filtered out by the agent before emission.
     #[serde(default)]
     pub effective_mode: ProbeModeWire,
+    /// Audit rationale from the operator's `controlOverrides[id].reason`
+    /// (or `controls[id].reason`). Surfaces in CP's event_log so
+    /// auditors can recover the "why was this control downgraded?"
+    /// answer from the signed event stream alone — no out-of-band
+    /// reference to fleet.nix needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -340,6 +347,7 @@ mod tests {
                 framework: "nis2".into(),
                 article: Some("21.2.h".into()),
                 effective_mode: ProbeModeWire::Enforce,
+                override_reason: None,
             }]),
             seq: 7,
         }));
