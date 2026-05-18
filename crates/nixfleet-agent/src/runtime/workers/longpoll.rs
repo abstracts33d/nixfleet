@@ -206,8 +206,30 @@ async fn handle_dispatch(
         }
     }
 
+    // LOADBEARING: `current_closure_at_dispatch` is semantically "the
+    // closure the agent was running when CP issued this dispatch" —
+    // i.e. the rollback target if activation fails. Read it from
+    // `/run/current-system` here, NOT from `dispatch.target_closure`
+    // (which is the NEW target the dispatch is steering toward). The
+    // distinction is load-bearing for the CP-side Failed → Reverted
+    // synthesis path: on a post-rollback restart the heartbeat reports
+    // current_closure == prior closure, and the synth condition
+    // `current_closure_at_dispatch == agent_current` must match.
+    // Reading target_closure here would store the failed-target,
+    // never matching the rollback's post-restart heartbeat, and the
+    // host would stay Failed indefinitely.
+    //
+    // `None` (no `/run/current-system` symlink — fresh install, test
+    // fixture) falls back to the empty-string sentinel, same shape as
+    // CP's post-wipe `synthesize_pending_to_converged` placeholder.
+    // The rollback-target ambiguity is inert in that case: a host
+    // with no prior closure can't roll back to one.
+    let current_closure_at_dispatch =
+        crate::runtime::recovery::read_current_closure(&cfg.current_system_path)
+            .unwrap_or_default();
+
     let event = nixfleet_state_machine::Event::LocalActivate {
-        current_closure_at_dispatch: dispatch.target_closure.clone(),
+        current_closure_at_dispatch,
         // LOADBEARING: validated dispatch target carried verbatim.
         // `ensure_for_dispatch` above asserted this value matches the
         // freshly-verified per-rollout manifest's declared
