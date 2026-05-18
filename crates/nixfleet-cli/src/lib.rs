@@ -230,7 +230,7 @@ pub fn render_status_table(input: &StatusInputs) -> String {
         rows.push([
             host.hostname.clone(),
             host.channel.clone(),
-            display_hash(host.current_closure_hash.as_deref(), "<unseen>"),
+            current_column(host),
             display_hash(host.declared_closure_hash.as_deref(), "<unset>"),
             status_label(
                 host,
@@ -286,7 +286,7 @@ pub fn render_status_table_with_color(input: &StatusInputs, color: bool) -> Stri
             input.channel_freshness.get(&host.channel).copied(),
         );
         let painted = paint_status(&st, &raw_status);
-        let current = display_hash(host.current_closure_hash.as_deref(), "<unseen>");
+        let current = current_column(host);
         let declared = display_hash(host.declared_closure_hash.as_deref(), "<unset>");
         let compliance = compliance_label(host);
         rows.push([
@@ -356,6 +356,35 @@ fn display_hash(h: Option<&str>, fallback: &str) -> String {
             format!("{prefix}\u{2026}")
         }
     }
+}
+
+/// CURRENT-column rendering with a context-aware fallback chain. The
+/// agent's post-activation closure observation (`current_closure_hash`)
+/// is the canonical value, but it's `None` between rollout-open and
+/// `ActivationCompleted` (the switch-in-progress window). During that
+/// window the host is demonstrably executing
+/// `pending_closure_hash` — the closure the agent reported running
+/// when it acked the dispatch — and the operator wants to see it.
+///
+/// Fallback order:
+/// 1. `current_closure_hash` — post-activation observed closure.
+/// 2. `pending_closure_hash` rendered with a trailing arrow —
+///    mid-rollout: agent has acked, switch in progress, host still
+///    on this closure.
+/// 3. Arrow alone — rollout opened, no DispatchAck yet (brief
+///    Pending window, ≤ one long-poll cycle).
+/// 4. `<unseen>` — no rollout, no agent observation.
+fn current_column(host: &HostStatusEntry) -> String {
+    if let Some(c) = host.current_closure_hash.as_deref() {
+        return display_hash(Some(c), "");
+    }
+    if let Some(p) = host.pending_closure_hash.as_deref() {
+        return format!("{} \u{2192}", display_hash(Some(p), ""));
+    }
+    if host.rollout_state.is_some() {
+        return "\u{2192}".to_string();
+    }
+    "<unseen>".to_string()
 }
 
 fn status_label(
@@ -1212,5 +1241,74 @@ mod tests {
             painted.contains("\x1b[33m") && painted.contains("\u{26A0} stale"),
             "stale should be yellow: {painted}",
         );
+    }
+
+    /// CURRENT-column fallback: mid-rollout (switch-in-progress window)
+    /// shows the pre-dispatch closure with an arrow, not `<unseen>`.
+    /// The agent's `ActivationCompleted` hasn't landed yet, but the
+    /// host is demonstrably running `pending_closure_hash` and the
+    /// operator gets to see it.
+    #[test]
+    fn current_column_shows_pending_closure_during_rollout() {
+        use nixfleet_proto::HostRolloutState;
+        let mut h = fixture_host("a", "stable", false, None, 0);
+        h.current_closure_hash = None;
+        h.pending_closure_hash = Some("aaaa1111bbbb2222".into());
+        h.rollout_state = Some(HostRolloutState::Activating);
+        let rendered = current_column(&h);
+        assert!(
+            rendered.contains("\u{2192}"),
+            "switch-in-progress must mark direction with arrow: {rendered}",
+        );
+        assert!(
+            rendered.contains("aaaa1111bbbb2"),
+            "switch-in-progress must show pending hash: {rendered}",
+        );
+        assert!(
+            !rendered.contains("<unseen>"),
+            "switch-in-progress must NOT render <unseen>: {rendered}",
+        );
+    }
+
+    /// CURRENT-column fallback: rollout opened but no DispatchAck yet
+    /// (brief Pending window). No closure observation either way; the
+    /// arrow alone conveys "in flight, no observation yet."
+    #[test]
+    fn current_column_shows_arrow_alone_for_unacked_pending() {
+        use nixfleet_proto::HostRolloutState;
+        let mut h = fixture_host("a", "stable", false, None, 0);
+        h.current_closure_hash = None;
+        h.pending_closure_hash = None;
+        h.rollout_state = Some(HostRolloutState::Pending);
+        let rendered = current_column(&h);
+        assert_eq!(
+            rendered, "\u{2192}",
+            "unacked-pending must render just the arrow: {rendered}",
+        );
+    }
+
+    /// CURRENT-column fallback: with no rollout open + no observation,
+    /// `<unseen>` is preserved as the honest answer.
+    #[test]
+    fn current_column_preserves_unseen_with_no_data() {
+        let mut h = fixture_host("a", "stable", false, None, 0);
+        h.current_closure_hash = None;
+        h.pending_closure_hash = None;
+        h.rollout_state = None;
+        let rendered = current_column(&h);
+        assert_eq!(rendered, "<unseen>");
+    }
+
+    /// CURRENT-column fallback: post-activation observation wins over
+    /// pending-closure data, even if both are populated.
+    #[test]
+    fn current_column_prefers_current_over_pending() {
+        let mut h = fixture_host("a", "stable", true, Some(0), 0);
+        h.current_closure_hash = Some("ccccdddd33334444".into());
+        h.pending_closure_hash = Some("aaaabbbb11112222".into());
+        let rendered = current_column(&h);
+        assert!(rendered.contains("ccccdddd33334"));
+        assert!(!rendered.contains("aaaabbbb"));
+        assert!(!rendered.contains("\u{2192}"));
     }
 }
