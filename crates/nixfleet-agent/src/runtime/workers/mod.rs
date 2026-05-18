@@ -8,6 +8,7 @@
 
 pub mod activation;
 pub mod advance_ticker;
+pub mod cert_renewal;
 pub mod heartbeat;
 pub mod longpoll;
 pub mod manifest_poll;

@@ -193,6 +193,19 @@ pub struct AgentConfig {
     /// path; `read_current_closure` returns `None` and the heartbeat
     /// behaves as it did pre-LIFT-#5.
     pub current_system_path: std::path::PathBuf,
+    /// Path to the host's SSH ed25519 key. The agent uses it as the
+    /// CSR signing key on `enroll` and on cert `renew` — the renewed
+    /// cert's pubkey is the host's SSH host pubkey, same as at
+    /// first-boot enrollment (RFC-0003 §2). Production:
+    /// `/etc/ssh/ssh_host_ed25519_key`.
+    pub ssh_host_key_file: std::path::PathBuf,
+    /// Fraction of mTLS cert validity remaining below which the
+    /// `cert_renewal` worker calls `enrollment::renew`. `None` →
+    /// disable the renewal worker (the cert stays in place until
+    /// expiry). Operator MAY raise (e.g. 0.8) for short-cycle
+    /// hardware testing of renewal flows. Strictly between 0 and 1
+    /// when set; the worker refuses to start otherwise.
+    pub renewal_threshold_fraction: Option<f64>,
 }
 
 /// Spawn the reducer + worker constellation.
@@ -254,10 +267,10 @@ pub fn spawn(cancel: CancellationToken, cfg: AgentConfig, clock: ClockHandle) ->
 
     // One oneshot per worker. Reducer task takes ownership of the
     // senders; on reducer exit every sender drops, every worker's
-    // `select!` shutdown arm fires. Seven workers now: probe,
-    // activation, longpoll, heartbeat, advance_ticker, outbound,
-    // manifest_poll.
-    const SHUTDOWN_TOKEN_COUNT: usize = 7;
+    // `select!` shutdown arm fires. Eight workers: probe, activation,
+    // longpoll, heartbeat, advance_ticker, outbound, manifest_poll,
+    // cert_renewal.
+    const SHUTDOWN_TOKEN_COUNT: usize = 8;
     let mut shutdown_senders: Vec<oneshot::Sender<()>> = Vec::new();
     let mut shutdown_tokens: Vec<ShutdownToken> = Vec::new();
     for _ in 0..SHUTDOWN_TOKEN_COUNT {
@@ -266,6 +279,9 @@ pub fn spawn(cancel: CancellationToken, cfg: AgentConfig, clock: ClockHandle) ->
         shutdown_tokens.push(ShutdownToken(rx));
     }
     // Pop in reverse so each consumer gets a distinct token.
+    let cert_renewal_shutdown = shutdown_tokens
+        .pop()
+        .expect("SHUTDOWN_TOKEN_COUNT allocated");
     let manifest_poll_shutdown = shutdown_tokens
         .pop()
         .expect("SHUTDOWN_TOKEN_COUNT allocated");
@@ -328,6 +344,11 @@ pub fn spawn(cancel: CancellationToken, cfg: AgentConfig, clock: ClockHandle) ->
             clock.clone(),
             input_tx.clone(),
             manifest_poll_shutdown,
+        ),
+        workers::cert_renewal::spawn(
+            cfg.clone(),
+            clock.clone(),
+            cert_renewal_shutdown,
         ),
     ];
 

@@ -70,13 +70,23 @@ pub(crate) struct Args {
     /// Signs evidence payloads; absent file -> events post unsigned.
     /// Plumbed for v0.2 even though the runtime doesn't consume it yet;
     /// host-report signing reattaches to the runtime's outbound queue
-    /// as a v0.2.1 follow-up.
+    /// as a v0.2.1 follow-up. Also used by `cert_renewal` worker as
+    /// the CSR signing key on `/v1/agent/renew` (RFC-0003 §2 — the
+    /// renewed cert's pubkey is the host's SSH host pubkey).
     #[arg(
         long,
         env = "NIXFLEET_AGENT_SSH_HOST_KEY_FILE",
         default_value = "/etc/ssh/ssh_host_ed25519_key"
     )]
     ssh_host_key_file: PathBuf,
+
+    /// Fraction of mTLS cert validity remaining below which the agent
+    /// auto-renews via `/v1/agent/renew`. Unset → renewal worker
+    /// disabled. Must be strictly between 0 and 1; the worker exits
+    /// on out-of-range values. Plumbed by the NixOS module's
+    /// `services.nixfleet-agent.renewalThresholdFraction` option.
+    #[arg(long, env = "NIXFLEET_AGENT_RENEWAL_THRESHOLD_FRACTION")]
+    renewal_threshold_fraction: Option<f64>,
 }
 
 #[tokio::main]
@@ -145,6 +155,8 @@ async fn main() -> anyhow::Result<()> {
             client_cert: args.client_cert.clone(),
             client_key: args.client_key.clone(),
             current_system_path: nixfleet_agent::runtime::recovery::default_current_system_path(),
+            ssh_host_key_file: args.ssh_host_key_file.clone(),
+            renewal_threshold_fraction: args.renewal_threshold_fraction,
         },
         clock,
     );
