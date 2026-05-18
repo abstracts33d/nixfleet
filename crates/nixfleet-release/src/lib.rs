@@ -301,7 +301,7 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
             .with_context(|| format!("serialise manifest for channel {channel_name}"))?;
         let manifest_canonical = nixfleet_canonicalize::canonicalize(&manifest_json)
             .with_context(|| format!("canonicalize manifest for channel {channel_name}"))?;
-        // LOADBEARING: rolloutId is the canonical RFC-0012 §6.3 composite,
+        // LOADBEARING: rolloutId is the canonical RFC-0008 §6.3 composite,
         // built from the FULL channel_ref. Not display_name, which truncates
         // to a 7-char short ref for operator-facing labels. Identical
         // (channel, channel_ref) inputs produce identical rolloutId, so

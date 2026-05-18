@@ -56,7 +56,7 @@
         Path to the trust-root JSON file. The default is materialised
         by this module from config.nixfleet.trust via environment.etc;
         override only when sourcing the file from a secrets manager.
-        See docs/rfcs/0005-trust-lifecycle.md §1.5 for the wiring.
+        See docs/rfcs/0010-trust-lifecycle.md §1.5 for the wiring.
       '';
     };
 
@@ -65,7 +65,7 @@
       default = 3600;
       description = ''
         Acceptance window (seconds) for `meta.signedAt` on fleet.resolved.json
-        + per-rollout manifest verification (RFC-0005 §1.5 replay defense).
+        + per-rollout manifest verification (RFC-0010 §1.5 replay defense).
         Default `3600` matches the channel-refs poll cadence — CP re-signs
         every hour, agents reject anything older as stale. Test harnesses
         with fixed-`signedAt` fixtures override to a much larger value (e.g.
@@ -156,7 +156,7 @@
       description = ''
         Host SSH ed25519 private key. The agent uses the matching
         PUBLIC half to verify compliance-evidence files produced by the
-        local collector unit (RFC-0004 §5 + RFC-0010 §7 evidence probe).
+        local collector unit (RFC-0009 §5 + RFC-0007 §7 evidence probe).
         Default matches OpenSSH's stock path; override only if the host
         runs sshd with a non-default `HostKey` config.
       '';
@@ -181,7 +181,7 @@
         Effective per-host probe set, resolved by `mkFleet` from
         `nixfleet.healthChecks` (fleet) + `nixfleet.tags.<>.healthChecks`
         (tag-scoped) + `nixfleet.hosts.<>.healthChecks` (host-scoped) with
-        host > tag > fleet precedence (RFC-0010 §3.2). The framework's
+        host > tag > fleet precedence (RFC-0007 §3.2). The framework's
         `mkHost` plumbs the resolved set into this option at fleet-eval
         time; `_agent.nix` renders it as
         `/etc/nixfleet/agent/health-checks.json`. Operators do NOT set

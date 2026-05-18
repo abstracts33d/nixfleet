@@ -1,4 +1,4 @@
-//! RFC-0012 §10 + §6.1 item 4 re-derivability invariant.
+//! RFC-0008 §10 + §6.1 item 4 re-derivability invariant.
 //!
 //! Walking `event_log` chronologically must reproduce the `rollouts`
 //! derived view from empty. This test stages a known rollout lifecycle
@@ -9,7 +9,7 @@
 //!
 //! Drift between the live applier-written table and the rebuild path
 //! is the bug class this test prevents — exactly the bug class the
-//! derived-view discipline (RFC-0011 §2.4) exists to eliminate.
+//! derived-view discipline (RFC-0004 §2.4) exists to eliminate.
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use nixfleet_control_plane::db::Db;
@@ -48,7 +48,7 @@ fn apply_effect(db: &Db, now: DateTime<Utc>, effect: RolloutEffect) {
                 .unwrap();
         }
         RolloutEffect::SchedulePruning { .. } => {
-            // Deferred per RFC-0012 §3 / §13; no-op in 10b.
+            // Deferred per RFC-0008 §3 / §13; no-op in 10b.
         }
     }
 }

@@ -1,6 +1,6 @@
 # Per-host framework-level `mode = "disabled"` deactivates the
 # synthesised `evidence-<framework>` probe for that host. Closes the
-# Aether/Darwin case (RFC-0010 §3.5 + §4): the operator declares the
+# Aether/Darwin case (RFC-0007 §3.5 + §4): the operator declares the
 # disable inline next to the host rather than carving probe-shadow
 # overrides into `healthChecks`.
 {mkFleet, ...}:

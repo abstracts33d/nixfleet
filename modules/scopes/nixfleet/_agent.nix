@@ -10,7 +10,7 @@
   trustConfig = import ./_trust-json.nix {trust = config.nixfleet.trust;};
   trustJson = pkgs.writers.writeJSON "trust.json" trustConfig;
 
-  # RFC-0010 §4 — render the mkFleet-resolved effective probe set
+  # RFC-0007 §4 — render the mkFleet-resolved effective probe set
   # (host > tag > fleet) into `/etc/nixfleet/agent/health-checks.json`
   # at a hardcoded path. The agent reads from this path directly (no
   # `--health-checks-config` flag); the closure hash chain transitively

@@ -55,9 +55,9 @@ async fn handle_intent(input_tx: &mpsc::Sender<ReducerInput>, intent: Activation
     let started_at = Utc::now();
     // LOADBEARING: Failed → Activating is not a legal state-machine
     // transition; rollback drives Failed → Reverted directly via
-    // `LocalRollbackCompleted` (RFC-0008 §3 / `failed.rs`). The forward
+    // `LocalRollbackCompleted` (RFC-0005 §3 / `failed.rs`). The forward
     // path emits `LocalActivationStarted` to stamp
-    // `activation_started_at` (RFC-0008 §4.2); the rollback path skips
+    // `activation_started_at` (RFC-0005 §4.2); the rollback path skips
     // it — emitting an Activation* event from Failed state causes the
     // reducer to silently reject both LocalActivationStarted and
     // LocalActivationCompleted, blocking Failed → Reverted bookkeeping

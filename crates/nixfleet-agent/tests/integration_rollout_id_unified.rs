@@ -1,4 +1,4 @@
-//! End-to-end round-trip for the canonical RolloutId format (RFC-0012 §6.3).
+//! End-to-end round-trip for the canonical RolloutId format (RFC-0008 §6.3).
 //!
 //! Producer writes the signed manifest at `{channel}@{channel_ref}.json`;
 //! CP serves it through `/v1/rollouts/{rolloutId}`; agent's
@@ -267,7 +267,7 @@ async fn ensure_for_dispatch_round_trips_canonical_rollout_id_via_http() {
 
     // Producer-side projection: nixfleet-release sets channel + channel_ref
     // from the resolved fleet's ci_commit; the rollout_id is the canonical
-    // RFC-0012 §6.3 composite.
+    // RFC-0008 §6.3 composite.
     let manifest = RolloutManifest {
         schema_version: 1,
         display_name: "stable@abc1234".into(),

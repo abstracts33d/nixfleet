@@ -4,7 +4,7 @@
 //! orphan rule: every conversion has a state-machine-local type on at
 //! least one side. Keeps `nixfleet-proto` free of state-machine
 //! awareness (proto is the leaf crate) and CP free of duplicate wire
-//! definitions (the architect's d013 lift per RFC-0011 §2).
+//! definitions (the architect's d013 lift per RFC-0004 §2).
 
 use nixfleet_proto::agent_event::{
     AgentEvent, ProbeModeWire, ProbeStatusWire, ProbeSubResultWire, ProbeTopologyEntryWire,

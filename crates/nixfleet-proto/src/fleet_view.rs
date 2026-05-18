@@ -69,7 +69,7 @@ pub struct HostsResponse {
 ///
 /// Distinct from [`RolloutEvents`], which projects the chronological
 /// `event_log` stream for the same rollout (engineer-facing replay
-/// surface; RFC-0008 §10.5 + Plan 04).
+/// surface; RFC-0005 §10.5 + Plan 04).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RolloutHosts {
     pub rollout_id: RolloutId,
@@ -96,7 +96,7 @@ pub struct RolloutHostEntry {
 
 /// Chronological event-log stream for a single rollout — every row in
 /// `event_log WHERE rollout_id = ? ORDER BY seq ASC`. Engineer-facing
-/// replay surface (RFC-0008 §10.5 + Plan 04 §"Event log schema"):
+/// replay surface (RFC-0005 §10.5 + Plan 04 §"Event log schema"):
 /// reproduces the per-host state evolution by replaying these entries
 /// through `nixfleet_state_machine::step`.
 ///

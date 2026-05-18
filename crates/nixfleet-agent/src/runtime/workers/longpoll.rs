@@ -2,7 +2,7 @@
 //! against the CP. On a 200 with a Dispatch body, fetches + verifies
 //! the rollout manifest via the disk-backed [`ManifestCache`], asserts
 //! the dispatched `target_closure` matches the manifest's declaration
-//! for this host (RFC-0008 §4.1 advisory-payload contract), then emits
+//! for this host (RFC-0005 §4.1 advisory-payload contract), then emits
 //! `LocalActivate` into the reducer.
 //!
 //! First dispatch per rollout fetches `/v1/rollouts/{id}` from CP,
@@ -157,7 +157,7 @@ async fn handle_dispatch(
         );
     }
 
-    // RFC-0008 §4.1 advisory-payload contract enforced by the
+    // RFC-0005 §4.1 advisory-payload contract enforced by the
     // ManifestCache: fetches the rollout's signed manifest (cache hit
     // re-verifies disk bytes; miss fetches from CP, verifies, writes
     // through), then asserts the dispatched target_closure matches the
@@ -216,7 +216,7 @@ async fn handle_dispatch(
         // against the reducer's stale manifests snapshot).
         target_closure: dispatch.target_closure.clone(),
         received_at: dispatch.enqueued_at,
-        // CP-resolved soak deadline (RFC-0011 §1 invariant 1: CP is
+        // CP-resolved soak deadline (RFC-0004 §1 invariant 1: CP is
         // the single source of truth for the policy-resolved soak
         // window).
         soak_due_at: dispatch.soak_due_at,

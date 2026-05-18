@@ -1,4 +1,4 @@
-//! Probe worker (RFC-0010 §8). On each `LocalResetProbeCache`:
+//! Probe worker (RFC-0007 §8). On each `LocalResetProbeCache`:
 //!
 //! 1. Aborts every per-probe ticker spawned for the previous rollout
 //!    (the `JoinHandle::abort` invariant: no probe ticker from rollout
@@ -6,7 +6,7 @@
 //! 2. Reads `/etc/nixfleet/agent/health-checks.json` (rendered by the
 //!    host's NixOS module from the mkFleet-resolved effective set —
 //!    closure-driven, transitively signed via the closure hash chain
-//!    per RFC-0010 §4). Path is hardcoded; no `--health-checks-config`
+//!    per RFC-0007 §4). Path is hardcoded; no `--health-checks-config`
 //!    flag.
 //! 3. Emits one `LocalProbeTopologyDeclared` event into the reducer
 //!    input MPSC, then spawns one ticker per probe with
@@ -16,7 +16,7 @@
 //! `runOnce = true`). On each tick it dispatches to the kind-specific
 //! `probe_runners::run` and emits `LocalProbeResult`. The ticker holds
 //! its own first-observation + first-failure flags to drive the
-//! `LocalProbeObservedFirst` / `LocalProbeFailureFirst` events RFC-0008
+//! `LocalProbeObservedFirst` / `LocalProbeFailureFirst` events RFC-0005
 //! §3.2 requires.
 //!
 //! Test-mode escape hatch: `NIXFLEET_AGENT_PROBE_TEST_MODE=1` skips
@@ -47,7 +47,7 @@ pub fn spawn(
     tokio::spawn(async move {
         let mut shutdown_rx = shutdown.into_inner();
         // Per-probe ticker handles for the CURRENT rollout. On reset we
-        // .abort() all of them — RFC-0010 §6 invariant.
+        // .abort() all of them — RFC-0007 §6 invariant.
         let mut tickers: HashMap<String, JoinHandle<()>> = HashMap::new();
         loop {
             tokio::select! {
@@ -141,7 +141,7 @@ async fn handle_reset(
 
     // Emit topology declaration BEFORE spawning tickers so the CP's
     // event_log has the authoritative declared-probe set on record
-    // before any per-probe result lands (RFC-0010 §8).
+    // before any per-probe result lands (RFC-0007 §8).
     let topology: Vec<ProbeTopologyEntry> = decls
         .iter()
         .map(|(name, d)| ProbeTopologyEntry {

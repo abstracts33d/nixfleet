@@ -6,7 +6,7 @@
   mkFleetImpl = import ./mk-fleet.nix {inherit lib;};
   mkHost = import ./mk-host.nix {inherit inputs lib;};
 
-  # Framework-owned mkFleet → nixosConfigurations wiring (RFC-0011 §2.2
+  # Framework-owned mkFleet → nixosConfigurations wiring (RFC-0004 §2.2
   # + §3 anti-pattern #4). The user authors `hosts.<name>.nixosArgs`
   # once; the framework computes `nixosConfigurations` by calling
   # `mkHost` for each host with `fleetResolved = fleet.resolved`

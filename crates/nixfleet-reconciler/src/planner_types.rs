@@ -1,9 +1,9 @@
-//! Types consumed/produced by the new planner (RFC-0009 §4.1).
+//! Types consumed/produced by the new planner (RFC-0006 §4.1).
 //!
 //! These types are NEW alongside the existing `reconcile()` /
 //! `gates::*` / `Observed` types — both coexist through Phase 5/6 of
 //! the v0.2 fold. Phase 6 wires CP's runtime applier onto the new
-//! planner and deletes the old path wholesale per RFC-0009 §12.
+//! planner and deletes the old path wholesale per RFC-0006 §12.
 //!
 //! Dispatch-path enforcement of "verified data only" lands here: the
 //! planner accepts `SignedManifestSet`, which carries `Verified<T>`
@@ -25,7 +25,7 @@ pub type HostId = String;
 pub type ClosureHash = String;
 
 // `RolloutId` is a newtype around `"{channel}@{channel_ref}"`
-// (RFC-0012 §6.3); lives in nixfleet-proto. Re-exported here so
+// (RFC-0008 §6.3); lives in nixfleet-proto. Re-exported here so
 // callers that already
 // `use nixfleet_reconciler::planner_types::RolloutId` keep working.
 pub use nixfleet_proto::RolloutId;
@@ -37,7 +37,7 @@ pub use nixfleet_proto::RolloutId;
 ///
 /// Holding a `&SignedManifestSet` is the planner's proof that every
 /// manifest in scope has passed the trust contract (RFC-0002 §3 +
-/// RFC-0005 §1.5).
+/// RFC-0010 §1.5).
 pub struct SignedManifestSet {
     pub fleet: Verified<FleetResolved>,
     /// Per-channel signed rollout manifests, keyed by channel name.
@@ -70,9 +70,9 @@ pub struct FleetState {
 
     /// Per-(rollout, host) outstanding enforce-mode probe failure count.
     /// Populated from `db::probe_failures::outstanding_failing_enforce_probes_by_rollout`
-    /// at `FleetState` construction time (RFC-0010 §7.2). Read by the
+    /// at `FleetState` construction time (RFC-0007 §7.2). Read by the
     /// compliance-wave gate; absent entries mean zero failing enforce
-    /// probes (RFC-0008 §6 — no fail-open fallback).
+    /// probes (RFC-0005 §6 — no fail-open fallback).
     pub outstanding_failing_enforce_probes: HashMap<RolloutId, HashMap<HostId, usize>>,
 }
 
@@ -113,7 +113,7 @@ pub enum PlanAction {
     },
 
     /// Queue a Dispatch for a single host on the agent's next long-poll
-    /// to `/v1/agent/dispatch`. Per RFC-0008 §4.1 the payload is
+    /// to `/v1/agent/dispatch`. Per RFC-0005 §4.1 the payload is
     /// advisory; agent cross-checks against signed manifest.
     QueueDispatch {
         host: HostId,
@@ -123,11 +123,11 @@ pub enum PlanAction {
     },
 
     // No `MarkChannelTerminal` variant: terminal transitions are driven
-    // by the rollout reducer (RFC-0012 §3) via
+    // by the rollout reducer (RFC-0008 §3) via
     // `RolloutEffect::RecordRolloutTransition`, not by the planner.
     //
     // No `ClearStaleQuarantine` variant: quarantines are append-only
-    // under the derived-view discipline (RFC-0012 §6.4). Operator-
+    // under the derived-view discipline (RFC-0008 §6.4). Operator-
     // driven clearance would land as an explicit event matching the
     // `OperatorClearance` shape.
     /// Record that a channel was halted (operator-visible status hint).

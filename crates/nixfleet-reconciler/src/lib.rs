@@ -1,5 +1,5 @@
 #![allow(clippy::doc_lazy_continuation)]
-//! Pure planner + verification primitives for the RFC-0009 runtime.
+//! Pure planner + verification primitives for the RFC-0006 runtime.
 
 pub mod evidence;
 pub mod manifest;

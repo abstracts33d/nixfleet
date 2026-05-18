@@ -11,7 +11,7 @@ use axum::response::IntoResponse;
 use super::super::route_error::internal_warn;
 use super::super::state::AppState;
 
-/// LOADBEARING: validates the canonical RFC-0012 §6.3 RolloutId shape
+/// LOADBEARING: validates the canonical RFC-0008 §6.3 RolloutId shape
 /// `"{channel}@{channel_ref}"` and blocks path-traversal smuggling
 /// (`/`, `..`, whitespace, multi-`@` all fail the character classes).
 /// Channel is locked to lowercase ASCII to match the cycle's convention
@@ -165,7 +165,7 @@ pub(in crate::server) async fn list_active(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let db = state.db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    // Per-host states sourced from `host_rollout_records` (RFC-0008 §5).
+    // Per-host states sourced from `host_rollout_records` (RFC-0005 §5).
     // Legacy `host_dispatch_state` is gone; the new projection groups
     // rows by rollout_id and renders the 6-state machine value as-is.
     let rollouts_meta = db
@@ -224,7 +224,7 @@ pub(in crate::server) async fn lifecycle(
         "rolloutId": rollout_id,
         "state": row.state.as_db_str(),
         "supersededAt": row.superseded_at.map(|t: chrono::DateTime<chrono::Utc>| t.to_rfc3339()),
-        // `superseded_by` dropped in Phase 10a per RFC-0012 §6.3 + SR-3.
+        // `superseded_by` dropped in Phase 10a per RFC-0008 §6.3 + SR-3.
         // Operator-facing successor lookup migrates to an event_log walk
         // for `SuccessorOpened` events; not yet wired (v0.2.x follow-up).
         "supersededBy": serde_json::Value::Null,
@@ -251,7 +251,7 @@ pub(in crate::server) async fn lifecycle(
 /// `nixfleet rollout hosts <id>` renders this as a table.
 ///
 /// For the chronological event-log stream (engineer-facing replay
-/// surface; RFC-0008 §10.5), see [`events`] / `GET /v1/rollouts/{id}/events`.
+/// surface; RFC-0005 §10.5), see [`events`] / `GET /v1/rollouts/{id}/events`.
 pub(in crate::server) async fn hosts(
     State(state): State<Arc<AppState>>,
     Path(rollout_id): Path<String>,
@@ -263,7 +263,7 @@ pub(in crate::server) async fn hosts(
 
     // Per-host summary rows from host_rollout_records. v0.2 collapses to
     // one row per (rollout, host) because dispatch is now event-driven
-    // (RFC-0008 §4) — multiple dispatches against the same pair are
+    // (RFC-0005 §4) — multiple dispatches against the same pair are
     // re-emits of the same logical intent, not distinct rows. The `wave`
     // field is read from the verified manifest's `host_set` for that
     // host.
@@ -318,7 +318,7 @@ pub(in crate::server) async fn hosts(
 }
 
 /// `GET /v1/rollouts/{rolloutId}/events` — chronological event-log
-/// stream for a rollout (RFC-0008 §10.5 + Plan 04 §"Event log schema").
+/// stream for a rollout (RFC-0005 §10.5 + Plan 04 §"Event log schema").
 ///
 /// Returns every `event_log` row whose `rollout_id` matches, sorted by
 /// `seq` ascending. Engineer-facing surface: feed the rows through
@@ -421,7 +421,7 @@ mod tests {
     use crate::db::Db;
     use nixfleet_state_machine::{HostRolloutState as SmState, HostState};
 
-    /// Canonical RFC-0012 §6.3 RolloutId, valid per `looks_like_rollout_id`.
+    /// Canonical RFC-0008 §6.3 RolloutId, valid per `looks_like_rollout_id`.
     const TEST_ROLLOUT: &str = "stable@deadbeef";
 
     #[test]
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn validator_rejects_legacy_sha256_hex_alone() {
         // Reject the legacy hex-only format (64 lowercase hex, no `@`
-        // separator) per RFC-0012 §6.3.
+        // separator) per RFC-0008 §6.3.
         assert!(!looks_like_rollout_id(
             "abc1234567890123456789012345678901234567890123456789012345678901",
         ));

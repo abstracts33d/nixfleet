@@ -37,7 +37,7 @@ fn build_router(state: Arc<AppState>) -> Router {
 
     let authenticated_v1 = Router::new()
         .route("/v1/whoami", get(routes::status::whoami))
-        // RFC-0008 §4 wire protocol (replaces the v0.1 checkin / confirm
+        // RFC-0005 §4 wire protocol (replaces the v0.1 checkin / confirm
         // pull pipeline — agents now POST events as they happen and
         // long-poll for dispatches).
         .route("/v1/agent/events", post(routes::events::events))
@@ -113,12 +113,12 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         if args.bootstrap_nonces.is_none() {
             missing.push("--bootstrap-nonces-{artifact,signature}-url (bootstrap-nonces polling disabled - replay-after-DB-wipe protection absent, nixfleet#96)");
         }
-        // RFC-0005 §1.5.1: file-backed CA leaves signing material on disk;
+        // RFC-0010 §1.5.1: file-backed CA leaves signing material on disk;
         // production deployments MUST use the TPM backend or opt-in explicitly.
         let tpm_configured = args.tpm_ca_pubkey_raw.is_some() && args.tpm_ca_sign_wrapper.is_some();
         let file_only = args.fleet_ca_key.is_some() && !tpm_configured;
         if file_only && !args.allow_file_ca_key {
-            missing.push("--tpm-ca-pubkey-raw + --tpm-ca-sign-wrapper (file-backed --fleet-ca-key keeps signing material on disk; pass --allow-file-ca-key to opt out, RFC-0005 §1.5.1)");
+            missing.push("--tpm-ca-pubkey-raw + --tpm-ca-sign-wrapper (file-backed --fleet-ca-key keeps signing material on disk; pass --allow-file-ca-key to opt out, RFC-0010 §1.5.1)");
         }
         if !missing.is_empty() {
             anyhow::bail!(
@@ -297,7 +297,7 @@ pub async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         ));
     }
 
-    // RFC-0009 §7.2 runtime: MPSC reducer + applier + workers + event_log
+    // RFC-0006 §7.2 runtime: MPSC reducer + applier + workers + event_log
     // writer. Sole CP-side processing path; the v0.1 reconcile loop is
     // gone.
     {
@@ -535,7 +535,7 @@ mod strict_mode_tests {
         args
     }
 
-    /// RFC-0005 §1.5.1: `--strict` + file-only CA + no opt-in must refuse to start.
+    /// RFC-0010 §1.5.1: `--strict` + file-only CA + no opt-in must refuse to start.
     #[tokio::test]
     async fn strict_bails_when_file_ca_only_without_opt_in() {
         let mut args = args_satisfying_existing_strict_gates(true);
@@ -547,7 +547,7 @@ mod strict_mode_tests {
             "expected TPM hint in strict bail; got: {msg}",
         );
         assert!(
-            msg.contains("RFC-0005 §1.5.1"),
+            msg.contains("RFC-0010 §1.5.1"),
             "expected RFC pointer in strict bail; got: {msg}",
         );
         assert!(
@@ -556,7 +556,7 @@ mod strict_mode_tests {
         );
     }
 
-    /// RFC-0005 §1.5.1: explicit opt-in lets file-only CA pass `--strict`.
+    /// RFC-0010 §1.5.1: explicit opt-in lets file-only CA pass `--strict`.
     /// Other startup paths may still fail; this test only asserts the CA
     /// gate does NOT contribute to the bail message.
     #[tokio::test]
@@ -575,7 +575,7 @@ mod strict_mode_tests {
         );
     }
 
-    /// RFC-0005 §1.5.1: TPM backend satisfies the CA gate without opt-in.
+    /// RFC-0010 §1.5.1: TPM backend satisfies the CA gate without opt-in.
     #[tokio::test]
     async fn strict_passes_ca_gate_when_tpm_configured() {
         let mut args = args_satisfying_existing_strict_gates(true);

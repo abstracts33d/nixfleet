@@ -173,7 +173,7 @@ struct ServeFlags {
     /// configured (i.e., neither `--tpm-ca-pubkey-raw` nor
     /// `--tpm-ca-sign-wrapper` is set). Production deployments SHOULD use
     /// the TPM backend; this opt-in exists for dev fleets where TPM
-    /// hardware is unavailable. See RFC-0005 §1.5.1.
+    /// hardware is unavailable. See RFC-0010 §1.5.1.
     #[arg(long, env = "NIXFLEET_CP_ALLOW_FILE_CA_KEY")]
     allow_file_ca_key: bool,
 }

@@ -1,4 +1,4 @@
-//! Pure planner (RFC-0009 §4.1).
+//! Pure planner (RFC-0006 §4.1).
 //!
 //! Emits `OpenRollout` actions for channels with a verified manifest but
 //! no rollout row for the current target_ref yet, and walks each active
@@ -50,7 +50,7 @@ pub fn plan_next(
     // asks "is anything in flight on this predecessor channel?".
     //
     // `rollout_id` is the canonical `"{channel}@{channel_ref}"`
-    // composite (RFC-0012 §6.3). `target_ref` stays as the raw
+    // composite (RFC-0008 §6.3). `target_ref` stays as the raw
     // channel_ref since it identifies the channel pointer, not the
     // rollout.
     for (channel, rollout_manifest) in &manifests.rollouts {
@@ -146,7 +146,7 @@ pub fn plan_next(
     }
 
     // Terminal-transition emission lives on the rollout reducer (per
-    // RFC-0012 §3 + §7). The planner does not emit
+    // RFC-0008 §3 + §7). The planner does not emit
     // `MarkChannelTerminal`; the rollout reducer's
     // `RolloutEffect::RecordRolloutTransition` drives the transition
     // when it consumes the last per-host
@@ -407,13 +407,13 @@ mod tests {
             })
             .expect("OpenRollout for stable must be emitted");
         // LOADBEARING: rollout_id is the canonical
-        // `"{channel}@{channel_ref}"` composite (RFC-0012 §6.3), not
+        // `"{channel}@{channel_ref}"` composite (RFC-0008 §6.3), not
         // channel_ref alone — multiple channels can share a ref, so a
         // ref-only identity would collide.
         assert_eq!(
             open.0.as_str(),
             "stable@r1",
-            "rollout_id MUST equal RolloutId::new(channel, channel_ref) per RFC-0012 §6.3"
+            "rollout_id MUST equal RolloutId::new(channel, channel_ref) per RFC-0008 §6.3"
         );
         assert_eq!(
             open.1, "r1",
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn plan_next_does_not_re_emit_open_rollout_for_terminal_rollout() {
         // LOADBEARING: Terminal rollouts stay in the `rollouts` table
-        // (RFC-0012 §6.3) so the channel-edges gate can read
+        // (RFC-0008 §6.3) so the channel-edges gate can read
         // `terminal_at`. The OpenRollout predicate MUST be
         // rollout-id-keyed; a channel-keyed predicate that filtered
         // by `terminal_at.is_none()` would re-fire OpenRollout for a

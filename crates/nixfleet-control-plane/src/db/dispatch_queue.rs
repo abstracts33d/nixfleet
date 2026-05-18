@@ -1,4 +1,4 @@
-//! Pending Dispatch payloads awaiting agent long-poll (RFC-0008 §4.1 +
+//! Pending Dispatch payloads awaiting agent long-poll (RFC-0005 §4.1 +
 //! plan 06).
 //!
 //! The runtime applier UPSERTs into this table on every

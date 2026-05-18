@@ -31,7 +31,7 @@ The doc tree splits by audience and lifecycle.
 
 ## RFCs
 
-See [rfcs/index.md](rfcs/index.md). The v0.2 protocol contract is owned by RFC-0001/0002/0003; the v0.3 trajectory by RFC-0004/0005/0006/0007.
+See [rfcs/index.md](rfcs/index.md). The v0.2 contract is owned by RFC-0001/0002/0003 (topology + reconciler + protocol) plus RFC-0004/0005/0006/0007/0008 (lift discipline, event-driven state machine, control-plane shell, multi-scope probes, derived-view rollout machine). RFC-0009/0010/0011/0012 trace the v0.3 trajectory (hardware-rooted trust, lifecycle, freshness, air-gap).
 
 ## Composed view (mdbook)
 

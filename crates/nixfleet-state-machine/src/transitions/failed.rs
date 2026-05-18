@@ -2,7 +2,7 @@
 //!
 //! - `LocalRollbackCompleted` — agent has executed rollback per manifest
 //!   policy; drives `Failed → Reverted`. Single signed source of truth is
-//!   the manifest; CP issued no signal (RFC-0008 §4.1).
+//!   the manifest; CP issued no signal (RFC-0005 §4.1).
 //! - `RemoteRollbackComplete` — CP mirror sees the same; emits
 //!   `RemoteInsertQuarantine` for the bad closure on the channel.
 //!

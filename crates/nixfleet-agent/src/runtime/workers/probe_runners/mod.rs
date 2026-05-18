@@ -1,7 +1,7 @@
-//! Per-kind probe runners (RFC-0010 §3.1). Each runner consumes a
+//! Per-kind probe runners (RFC-0007 §3.1). Each runner consumes a
 //! `ProbeDecl` + returns a `RunnerOutcome`. Uniform strict-mode
 //! semantics: any runtime error → `ProbeStatus::Fail` with a
-//! `failure_reason` string. Per RFC-0010 §6 there is no `Unknown` or
+//! `failure_reason` string. Per RFC-0007 §6 there is no `Unknown` or
 //! "swallowed error" class.
 //!
 //! Runners are pure (modulo I/O and the system clock) — they don't
@@ -94,7 +94,7 @@ pub struct ProbeDecl {
     pub controls: HashMap<String, ControlOverrideDecl>,
 }
 
-/// Single entry in `controlOverrides` / `controls` (RFC-0010 §3.4
+/// Single entry in `controlOverrides` / `controls` (RFC-0007 §3.4
 /// per-control granularity). `mode` is the effective mode for the
 /// control; `reason` is operator-facing audit rationale, surfaced in
 /// event_log + dashboards.

@@ -6,7 +6,7 @@
 //! state and returns either the new state + effects, or `IllegalForState`
 //! for events the §3 graph doesn't permit from that source. The runtime
 //! layer is expected to log + drop illegal events (out-of-order retransmits)
-//! and rely on `Replay-From` heartbeat drift-detection (RFC-0008 §4.3) for
+//! and rely on `Replay-From` heartbeat drift-detection (RFC-0005 §4.3) for
 //! gap recovery.
 
 mod activating;

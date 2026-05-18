@@ -1,5 +1,5 @@
-//! Quarantined-closures derived view (RFC-0012 §6.4). Append-only: one
-//! row per `RollbackComplete` event (RFC-0008 §4.2). The applier is the
+//! Quarantined-closures derived view (RFC-0008 §6.4). Append-only: one
+//! row per `RollbackComplete` event (RFC-0005 §4.2). The applier is the
 //! sole writer; the `triggering_event_log_seq` FK proves the table is
 //! re-derivable from `event_log` (walk RollbackComplete events, group by
 //! `(channel, target_closure_hash)`, write one row per group).
@@ -10,11 +10,11 @@
 //! compromised host DoS the fleet by quarantining arbitrary SHAs).
 //!
 //! `triggering_event_log_seq` is NULL-able under the v0.2.1 baseline
-//! (RFC-0012 §6.1 item 3 + v0.2.1-followups #1).
+//! (RFC-0008 §6.1 item 3 + v0.2.1-followups #1).
 //!
 //! Append-only under the v0.2 derived-view discipline: no `clear`,
 //! no `cleared_at`. Operator-driven clearance would land as an
-//! explicit event matching the `OperatorClearance` shape (RFC-0012 §4).
+//! explicit event matching the `OperatorClearance` shape (RFC-0008 §4).
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -142,7 +142,7 @@ mod tests {
     fn idempotent_insert_is_no_op_after_conflict() {
         let db = fresh_db();
         let q = db.quarantined_closures();
-        // FK is NULL-able under v0.2.1 baseline (RFC-0012 §6.1 item 3);
+        // FK is NULL-able under v0.2.1 baseline (RFC-0008 §6.1 item 3);
         // None is the legal "FK not yet known" marker.
         q.insert("stable", "abc", t0(), None).unwrap();
         // Second insert at a later timestamp is a no-op (append-only).

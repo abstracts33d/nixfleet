@@ -36,7 +36,7 @@ testing = []
 # that need to forge a `RolloutId` without going through the canonical
 # `RolloutId::new(channel, channel_ref)` constructor. Same convention
 # as `nixfleet_reconciler::Verified::unverified_for_tests` per
-# RFC-0009 §3 + the RFC-0012 §6.3 amendment `0320c2fa`. Production
+# RFC-0006 §3 + the RFC-0008 §6.3 amendment `0320c2fa`. Production
 # builds MUST NOT enable this — the type-level enforcement of the
 # canonical `"{channel}@{channel_ref}"` format is the contract.
 test-helpers = []

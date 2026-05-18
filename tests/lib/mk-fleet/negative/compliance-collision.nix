@@ -1,4 +1,4 @@
-# RFC-0010 §3.5: declaring both `compliance.frameworks = ["anssi-bp028"]`
+# RFC-0007 §3.5: declaring both `compliance.frameworks = ["anssi-bp028"]`
 # AND an explicit `healthChecks.evidence-anssi-bp028 = {...}` is
 # ambiguous - the shorthand's synthesized probe name collides with the
 # operator's explicit declaration. Eval must throw with a clear

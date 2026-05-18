@@ -1,6 +1,6 @@
 //! On-demand HTTP-fetched rollout manifests. This module is a thin
 //! signed-pair fetcher: it substitutes the canonical RolloutId
-//! (`{channel}@{channel_ref}` per RFC-0012 §6.3) into the URL templates
+//! (`{channel}@{channel_ref}` per RFC-0008 §6.3) into the URL templates
 //! and returns the raw (manifest, signature) byte pair. It performs no
 //! identifier validation. The caller (manifest_poll) is responsible for
 //! signature verification (`verify_rollout_manifest`) and identifier

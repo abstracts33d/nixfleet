@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Pure per-host rollout state-machine reducer.
 //!
-//! Implements RFC-0008 §3 (6-state machine) and RFC-0009 §3 (functional
+//! Implements RFC-0005 §3 (6-state machine) and RFC-0006 §3 (functional
 //! core / imperative shell). The reducer is a single function:
 //!
 //! ```ignore
@@ -11,19 +11,19 @@
 //! Properties enforced by the crate's structure:
 //!
 //! - **No I/O.** `Cargo.toml` declares no tokio, no reqwest, no rusqlite.
-//!   CI verifies via `cargo tree -p nixfleet-state-machine` (RFC-0009 §11).
+//!   CI verifies via `cargo tree -p nixfleet-state-machine` (RFC-0006 §11).
 //! - **No clock reads.** `chrono::Utc::now()` is not called anywhere in
 //!   this crate; `now` is always a parameter.
 //! - **Pure transitions.** `step` is deterministic for a given input.
 //!   Same `(state, event, now, policy)` → same `(state, effects)`.
 //! - **Side effects as data.** `Effect` is a description, not an execution.
-//!   The agent runtime (RFC-0009 §7.1) and CP runtime (§7.2) each
+//!   The agent runtime (RFC-0006 §7.1) and CP runtime (§7.2) each
 //!   exhaustively match on `Effect` variants; adding a variant is a
 //!   compiler-enforced change at every applier.
 //!
 //! ## Same code, both sides
 //!
-//! The CP-mirror view of per-host state (RFC-0009 §2 principle 4) runs the
+//! The CP-mirror view of per-host state (RFC-0006 §2 principle 4) runs the
 //! same `step()` as the agent. `Event` carries both `Local*` (agent-side,
 //! synthesized from worker output) and `Remote*` (CP-side, synthesized from
 //! inbound agent events) variants — the transitions they drive are identical

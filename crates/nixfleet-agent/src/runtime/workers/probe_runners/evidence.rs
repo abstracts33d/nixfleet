@@ -1,4 +1,4 @@
-//! Evidence probe runner (RFC-0010 §3.1 + §7). READ-ONLY consumer of
+//! Evidence probe runner (RFC-0007 §3.1 + §7). READ-ONLY consumer of
 //! the local collector unit's signed evidence file.
 //!
 //! The collector (compliance-evidence-collector.service) owns its own
@@ -6,7 +6,7 @@
 //! tick the runner:
 //! 1. Reads `evidence_path` (default `/var/lib/nixfleet-compliance/evidence.json`).
 //! 2. Verifies the ed25519 signature against the host's SSH ed25519
-//!    public key half (RFC-0004 §5). Signature is read from
+//!    public key half (RFC-0009 §5). Signature is read from
 //!    `<path>.sig` (base64 64-byte sig of the JCS canonical bytes of
 //!    the payload's `controls` array).
 //! 3. Filters `controls` to `framework == decl.framework` and produces
@@ -14,7 +14,7 @@
 //!    matching control is Pass.
 //!
 //! Any error (file missing, parse, signature mismatch, framework
-//! missing) → `Fail` (RFC-0010 §6 uniform strict mode).
+//! missing) → `Fail` (RFC-0007 §6 uniform strict mode).
 
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
@@ -82,7 +82,7 @@ pub async fn run(decl: &ProbeDecl, now: DateTime<Utc>) -> RunnerOutcome {
         }
     };
 
-    // Host SSH host pubkey (RFC-0004 §5). Read from a conventional
+    // Host SSH host pubkey (RFC-0009 §5). Read from a conventional
     // path; the agent's main.rs --ssh-host-key-file points at the
     // PRIVATE half, the public half is alongside as `.pub` per
     // OpenSSH convention. The agent verifies the signature against
@@ -149,7 +149,7 @@ pub async fn run(decl: &ProbeDecl, now: DateTime<Utc>) -> RunnerOutcome {
     // Expand the one-entry-per-control wire shape into one
     // ProbeSubResult per (control, framework, article) tuple. Each
     // sub-result carries the resolved effective_mode so the CP-side
-    // probe_failures applier (RFC-0010 §7.2) can gate by control
+    // probe_failures applier (RFC-0007 §7.2) can gate by control
     // rather than by whole probe. Controls with effective_mode =
     // Disabled are dropped entirely (no event_log noise for opted-
     // out controls).
@@ -355,7 +355,7 @@ async fn resolve_host_pubkey() -> Result<[u8; 32], String> {
         .decode(blob_b64)
         .map_err(|err| format!("host pubkey base64 decode: {err}"))?;
     // The blob is a length-prefixed wire format; the last 32 bytes are
-    // the raw ed25519 public key (RFC-0004 §5 / RFC 4253).
+    // the raw ed25519 public key (RFC-0009 §5 / RFC 4253).
     if blob.len() < 32 {
         return Err(format!("host pubkey blob len {} < 32", blob.len()));
     }

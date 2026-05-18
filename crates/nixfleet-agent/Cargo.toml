@@ -86,11 +86,11 @@ wiremock = { workspace = true }
 # Enable Verified::unverified_for_tests so agent integration tests can
 # synthesise SignedManifestSet without driving the full signing pipeline.
 # Production builds do NOT enable this feature; the trust contract on
-# Verified<T> (RFC-0009 §3) holds.
+# Verified<T> (RFC-0006 §3) holds.
 nixfleet-reconciler = { path = "../nixfleet-reconciler", features = ["test-helpers"] }
 # Workspace builder for fleet.resolved fixtures.
 # `test-helpers` enables `RolloutId::from_raw_for_tests` + `From<&str>` /
-# `From<String>` impls for test ergonomics (RFC-0012 §6.3).
+# `From<String>` impls for test ergonomics (RFC-0008 §6.3).
 nixfleet-proto = { path = "../nixfleet-proto", features = ["testing", "test-helpers"] }
 # integration_mtls.rs spins up a minimal axum-server with rustls
 # `WebPkiClientVerifier` to prove DEFECT-003: the post-enroll workers

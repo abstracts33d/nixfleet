@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// dispatch for this agent. Empty body / 204 means no work pending.
 ///
 /// `rollout_id` is the canonical `"{channel}@{channel_ref}"` composite
-/// (RFC-0012 §6.3); serde-transparent so the wire JSON shape is
+/// (RFC-0008 §6.3); serde-transparent so the wire JSON shape is
 /// indistinguishable from a plain `String`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct DispatchResponse {
@@ -41,7 +41,7 @@ pub struct HeartbeatResponse {
     #[serde(default)]
     pub received_at: Option<DateTime<Utc>>,
     /// LIFT #3: per active rollout on this host, a HostRolloutSnapshot
-    /// the agent should apply to its in-memory reducer (RFC-0008 §9.5
+    /// the agent should apply to its in-memory reducer (RFC-0005 §9.5
     /// scenario 3, agent-side half). Populated by CP only when the
     /// heartbeat carried `rollout_id = None` AND CP holds non-terminal
     /// records for the host. Empty in steady-state.

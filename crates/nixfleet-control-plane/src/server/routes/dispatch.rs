@@ -3,7 +3,7 @@
 //! Replaces the pre-v0.2 dispatch-on-checkin contract. The agent calls
 //! this every time it wants new work (typically right after a Converged
 //! or every minute on idle, per `nixfleet-agent` policy). The contract
-//! is RFC-0003 §1 pull-only + RFC-0008 §2.1 + plan 06's locked-in
+//! is RFC-0003 §1 pull-only + RFC-0005 §2.1 + plan 06's locked-in
 //! "long-poll, 60s wait window" decision.
 //!
 //! Implementation:

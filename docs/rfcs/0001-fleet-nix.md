@@ -1,9 +1,7 @@
 # RFC-0001: Declarative fleet topology (`fleet.nix`)
 
 **Status.** Accepted.
-**Target.** `arcanesys/nixfleet` issue #1.
-**Scope.** Schema and evaluation contract for the `fleet` flake output. Does not cover reconciliation semantics (that's #3) or activation (that's #2).
-**Implementation.** `lib/mk-fleet.nix` (the schema), `crates/nixfleet-proto/src/fleet_resolved.rs` (the wire types), `crates/nixfleet-release` (the producer), `tests/lib/mk-fleet/` (the eval harness). See `../design/architecture.md` §1.1 / §3.
+**Scope.** Schema and evaluation contract for the `fleet` flake output. Does not cover reconciliation semantics (RFC-0002) or activation (RFC-0003).
 
 ## 1. Motivation
 
@@ -61,7 +59,8 @@ outputs = { self, nixpkgs, nixfleet, ... }: {
       freshnessWindow        = 1440;     # 24h in minutes; REQUIRED, no default
                                           #   - invariant: ≥ 2 × signingIntervalMinutes
       compliance = {
-        strict     = true;
+        mode       = "enforce";          # per-channel default for evidence probes;
+                                          #   per-probe mode (RFC-0007 §3.3) overrides
         frameworks = [ "anssi-bp028" ];
       };
     };
@@ -130,6 +129,13 @@ outputs = { self, nixpkgs, nixfleet, ... }: {
   };
 };
 ```
+
+The following additional top-level keys exist; they're spec'd in the RFCs that own them rather than duplicated here:
+
+- `healthChecks` / `tags.<t>.healthChecks` / `hosts.<h>.healthChecks` — multi-scope probe declarations (RFC-0007).
+- `compliance` / `tags.<t>.compliance` / `hosts.<h>.compliance` — multi-scope compliance refinement (RFC-0007 §3.7).
+- `revocations` — signed agent-cert revocation list (RFC-0003 §4.5 + RFC-0010).
+- `bootstrapNonces` — durable replay-invariant allowlist for `/v1/enroll` (RFC-0003 §4.5).
 
 ## 3. Selector algebra
 
@@ -247,25 +253,7 @@ Conflicts (same host name, same channel definition with different values) fail e
 
 ## 6. What's deliberately out of scope
 
-- **Secrets.** Declared alongside, not inside, the fleet schema. See #6.
-- **Enrollment / host identity.** A host *exists* in the fleet schema regardless of whether it's enrolled. Enrollment is an orthogonal state (see #9).
+- **Secrets.** Declared alongside, not inside, the fleet schema.
+- **Enrollment / host identity.** A host *exists* in the fleet schema regardless of whether it's enrolled. Enrollment is an orthogonal state.
 - **Runtime state.** `fleet.resolved` is purely declarative. Observed state (which host is online, what gen is running) lives in the control plane only.
-- **Dynamic host sets.** No "autoscaling" - every host is named in the flake. If you need dynamic, generate the flake from a higher-level tool.
-
-## 7. Open questions
-
-1. **Cross-host references.** Should an edge be able to say `{ after = <selector>; before = <selector>; }`, or only named hosts? Pro: expressive. Con: cycle detection across selectors is O(n²) and harder to reason about. Lean: named-host only in v1; revisit.
-2. **Per-host policy overrides.** Should a host be able to override its channel's rollout policy for itself? Pro: one-off quirky hosts. Con: erodes the channel abstraction. Lean: no in v1; force a new channel if you need it.
-3. **Schema version negotiation.** If a control plane is older than the fleet's `schemaVersion`, should it refuse or degrade? Lean: refuse, log the exact incompatibility, operator upgrades one side.
-4. **Canonicalization format for `fleet.resolved.json`.** JCS (RFC 8785) is JSON-native but finicky around numbers; deterministic CBOR is stricter and smaller. Lean: JCS in v1 (debuggability wins over wire size at this fleet scale); revisit if signature drift becomes a practical issue.
-
-## 8. Migration path from current state
-
-- Ship `mkFleet` alongside existing CLI. `fleet.nix` is optional; CLI still works imperatively.
-- Control plane learns to ingest `fleet.resolved`. Operators can opt in per channel.
-- CLI `deploy` becomes syntactic sugar over channel-pointer updates. Remains for CI convenience.
-- SQLite desired-state becomes a cache of `fleet.resolved`, not a source of truth.
-
----
-
-**Next.** Natural follow-ups are RFC-0002 (rollout execution engine, consumes `fleet.resolved`, emits wave-by-wave reconciliation) and RFC-0003 (agent ↔ control plane protocol). Both are downstream of this being solid.
+- **Dynamic host sets.** No "autoscaling" — every host is named in the flake. If you need dynamic, generate the flake from a higher-level tool.

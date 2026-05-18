@@ -15,5 +15,5 @@ Exit codes are stable: 0 verified, 1 verify error, 2 argument / I/O / parse erro
 **Links.**
 
 - Generated rustdoc: [`api/nixfleet_verify_artifact/`](../../api/nixfleet_verify_artifact/index.html)
-- Relevant RFCs: [RFC-0001](../../rfcs/0001-fleet-nix.md), [RFC-0005](../../rfcs/0005-trust-lifecycle.md), [RFC-0006](../../rfcs/0006-freshness-window-policy.md)
+- Relevant RFCs: [RFC-0001](../../rfcs/0001-fleet-nix.md), [RFC-0010](../../rfcs/0010-trust-lifecycle.md), [RFC-0011](../../rfcs/0011-freshness-window-policy.md)
 - Architecture component: [§1.5 Agent](../../design/architecture.md#15-agent-the-actuator), [§4 The trust flow](../../design/architecture.md#4-the-trust-flow)

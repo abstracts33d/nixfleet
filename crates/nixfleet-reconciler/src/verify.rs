@@ -344,7 +344,7 @@ pub fn verify_bootstrap_nonces(
 }
 
 /// Verify a signed rollout manifest. Callers MUST additionally
-/// discriminate the parsed manifest's canonical RolloutId per RFC-0012
+/// discriminate the parsed manifest's canonical RolloutId per RFC-0008
 /// §6.3 against the advertised identifier (`RolloutId::new(&m.channel,
 /// &m.channel_ref).as_str()`) before consuming any field.
 pub fn verify_rollout_manifest(

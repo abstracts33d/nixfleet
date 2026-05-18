@@ -1,4 +1,4 @@
-//! TCP probe runner (RFC-0010 §3.1). Pass iff `connect_timeout_secs`
+//! TCP probe runner (RFC-0007 §3.1). Pass iff `connect_timeout_secs`
 //! TCP connect succeeds against `host:port`. `host` defaults to
 //! `127.0.0.1` if absent.
 

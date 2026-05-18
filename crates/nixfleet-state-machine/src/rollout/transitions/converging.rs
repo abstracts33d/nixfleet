@@ -98,7 +98,7 @@ pub(super) fn step(
 
         // HostJoined is observed but does NOT mutate `current_wave` —
         // the wave-cursor progresses ONLY via `advance_current_waves`
-        // and the resulting `WaveAdvanced` event (RFC-0012 §6.3). See
+        // and the resulting `WaveAdvanced` event (RFC-0008 §6.3). See
         // opening.rs's HostJoined arm for the full rationale.
         RolloutEvent::HostJoined { .. } => Ok((record, Vec::new())),
 

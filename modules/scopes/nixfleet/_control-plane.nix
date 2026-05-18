@@ -165,7 +165,7 @@ in {
       description = ''
         Path to the trust-root JSON file. Materialised by this module
         from `config.nixfleet.trust` via environment.etc. See
-        docs/rfcs/0005-trust-lifecycle.md §1.5 for the wiring.
+        docs/rfcs/0010-trust-lifecycle.md §1.5 for the wiring.
       '';
     };
 
@@ -294,7 +294,7 @@ in {
         is configured (i.e., neither `tpmCaPubkeyRaw` nor `tpmCaSignWrapper`
         is set). Production deployments SHOULD use the TPM backend; set
         this to `true` only for dev fleets where TPM hardware is
-        unavailable. See RFC-0005 §1.5.1.
+        unavailable. See RFC-0010 §1.5.1.
       '';
     };
 

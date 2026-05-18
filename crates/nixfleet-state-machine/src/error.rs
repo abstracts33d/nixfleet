@@ -11,7 +11,7 @@ use crate::state::{HostState, RolloutId};
 pub enum TransitionError {
     /// The event is not legal from the current `HostState`. The runtime
     /// layer should typically log + drop (lost-ordering noise) and rely on
-    /// heartbeat drift-detection to recover via Replay-From (RFC-0008 §4.3).
+    /// heartbeat drift-detection to recover via Replay-From (RFC-0005 §4.3).
     #[error("event {event} not legal from state {from:?} (rollout {rollout_id}, host {hostname})")]
     IllegalForState {
         from: HostState,
@@ -33,7 +33,7 @@ pub enum TransitionError {
         hostname: String,
     },
 
-    /// Invariant from RFC-0008 §3 violated by the event's payload (e.g.
+    /// Invariant from RFC-0005 §3 violated by the event's payload (e.g.
     /// `Converged` claimed but `current != target`). CP rejects the event
     /// with `409 Conflict`; agent retries after re-verifying.
     #[error("invariant violation: {0}")]

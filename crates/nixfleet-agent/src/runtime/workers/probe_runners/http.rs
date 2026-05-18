@@ -1,6 +1,6 @@
-//! HTTP probe runner (RFC-0010 §3.1). `GET <url>` with `timeoutSecs`
+//! HTTP probe runner (RFC-0007 §3.1). `GET <url>` with `timeoutSecs`
 //! wallclock budget; Pass iff response status matches `expectStatus`.
-//! Error classes that count as Fail (RFC-0010 §6 uniform strict mode):
+//! Error classes that count as Fail (RFC-0007 §6 uniform strict mode):
 //! - missing url field
 //! - network error (connect refused, DNS, TLS)
 //! - timeout

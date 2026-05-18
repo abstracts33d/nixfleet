@@ -5,7 +5,7 @@
 //! are exactly the bytes CP fetched from the channel-refs source and
 //! verified against the trust roots; signature verification + the
 //! rollout-anchored `fleet_resolved_hash` discriminator happen at the
-//! consumer (per RFC-0011 §1 invariant #1 — single signed source of
+//! consumer (per RFC-0004 §1 invariant #1 — single signed source of
 //! truth + defense-in-depth at the verification gate).
 
 use std::sync::Arc;

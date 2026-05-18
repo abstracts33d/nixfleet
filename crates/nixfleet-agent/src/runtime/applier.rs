@@ -1,4 +1,4 @@
-//! Imperative shell for the agent reducer (RFC-0009 §7.1).
+//! Imperative shell for the agent reducer (RFC-0006 §7.1).
 //!
 //! Effect dispatch — the applier itself contains NO platform-specific
 //! code. `LocalFireSwitch` / `LocalFireRollbackTo` send an
@@ -70,7 +70,7 @@ pub async fn apply_effect(ctx: &ApplierCtx<'_>, effect: Effect) {
         } => {
             // Persist to the disk-backed queue BEFORE returning so a
             // crash between this point and the network POST is
-            // recoverable on restart (Plan 07 + RFC-0008 §9.7). The
+            // recoverable on restart (Plan 07 + RFC-0005 §9.7). The
             // outbound worker drains the queue and POSTs; on success
             // it deletes the file.
             //
@@ -86,7 +86,7 @@ pub async fn apply_effect(ctx: &ApplierCtx<'_>, effect: Effect) {
                 hostname: ctx.cfg.machine_id.clone(),
                 // `rollout_id` is carried on the effect directly (Phase 8a —
                 // closes the v0.2 enrichment stopgap by lifting the field
-                // onto every Local* variant per RFC-0009 §9's
+                // onto every Local* variant per RFC-0006 §9's
                 // "effects carry everything the applier needs" principle).
                 rollout_id,
                 event_kind: outbound_event_kind(&payload).to_string(),

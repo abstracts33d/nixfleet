@@ -1,10 +1,9 @@
-# RFC-0010: Multi-scope health probes
+# RFC-0007: Multi-scope health probes
 
-**Status.** Draft (slated for v0.2.1 cycle).
-**Depends on.** RFC-0001 (fleet topology + `mkFleet` API), RFC-0002 (reconciler + signed manifests), RFC-0008 (event-driven probe state), RFC-0009 (runtime architecture).
-**Supersedes.** Sections of RFC-0002 referencing `HealthGate.compliance_probes.required` and `Channel.compliance.{mode,strict}` as channel-level booleans/enums; those fields are removed in favour of per-probe `mode`. Also supersedes the `host_reports`-as-canonical-storage references in RFC-0003 §192 (bootstrap-report rows), RFC-0004 §267 (attestation events `AttestationOK`/`Drift`/`Invalid`), RFC-0005 §111 (`HostUnquarantined` logging), and RFC-0006 §160 (`StaleTargetRejected` events). Under v0.2.1, those event kinds land in `event_log` per RFC-0008 §4.3; gate-relevant subsets land additionally in the `probe_failures` derived view per §7.2.
-**Scope.** The declarative shape operators use to define health probes across fleet, tag, and host scopes; the per-probe `mode` field that replaces the channel-level enforcement flag; the relationship between probe topology and the closure-hash signing chain. Does not cover runtime execution mechanics (those live in RFC-0008 + RFC-0009) or the agent-internal probe-runner pipeline (implementation in Phase 9 commits).
-**Implementation.** Nix-side resolver in `lib/mkFleet.nix` + module-option additions in `modules/contracts/`; manifest schema delete in `crates/nixfleet-proto/src/fleet_resolved.rs`; rendering in `modules/scopes/nixfleet/_agent.nix`; Rust runners in `crates/nixfleet-agent/src/runtime/workers/probe_runners/`.
+**Status.** Accepted.
+**Depends on.** RFC-0001 (fleet topology + `mkFleet` API), RFC-0002 (reconciler + signed manifests), RFC-0005 (event-driven probe state), RFC-0006 (runtime architecture).
+**Supersedes.** Sections of RFC-0002 referencing `HealthGate.compliance_probes.required` and `Channel.compliance.{mode,strict}` as channel-level booleans/enums; those fields are removed in favour of per-probe `mode`. Also supersedes the `host_reports`-as-canonical-storage references in RFC-0003, RFC-0009 (attestation events), RFC-0010 (`HostUnquarantined`), and RFC-0011 (`StaleTargetRejected`). Those event kinds land in `event_log` per RFC-0005 §4.3; gate-relevant subsets land additionally in the `probe_failures` derived view per §7.2.
+**Scope.** The declarative shape operators use to define health probes across fleet, tag, and host scopes; the per-probe `mode` field that replaces the channel-level enforcement flag; the relationship between probe topology and the closure-hash signing chain. Does not cover runtime execution mechanics (those live in RFC-0005 + RFC-0006) or the agent-internal probe-runner pipeline.
 
 ## 1. Problem statement
 
@@ -149,7 +148,7 @@ The framework keeps L1 and L2 deliberately separate (no auto-coupling): the NixO
 
 ### 3.7 Compliance scope hierarchy (v0.2)
 
-The channel-scope `compliance.frameworks` shorthand desugars to `evidence-<framework>` probes synthesised into each host's effective probe set (RFC-0010 §3.5 mechanism — the channel scope is the framework-set's source of truth). On top of that, v0.2 adds **per-framework refinement attrsets** at fleet, tag, and host scope:
+The channel-scope `compliance.frameworks` shorthand desugars to `evidence-<framework>` probes synthesised into each host's effective probe set (RFC-0007 §3.5 mechanism — the channel scope is the framework-set's source of truth). On top of that, v0.2 adds **per-framework refinement attrsets** at fleet, tag, and host scope:
 
 ```nix
 {
@@ -169,10 +168,10 @@ The channel-scope `compliance.frameworks` shorthand desugars to `evidence-<frame
     reason = "Audit-tagged hosts: always-enforce";
   };
 
-  # Channel-scope declaration (existing, RFC-0010 §3.5)
+  # Channel-scope declaration (existing, RFC-0007 §3.5)
   nixfleet.channels.stable.compliance.frameworks = ["nis2-essential"];
 
-  # Per-host refinement (RFC-0010 §3.5 + v0.2 framework-level extension)
+  # Per-host refinement (RFC-0007 §3.5 + v0.2 framework-level extension)
   nixfleet.hosts.aether.compliance.frameworks.nis2-essential = {
     mode = "disabled";             # Darwin host, no collector available
     reason = "Aether is a Darwin developer host: no NixOS compliance collector";
@@ -194,11 +193,11 @@ with three field-level merge rules:
 | `reason` | Most-specific non-empty wins. Annotates `ProbeSubResult.override_reason` for downstream audit. |
 | `controlOverrides.<id>` | Per-key deep merge: each scope's entry for a given control ID replaces the same-keyed entry from broader scopes (host > channel > tag > fleet). |
 
-**Aether/Darwin shortcut.** A `mode = "disabled"` at host scope produces an `evidence-<framework>` entry with `mode = "disabled"` in the host's `health-checks.json`; the agent's probe-runner worker skips disabled probes (per RFC-0010 §3.3). Closes the class of "exempt this single host from this framework without carving probe-shadow overrides under `nixfleet.hosts.<h>.healthChecks`."
+**Aether/Darwin shortcut.** A `mode = "disabled"` at host scope produces an `evidence-<framework>` entry with `mode = "disabled"` in the host's `health-checks.json`; the agent's probe-runner worker skips disabled probes (per RFC-0007 §3.3). Closes the class of "exempt this single host from this framework without carving probe-shadow overrides under `nixfleet.hosts.<h>.healthChecks`."
 
 **Silent no-op for un-enabled frameworks.** Declaring a refinement at fleet/tag/host scope against a framework the channel hasn't enabled (e.g. `nixfleet.compliance.frameworks.iso27001 = { mode = "enforce"; };` when no channel includes `iso27001` in its shorthand list) is a silent no-op — channel scope is the framework-set's source of truth; broader scopes only refine. Operators who want to introduce a brand-new framework probe declare it explicitly under `healthChecks` (kind = "evidence", framework = "..."), not via the compliance shorthand.
 
-**Aside — fleet.nix vs NixOS-state asymmetry.** `healthChecks` lives wholly in `fleet.nix`: every probe declaration at every scope is a topology-layer artifact, transitively signed via the closure hash chain (§5). Compliance is asymmetric: the *capability* to produce evidence (`services.nixfleet-compliance`) is a NixOS-module declaration on the host, while the *policy* to consume it is `fleet.nix` topology. This is documented for the operator's benefit — a probe declaration like `nixfleet.compliance.frameworks.nis2-essential.mode = "disabled"` doesn't disable the collector; it disables the agent's consumption. Disabling the collector itself is a NixOS-module change on the host. RFC-0011 §3 captures the broader pattern of where capability declarations belong (NixOS modules) vs where policy declarations belong (`fleet.nix`).
+**Aside — fleet.nix vs NixOS-state asymmetry.** `healthChecks` lives wholly in `fleet.nix`: every probe declaration at every scope is a topology-layer artifact, transitively signed via the closure hash chain (§5). Compliance is asymmetric: the *capability* to produce evidence (`services.nixfleet-compliance`) is a NixOS-module declaration on the host, while the *policy* to consume it is `fleet.nix` topology. This is documented for the operator's benefit — a probe declaration like `nixfleet.compliance.frameworks.nis2-essential.mode = "disabled"` doesn't disable the collector; it disables the agent's consumption. Disabling the collector itself is a NixOS-module change on the host. RFC-0004 §3 captures the broader pattern of where capability declarations belong (NixOS modules) vs where policy declarations belong (`fleet.nix`).
 
 ## 4. Resolution semantics
 
@@ -300,10 +299,10 @@ nixfleet.healthChecks.evidence-nis2 = {
 The probe runner:
 
 1. Stats the evidence file; if `mtime` hasn't advanced since last observation, reports the previous result without re-verification.
-2. On new `mtime`: reads the file, verifies its ed25519 signature against the **host's local SSH host key public half** (loaded at agent startup, per RFC-0004 §5 — same source as the agent's evidence-signing identity), checks the framework's pass condition.
-3. Emits `ProbeResult { name = "evidence-nis2", status = Pass | Fail, observed_at, sub_results }` via the existing event channel (RFC-0008 §4.2).
+2. On new `mtime`: reads the file, verifies its ed25519 signature against the **host's local SSH host key public half** (loaded at agent startup, per RFC-0009 §5 — same source as the agent's evidence-signing identity), checks the framework's pass condition.
+3. Emits `ProbeResult { name = "evidence-nis2", status = Pass | Fail, observed_at, sub_results }` via the existing event channel (RFC-0005 §4.2).
 
-The agent does NOT receive the verifying pubkey via probe-config JSON — `cfg.host_pubkey` is loaded locally at startup from the host's own SSH key infrastructure. Probe declarations carry no key material; key plumbing stays in the existing RFC-0004 path.
+The agent does NOT receive the verifying pubkey via probe-config JSON — `cfg.host_pubkey` is loaded locally at startup from the host's own SSH key infrastructure. Probe declarations carry no key material; key plumbing stays in the existing RFC-0009 path.
 
 **The probe runner does not invoke the collector.** Collector cadence and probe cadence are independent. The probe is a read-only consumer; the heavy work (evidence collection + signing) stays with the systemd unit on its operator-controlled schedule.
 
@@ -339,7 +338,7 @@ The `compliance_wave` gate previously consumed `db::reports::outstanding_complia
 
 Replacement pipeline:
 
-1. **`event_log` is the sole canonical store.** Inbound `ProbeResult` events land in `event_log` with `kind = 'agent_event'` (RFC-0008 §4.3). Append-only audit; consumed by `/v1/rollouts/{id}/events` and replay tooling.
+1. **`event_log` is the sole canonical store.** Inbound `ProbeResult` events land in `event_log` with `kind = 'agent_event'` (RFC-0005 §4.3). Append-only audit; consumed by `/v1/rollouts/{id}/events` and replay tooling.
 2. **A new `probe_failures` derived view** carries the typed denormalization the gate needs:
 
 ```sql
@@ -370,7 +369,7 @@ For the wave-promotion gate to distinguish "this enforce-mode probe hasn't repor
 
 ### 8.1 Topology declaration on activation
 
-After every `LocalActivationCompleted` (RFC-0008 §4.2), the agent's probe worker re-reads `/etc/nixfleet/agent/health-checks.json` and emits one event:
+After every `LocalActivationCompleted` (RFC-0005 §4.2), the agent's probe worker re-reads `/etc/nixfleet/agent/health-checks.json` and emits one event:
 
 ```rust
 Event::LocalProbeTopologyDeclared {
@@ -422,11 +421,11 @@ Absence handling: a missing `LocalProbeTopologyDeclared` (e.g., agent crashed be
 
 ### Changing a probe
 
-Edit the declaration at its current scope, push. The rebuilt closure has the new probe shape; the agent re-reads `/etc/nixfleet/agent/health-checks.json` on `ActivationCompleted` (RFC-0008 §4.2) and respawns runners with the new declarations.
+Edit the declaration at its current scope, push. The rebuilt closure has the new probe shape; the agent re-reads `/etc/nixfleet/agent/health-checks.json` on `ActivationCompleted` (RFC-0005 §4.2) and respawns runners with the new declarations.
 
 ### Removing a probe
 
-Delete the declaration; push. The next closure activation drops it from `effective[host]`; the agent's `LocalResetProbeCache` effect kills the existing runner; the probe stops reporting. Any in-flight `event_log` rows for the probe remain (append-only audit log; RFC-0008 §4.3).
+Delete the declaration; push. The next closure activation drops it from `effective[host]`; the agent's `LocalResetProbeCache` effect kills the existing runner; the probe stops reporting. Any in-flight `event_log` rows for the probe remain (append-only audit log; RFC-0005 §4.3).
 
 ### Disabling a probe temporarily
 
@@ -436,30 +435,5 @@ Change the probe's `mode` to `"disabled"`, push. The probe entry stays in the de
 
 Add or remove a tag on a host. The merge changes; the host's effective probe set changes accordingly on the next closure activation. Standard tag-membership semantics from RFC-0001.
 
-## 9. Out of scope
-
-- **CP-side probe-declaration visibility.** CP consumes probe **results** via `event_log`, not declarations. If `/v1/hosts` ever needs to surface "this host runs these probes," that's a separate feature — agent could include its declaration set in heartbeats, or CP could read declarations from a debug endpoint. Not v0.2.1.
-- **Cross-host probe correlation.** Each host's probes evaluate independently. "All `web` hosts must pass `nginx-version` before next wave" is a CP-side coordination concern not introduced here.
-- **Schema versioning in the manifest.** Probe shape lives in the closure (rendered from NixOS module); closure hash carries the version implicitly. The manifest is not aware of the probe-shape version.
-- **Probe-result retention policy.** Event-log retention is RFC-0008 §4.3 territory; this RFC inherits whatever retention applies to `event_log` overall.
-- **Authoring tools.** Operator UX for browsing the effective probe set of a host before push (e.g., `nixfleet probes effective <host>`) is a future CLI feature; not v0.2.1.
-
-## 10. Open questions / future work
-
-- **One-shot probes.** `intervalSeconds = 0` is **rejected at fleet-eval time** — the value is ambiguous (reads as "every 0 seconds," a footgun). A separate explicit `runOnce = true` boolean option carries the one-shot semantics. When `runOnce = true`, `intervalSeconds` is ignored (or rejected) and the probe fires once per `LocalActivationCompleted`, never reschedules. Useful for `kind = "exec"` probes that produce evidence-like artifacts at activation time.
-- **Grace window for `enforce`-mode probes during initial activation.** RFC-0008 §3 handles `probe_observed_first_at` semantics. Reuse those windows; do not introduce new ones in this RFC.
-- **Disabled-probe rendering.** Two options: include in `/etc/nixfleet/agent/health-checks.json` with `disabled: true`, or filter at render time. Render-with-flag preserves operator visibility ("I see this probe is configured but currently disabled"). Implementer's call; either works.
-- **`/v1/hosts` exposing effective probe sets.** Useful for operator UI but not v0.2.1. Tracked for v0.2.2+ if demand surfaces.
-- **A general framework-config layering RFC.** This RFC documents the closure-driven path for probes; the same trade-off applies to future features that "look like they belong in the manifest." A separate RFC capturing the general principle (when to put per-host content in the closure vs the manifest) may be worth writing once 2-3 more features have validated the pattern. Premature at v0.2.1.
-
-## 11. Migration
-
-v0.2.1 is a forward-only cycle (RFC-0009 §12 "fresh DB on operator wipe" applies to schema changes within the v0.2 series). The migration steps for operators:
-
-1. Existing `services.nixfleet-agent.healthChecks` declarations remain valid — they become the per-host scope of the multi-scope model. No edit required if the operator wants to keep the current single-host probes.
-2. The legacy `fleet_resolved::HealthGate.compliance_probes.required: bool` is removed.
-3. The legacy `fleet_resolved::Channel.compliance.mode` field is removed. Operators who relied on it for environment toggling ("disable compliance for the staging channel") migrate to tag-scoped probe declarations: scope evidence probes to a `production` tag, ensure staging hosts don't carry that tag. `mkFleet` emits a clear eval error if either legacy field is present, with a pointer to this RFC's §3.
-4. The agent's `--health-checks-config` CLI flag is removed alongside `--poll-interval` and `--compliance-gate-mode`. The agent reads `/etc/nixfleet/agent/health-checks.json` from a hardcoded path (same convention as `/etc/nixfleet/agent/trust.json`, RFC-0005 §1.5).
-5. The `host_reports` DB table is removed. Its v0.1 role (catching `compliance-failure` / `runtime-gate-error` reports from the deleted `agent::compliance::*` path) has had no producer since Phase 7g. The new `probe_failures` derived view is its v0.2.1 replacement, written by the applier in the same transaction that appends to `event_log` (§7.2). Operators with v0.2-era databases pick up the schema change via the standard v0.2 fresh-DB story (RFC-0009 §12) — no in-place migration needed since no production data is preserved across the v0.2 series until v0.2.1 ships.
 
 A new fleet rollout under v0.2.1 picks up the new shape automatically on the next push; no manual wipe required beyond the standard v0.2 fresh-DB story.

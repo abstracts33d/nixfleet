@@ -1,6 +1,6 @@
 //! Property-based + table-driven invariant tests.
 //!
-//! Covers RFC-0008 §3 + §4.2 invariants in two layers:
+//! Covers RFC-0005 §3 + §4.2 invariants in two layers:
 //!
 //! - **Positive space**: every legal event sequence preserves the §3
 //!   invariants (Converged ⇒ current == declared, etc.). Random sequences
@@ -92,7 +92,7 @@ const ALL_EVENT_VARIANTS: &[&str] = &[
     "RemoteConverged",
 ];
 
-/// Legal (state, event) pairs per RFC-0008 §3 graph + §4.2 wire vocabulary.
+/// Legal (state, event) pairs per RFC-0005 §3 graph + §4.2 wire vocabulary.
 fn is_legal(state: HostState, event: &str) -> bool {
     match (state, event) {
         (HostState::Pending, "LocalActivate" | "RemoteDispatchAck") => true,
@@ -373,7 +373,7 @@ fn converged_before_soak_due_at_rejected() {
 
 #[test]
 fn converged_with_failing_observe_probe_accepted() {
-    // RFC-0010 §3.3 (ProbeMode docstring): observe-mode probes do not
+    // RFC-0007 §3.3 (ProbeMode docstring): observe-mode probes do not
     // gate. A Soaking host with a Passing enforce probe + Failing observe
     // probe is the canonical "evidence-collector race / non-blocking
     // visibility" shape — must converge.
@@ -472,7 +472,7 @@ proptest! {
     }
 
     /// Reducer state cannot end in Converged unless current_closure == target_closure
-    /// (RFC-0008 §3 invariant).
+    /// (RFC-0005 §3 invariant).
     #[test]
     fn converged_implies_current_eq_target(seq in 1u64..1000) {
         let policy = policy_halt();

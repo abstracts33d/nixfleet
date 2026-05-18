@@ -1,5 +1,5 @@
 #![allow(clippy::doc_lazy_continuation)]
-//! NixFleet control plane: TLS server + RFC-0009 runtime.
+//! NixFleet control plane: TLS server + RFC-0006 runtime.
 
 pub mod auth;
 pub mod db;

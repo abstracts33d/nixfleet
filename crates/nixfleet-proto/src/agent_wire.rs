@@ -4,7 +4,7 @@
 //!
 //! Phase 8d trimmed the legacy v0.1 checkin / confirm / activate wire shape;
 //! Phase 9a then deleted the legacy `/v1/agent/report` surface (`ReportRequest`,
-//! `ReportEvent`, `ReportResponse`) — the unified event-driven wire (RFC-0008
+//! `ReportEvent`, `ReportResponse`) — the unified event-driven wire (RFC-0005
 //! §4.2 → `runtime/wire.rs` + CP's `server/routes/events.rs`) is now the
 //! sole agent→CP event channel.
 
@@ -45,7 +45,7 @@ pub struct PendingGeneration {
 /// probe runners + advance-ticker resume their work post-restart.
 ///
 /// Fields mirror `nixfleet_state_machine::HostRolloutState`'s
-/// LOADBEARING set (RFC-0008 §5) — anything the agent's reducer or
+/// LOADBEARING set (RFC-0005 §5) — anything the agent's reducer or
 /// downstream workers (probe topology, advance-ticker, soak-elapsed
 /// detection) need to drive the state forward. Probe state itself is
 /// NOT carried: probe runners re-emit `LocalProbeTopologyDeclared`

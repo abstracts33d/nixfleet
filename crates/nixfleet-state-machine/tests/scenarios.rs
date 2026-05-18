@@ -223,7 +223,7 @@ fn sustained_failure_halt_only_does_not_fire_rollback() {
 }
 
 /// `Converged` event with `current != target` is rejected as
-/// `Invariant` per RFC-0008 §4.2.
+/// `Invariant` per RFC-0005 §4.2.
 #[test]
 fn converged_invariant_violation_rejected() {
     let p = policy_halt();

@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use super::super::wire::{HeartbeatRequest, HeartbeatResponse};
 use super::super::{AgentConfig, ReducerInput, ShutdownToken};
 
-/// 60s heartbeat cadence. Plan 06 + RFC-0008 §4.3 — same window as the
+/// 60s heartbeat cadence. Plan 06 + RFC-0005 §4.3 — same window as the
 /// long-poll's `wait` window so a stuck agent stops heartbeating within
 /// roughly one polling interval.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);

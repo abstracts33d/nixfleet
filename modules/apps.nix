@@ -141,10 +141,10 @@
             nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 
           echo ""
-          echo "=== Pure-crate dependency contract (RFC-0009 §11) ==="
+          echo "=== Pure-crate dependency contract (RFC-0006 §11) ==="
           # The pure crates MUST NOT pull tokio / reqwest / rusqlite /
           # hyper. The boundary is the safety contract of the
-          # functional-core architecture (RFC-0009 §3 + §8). A
+          # functional-core architecture (RFC-0006 §3 + §8). A
           # transitive leak — a new helper crate that brings tokio
           # in, a feature flag that activates rusqlite — would silently
           # bring I/O surface into the reducer's compilation unit and

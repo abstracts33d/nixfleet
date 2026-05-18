@@ -1,10 +1,9 @@
-# RFC-0009: v0.2 control-plane architecture
+# RFC-0006: v0.2 control-plane architecture
 
-**Status.** Draft (slated for v0.2 cycle alongside RFC-0008).
-**Depends on.** RFC-0001 (fleet topology), RFC-0002 (reconciler), RFC-0003 (agent/CP protocol), RFC-0008 (event-driven host-rollout state).
-**Supersedes.** RFC-0002 §5 (today's reconciler tick loop) and the scattered side-effect organisation of `crates/nixfleet-agent/src/*` and `crates/nixfleet-control-plane/src/server/reconcile.rs`.
-**Scope.** Implementation skeleton — how the per-host state machine (RFC-0008 §3) and the channel-level planner (this RFC §4) are organised in code so they remain pure, testable, and bug-resistant. Defines the actor-pattern runtime that wraps each pure core, the effect vocabulary they emit, and the explicit responsibility split between CP and agent. Does not change wire protocol (RFC-0008), trust model (RFC-0005), or topology (RFC-0001).
-**Implementation.** Refactor of `crates/nixfleet-control-plane/src/server/reconcile.rs` into `crates/nixfleet-reconciler/src/planner.rs` (pure) + `crates/nixfleet-control-plane/src/runtime.rs` (impure runner). Refactor of `crates/nixfleet-agent/src/` into a single `runtime.rs` + the existing module set demoted to background workers + effect handlers. New `crates/nixfleet-state-machine/` crate for the per-host pure `step()` function (shared between agent and CP-mirror view).
+**Status.** Accepted.
+**Depends on.** RFC-0001 (fleet topology), RFC-0002 (reconciler), RFC-0003 (agent/CP protocol), RFC-0005 (event-driven host-rollout state).
+**Supersedes.** RFC-0002 §5 (the v0.1 reconciler tick loop) and the scattered side-effect organisation of `crates/nixfleet-agent/src/*` and the pre-v0.2 `nixfleet-control-plane/src/server/reconcile.rs`.
+**Scope.** How the per-host state machine (RFC-0005 §3) and the channel-level planner (this RFC §4) are organised so they remain pure, testable, and bug-resistant. Defines the actor-pattern runtime that wraps each pure core, the effect vocabulary they emit, and the explicit responsibility split between CP and agent. Does not change wire protocol (RFC-0005), trust model (RFC-0010), or topology (RFC-0001).
 
 ## 1. Problem statement
 
@@ -15,14 +14,14 @@ The pre-v0.2 codebase organises side effects as scattered mutable state:
 
 This produces a recurring class of defect — **two readers of "the same state" disagree because they each construct their view differently from primitive DB rows**. Every per-host bug we shipped in v0.2.0 polish (probe gate stale data, sweep timing drift, channel-edge over-hold) lives in this layer, not in the wire protocol or the trust model.
 
-RFC-0008 makes the wire event-driven. This RFC makes the **code** event-driven, so the same bugs cannot reappear in the next layer down.
+RFC-0005 makes the wire event-driven. This RFC makes the **code** event-driven, so the same bugs cannot reappear in the next layer down.
 
 ## 2. Design principles
 
 1. **Functional core, imperative shell.** Every state-affecting decision lives in a pure function: `(state, input, now) → (new_state, [effects])`. Effects are descriptive data, not executions. A separate runner interprets effects against real I/O. The pure core is `#![forbid(unsafe_code)]`-safe by construction and `proptest`-friendly by structure.
 2. **One state, one mutator.** Both agent and CP have **exactly one** task that mutates the state machine. Background workers (probes, manifest poller, long-poll listener) emit *events* into a single MPSC channel; the mutator consumes events serially. No locks on rollout state. No interleaved transitions.
 3. **Effects-as-data.** The state machine returns `Vec<Effect>`. Effects are an enum of concrete operations (write DB row, send HTTP request, log a metric, fire a systemd unit). The runner has one match-arm per variant. Adding a new effect = adding an enum variant + an arm; the compiler tells you what you forgot.
-4. **Same code, both sides.** The per-host state-machine reducer (RFC-0008 §3) is one crate (`nixfleet-state-machine`) used by both the agent runtime and the CP-mirror view. Identical transition semantics on both sides by construction — the compiler enforces what tests would otherwise have to.
+4. **Same code, both sides.** The per-host state-machine reducer (RFC-0005 §3) is one crate (`nixfleet-state-machine`) used by both the agent runtime and the CP-mirror view. Identical transition semantics on both sides by construction — the compiler enforces what tests would otherwise have to.
 5. **Explicit responsibility ledger.** CP and agent each have a written list of "what I'm responsible for" (§5 below). Anything not on the list is the other side's job. Cross-references prevent drift.
 6. **Replay-friendly.** Every decision has its inputs visible: state + event + now. An event log replayed through the reducer reproduces the exact transition sequence. Operators can answer "what would have happened if event X arrived 5 s later" without a live system.
 
@@ -55,14 +54,14 @@ pub enum Event {
     // Inputs the CP runtime synthesises from inbound agent events (mirrors LocalXXX):
     RemoteDispatchAck { ... },
     RemoteActivationStarted { ... },
-    // ... one per RFC-0008 §4.2 event
+    // ... one per RFC-0005 §4.2 event
 }
 
 pub enum Effect {
     // Side-effect descriptions. Agent runtime executes Local*; CP runtime executes Remote*.
     LocalFireSwitch { target: ClosureHash },
     LocalFireRollbackTo { closure: ClosureHash },
-    LocalResetProbeCache,                                  // RFC-0008 §4.2 ActivationComplete
+    LocalResetProbeCache,                                  // RFC-0005 §4.2 ActivationComplete
     LocalEmitEvent { payload: AgentEvent },                // outbound to CP
     RemoteQueueDispatch { host: HostId, rollout: RolloutId },
     RemoteRecordTransition { from: HostRolloutState, to: HostRolloutState, at: DateTime<Utc> },
@@ -204,18 +203,18 @@ Every responsibility CP has in v0.2. Anything not on this list is **not** CP's j
 
 | # | Non-responsibility | Why |
 |---|---|---|
-| N1 | Decide per-host rollback | Agent reads `onHealthFailure` policy from the signed manifest directly (RFC-0008 §2.1, §4.1) |
-| N2 | Run the sustained-failure sweep | Agent times its own `HEALTH_FAILURE_THRESHOLD_SECS` from its own probe-cache (RFC-0008 §6) |
-| N3 | Infer host state from checkin diffs | Agent emits explicit events (RFC-0008 §4.2) |
+| N1 | Decide per-host rollback | Agent reads `onHealthFailure` policy from the signed manifest directly (RFC-0005 §2.1, §4.1) |
+| N2 | Run the sustained-failure sweep | Agent times its own `HEALTH_FAILURE_THRESHOLD_SECS` from its own probe-cache (RFC-0005 §6) |
+| N3 | Infer host state from checkin diffs | Agent emits explicit events (RFC-0005 §4.2) |
 | N4 | Reset probe state on activation | Agent does it locally (`LocalResetProbeCache` effect) |
-| N5 | Hold trust private keys | RFC-0005 §1.5 — exception: the CA-issuance key, TPM-bound in production per RFC-0005 §1.5.1 |
-| N6 | Sign anything | RFC-0002 §3 — CP is a verified stateless distributor for manifests and events. **Amendment (2026-05-17):** CP does sign agent mTLS certs at `/v1/enroll` and `/v1/agent/renew-cert`; the signing material is TPM-resident in production (RFC-0005 §1.5.1). The "stateless distributor" claim continues to hold for the manifest + event pipeline. |
-| N7 | ~~Forge secrets, mint bootstrap tokens, generate certs~~ Forge secrets, mint bootstrap tokens | Bootstrap-token authority remains outside CP (org-root threshold per RFC-0005). **Agent cert generation now happens inside CP** at enroll/renew time per RFC-0005 §1.5.1; the signing key is TPM-bound in production. |
+| N5 | Hold trust private keys | RFC-0010 §1.5 — exception: the CA-issuance key, TPM-bound in production per RFC-0010 §1.5.1 |
+| N6 | Sign anything | RFC-0002 §3 — CP is a verified stateless distributor for manifests and events. **Amendment (2026-05-17):** CP does sign agent mTLS certs at `/v1/enroll` and `/v1/agent/renew-cert`; the signing material is TPM-resident in production (RFC-0010 §1.5.1). The "stateless distributor" claim continues to hold for the manifest + event pipeline. |
+| N7 | ~~Forge secrets, mint bootstrap tokens, generate certs~~ Forge secrets, mint bootstrap tokens | Bootstrap-token authority remains outside CP (org-root threshold per RFC-0010). **Agent cert generation now happens inside CP** at enroll/renew time per RFC-0010 §1.5.1; the signing key is TPM-bound in production. |
 | N8 | Decide what closure a host should run | Signed manifest specifies it; agent verifies it; CP just routes |
 
 The list is short by design. When in doubt: "could an agent figure this out from the signed manifest plus its own local state?" If yes, agent does it.
 
-> **Amendment note (2026-05-17).** N5/N6/N7 above were rewritten to reflect the CA-issuance signing path that landed in `feat(cp,trust): cert issuance` (commit `4808d4dc`). The architectural intent — production-grade deployments hold no in-memory signing material — is preserved via the TPM-backed `CaSigner` backend; the file-backed backend is a dev convenience. RFC-0005 §1.5.1 is the canonical statement; an additive `--strict` enforcement closes the operator-facing gap. Adjacent claims in RFC-0008 §2.1 are amended in the same pass.
+> **Amendment note (2026-05-17).** N5/N6/N7 above were rewritten to reflect the CA-issuance signing path that landed in `feat(cp,trust): cert issuance` (commit `4808d4dc`). The architectural intent — production-grade deployments hold no in-memory signing material — is preserved via the TPM-backed `CaSigner` backend; the file-backed backend is a dev convenience. RFC-0010 §1.5.1 is the canonical statement; an additive `--strict` enforcement closes the operator-facing gap. Adjacent claims in RFC-0005 §2.1 are amended in the same pass.
 
 ## 6. Agent responsibility ledger
 
@@ -227,9 +226,9 @@ The list is short by design. When in doubt: "could an agent figure this out from
 | 4 | Decide rollback (from manifest policy) | Reducer reads `policy: &RolloutPolicy` arg, transitions to `RollbackComplete` automatically when `onHealthFailure = "rollback-and-halt"` | signed manifest |
 | 5 | Execute switch-to-configuration (forward + rollback) | `LocalFireSwitch` / `LocalFireRollbackTo` effects → `systemd-run` | reducer-emitted effect |
 | 6 | Emit signed events to CP | `LocalEmitEvent` effect → HTTP POST `/v1/agent/events` | reducer output |
-| 7 | Persist outbound event queue across restarts | Durable on-disk queue (§7.2 of RFC-0008) | local fs |
+| 7 | Persist outbound event queue across restarts | Durable on-disk queue (§7.2 of RFC-0005) | local fs |
 | 8 | Heartbeat | `heartbeat-worker` task posts `/v1/agent/heartbeat` every 60 s | local clock + reducer's `last_event_seq` |
-| 9 | Reconcile on boot | Read `/run/current-system`, emit synthetic `ActivationComplete` if needed (RFC-0008 §9.5) | local filesystem |
+| 9 | Reconcile on boot | Read `/run/current-system`, emit synthetic `ActivationComplete` if needed (RFC-0005 §9.5) | local filesystem |
 
 ## 7. Runtime topology
 
@@ -300,7 +299,7 @@ The CP reducer additionally maintains a **mirror** of per-host state, derived by
 
 ```
 crates/
-  nixfleet-state-machine/      [NEW] Pure per-host reducer (RFC-0008 §3)
+  nixfleet-state-machine/      [NEW] Pure per-host reducer (RFC-0005 §3)
     src/
       lib.rs                   step(), state types, effect enum
       transitions/             one module per state transition group
@@ -331,7 +330,7 @@ crates/
       compliance/              compliance probe runner (emits events)
       enrollment.rs            unchanged
 
-  nixfleet-proto/              [UNCHANGED + new event types] wire schemas (RFC-0008 §4)
+  nixfleet-proto/              [UNCHANGED + new event types] wire schemas (RFC-0005 §4)
 
   nixfleet-verify-artifact/    [UNCHANGED] manifest signature verification
 ```
@@ -372,39 +371,3 @@ pub enum Effect {
 
 Symmetric design: 4 local-only, 5 remote-only, 3 shared. The reducer knows from context which set it can emit; the runner has compile-time assurance every variant is handled.
 
-## 10. Open questions
-
-1. **State machine crate boundary fineness.** Should `nixfleet-state-machine` ship one reducer or multiple (one per "role": host-rollout, channel-rollout, fleet-wide)? Leaning one — separation by responsibility, not by reducer type. Re-visit if compilation time becomes an issue.
-2. **Effect type stability across major versions.** `Effect` is internal to the runtime; it doesn't appear on the wire. But it appears in tests and in the trace logs. Should it be `#[non_exhaustive]` to allow additions without semver bumps? Lean yes.
-3. **Mirror state on CP — full or projected?** Today's outline says CP runs the same `step()` to maintain a full per-host mirror. Alternative: CP keeps only a projected `FleetView` (Idle / InFlight / Converged / Failed / Reverted — 5 states instead of 6) since that's all the planner needs. Trade-off: full mirror = easier to reason about (same state as agent), projected = smaller memory footprint at scale. Decide before implementation.
-4. **Event log durability vs throughput.** Append-only to SQLite per inbound event: fine at homelab scale, may bottleneck at enterprise. Batch + fsync interval? Out of scope here but flag for performance review.
-5. **Worker shutdown semantics.** All workers reach into the MPSC. On graceful shutdown, who closes the channel first? Convention: the reducer loop owns the channel's `Sender` (workers hold clones); reducer-loop exit drops its `Sender`, workers see channel closed and exit. Documented but not enforced by types.
-6. **Reducer panic recovery.** If `step()` panics on bad input, the agent loses its mutator. Restart via systemd? Catch panic and treat as a TransitionError? Lean catch + error event to CP + continue; we don't want one bad input to kill the whole agent.
-7. **Compliance events.** Today's compliance reporting is separate from the rollout state machine. Under this architecture, compliance probes are just another worker emitting `LocalProbeObserved`-shaped events. Decide whether to unify the event vocabulary in this RFC or keep compliance in its own lane (with its own reducer) — both work.
-
-## 11. Validation plan
-
-- **Per-host reducer property tests.** Every legal event sequence preserves the invariants from RFC-0008 §3. `proptest` runs ~10000 sequences per CI run; failure shrinks to minimal reproducer.
-- **CP planner property tests.** Same approach against `plan_next`: every fleet state + manifest combination produces a valid plan (no Dispatch to a quarantined SHA, no channel-edges violation, no exceeded budget).
-- **Mirror parity tests.** Run the same event sequence through agent's and CP's `step()`; assert final states are byte-identical. Catches drift if any code path ever diverges.
-- **Effect-handler exhaustiveness.** Compiler-enforced. New `Effect` variant without a runner arm = build failure. Verified by adding a deliberately-unhandled variant in a test fixture and asserting `cargo build` fails.
-- **No-I/O-in-pure-crates check.** CI step: `cargo tree -p nixfleet-state-machine` must not list `tokio`, `reqwest`, `rusqlite`, `chrono` (note: `chrono` allowed for types, but not `chrono::Utc::now`). Same for `nixfleet-reconciler`.
-- **Re-run the v0.2 demo cycle.** Six-phase validation (`fleet-up` → `fleet-promote` → `fleet-rollback` → `fleet-recover` → `fleet-down`) against the new runtime. Same assertions as RFC-0008 §10 plus: no shared-mutable-state warnings under `loom` testing of the agent runtime.
-
-## 12. Migration
-
-None. v0.2 is a full rewrite (per RFC-0008 §7). The pre-v0.2 reconciler tick loop, the `host_dispatch_state` table, the `pipeline.rs` / `health.rs` / `compliance.rs` cross-talk — all deleted on the same commit that lands `nixfleet-state-machine`. No compat shim, no parallel code paths.
-
-The new code is smaller. Today's `reconcile.rs` is ~1100 lines doing nine things; this RFC's runtime split is roughly:
-
-| File | LoC estimate |
-|---|---|
-| `nixfleet-state-machine/src/lib.rs` | ~400 (reducer + types) |
-| `nixfleet-reconciler/src/planner.rs` | ~200 |
-| `nixfleet-reconciler/src/gates/*.rs` | ~300 (split, 5 gates) |
-| `nixfleet-control-plane/src/runtime/applier.rs` | ~250 (one arm per PlanAction + Effect) |
-| `nixfleet-control-plane/src/runtime/workers/*` | ~400 (four workers) |
-| `nixfleet-agent/src/runtime/applier.rs` | ~150 |
-| `nixfleet-agent/src/runtime/workers/*` | ~300 |
-
-Net: roughly the same total LoC, but partitioned along lines that make the bugs we hit structurally impossible to recur.

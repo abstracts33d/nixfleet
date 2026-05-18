@@ -5,7 +5,7 @@
 //!   - per-rollout `HostRolloutState` keyed by `rollout_id` (the agent
 //!     owns its own host's state, so the key is just the rollout id)
 //!   - cached `SignedManifestSet` (refreshed by the `manifest_poll`
-//!     worker per RFC-0011 §1 invariant #1 — single signed source of
+//!     worker per RFC-0004 §1 invariant #1 — single signed source of
 //!     truth fetched + verified once per tick; the reducer reads
 //!     rollout policy from it for `step()` calls)
 //!
@@ -32,13 +32,13 @@ use super::{
     ShutdownGuard,
 };
 
-/// Sustained-failure window cap. RFC-0008 §6 — the agent transitions
+/// Sustained-failure window cap. RFC-0005 §6 — the agent transitions
 /// Soaking → Failed when a probe has been failing continuously past
 /// this threshold.
 ///
 /// TODO(v0.2.1): wire from `services.nixfleet-agent.healthChecks` via
 /// the NixOS module → agent CLI arg → runtime config struct, per
-/// RFC-0008 §6 + §9.1 ("each agent reads it from
+/// RFC-0005 §6 + §9.1 ("each agent reads it from
 /// services.nixfleet-agent.healthChecks"). Bigger than v0.2 scope
 /// because it touches the NixOS module surface; v0.2 ships with the
 /// hardcoded floor.
@@ -47,7 +47,7 @@ use super::{
 /// or GitHub `upstream`, operator's call) — title "Wire
 /// SUSTAINED_FAILURE_THRESHOLD_SECS from NixOS module config (v0.2.1)".
 ///
-/// The hardcoded 120s is twice RFC-0008 §6's documented default
+/// The hardcoded 120s is twice RFC-0005 §6's documented default
 /// (60s), so under-shooting safely: real probe-failure detection
 /// still fires, just 60s later than a tuned deployment would. Safe
 /// for v0.2 demo + lab work; not appropriate for production fleets
@@ -75,7 +75,7 @@ pub async fn run(
     // each `verify_rollout_manifest` succeeds (and the boot-recovery
     // handshake in 7f); the reducer reads it to find `RolloutPolicy`
     // for step() calls. None at startup; events that arrive before
-    // the cache is warm are dropped with a warn (RFC-0008 §9.5's
+    // the cache is warm are dropped with a warn (RFC-0005 §9.5's
     // "agent can't act on unverified state").
     let mut manifests: Option<SignedManifestSet> = None;
 
@@ -262,7 +262,7 @@ async fn run_host_event(
     // snapshot read. Carrying the validated value with the event
     // makes the trust chain explicit: longpoll verifies against the
     // signed manifest, longpoll passes the value forward, reducer
-    // consumes it without re-derivation. RFC-0011 §1 invariant 1.
+    // consumes it without re-derivation. RFC-0004 §1 invariant 1.
     let prior = host_states.get(&rollout_id).cloned();
     let (state, policy_channel) = match (prior, &event) {
         (Some(s), _) => {
@@ -323,7 +323,7 @@ async fn run_host_event(
     };
     host_states.insert(rollout_id, next_state);
 
-    // Effects carry their own `rollout_id` per RFC-0009 §9. Applier
+    // Effects carry their own `rollout_id` per RFC-0006 §9. Applier
     // reads directly from the effect variant.
     for effect in effects {
         apply_effect(ctx, effect).await;
@@ -342,7 +342,7 @@ async fn run_advance_tick(
     let mut synth: Vec<(nixfleet_proto::RolloutId, Event)> = Vec::new();
 
     // Fail-gate: Soaking → Failed via LocalSustainedFailureCrossed. Mode
-    // filter on the failing-probe set per RFC-0010 §3.3 (ProbeMode
+    // filter on the failing-probe set per RFC-0007 §3.3 (ProbeMode
     // docstring): only Enforce-mode probes contribute to sustained-failure.
     for (rollout_id, state) in host_states.iter() {
         if state.state != HostState::Soaking {
@@ -374,10 +374,10 @@ async fn run_advance_tick(
     }
 
     // Pass-gate: Soaking → Converged via LocalConvergedReached. Three
-    // RFC-0008 §4.2 invariants: current==target, soak_due_at elapsed, all
+    // RFC-0005 §4.2 invariants: current==target, soak_due_at elapsed, all
     // enforce-mode probes Pass. Mode filter on the probe-pass check
     // brings convergence into parity with the fail-gate above per
-    // RFC-0010 §3.3 (ProbeMode docstring). The shared verifier
+    // RFC-0007 §3.3 (ProbeMode docstring). The shared verifier
     // (state-machine soaking::verify_converged_invariants) re-checks
     // these at step() time before transitioning.
     for (rollout_id, state) in host_states.iter() {
@@ -415,12 +415,12 @@ async fn run_advance_tick(
 }
 
 /// First-touch bootstrap for a fresh `LocalActivate` event. Pure: derives
-/// channel from the canonical `RolloutId` composite (RFC-0012 §6.3); the
+/// channel from the canonical `RolloutId` composite (RFC-0008 §6.3); the
 /// caller threads in the manifest-looked-up `target_closure` for this
 /// host (selecting by `hostname == cfg.machine_id`) and the
 /// CP-resolved `soak_due_at` carried by the `LocalActivate` event
 /// from `DispatchResponse.soak_due_at` (CP is the single source of
-/// truth for the policy-resolved soak window per RFC-0011 §1
+/// truth for the policy-resolved soak window per RFC-0004 §1
 /// invariant 1). Caller also threads `now` so the helper stays
 /// clock-injection-free.
 fn bootstrap_pending_state(
@@ -441,7 +441,7 @@ fn bootstrap_pending_state(
 }
 
 /// Collect probe names that are currently failing AND declared with
-/// `mode = Enforce`. Per RFC-0010 §3.4, only `Enforce`-mode probes
+/// `mode = Enforce`. Per RFC-0007 §3.4, only `Enforce`-mode probes
 /// participate in the soak gate; `Observe` and `Disabled` records
 /// events but does not gate. The pre-fix builder filtered only by
 /// `status == Fail`, which silently included failing `Observe`-mode
@@ -461,7 +461,7 @@ fn collect_failing_enforce_probes(
 }
 
 /// All enforce-mode probes have status `Pass`. Observe and Disabled are
-/// ignored per RFC-0010 §3.3 (ProbeMode docstring, state.rs); they do not
+/// ignored per RFC-0007 §3.3 (ProbeMode docstring, state.rs); they do not
 /// gate convergence. Mirror of `collect_failing_enforce_probes` on the
 /// Soaking → Converged exit path. Empty enforce set trivially satisfies
 /// — matches the shared verifier's "empty probe map acceptable" semantic
@@ -704,7 +704,7 @@ mod tests {
         // per-rollout manifest even after longpoll verified the NEW
         // target — producing a TOCTOU that strands the agent in
         // Soaking against an OLD target while CP has already moved on
-        // (RFC-0011 §1 invariant 1). The pure helper is
+        // (RFC-0004 §1 invariant 1). The pure helper is
         // caller-driven; the call site in run_host_event extracts the
         // field from the event and passes it through.
         let rid = nixfleet_proto::RolloutId::new("edge", "f8c46e472deadbeef");
@@ -755,13 +755,13 @@ mod tests {
         assert_eq!(
             failing,
             vec!["enforce-fail".to_string()],
-            "failing enforce-mode probe MUST gate per RFC-0010 §3.4",
+            "failing enforce-mode probe MUST gate per RFC-0007 §3.4",
         );
     }
 
     #[test]
     fn collect_failing_enforce_probes_excludes_failing_observe_and_disabled() {
-        // RFC-0010 §3.4 regression guard: a failing observe-mode probe
+        // RFC-0007 §3.4 regression guard: a failing observe-mode probe
         // (e.g. an evidence-kind compliance probe with mode = "observe"
         // that triggers an audit failure) records the event but MUST
         // NOT gate soak promotion. Same for disabled mode. The pre-fix
@@ -821,7 +821,7 @@ mod tests {
 
     #[test]
     fn all_enforce_probes_pass_ignores_failing_observe_and_disabled() {
-        // RFC-0010 §3.3 regression guard: observe + disabled probe
+        // RFC-0007 §3.3 regression guard: observe + disabled probe
         // failures MUST NOT gate convergence. Mirror of the
         // collect_failing_enforce_probes filter on the soak-fail side.
         let mut probes = HashMap::new();
@@ -848,7 +848,7 @@ mod tests {
         );
         assert!(
             all_enforce_probes_pass(&probes),
-            "observe + disabled failures MUST NOT gate convergence per RFC-0010 §3.3",
+            "observe + disabled failures MUST NOT gate convergence per RFC-0007 §3.3",
         );
     }
 

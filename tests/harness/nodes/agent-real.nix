@@ -65,7 +65,7 @@
     # run would break fixture caching). Override the agent's freshness
     # window to 1 year so the fixture verifies regardless of wallclock
     # drift between fixture-build-time and test-run-time. Production sets
-    # the default `3600` (RFC-0005 §1.5 replay defense).
+    # the default `3600` (RFC-0010 §1.5 replay defense).
     manifestFreshnessWindowSecs = 365 * 24 * 3600;
     stateDir = "/var/lib/nixfleet-agent";
     tls = {

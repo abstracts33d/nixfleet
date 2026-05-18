@@ -1,4 +1,4 @@
-//! End-to-end smoke test for the new RFC-0009 runtime.
+//! End-to-end smoke test for the new RFC-0006 runtime.
 //!
 //! Spins up `runtime::spawn` against an in-memory DB, feeds inputs through
 //! the MPSC, observes the side effects (DB rows, event_log entries,
@@ -118,7 +118,7 @@ async fn manifest_set_updated_opens_rollout_and_creates_pending_record() {
     // Feed a SignedManifestSet. Plan_next emits OpenRollout, the applier
     // creates a Pending host_rollout_records row for h1.
     let set = signed_manifest_set_one_host("target-closure");
-    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // RFC-0008 §6.3 + D-007: rollout_id is the canonical
     // `RolloutId::new(channel, channel_ref)` composite. Reconstruct
     // here so the test's lookups by rollout_id match what
     // `build_fleet_state` + the planner produce.
@@ -170,7 +170,7 @@ async fn host_event_drives_state_transition_and_writes_event_log() {
 
     // Same as the previous test: seed the rollout.
     let set = signed_manifest_set_one_host("target-closure");
-    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // RFC-0008 §6.3 + D-007: rollout_id is the canonical
     // `RolloutId::new(channel, channel_ref)` composite. Reconstruct
     // here so the test's lookups by rollout_id match what
     // `build_fleet_state` + the planner produce.
@@ -268,7 +268,7 @@ async fn heartbeat_with_closure_mismatch_returns_replay_from_seq() {
 
     // Seed: rollout open, host advances to Activating (sets last_event_seq=1).
     let set = signed_manifest_set_one_host("target-closure");
-    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // RFC-0008 §6.3 + D-007: rollout_id is the canonical
     // `RolloutId::new(channel, channel_ref)` composite. Reconstruct
     // here so the test's lookups by rollout_id match what
     // `build_fleet_state` + the planner produce.
@@ -323,7 +323,7 @@ async fn heartbeat_with_closure_mismatch_returns_replay_from_seq() {
     // Heartbeat with a current_closure that disagrees with the CP-mirror
     // (the mirror has current_closure = None at this point; the drift
     // detector treats anything ≠ "what CP knows" as drift and replies
-    // with last_event_seq for Replay-From). RFC-0008 §4.3 semantics.
+    // with last_event_seq for Replay-From). RFC-0005 §4.3 semantics.
     let (reply_tx, reply_rx) = oneshot::channel::<HeartbeatReply>();
     rt.input_tx
         .send(ReducerInput::HeartbeatReceived {
@@ -941,7 +941,7 @@ async fn current_wave_advances_when_every_wave_zero_host_converges() {
         .await
         .unwrap();
 
-    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // RFC-0008 §6.3 + D-007: rollout_id is the canonical
     // `RolloutId::new(channel, channel_ref)` composite. This fixture
     // uses `channel: "stable"` and `channel_ref: "stable"` so the
     // composite is `"stable@stable"`.
@@ -1143,7 +1143,7 @@ async fn wave_one_hosts_do_not_dispatch_while_wave_zero_hosts_are_pending() {
 /// `channel_ref` (the architectural point of multi-channel cascading
 /// from a single git push) would collide on the rollout PK. D-007
 /// lifted `RolloutId` to a newtype with canonical
-/// `"{channel}@{channel_ref}"` construction (RFC-0012 §6.3 amendment
+/// `"{channel}@{channel_ref}"` construction (RFC-0008 §6.3 amendment
 /// `0320c2fa`).
 ///
 /// This test deliberately uses two channels (`stable`, `edge`) sharing
@@ -1259,7 +1259,7 @@ async fn plan_next_distinguishes_rollouts_when_two_channels_share_channel_ref() 
     }
 
     // Distinct `rollouts` rows under the canonical `channel@channel_ref`
-    // identity (RFC-0012 §6.3): two channels sharing a channel_ref still
+    // identity (RFC-0008 §6.3): two channels sharing a channel_ref still
     // map to disjoint rollout_id values, so each gets its own row.
     let stable_row = db
         .rollouts()

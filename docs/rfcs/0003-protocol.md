@@ -2,8 +2,7 @@
 
 **Status.** Accepted.
 **Depends on.** RFC-0001, RFC-0002, magic rollback.
-**Scope.** Wire protocol between agent and control plane. Identity, endpoints, polling, versioning, security properties. Does not cover control-plane-internal APIs.
-**Implementation.** `crates/nixfleet-proto/src/agent_wire.rs` + `enroll_wire.rs` (request/response types), `crates/nixfleet-control-plane/src/server/` (the `/v1/*` handlers and mTLS gate), `crates/nixfleet-agent/` (the poll loop, enrollment, magic-rollback timer). See `docs/design/architecture.md` §1.4 and §1.5.
+**Scope.** Wire protocol between agent and control plane. Identity, endpoints, polling, versioning, security properties. Does not cover control-plane-internal APIs. The agent-state event flow is owned by RFC-0005 (§4.1 here points at it).
 
 ## 1. Design goals
 
@@ -36,119 +35,21 @@
 
 All endpoints rooted at `https://<control-plane>/v1/`.
 
-### 4.1 `POST /agent/checkin`
+### 4.1 Agent-driven event flow
 
-The core of the protocol. Agent polls this on its declared interval.
+RFC-0005 supersedes the v0.1 `POST /agent/checkin` + `POST /agent/confirm` + `POST /agent/report` triple. The wire surface is now:
 
-**Request body:**
+- `POST /v1/agent/events` — outbound event stream (DispatchAck, ActivationStarted, ActivationComplete/Failed/Deferred, ProbeTopologyDeclared, ProbeResult, ProbeFailureFirst, Failed, RollbackComplete, Converged). One event per POST; CP dedupes by `(hostname, rollout_id, seq)`. See RFC-0005 §4.2 for the event vocabulary.
+- `POST /v1/agent/heartbeat` — liveness + drift-detection. Minimal payload (`current_closure`, `last_event_seq_by_rollout`); never advances state. See RFC-0005 §4.3.
+- `GET /v1/agent/dispatch` — agent long-polls for queued `Dispatch` payloads (the only CP→agent message; rollback is agent-decided). Preserves the pull-only contract per §1 design goal. See RFC-0005 §4.1.
 
-```json
-{
-  "hostname": "attic-01",
-  "agentVersion": "0.2.1",
-  "currentGeneration": {
-    "closureHash": "sha256-aabbcc...",
-    "channelRef": "abc123def",
-    "bootId": "f0e1d2c3-..."
-  },
-  "health": {
-    "systemdFailedUnits": [],
-    "uptime": 1234567,
-    "loadAverage": [0.1, 0.2, 0.3]
-  },
-  "lastProbeResults": [
-    { "control": "anssi-bp028-ssh-no-password", "status": "passed",
-      "evidence": "...", "ts": "2026-04-24T10:15:02Z" }
-  ]
-}
-```
+The agent verifies every `target_closure` against the signed manifest fetched via §4.4 before acting on it; no CP-advertised value is trusted directly. See RFC-0002 §4.4 for the threat model that contract closes.
 
-**Response body:**
-
-```json
-{
-  "target": {
-    "closureHash": "sha256-ddeeff...",
-    "channelRef": "def456abc",
-    "rollout": "a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1",
-    "wave": 2,
-    "activate": {
-      "confirmWindowSecs": 120,
-      "confirmEndpoint": "/v1/agent/confirm",
-      "runtimeProbes": [
-        { "control": "anssi-bp028-ssh-no-password", "schema": "anssi-bp028/v1" }
-      ]
-    }
-  },
-  "nextCheckinSecs": 60
-}
-```
-
-If the host is already at the desired generation, `target` is absent and `nextCheckinSecs` reflects idle polling.
-
-**`target.rollout` is the canonical RolloutId.** RFC-0012 §6.3 supersedes the v0.1 content-addressed shape: the wire value is the canonical composite `"{channel}@{channel_ref}"`, validated against `[a-z0-9_-]+@[0-9a-f]+`. The legacy `displayName` field inside the manifest is now redundant with the identifier and retained only for backwards-compatible operator-facing surfaces.
-
-**Agent verification posture (mandatory).** On first sight of a `rolloutId` it has not seen before, the agent MUST:
-
-1. Fetch `GET /v1/rollouts/<rolloutId>` and the matching `.sig` (§4.6).
-2. Verify the signature against the trust roots it already holds (`ciReleaseKey`).
-3. Recompute `RolloutId::new(manifest.channel, manifest.channel_ref)` from the parsed manifest and assert it equals the advertised `rolloutId` (per RFC-0012 §6.3; supersedes the v0.1 `sha256(canonical(manifest))` recompute).
-4. Assert `(hostname, wave_index)` ∈ `manifest.host_set`.
-5. Cache the manifest bytes + signature under `<state-dir>/rollouts/<rolloutId>.{json,sig}`.
-
-Failure of any step is a hard refuse-to-act: the agent emits the corresponding `ReportEvent` (`ManifestMissing`, `ManifestVerifyFailed`, `ManifestMismatch`) and does not consume any other field of `target`. There is no fallback path that trusts a CP-advertised `target` for one tick - see RFC-0002 §4.4 for the threat model this closes.
-
-**Subsequent checkins.** For every checkin where `target.rollout` matches a `rolloutId` the agent has already cached, the agent MUST re-assert string equality against the cache. A change in `rolloutId` while the cached one is still in flight is a hard refuse-to-act; the CP cannot replace a rollout's plan mid-flight by content-address (a different plan is a different rollout).
-
-**Idempotency.** Repeated check-ins from the same host with unchanged state are no-ops (but still update `lastSeen` for observability). The control plane must not create duplicate work.
-
-### 4.2 `POST /agent/confirm`
-
-Called exactly once by the agent, after a new generation has booted and the agent process has come up healthy. The magic-rollback window (nixfleet #2) closes on receipt.
-
-**Request body:**
-
-```json
-{
-  "hostname": "attic-01",
-  "rollout": "a3f7c2b1d4e8f6a9c0b5d2e7f1a4c8b3d6e9f2a5c7b4d1e8f0a3b6c9d2e5f8a1",
-  "wave": 2,
-  "generation": {
-    "closureHash": "sha256-ddeeff...",
-    "bootId": "new-boot-uuid-..."
-  },
-  "probeResults": [
-    { "control": "anssi-bp028-ssh-no-password", "status": "passed", "evidence": "..." }
-  ]
-}
-```
-
-`rollout` is the same content hash the agent received in `target.rollout` and persisted to its cache; the CP looks up `(hostname, rollout)` in `host_rollout_state` and asserts the agent is confirming a rollout it actually dispatched.
-
-**Response:** `204 No Content` on acceptance, `410 Gone` if the rollout was cancelled or the wave already failed (agent then triggers local rollback on its own).
-
-### 4.3 `POST /agent/report`
-
-Out-of-band state reports: activation failure, probe failure, voluntary rollback. Distinct from `/checkin` so that failure reports don't interleave with normal polling cadence.
-
-```json
-{
-  "hostname": "attic-01",
-  "event": "activation-failed",
-  "rollout": "stable@def456",
-  "details": {
-    "phase": "switch-to-configuration",
-    "exitCode": 1,
-    "stderrTail": "..."
-  }
-}
-```
-
-### 4.4 `GET /agent/closure/<hash>`
+### 4.2 `GET /agent/closure/<hash>`
 
 Optional. If the host cannot reach the binary cache directly (restricted network), the control plane can proxy closures. Preference remains: agents fetch from cache, not control plane - this endpoint exists as a fallback, not a default path.
 
-### 4.5 Enrollment endpoints (nixfleet #9)
+### 4.3 Enrollment endpoints (nixfleet #9)
 
 Out of scope for this RFC in detail. Summary:
 
@@ -181,21 +82,19 @@ runbook.
 
 #### Bootstrap report
 
-Agents that fail enrollment cannot use the mTLS-gated `POST /agent/report` to surface the failure (no cert yet). `POST /agent/bootstrap-report` exists for this case alone.
+Agents that fail enrollment can't reach the mTLS-gated event endpoints (no cert yet). `POST /agent/bootstrap-report` exists for this case alone.
 
-**Authentication.** Bound to a hostname + agent-supplied pubkey via the same bootstrap token used by `POST /enroll`. The token is NOT consumed - multiple bootstrap reports may fire while the operator iterates on the underlying issue. The token's lifetime gates the window.
+**Authentication.** Bound to a hostname + agent-supplied pubkey via the same bootstrap token used by `POST /enroll`. The token is NOT consumed — multiple bootstrap reports may fire while the operator iterates on the underlying issue. The token's lifetime gates the window.
 
 **Allowlisted events.** Only `TrustError` and `EnrollmentFailed` events are accepted on this endpoint. Anything else is `400`. The allowlist enforces the path's narrow purpose: surfacing why enrollment is broken, not generic agent telemetry.
 
-**No nonce consumption.** Standard `/agent/report` consumes a per-checkin nonce to bind the report to a specific server view. Bootstrap reports happen before the agent has a checkin nonce; nonce binding is not enforced. The token + hostname + pubkey + event allowlist together constrain the abuse surface.
+**Response.** `204 No Content` on accept; the CP records the event in `event_log` so the operator dashboard sees pre-cert failures in the same place as post-cert ones. Subsequent successful `/enroll` does not retroactively rewrite the bootstrap-report rows.
 
-**Response.** `204 No Content` on accept; the CP records the event in `host_reports` (same ring as post-enrollment events) so the operator dashboard sees pre-cert failures in the same panel as post-cert ones. Subsequent successful `/enroll` does not retroactively rewrite the bootstrap-report rows.
-
-### 4.6 `GET /v1/rollouts/<rolloutId>`
+### 4.4 `GET /v1/rollouts/<rolloutId>`
 
 Distributes the signed `RolloutManifest` (RFC-0002 §4.4) to agents. mTLS-gated like every other endpoint. The CP serves the on-disk pre-signed pair byte-for-byte; it does not re-derive, re-sign, or otherwise transform the manifest.
 
-**Path parameter.** `rolloutId` is the canonical RFC-0012 §6.3 composite `"{channel}@{channel_ref}"` exactly as the CP advertised it in `/agent/checkin` responses. The CP route validator enforces `[a-z0-9_-]+@[0-9a-f]+` to block path-traversal smuggling.
+**Path parameter.** `rolloutId` is the canonical RFC-0008 §6.3 composite `"{channel}@{channel_ref}"` exactly as the CP advertised it in `/agent/checkin` responses. The CP route validator enforces `[a-z0-9_-]+@[0-9a-f]+` to block path-traversal smuggling.
 
 **Response.** Two body shapes, served via the standard HTTP `Accept` content-negotiation pattern:
 
@@ -250,42 +149,3 @@ Agents fetch both. Implementations MAY also expose a single endpoint that return
 - **Prolonged offline window.** If check-in fails for longer than `channel.offlineGraceSecs` (default: 7 days), the agent emits a local systemd journal warning but takes no action. Action is an operator decision.
 - **Clock skew tolerance.** All deadlines (confirm window, cert validity) carry ≥ 60s slack to absorb typical host↔CP clock drift.
 
-## 9. Open questions
-
-1. **Per-host pinning for debugging.** Should operators be able to pin a host to a specific generation outside normal rollouts ("don't touch this, I'm debugging")? Leaning yes, via a `freeze` flag in fleet.nix or a control-plane-side override - but this is declarative-intent-breaking, so needs careful design.
-2. **Streaming vs polling.** SSE or long-polling for the checkin endpoint would reduce latency for event-driven rollouts (no need to wait for next poll). Deferred to v2; pure polling is simpler to reason about and adequate for nixfleet's target fleet sizes.
-3. **Multi-control-plane.** Agents talking to a quorum of CPs for HA. Out of scope for v1; single control plane with standard HA (pacemaker, k8s statefulset) is the expected deployment.
-
-### Resolved in v0.2
-
-- **Closure signing** (was: should CP sign `target` responses?). Resolved: closures are signed by attic (not the control plane), `fleet.resolved` is signed by CI, both verified by the agent. CP `target` responses are not independently signed - they carry references (closure hash, `fleet.resolved` revision) that the agent verifies against their respective signing roots. See ../design/architecture.md §4 and §7 "stale-closure replay" above.
-
----
-
-## Appendix: Relationship between the three RFCs
-
-```
-  RFC-0001 (fleet.nix)          "what do I want?"
-       │
-       │  produces fleet.resolved
-       ▼
-  RFC-0002 (reconciler)          "what should happen next?"
-       │
-       │  emits per-host intents
-       ▼
-  RFC-0003 (agent protocol)      "how do intents reach hosts and
-                                  how does observed state come back?"
-       │
-       │  updates observed state
-       ▼
-  RFC-0002 (reconciler, next tick)
-```
-
-The loop is:
-
-1. RFC-0001 defines desired state.
-2. RFC-0002 compares desired to observed and emits intent.
-3. RFC-0003 ships intent to agents and returns observations.
-4. Loop forever. Every tick is idempotent. Every decision has a written reason.
-
-That's the whole system. Everything else in nixfleet - CLI, compliance, scopes, darwin support - is an accessory to this loop.

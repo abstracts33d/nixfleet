@@ -20,7 +20,7 @@ pub enum RolloutTransitionError {
 
     /// A `RolloutOpened` arrived for a `(channel, ref)` whose channel
     /// already has an `active_rollout_id`. The planner must emit
-    /// `SuccessorOpened` first (RFC-0012 §3 invariant).
+    /// `SuccessorOpened` first (RFC-0008 §3 invariant).
     #[error(
         "rollout {rollout_id} opened on channel {channel} without prior SuccessorOpened (expected supersession)"
     )]
@@ -29,7 +29,7 @@ pub enum RolloutTransitionError {
         channel: String,
     },
 
-    /// Invariant from RFC-0012 §3 violated by the event's payload (e.g.,
+    /// Invariant from RFC-0008 §3 violated by the event's payload (e.g.,
     /// `RolloutTerminal` while at least one host is not Converged).
     #[error("rollout invariant violation: {0}")]
     Invariant(&'static str),

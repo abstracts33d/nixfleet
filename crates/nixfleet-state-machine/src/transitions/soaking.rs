@@ -327,7 +327,7 @@ pub(super) fn handle(
             Ok((state, effects))
         }
 
-        // Soaking → Converged (after re-verifying RFC-0008 §4.2 invariants)
+        // Soaking → Converged (after re-verifying RFC-0005 §4.2 invariants)
         Event::LocalConvergedReached {
             converged_at,
             current_closure,
@@ -426,9 +426,9 @@ fn update_probe(
     }
 }
 
-/// RFC-0008 §4.2 `Converged` event: CP re-verifies the three invariants
+/// RFC-0005 §4.2 `Converged` event: CP re-verifies the three invariants
 /// before transitioning. Same check runs agent-side too — same code, both
-/// sides (RFC-0009 §2 principle 4).
+/// sides (RFC-0006 §2 principle 4).
 fn verify_converged_invariants(
     state: &HostRolloutState,
     current_closure: &str,
@@ -449,7 +449,7 @@ fn verify_converged_invariants(
         ));
     }
     // Invariant 3: all enforce-mode declared probes are Pass. Observe and
-    // Disabled probes do not gate per RFC-0010 §3.3 (ProbeMode docstring,
+    // Disabled probes do not gate per RFC-0007 §3.3 (ProbeMode docstring,
     // state.rs); the wave-promotion gate already filters by mode, and the
     // sustained-failure path (reducer's collect_failing_enforce_probes)
     // is on the same side of the line — this brings convergence into

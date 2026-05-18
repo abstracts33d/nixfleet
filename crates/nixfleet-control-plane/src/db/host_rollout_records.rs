@@ -38,7 +38,7 @@ impl<'a> HostRolloutRecords<'a> {
     }
 
     /// All records for a given rollout. Used by the planner to derive
-    /// `FleetState.host_states` (RFC-0009 §4.1).
+    /// `FleetState.host_states` (RFC-0006 §4.1).
     pub fn all_for_rollout(&self, rollout_id: &str) -> Result<Vec<HostRolloutState>> {
         let conn = super::lock_conn(self.conn)?;
         let mut stmt = conn.prepare(
@@ -62,7 +62,7 @@ impl<'a> HostRolloutRecords<'a> {
 
     /// Active (non-terminal) records for a hostname across all rollouts.
     /// Used by the heartbeat handler to drive boot-recovery retroactive
-    /// confirmation (RFC-0008 §9.5): when an agent restart drops the
+    /// confirmation (RFC-0005 §9.5): when an agent restart drops the
     /// in-memory verify-poll loop, the next heartbeat carries
     /// `current_closure` but no `rollout_id` — CP scans active records
     /// for this host to find the one whose `target_closure` matches.

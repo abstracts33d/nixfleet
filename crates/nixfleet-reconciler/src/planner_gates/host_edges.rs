@@ -2,7 +2,7 @@
 //! `Edge { gated: A, gates: B }` holds A's dispatch until B is
 //! ordering-eligible — Converged (canonical "health-verified at
 //! target") OR Deferred (activation staged, live-switch pending
-//! operator reboot per RFC-0008 §3 terminal-for-ordering).
+//! operator reboot per RFC-0005 §3 terminal-for-ordering).
 //!
 //! LOADBEARING: Deferred counts as ordering-eligible. Without this,
 //! a single host that hit `DeferredPendingReboot` (framework upgrade

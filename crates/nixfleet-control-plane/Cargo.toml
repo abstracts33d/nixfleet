@@ -114,7 +114,7 @@ nixfleet-proto = { path = "../nixfleet-proto", features = ["rusqlite", "testing"
 # Enable `Verified::unverified_for_tests` so applier-integration tests
 # can synthesise SignedManifestSet without driving the full signing
 # pipeline. Production builds do NOT enable this feature; the trust
-# contract on `Verified<T>` (RFC-0009 §3) holds.
+# contract on `Verified<T>` (RFC-0006 §3) holds.
 nixfleet-reconciler = { path = "../nixfleet-reconciler", features = ["test-helpers"] }
 # `tokio::time::pause` + `start_paused` are gated on test-util; the
 # graceful-shutdown unit tests use them to fast-forward past the 30s

@@ -1,5 +1,5 @@
 //! `Pruned` source state. Absorbing — the in-memory state-machine
-//! instance has been freed; the row persists for audit (RFC-0012 §3 +
+//! instance has been freed; the row persists for audit (RFC-0008 §3 +
 //! d1bc6df1 architect fix-up). Any further event is structurally a
 //! defect.
 

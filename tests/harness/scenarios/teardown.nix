@@ -79,7 +79,7 @@ in
         # The v0.2 equivalent of v0.1's `last_healthy_since` is the
         # `converged_at` column: both mark the moment the host was last
         # observed at the target closure. Recovery path is event-driven
-        # (RFC-0008 §4.3 + RFC-0009 §5): post-wipe agent heartbeats
+        # (RFC-0005 §4.3 + RFC-0006 §5): post-wipe agent heartbeats
         # carry current_closure → reducer creates/updates the row →
         # LocalConvergedReached event → applier populates converged_at.
         print("step 5: waiting for state recovery (host_rollout_records row + converged_at)...")
@@ -136,7 +136,7 @@ in
           """Block until each agent has a 'heartbeat received' line in
           the CP journal after `cursor`. v0.1's `/v1/agent/checkin`
           endpoint is gone — v0.2 agents establish liveness via
-          POST /v1/agent/heartbeat (RFC-0008 §4.3) on a periodic
+          POST /v1/agent/heartbeat (RFC-0005 §4.3) on a periodic
           ticker. Returns hostname -> seen-at."""
           deadline = time.monotonic() + timeout_s
           pending = set(${builtins.toJSON agentNames})
@@ -189,7 +189,7 @@ in
       print("step 3: waiting for post-wipe recovery checkins...")
       recovery_start = time.monotonic()
       # Budget = HEARTBEAT_INTERVAL (60s, agent's heartbeat worker cadence,
-      # per RFC-0008 §4.3 — same window as the long-poll wait) + 30s slack
+      # per RFC-0005 §4.3 — same window as the long-poll wait) + 30s slack
       # for the worst-case "agent's boot heartbeat landed just before the
       # post-wipe cursor was captured" case. Pre-LIFT cadence was 30s; the
       # v0.2 agent dropped that to once-per-60s steady-state.
@@ -214,7 +214,7 @@ in
           "fleet-harness-teardown: every agent re-checked-in within "
           "one reconcile cycle after CP DB wipe; revocations sidecar "
           "replayed and state-recovery stamped host_rollout_records "
-          "(RFC-0008 §4.3 + RFC-0009 §5)."
+          "(RFC-0005 §4.3 + RFC-0006 §5)."
       )
     '';
   }

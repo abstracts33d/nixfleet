@@ -11,7 +11,7 @@
 //! Backpressure: the channel is bounded. When full, the applier's
 //! `send().await` waits — which surfaces the slowdown back into the
 //! reducer's input MPSC, preserving the no-fail-open contract for the
-//! audit log (RFC-0008 §6: every gate decision and state transition
+//! audit log (RFC-0005 §6: every gate decision and state transition
 //! must reach the log; silently dropping is forbidden).
 
 use std::sync::Arc;

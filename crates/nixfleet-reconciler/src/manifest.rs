@@ -27,7 +27,7 @@ pub fn current_rollout_ids(
 }
 
 /// CP-side rolloutId for a host on `channel`. `Ok(None)` when the channel
-/// has no host with a declared closure. The id is the canonical RFC-0012 §6.3
+/// has no host with a declared closure. The id is the canonical RFC-0008 §6.3
 /// composite `"{channel}@{channel_ref}"`, deterministic from the projection
 /// inputs; producer and CP derive the same string for the same inputs.
 pub fn compute_rollout_id_for_channel(

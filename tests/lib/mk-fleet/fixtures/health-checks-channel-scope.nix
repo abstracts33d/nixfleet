@@ -1,4 +1,4 @@
-# RFC-0010 §3.5 + §4 - channel scope is the fourth multi-scope target.
+# RFC-0007 §3.5 + §4 - channel scope is the fourth multi-scope target.
 # Verifies host > channel > tag > fleet precedence on probe-name
 # collision: fleet declares `heartbeat`, tag `web` declares `heartbeat`,
 # channel `stable` declares `heartbeat`. h-web (on `stable`, tagged

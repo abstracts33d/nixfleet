@@ -115,7 +115,7 @@ in {
       };
 
       # Per-rollout manifest fetch. CP's manifest_poll substitutes
-      # `{rolloutId}` for the canonical RFC-0012 §6.3 composite
+      # `{rolloutId}` for the canonical RFC-0008 §6.3 composite
       # `{channel}@{channel_ref}` when fetching.
       rolloutsSource = {
         artifactUrlTemplate = "http://127.0.0.1:9091/rollouts/{rolloutId}.json";

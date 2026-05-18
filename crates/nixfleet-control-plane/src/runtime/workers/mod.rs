@@ -6,7 +6,7 @@
 //! `plan_next()` — they translate I/O into [`super::ReducerInput`] values
 //! and let the reducer task do the actual transitions.
 //!
-//! Routing (RFC-0009 §7.2):
+//! Routing (RFC-0006 §7.2):
 //!
 //! - [`manifest_poll`] — periodic verify of channel-refs + per-channel
 //!   rollout manifests; emits `ManifestSetUpdated`.

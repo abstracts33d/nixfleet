@@ -23,20 +23,20 @@ pub mod testing;
 /// A signed channel ref (typically a closure hash or a tagged ref name).
 /// Shared between reconciler (`PlanAction::OpenRollout.target_ref`) and
 /// state-machine (`RolloutEvent::RolloutOpened.target_ref`); lives in proto
-/// so both pure crates can depend on it without cross-edges (RFC-0012 §7).
+/// so both pure crates can depend on it without cross-edges (RFC-0008 §7).
 pub type ChannelRef = String;
 
-/// Content-addressed rollout identifier (RFC-0012 §6.3).
+/// Content-addressed rollout identifier (RFC-0008 §6.3).
 ///
 /// Identity contract: a `RolloutId` is the canonical
 /// `"{channel}@{channel_ref}"` composite. Constructed only via
 /// [`RolloutId::new`]; the private inner field prevents ad-hoc
 /// construction the same way `Verified<T>` prevents ad-hoc construction
-/// of a "verified" payload (RFC-0009 §3). Test code that needs to forge
+/// of a "verified" payload (RFC-0006 §3). Test code that needs to forge
 /// a pre-formed identifier goes through `from_raw_for_tests` under the
 /// `test-helpers` feature gate.
 ///
-/// Rationale (RFC-0012 §6.3): two channels can share a `channel_ref`
+/// Rationale (RFC-0008 §6.3): two channels can share a `channel_ref`
 /// (the architectural point of multi-channel cascading from a single
 /// git push). `channel_ref` alone collides in that topology;
 /// `channel` alone violates the content-addressed property of the rest
@@ -66,7 +66,7 @@ impl RolloutId {
     pub fn new(channel: &str, channel_ref: &str) -> Self {
         debug_assert!(
             !channel.contains('@'),
-            "channel must not contain '@' (per RFC-0012 §6.3 canonical format)",
+            "channel must not contain '@' (per RFC-0008 §6.3 canonical format)",
         );
         Self(format!("{channel}@{channel_ref}"))
     }
@@ -76,7 +76,7 @@ impl RolloutId {
         &self.0
     }
 
-    /// Channel half of the canonical composite (per RFC-0012 §6.3).
+    /// Channel half of the canonical composite (per RFC-0008 §6.3).
     /// Splits on the first `@`; the constructor's invariant guarantees
     /// the channel never carries `@` itself, so this returns the
     /// operator-declared channel name unmodified.
@@ -84,7 +84,7 @@ impl RolloutId {
         self.0.split_once('@').map(|(c, _)| c).unwrap_or(&self.0)
     }
 
-    /// Channel-ref half of the canonical composite (per RFC-0012 §6.3).
+    /// Channel-ref half of the canonical composite (per RFC-0008 §6.3).
     /// Splits on the first `@`; if no `@` is present (only reachable via
     /// `from_raw_for_tests` with a malformed input), returns the empty
     /// string rather than panic.
@@ -143,7 +143,7 @@ impl std::borrow::Borrow<str> for RolloutId {
 impl rusqlite::types::FromSql for RolloutId {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
         // Reads round-trip through the canonical-format constraint at
-        // the storage layer (RFC-0012 §6.3): rollout_id is written via
+        // the storage layer (RFC-0008 §6.3): rollout_id is written via
         // `RolloutId::new`'s output and read back unchanged. The DB
         // boundary is the one legitimate non-`new` construction path;
         // every other path goes through `new` or `from_raw_for_tests`.

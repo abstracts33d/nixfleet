@@ -1,5 +1,5 @@
 //! `Active` source state. At least one host is in-flight
-//! (`Pending`/`Activating`/`Soaking` per RFC-0008).
+//! (`Pending`/`Activating`/`Soaking` per RFC-0005).
 
 use chrono::{DateTime, Utc};
 

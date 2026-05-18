@@ -16,7 +16,7 @@ path = "src/lib.rs"
 # Exposes `Verified::unverified_for_tests` for downstream crates' tests
 # (e.g. nixfleet-control-plane's applier integration tests). Production
 # builds MUST NOT enable this — the safety contract of `Verified<T>`
-# (RFC-0009 §3, RFC-0002 §3) is that the only path to a `Verified<T>`
+# (RFC-0006 §3, RFC-0002 §3) is that the only path to a `Verified<T>`
 # in production is through a real signature-checking `verify_*` call.
 # Enable strictly via [dev-dependencies] in the downstream crate.
 test-helpers = []

@@ -2,8 +2,7 @@
 
 **Status.** Accepted.
 **Depends on.** RFC-0001 (`fleet.nix` schema), magic rollback, compliance gates.
-**Scope.** The decision procedure that turns `fleet.resolved` + observed fleet state into wave-by-wave reconciliation actions. Does not cover *how* actions reach hosts - that's RFC-0003.
-**Implementation.** `crates/nixfleet-reconciler/` (pure decision procedure: `reconcile`, `verify_artifact`, `host_state`, `manifest`). `crates/nixfleet-control-plane/src/server/reconcile.rs` (the tick loop). See `docs/design/architecture.md` §1.4 and §6.
+**Scope.** The decision procedure that turns `fleet.resolved` + observed fleet state into wave-by-wave reconciliation actions. Does not cover *how* actions reach hosts — that's RFC-0003. The per-host state machine is RFC-0005; the rollout-level state machine is RFC-0008.
 
 ## 1. Motivation
 
@@ -32,67 +31,13 @@ The reconciler itself is stateless: all state lives in the database. A cold-star
 
 ### 3.1 Rollout lifecycle
 
-```
-          Pending
-             │
-             │  (compliance static gate passes + release closure available)
-             ▼
-         Planning  ──(waves computed from policy + fleet.resolved)──▶  Executing
-                                                                         │
-                                       ┌─────────────────────────────────┤
-                                       │                                 │
-                                       ▼                                 ▼
-                                  WaveActive                      (every wave done)
-                                       │                                 │
-                                 (in-flight hosts                        ▼
-                                  reach Healthy                     Converged
-                                  within wave budget)
-                                       │
-                                       ▼
-                                 WaveSoaking
-                                       │
-                                 (soakMinutes elapsed
-                                  + healthGate passes)
-                                       │
-                                       ▼
-                                 WavePromoted ───▶ (next wave) ───▶ WaveActive
-                                       │
-                                    (last wave)
-                                       │
-                                       ▼
-                                  Converged
+The rollout-level state machine is defined by RFC-0008 §3 (8 states: `Opening → Active → Converging → Terminal`, with `Reverted` / `Failed` / `Superseded` / `Pruned` for failure and end-of-life). The v0.1 outline this section used to carry (Pending → Planning → Executing → WaveActive → WaveSoaking → WavePromoted → Converged) was superseded — see RFC-0008 for the canonical shape and the per-rollout `event_log` projection that records it.
 
-                Failure branches from any WaveActive/WaveSoaking state:
-                  ├─ onHealthFailure = "rollback-and-halt" -> Reverting -> Reverted
-                  ├─ onHealthFailure = "halt"              -> Halted
-                  └─ operator override                      -> Cancelled
-```
-
-Transitions are only taken during reconcile ticks. There is no async callback from an agent that directly mutates rollout state - agents update *observed state* only; the reconciler reads observed state and decides.
+Transitions are only taken during reconcile ticks. There is no async callback from an agent that directly mutates rollout state — agents update *observed state* only; the reconciler reads observed state and decides.
 
 ### 3.2 Per-host rollout participation
 
-Within an active rollout, each member host has its own state:
-
-```
-  Queued ──▶ Dispatched ──▶ Activating ──▶ ConfirmWindow ──▶ Healthy ──▶ Soaked ──▶ Converged
-                                              │
-                                              │  (magic rollback triggered  - 
-                                              │   host did not phone home)
-                                              ▼
-                                          Reverted
-                                              │
-                                              ▼
-                                           Failed
-```
-
-- **Dispatched.** Control plane has set host's intent to new target generation. Host may still be offline.
-- **Activating.** Agent has pulled the target and is running `nixos-rebuild switch`.
-- **ConfirmWindow.** New generation booted; agent must phone home within the window (nixfleet #2, RFC-0003 §4.3).
-- **Healthy.** Phone-home received; health gate evaluation begins.
-- **Soaked.** Host has remained Healthy for `soakMinutes`.
-- **Converged.** Wave promoted.
-- **Reverted/Failed.** Either magic rollback fired, or health gate failed, or runtime compliance probe failed.
+The per-host state machine inside a rollout is defined by RFC-0005 §3 (7 states: `Pending → Activating → Soaking → Converged`, with `Failed → Reverted` on sustained probe failure and `Deferred` for activations that staged the profile but skipped the live switch because dbus/systemd/kernel/init can't be hot-swapped). The v0.1 outline (Queued/Dispatched/ConfirmWindow/Healthy/Soaked) was superseded — see RFC-0005 for the canonical shape.
 
 ## 4. Decision procedure
 
@@ -145,7 +90,7 @@ Edges (RFC-0001 §2.5) are consulted *within the current wave*: a host cannot ad
 
 Budgets (RFC-0001 §2.6) apply *across all active rollouts simultaneously*. A host counts against its budget from Dispatched through Converged. If advancing the next host would exceed `maxInFlight` or `maxInFlightPct` for any matching budget, the reconciler defers - host stays in Queued until a slot opens.
 
-**In-flight definition refinement.** RFC-0008 §3 supersedes the v0.1 state names used above; the v0.2 mapping makes the in-flight set explicit. A host is "in flight" for disruption-budget accounting if and only if its state is `Activating` or `Soaking` per RFC-0008 §3 (the v0.1 "Dispatched" maps to v0.2 `Activating`). `Pending` is NOT in flight: the host has not yet been dispatched and continues serving on the prior closure. Exit states (`Converged`, `Failed`, `Reverted`) are not in flight. The planner additionally counts its own `QueueDispatch` emissions within a single `plan_next()` invocation against the budget, so that within-tick batches respect `maxInFlight` even though the underlying `fleet_state` snapshot does not refresh between gate evaluations.
+**In-flight definition.** A host is "in flight" for disruption-budget accounting if and only if its state is `Activating` or `Soaking` per RFC-0005 §3. `Pending` is NOT in flight: the host has not yet been dispatched and continues serving on the prior closure. Exit states (`Converged`, `Failed`, `Reverted`) are not in flight. The planner additionally counts its own `QueueDispatch` emissions within a single `plan_next()` invocation against the budget, so within-tick batches respect `maxInFlight` even though the underlying `fleet_state` snapshot does not refresh between gate evaluations.
 
 **Budget snapshots are per-rollout; identity is by selector.** Each rollout's manifest carries a frozen `disruption_budgets[]` snapshot - the operator's selector resolved against `fleet.hosts` at OpenRollout time. The reconciler reads the snapshot, never the live `fleet.disruptionBudgets[].selector`. Mid-rollout retags therefore cannot reshape an in-flight rollout's budget membership; they take effect on the next rollout. Cross-rollout fleet-wide enforcement survives the snapshot model: in-flight summing matches budgets across active rollouts by selector equality, so two rollouts that share a `tags = ["etcd"]` budget cap concurrent etcd disruption to the global maxInFlight.
 
@@ -161,15 +106,13 @@ Per-channel: at most one active rollout. A new ref arriving while a rollout is i
 
 ### 4.4 Rollout manifests
 
-**Identifier refinement.** RFC-0012 §6.3 supersedes the v0.1 content-addressed identifier shape used in this section. The canonical form is `rolloutId = "{channel}@{channel_ref}"`, constructed via `RolloutId::new(channel, channel_ref)`. Verification still walks the canonical-byte signature path described below (steps in §4.4 "Adoption"/"Distribution"); the difference is that the identifier is no longer the manifest's content hash, so the "recompute and compare" check is now against the parsed `(channel, channel_ref)` pair. The `fleetResolvedHash` anchor and the signed-bytes recovery property are unchanged.
-
 A `RolloutManifest` is the per-rollout signed plan: the frozen view of which hosts are in which wave, signed by CI at the same time it signs `fleet.resolved.json`. The manifest is the artifact that lets agents verify their wave assignment without trusting the CP.
 
 **Why this exists.** `fleet.resolved.json` is the desired-state snapshot - it rolls forward continuously as new CI commits land. A rollout has a different temporal scope: its plan freezes at rollout-open and stays frozen until the rollout terminates. Without a separately-named, frozen artifact, an attacker (or buggy CP) could serve host A "you're in wave 1" and host B "you're in wave 3" of the same logical rollout, and neither agent could detect the inconsistency. Content-addressing the manifest closes that gap.
 
 **Producer.** CI produces *N+1 signed artifacts per commit* where N is the number of channels in `fleet.resolved.channels`: the resolved snapshot itself, plus one manifest per channel. Each manifest is a deterministic projection of `fleet.resolved` for one channel - every input (host membership, wave layout, target closure, health gate, compliance frameworks) is already inside the signed snapshot. CI signs both with the same `ciReleaseKey`. The CP holds no signing key for rollouts; it is a verified stateless distributor.
 
-**Identifier.** `rolloutId = sha256(canonicalize(manifest))`, full hex. The hash IS the identity (cf. content-addressed closures, secrets, revocations). The human-readable `<channel>@<short-ci-commit>` lives inside the manifest as `displayName` for trace and CLI display only - it is not the primary key. Two manifests with different content cannot collide on `rolloutId`; an attacker tampering with any field invalidates the hash.
+**Identifier.** `rolloutId = "{channel}@{channel_ref}"`, constructed via `RolloutId::new(channel, channel_ref)` (RFC-0008 §6.3). Two channels can share a `channel_ref` (the architectural point of multi-channel cascading from a single git push), so the composite is the canonical key. Verification recomputes the identifier from the parsed manifest fields and compares against the advertised value; mismatch is a hard refuse-to-act.
 
 **Anchor.** The manifest carries `fleetResolvedHash` - sha256 of the canonical bytes of the `fleet.resolved.json` it was projected from. This closes a mix-and-match attack: during a key-rotation overlap window where both predecessor and successor sign valid `fleet.resolved.json` snapshots at the same channel ref, an attacker without the anchor could pair a manifest from snapshot X with the resolved.json from snapshot Y. The anchor makes that inconsistency provably detectable.
 
@@ -203,7 +146,7 @@ Runtime compliance probes distinguish three outcomes (per the compliance RFC):
 
 - **`passed`** - host advances.
 - **`failed`** - host Failed; triggers `onHealthFailure`.
-- **`probe-error`** - probe itself broken (nonzero exit, malformed output, timeout). Treated as failed unless `channel.compliance.strict = false`, in which case it's a warning and the host advances. Default strict.
+- **`probe-error`** — probe itself broken (nonzero exit, malformed output, timeout). Treated as `failed` uniformly (RFC-0007 §6). Operators who want "tolerate probe errors" use per-probe `mode = "observe"` (RFC-0007 §3.3).
 
 ## 6. Reconcile triggers
 
@@ -233,9 +176,3 @@ Every decision writes a structured event:
 
 Events are queryable via CLI (`nixfleet rollout trace <id>`) and emitted as structured logs. Every skip, every wait, every failure carries its reasoning - "why didn't this host upgrade yet?" must always be answerable from logs alone.
 
-## 8. Open questions
-
-1. **Re-entry when a host returns from offline.** Should the late-arriving host receive the *current* channel ref (skipping intermediate) or be replayed through the sequence of rollouts it missed? Lean: current only. Replaying violates "declarative" - the desired state is always "latest channel ref", history is noise.
-2. **Per-channel rollout queue depth.** Should operators be able to set depth > 1 (keep every commit) or force coalescing (only latest)? Lean: coalesce always. Preserving every commit as a separate rollout invites a backlog and contradicts GitOps semantics where HEAD is truth.
-3. **Cross-channel edges.** Genuinely useful for e.g. "database channel must finish before app channel starts". Deferred to v2; the workaround is putting both in the same channel.
-4. **Scheduler fairness.** With many concurrent channels contending for the same disruption budget, should we use FIFO, priority, or fair-share? Lean: FIFO on rollout start time; revisit when anyone actually runs enough channels to care.

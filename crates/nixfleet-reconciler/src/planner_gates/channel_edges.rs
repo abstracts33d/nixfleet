@@ -50,7 +50,7 @@ pub fn check(
 ///    — in-flight blocks, Terminal passes.
 ///
 /// LOADBEARING: keyed by canonical `RolloutId::new(channel,
-/// channel_ref)` (RFC-0012 §6.3), NOT by channel. A channel-level
+/// channel_ref)` (RFC-0008 §6.3), NOT by channel. A channel-level
 /// key would conflate "no rollout yet on this channel" with "rollout
 /// for this target_ref terminal" — the `terminal_at.is_none()`
 /// filter on a channel-keyed map causes the fresh-boot protection to

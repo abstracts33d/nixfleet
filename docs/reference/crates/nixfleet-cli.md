@@ -9,5 +9,5 @@
 **Links.**
 
 - Generated rustdoc: [`api/nixfleet_cli/`](../../api/nixfleet_cli/index.html)
-- Relevant RFCs: [RFC-0003](../../rfcs/0003-protocol.md), [RFC-0005](../../rfcs/0005-trust-lifecycle.md)
+- Relevant RFCs: [RFC-0003](../../rfcs/0003-protocol.md), [RFC-0010](../../rfcs/0010-trust-lifecycle.md)
 - Architecture component: [§1.4 Control plane](../../design/architecture.md#14-control-plane-the-router), [§3 The main flow](../../design/architecture.md#3-the-main-flow)

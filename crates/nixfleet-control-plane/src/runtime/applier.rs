@@ -1,4 +1,4 @@
-//! Imperative shell for the pure planner + reducer (RFC-0009 §7.2).
+//! Imperative shell for the pure planner + reducer (RFC-0006 §7.2).
 //!
 //! Two entrypoints:
 //!
@@ -110,7 +110,7 @@ async fn open_rollout(
     // `RolloutEffect::RecordRolloutTransition` that the applier writes
     // via `record_rollout_transition`. This replaces the Phase-10b
     // inline `UPDATE` supersession in `record_rollout_opened` (now a
-    // pure insert) — single concern per applier step (RFC-0011 §3).
+    // pure insert) — single concern per applier step (RFC-0004 §3).
     let in_flight_predecessors: Vec<RolloutId> = db
         .rollouts()
         .list_active()
@@ -127,7 +127,7 @@ async fn open_rollout(
         channel,
         target_ref,
         now,
-        // FK NULL-able under v0.2.1 baseline (RFC-0012 §6.1 item 3 +
+        // FK NULL-able under v0.2.1 baseline (RFC-0008 §6.1 item 3 +
         // v0.2.1-followups #1).
         None,
     ) {
@@ -228,7 +228,7 @@ async fn open_rollout(
             continue;
         }
         // HostJoined drives the rollout reducer's Opening → Active
-        // transition on the first host (RFC-0012 §3).
+        // transition on the first host (RFC-0008 §3).
         process_rollout_event(
             ctx,
             db,
@@ -310,7 +310,7 @@ async fn queue_dispatch(
 
 // No `mark_channel_terminal` helper: terminal transitions are driven
 // by the rollout reducer via `RolloutEffect::RecordRolloutTransition`
-// (RFC-0012 §5 + §7).
+// (RFC-0008 §5 + §7).
 
 async fn record_halt_lifted(
     ctx: &ApplierCtx<'_>,
@@ -357,7 +357,7 @@ async fn defer_dispatch(
 
 /// Execute one `Effect` emitted by [`nixfleet_state_machine::step`].
 ///
-/// Variant routing (RFC-0009 §9):
+/// Variant routing (RFC-0006 §9):
 /// - `Local*` (4 variants) — agent-only. CP receiving one is a defect; log
 ///   at `error` and return. Never panic — a buggy peer must not crash CP.
 /// - `Remote*` (5 variants) — CP-only. Handled here.
@@ -404,7 +404,7 @@ pub async fn apply_effect(ctx: &ApplierCtx<'_>, effect: Effect) {
                 && let Err(err) = db.quarantined_closures().insert(
                     &channel, &closure, now,
                     // FK populated by Phase 10b's rollout reducer co-write
-                    // (RFC-0012 §6.1 item 3 + §6.4).
+                    // (RFC-0008 §6.1 item 3 + §6.4).
                     None,
                 )
             {
@@ -458,7 +458,7 @@ pub async fn apply_effect(ctx: &ApplierCtx<'_>, effect: Effect) {
             // Enforce-mode probe Fail → write a `probe_failures` row
             // per sub_result (or one row with control_id=NULL for
             // non-evidence enforce-fail). Single transaction with the
-            // event_log row above is the contract (RFC-0010 §7.2); for
+            // event_log row above is the contract (RFC-0007 §7.2); for
             // 9b we trail the event_log append and accept eventual
             // consistency within milliseconds — the writer task is
             // bounded-mpsc, so a crash between rows is a known small
@@ -473,7 +473,7 @@ pub async fn apply_effect(ctx: &ApplierCtx<'_>, effect: Effect) {
             } = &payload
                 && let Some(db) = ctx.state.db.as_ref()
             {
-                // Per-control gate (RFC-0010 §3.4 + §7.2): each
+                // Per-control gate (RFC-0007 §3.4 + §7.2): each
                 // sub_result carries its own `effective_mode` resolved
                 // by the agent's probe runner against the probe's
                 // `controlOverrides` / `controls` declaration. Only
@@ -759,14 +759,14 @@ async fn append_event_log(
 /// Step the rollout reducer with the given event and apply its effects.
 ///
 /// Reads the current `rollouts` row, builds a `RolloutRecord`, steps the
-/// pure reducer (RFC-0012 §3), then appends a `rollout_event` row to
+/// pure reducer (RFC-0008 §3), then appends a `rollout_event` row to
 /// `event_log` and writes each emitted `RolloutEffect` against the
 /// derived-view tables. Matches Phase 9b's eventual-consistency pattern
 /// (SR-2): the event_log row and the derived-view rows are sequential
 /// writes within the applier task, not a single SQL transaction.
 ///
 /// `event_log_seq` on derived-view rows is NULL under the v0.2.1
-/// baseline (RFC-0012 §6.1 item 3 + v0.2.1-followups #1); the writer
+/// baseline (RFC-0008 §6.1 item 3 + v0.2.1-followups #1); the writer
 /// task is fire-and-forget so the applier doesn't know `seq` at co-
 /// write time.
 ///
@@ -924,7 +924,7 @@ async fn apply_rollout_effect(
             // Out of scope for Phase 10b. Retention-driven pruning is the
             // existing `prune_finished_rollouts` timer path; the
             // reducer-driven event-emission cycle is v0.2.x follow-up
-            // territory (RFC-0012 §3 + §13).
+            // territory (RFC-0008 §3 + §13).
             tracing::debug!(
                 target: "cp_runtime",
                 rollout_id = %rollout_id,
@@ -1107,7 +1107,7 @@ fn effect_kind(e: &Effect) -> &'static str {
 }
 
 /// Convert an `OutboundAgentEvent` to its event_log JSON payload. Schema is
-/// the wire-side RFC-0008 §4.2 shape (camelCase). Hand-written because the
+/// the wire-side RFC-0005 §4.2 shape (camelCase). Hand-written because the
 /// state-machine crate keeps its types serde-derive-free for now; if Phase
 /// 7/8 adds `Serialize` we collapse this into a single `serde_json::to_value`.
 fn outbound_event_to_json(payload: &OutboundAgentEvent) -> Value {

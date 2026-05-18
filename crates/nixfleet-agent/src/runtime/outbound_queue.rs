@@ -1,5 +1,5 @@
 //! Disk-backed durable outbound event queue (Plan 07 locked-in
-//! decision; RFC-0008 §9.7).
+//! decision; RFC-0005 §9.7).
 //!
 //! Each event is one file on disk under `{state_dir}/outbound-queue/`,
 //! named `{seq:020}-{hostname}-{rollout}-{event_kind}.json`. Zero-
@@ -29,7 +29,7 @@ use nixfleet_state_machine::OutboundAgentEvent;
 use serde::{Deserialize, Serialize};
 
 /// One entry in the on-disk queue. Persisted as JSON via serde.
-/// `payload` is the typed wire event (RFC-0011 §2 lift: the wire
+/// `payload` is the typed wire event (RFC-0004 §2 lift: the wire
 /// envelope + AgentEvent live in `nixfleet-proto`, both sides of the
 /// agent <-> CP boundary import the same types). The outbound worker
 /// wraps each QueuedEvent in an `AgentEventEnvelope` at POST time.

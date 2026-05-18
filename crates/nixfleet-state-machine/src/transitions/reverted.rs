@@ -1,5 +1,5 @@
 //! Transitions from `Reverted`. Terminal until the channel halt is lifted
-//! by a new declared SHA (RFC-0008 §3). The runtime creates a fresh
+//! by a new declared SHA (RFC-0005 §3). The runtime creates a fresh
 //! `HostRolloutState` when the next rollout opens for this channel; this
 //! record stays `Reverted` as history.
 //!

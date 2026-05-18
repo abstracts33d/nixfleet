@@ -382,7 +382,7 @@ fn base_status_label(
 ) -> String {
     use nixfleet_proto::HostRolloutState;
 
-    // 6-state machine per RFC-0008 §3. The pre-v0.2 conditional ladder
+    // 6-state machine per RFC-0005 §3. The pre-v0.2 conditional ladder
     // (Failed+current!=declared → "→ reverting", Healthy/Soaked → label
     // soaking, etc.) collapsed into one match arm per variant because the
     // new state machine forbids the shapes that ladder masked.
@@ -785,7 +785,7 @@ mod tests {
     /// knows recovery is in flight rather than seeing a stale "✗ failed".
     #[test]
     fn rollout_state_failed_renders_as_failed_under_new_state_machine() {
-        // RFC-0008 §3 forbids the v0.1 "Failed + current != declared →
+        // RFC-0005 §3 forbids the v0.1 "Failed + current != declared →
         // → reverting" shape. The agent owns its own rollback; CP sees
         // either Failed or Reverted as terminal-but-stuck. The label
         // collapsed accordingly in Phase 7h.
@@ -1013,7 +1013,7 @@ mod tests {
 
     #[test]
     fn rollout_state_soaking_renders_in_flight_not_converged() {
-        // RFC-0008 §3 collapsed Soaked into Soaking and made Converged
+        // RFC-0005 §3 collapsed Soaked into Soaking and made Converged
         // the sole terminal-for-ordering state. Soaking must render as
         // in-flight (→ soaking), not as ✓.
         use nixfleet_proto::HostRolloutState;

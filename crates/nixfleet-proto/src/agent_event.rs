@@ -1,11 +1,11 @@
-//! Wire-format types for `POST /v1/agent/events` (RFC-0008 §4.2).
+//! Wire-format types for `POST /v1/agent/events` (RFC-0005 §4.2).
 //!
 //! Lives in `nixfleet-proto` so the agent (producer) and CP (consumer)
 //! share a single canonical definition. Prior to this lift the envelope
 //! was hand-built as `serde_json::Map` on the agent and re-defined as a
 //! Rust struct on the CP side; a casing mismatch on the outer
 //! `rollout_id` field was the surface defect that exposed the
-//! duplicated-definition shape. Lifted per RFC-0011 §2: any type that
+//! duplicated-definition shape. Lifted per RFC-0004 §2: any type that
 //! crosses the agent <-> CP boundary lives in `nixfleet-proto`, not in
 //! both sides simultaneously.
 //!
@@ -41,7 +41,7 @@ pub struct AgentEventEnvelope {
 
 /// Inbound agent events. Mirrors the wire side of
 /// `nixfleet_state_machine::OutboundAgentEvent` (same variant names,
-/// `camelCase` fields per RFC-0008 §4.2).
+/// `camelCase` fields per RFC-0005 §4.2).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "PascalCase")]
 pub enum AgentEvent {
@@ -71,7 +71,7 @@ pub enum AgentEvent {
         failed_at: DateTime<Utc>,
         seq: u64,
     },
-    /// LIFT #2 (RFC-0008 §4.2): live activation skipped because
+    /// LIFT #2 (RFC-0005 §4.2): live activation skipped because
     /// `component` (dbus/systemd/kernel/init) cannot be live-swapped on
     /// a running system. Profile + bootloader updated; next reboot
     /// completes the activation. Replaces the pre-LIFT-#2 fake

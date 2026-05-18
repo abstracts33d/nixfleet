@@ -9,5 +9,5 @@
 **Links.**
 
 - Generated rustdoc: [`api/nixfleet_proto/`](../../api/nixfleet_proto/index.html)
-- Relevant RFCs: [RFC-0001](../../rfcs/0001-fleet-nix.md), [RFC-0003](../../rfcs/0003-protocol.md), [RFC-0005](../../rfcs/0005-trust-lifecycle.md)
+- Relevant RFCs: [RFC-0001](../../rfcs/0001-fleet-nix.md), [RFC-0003](../../rfcs/0003-protocol.md), [RFC-0010](../../rfcs/0010-trust-lifecycle.md)
 - Architecture component: [§1.2 CI](../../design/architecture.md#12-continuous-integration-the-intent-signing-oracle), [§1.4 Control plane](../../design/architecture.md#14-control-plane-the-router), [§1.5 Agent](../../design/architecture.md#15-agent-the-actuator)

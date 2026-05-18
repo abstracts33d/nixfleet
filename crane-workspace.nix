@@ -18,7 +18,7 @@
 
   # Per-crate source: always includes the four shared library crates that
   # every workspace member transitively depends on through the new
-  # event-driven runtime (RFC-0008 / RFC-0009). `extraFiles` for non-Rust
+  # event-driven runtime (RFC-0005 / RFC-0006). `extraFiles` for non-Rust
   # files (e.g. SQL migrations).
   #
   # Crate-set rationale:

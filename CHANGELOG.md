@@ -39,7 +39,7 @@ The Rust workspace builds via crane caching. CI signs releases with an HSM-held 
 
 ### v0.3 trajectory
 
-The v0.3 RFC track formalises the next round of trust mechanism. RFC-0004 specifies hardware-rooted trust (TPM-bound issuance CA, EK-quoted attestation). RFC-0005 specifies the trust lifecycle (operator-role hierarchy, rotation runbooks, active host-attestation quarantine, threshold-signed channels). RFC-0006 specifies the freshness-window policy. RFC-0007 specifies air-gapped operation via signed bundles. None of these break the v0.2 wire protocol; all extend it.
+The v0.3 RFC track formalises the next round of trust mechanism. RFC-0009 specifies hardware-rooted trust (TPM-bound issuance CA, EK-quoted attestation). RFC-0010 specifies the trust lifecycle (operator-role hierarchy, rotation runbooks, active host-attestation quarantine, threshold-signed channels). RFC-0011 specifies the freshness-window policy. RFC-0012 specifies air-gapped operation via signed bundles. None of these break the v0.2 wire protocol; all extend it.
 
 ## [0.1.0] - 2026-04-19
 

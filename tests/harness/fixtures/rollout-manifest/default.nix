@@ -50,7 +50,7 @@ in
     cp "${signed}/canonical.json.sig"  "$out/manifest.canonical.json.sig"
     cp "${signed}/pubkey.b64"          "$out/pubkey.b64"
 
-    # RFC-0012 §6.3 canonical RolloutId: "{channel}@{channel_ref}". The
+    # RFC-0008 §6.3 canonical RolloutId: "{channel}@{channel_ref}". The
     # CP routes + agent parser both expect this shape (D-007). v0.1's
     # content-address form (sha256 of canonical bytes) was retired with
     # the RolloutId newtype unification.

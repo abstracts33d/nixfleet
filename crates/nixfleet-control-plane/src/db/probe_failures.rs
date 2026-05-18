@@ -3,7 +3,7 @@
 //! this table is a derived projection providing the indexed columns
 //! the compliance-wave gate needs cheaply.
 //!
-//! RFC-0010 §7.2 shape:
+//! RFC-0007 §7.2 shape:
 //! - `event_log_seq`  — FK back to the source `event_log` row
 //! - `rollout_id`     — gate aggregates per rollout
 //! - `host_id`        — gate aggregates per host

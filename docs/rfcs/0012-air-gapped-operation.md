@@ -1,8 +1,8 @@
-# RFC-0007: Air-gapped operation
+# RFC-0012: Air-gapped operation
 
 **Status.** Draft.
 **Targets.** v0.3.
-**Depends on.** ../design/architecture.md (especially §5 control-plane failure case), RFC-0001 (channel schema), RFC-0003 (agent protocol), RFC-0006 (freshness in air-gap).
+**Depends on.** ../design/architecture.md (especially §5 control-plane failure case), RFC-0001 (channel schema), RFC-0003 (agent protocol), RFC-0011 (freshness in air-gap).
 **Scope.** First-class deployment mode for environments with no internet egress: energy operators, water utilities, defense-adjacent contractors, healthcare critical systems. The trust model already supports this - every artifact is self-verifying. This RFC makes the workflow explicit, the sovereign-cache transport role explicit, and ships the bundle tooling.
 
 ## 1. Motivation
@@ -13,14 +13,14 @@ What is missing is the workflow. An operator running a regulated air-gap site ne
 
 - How releases enter the air-gap (transport, format, verification).
 - What the sovereign cache's role is (re-signing? transport-only?). This matters: re-signing means a new trust root inside the air-gap, transport-only means the existing trust roots cover everything.
-- How freshness applies when bundles are days or weeks old by design (RFC-0006 cross-reference).
-- How key rotation crosses the air-gap (RFC-0005 §7 cross-reference).
+- How freshness applies when bundles are days or weeks old by design (RFC-0011 cross-reference).
+- How key rotation crosses the air-gap (RFC-0010 §7 cross-reference).
 
 The mechanism is small. The contract is the bulk of the work.
 
 ## 2. Non-goals
 
-- **Two-way air-gap.** Telemetry, support bundles, or any reverse channel from the air-gap is the customer's responsibility. RFC-0007 covers the inbound path only.
+- **Two-way air-gap.** Telemetry, support bundles, or any reverse channel from the air-gap is the customer's responsibility. RFC-0012 covers the inbound path only.
 - **Real-time sync.** By definition not possible. Channels in air-gap mode update at human cadence.
 - **Auto-discovery of new releases from inside the air-gap.** The operator pulls a bundle, validates it, imports it. There is no automatic mechanism that bridges the gap.
 
@@ -72,7 +72,7 @@ bundle-2026-05-14.tar
 └── import-instructions.md     # operator-readable procedure (humans, not machines)
 ```
 
-The manifest declares: which channels this bundle updates, the previous channel-pointer it expects (so out-of-order imports are detected), the CI commit range, and the bundle's expiry. Bundles older than the channel's air-gap freshness window (RFC-0006) are rejected at import.
+The manifest declares: which channels this bundle updates, the previous channel-pointer it expects (so out-of-order imports are detected), the CI commit range, and the bundle's expiry. Bundles older than the channel's air-gap freshness window (RFC-0011) are rejected at import.
 
 The bundle has its own signature on the manifest, in addition to the per-artifact signatures. Reasoning: early failure detection at verify time, before any artifact is opened. A tampered bundle fails the manifest signature check immediately rather than being detected piecewise as artifacts are extracted.
 
@@ -101,7 +101,7 @@ The framework also exposes flake apps that wrap the binary for the common cases:
 
 ## 6. Freshness in air-gap
 
-Channels in air-gap mode declare an explicit longer freshness window per RFC-0006, plus an air-gap-specific staleness for the bundle itself:
+Channels in air-gap mode declare an explicit longer freshness window per RFC-0011, plus an air-gap-specific staleness for the bundle itself:
 
 ```nix
 channels.airgap-prod = {
@@ -118,20 +118,20 @@ channels.airgap-prod = {
 
 Two timestamps matter:
 
-- **Bundle signing time** - when CI produced the artifacts. Compared against the channel's `freshnessWindow` per RFC-0006; this is the agent's replay-protection contract.
+- **Bundle signing time** - when CI produced the artifacts. Compared against the channel's `freshnessWindow` per RFC-0011; this is the agent's replay-protection contract.
 - **Bundle import time** - when the sovereign cache received the bundle. Compared against `airgap.maxStaleness`; this is the operator's "are we current?" contract.
 
 The agent uses signing time, not import time, for freshness verification. Import time is operator metadata recorded in the import receipt (§7) and surfaced in fleet status; it does not gate convergence.
 
 Agents that have been offline since before the most recent import use the import time as a recovery anchor (i.e., for computing "how long have we been operating on a stale view of the channel"); operators see this as a per-host staleness indicator distinct from the channel-level freshness window.
 
-For time source: air-gap channels MUST NOT use the public NTP defaults from RFC-0006 §4 (Cloudflare/NIST aren't reachable). The framework refuses to evaluate an air-gap channel without an explicit `timeSource` declaration. Recommended: a signed-time service (Roughtime or equivalent) with an internal NTP fallback. Internal NTP-only is acceptable for less stringent environments.
+For time source: air-gap channels MUST NOT use the public NTP defaults from RFC-0011 §4 (Cloudflare/NIST aren't reachable). The framework refuses to evaluate an air-gap channel without an explicit `timeSource` declaration. Recommended: a signed-time service (Roughtime or equivalent) with an internal NTP fallback. Internal NTP-only is acceptable for less stringent environments.
 
 ## 7. Control plane in air-gap
 
 The CP runs inside the air-gap with no special configuration. It polls the sovereign cache (or receives a webhook from `nixfleet-bundle import`) for new channel pointers. Its signature verification continues as in v0.2: it verifies CI signatures on `fleet.resolved.json`, regardless of whether the bundle came over the internet or via USB.
 
-The CP in air-gap holds the same trust roots as the online version. Trust origins (org root, CI release key, attic cache key) are deployed into the air-gap at the same enrollment time as the rest of the infrastructure. RFC-0005 §7 rotation procedures apply with one additional step: "rotation envelope traverses the air-gap as a bundle."
+The CP in air-gap holds the same trust roots as the online version. Trust origins (org root, CI release key, attic cache key) are deployed into the air-gap at the same enrollment time as the rest of the infrastructure. RFC-0010 §7 rotation procedures apply with one additional step: "rotation envelope traverses the air-gap as a bundle."
 
 The import receipt is a small signed JSON written by `nixfleet-bundle import` to a known location:
 
@@ -175,7 +175,7 @@ The full chain, online commit to first agent activation, is human-paced (typical
 - *Sovereign cache compromised.* Closures still verify against pinned `cacheKeys` on agents; an attacker who replaces a closure cannot make agents accept it. DoS is possible (delete or block fetch); fleet stalls until the cache is restored from re-imported bundles.
 - *Operator imports a bundle to the wrong channel.* Channel-pointer signatures bind to channel name; mismatched bundle is rejected at verify.
 - *Bundle imported but never reaches agents (network partition inside air-gap).* Agents cache last known target and continue running; the new target activates when the partition heals.
-- *Time-source unavailable inside air-gap.* Per RFC-0006 §4.3: agents refuse to evaluate freshness, hold current generation, emit `TimeSourceUnavailable`. Operator either restores the signed-time service or extends the channel's `freshnessWindow` with rationale.
+- *Time-source unavailable inside air-gap.* Per RFC-0011 §4.3: agents refuse to evaluate freshness, hold current generation, emit `TimeSourceUnavailable`. Operator either restores the signed-time service or extends the channel's `freshnessWindow` with rationale.
 - *Import operator's signing key compromised.* Import receipts under that key become untrustworthy; subsequent imports use a new key. The receipts are accountability metadata, not part of the agent-verification chain - no agent action required.
 
 ## 10. Trust analysis
@@ -194,7 +194,7 @@ The full chain, online commit to first agent activation, is human-paced (typical
 
 **What this RFC does not protect against.**
 
-- A compromised CI release key signing a malicious bundle. RFC-0005 (threshold-signed channels) is the answer for high-stakes air-gap deployments.
+- A compromised CI release key signing a malicious bundle. RFC-0010 (threshold-signed channels) is the answer for high-stakes air-gap deployments.
 - An operator importing a malicious bundle whose signatures verify because the attacker has the keys. Same as above.
 - A leaked import receipt key being used to fake an import. Fix: rotate the receipt key.
 
@@ -222,7 +222,7 @@ The full chain, online commit to first agent activation, is human-paced (typical
 - **Telemetry from inside the air-gap.** Some customers want a one-way channel for "fleet healthy" beacons exfiltrated for upstream support. Out of scope here; deserves its own spec. Likely solution: a signed daily summary written to a documented path, picked up by the customer's existing one-way egress process.
 - **Diode-friendly tooling.** Some environments use one-way data diodes that prohibit bidirectional handshakes. The combined `bundle apply` command should be testable without any return path; verify this with a customer who actually uses diodes before declaring done.
 - **Bundle compression and partial transfer.** For very large fleets, full closure transfer over USB media may be impractical. Worth specifying a partial-bundle format (delta against previous) before the first large-fleet pilot. Defer to v0.4 unless a customer asks.
-- **Threshold signing across the air-gap.** RFC-0005 §6 signing sessions assume a forge-reachable transport. Air-gap threshold signing needs a session-bundle round trip. RFC-0005 §12 lists this as an open question; resolution is a v0.4 cycle.
+- **Threshold signing across the air-gap.** RFC-0010 §6 signing sessions assume a forge-reachable transport. Air-gap threshold signing needs a session-bundle round trip. RFC-0010 §12 lists this as an open question; resolution is a v0.4 cycle.
 
 ## 14. One-sentence summary
 

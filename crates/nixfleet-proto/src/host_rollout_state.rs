@@ -1,4 +1,4 @@
-//! Wire-side per-host rollout state. Mirrors RFC-0008 §3's 6-state machine.
+//! Wire-side per-host rollout state. Mirrors RFC-0005 §3's 6-state machine.
 //!
 //! The CP's internal source of truth lives in
 //! [`nixfleet_state_machine::HostState`]; this proto type exists for
@@ -20,9 +20,9 @@ impl std::fmt::Display for HostRolloutStateParseError {
 
 impl std::error::Error for HostRolloutStateParseError {}
 
-/// 7-state machine per RFC-0008 §3. `Deferred` covers the
+/// 7-state machine per RFC-0005 §3. `Deferred` covers the
 /// "activation staged but live-switch skipped pending operator
-/// reboot" case (critical-component swap; see RFC-0008 §3.5).
+/// reboot" case (critical-component swap; see RFC-0005 §3.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HostRolloutState {
     Pending,
@@ -36,7 +36,7 @@ pub enum HostRolloutState {
 
 impl HostRolloutState {
     /// Canonical literal — matches the SQL CHECK on
-    /// `host_rollout_records.state` and the RFC-0008 §3 wire shape.
+    /// `host_rollout_records.state` and the RFC-0005 §3 wire shape.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             HostRolloutState::Pending => "Pending",

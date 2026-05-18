@@ -1,6 +1,6 @@
 //! Rollout manifest fetch + verify + disk cache. Disk-cache hit re-verifies
 //! the bytes (defense in depth); miss fetches from CP, verifies, writes
-//! through. Per RFC-0008 §4.1, the dispatch path also asserts the manifest's
+//! through. Per RFC-0005 §4.1, the dispatch path also asserts the manifest's
 //! declared `target_closure` for this host matches the dispatched value
 //! before the reducer ever sees the event.
 
@@ -13,7 +13,7 @@ use nixfleet_reconciler::{
     VerifiedFleet, VerifiedRolloutManifest, canonical_hash_from_bytes, verify_artifact,
 };
 
-/// RFC-0005 §1.5 convention: agent reads trust roots from a hardcoded
+/// RFC-0010 §1.5 convention: agent reads trust roots from a hardcoded
 /// path, not a CLI flag. Same shape as `/etc/nixfleet/agent/health-checks.json`.
 pub const DEFAULT_TRUST_PATH: &str = "/etc/nixfleet/agent/trust.json";
 
@@ -35,7 +35,7 @@ impl ManifestError {
 }
 
 /// Production freshness window for signed-artifact verification. Matches
-/// CP's channel-refs poll cadence (RFC-0005 §1.5).
+/// CP's channel-refs poll cadence (RFC-0010 §1.5).
 pub const DEFAULT_FRESHNESS_WINDOW_SECS: u64 = 3600;
 
 pub struct ManifestCache {
@@ -119,7 +119,7 @@ impl ManifestCache {
 
     /// Path-traversal sanity check on the rollout_id string before it is
     /// embedded in any filesystem path. Mirrors the CP route validator's
-    /// shape (RFC-0012 §6.3 canonical format `"channel@channel_ref"`); both
+    /// shape (RFC-0008 §6.3 canonical format `"channel@channel_ref"`); both
     /// layers refuse `/` and `..` so neither side can be coerced into
     /// reading a file outside its rollouts directory.
     fn validate_rollout_id_for_path(rollout_id: &str) -> Result<(), ManifestError> {
@@ -160,7 +160,7 @@ impl ManifestCache {
         Ok(verified)
     }
 
-    /// Discriminator per RFC-0012 §6.3: the canonical identity is
+    /// Discriminator per RFC-0008 §6.3: the canonical identity is
     /// `"{channel}@{channel_ref}"` derived from the parsed manifest's
     /// fields. Defense-in-depth that the advertised id matches the
     /// manifest's actual identity; the signature verify above already
@@ -200,7 +200,7 @@ impl ManifestCache {
         Ok(())
     }
 
-    /// RFC-0008 §4.1 advisory-payload contract: agent acts on a Dispatch
+    /// RFC-0005 §4.1 advisory-payload contract: agent acts on a Dispatch
     /// only if the dispatched `target_closure` matches the manifest's
     /// declared `target_closure` for this host. Pure function; tested in
     /// isolation. The dispatch path's canonical entry composes this with
@@ -309,7 +309,7 @@ impl ManifestCache {
 
     /// Canonical dispatch entry: fetch + verify the manifest, then assert
     /// the dispatched `target_closure` matches the manifest's declaration
-    /// for this host (RFC-0008 §4.1). The longpoll worker's only path
+    /// for this host (RFC-0005 §4.1). The longpoll worker's only path
     /// from a `DispatchResponse` into the reducer.
     pub async fn ensure_for_dispatch(
         &self,
@@ -570,7 +570,7 @@ mod tests {
     fn assert_rollout_id_matches_rejects_sha256_hash_format() {
         // Regression guard: a 64-char hex string is what a refactor
         // accidentally reverting the discriminator to a content-hash
-        // would produce. RFC-0012 §6.3 specifies the canonical RolloutId
+        // would produce. RFC-0008 §6.3 specifies the canonical RolloutId
         // is the composite `"channel@channel_ref"`; this test locks the
         // discriminator against drift back to a hash comparator.
         let m = manifest_with(vec![host_wave("h1", 0, "closure-A")]);

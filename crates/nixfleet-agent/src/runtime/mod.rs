@@ -1,4 +1,4 @@
-//! Agent runtime: MPSC reducer loop + applier + workers (RFC-0009 §7.1).
+//! Agent runtime: MPSC reducer loop + applier + workers (RFC-0006 §7.1).
 //!
 //! Symmetric to the CP-side runtime in
 //! [`nixfleet_control_plane::runtime`]. Workers (probe, activation,
@@ -16,7 +16,7 @@
 //!                                                           (step)
 //! ```
 //!
-//! Invariants (mirror CP's `runtime::mod` — RFC-0009 §2 principle 4):
+//! Invariants (mirror CP's `runtime::mod` — RFC-0006 §2 principle 4):
 //!
 //! 1. **One MPSC, one mutator.** The reducer task is the only thing that
 //!    calls [`nixfleet_state_machine::step`]. Workers emit
@@ -173,7 +173,7 @@ pub struct AgentConfig {
     /// alone doesn't propagate into runtime trust loading.
     pub trust_file: std::path::PathBuf,
     /// Acceptance window for `meta.signedAt` on fleet.resolved.json +
-    /// per-rollout manifest verification (RFC-0005 §1.5 replay
+    /// per-rollout manifest verification (RFC-0010 §1.5 replay
     /// defense). Production: 3600s — matches the channel-refs poll
     /// cadence so any signed artifact older than one refresh cycle is
     /// rejected. Test harnesses with fixed-`signedAt` fixtures override

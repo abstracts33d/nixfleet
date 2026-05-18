@@ -1,5 +1,5 @@
-//! Pure rollout-level reducer (RFC-0012 §3). Parallel to the per-host
-//! reducer (`crate::step`); same functional-core discipline (RFC-0009 §2):
+//! Pure rollout-level reducer (RFC-0008 §3). Parallel to the per-host
+//! reducer (`crate::step`); same functional-core discipline (RFC-0006 §2):
 //! no I/O, no clock reads, no shared mutable state, deterministic given
 //! `(state, event, now)`.
 //!

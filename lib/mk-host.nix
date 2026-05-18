@@ -39,7 +39,7 @@ in
     # themselves. This closes DEFECT-001/-002: an entire class of
     # silent no-op bugs ("operator forgot to wire fleetResolved →
     # probes silently disappear") is impossible by design
-    # (RFC-0011 §2.2 + §3 anti-pattern #4).
+    # (RFC-0004 §2.2 + §3 anti-pattern #4).
     #
     # If you find yourself calling `mkHost` directly with
     # `fleetResolved = ...`, you're outside the framework path —
@@ -56,7 +56,7 @@ in
       // hostSpec
       // lib.optionalAttrs isDarwin {inherit isDarwin;};
 
-    # RFC-0010 §4 closure-driven probe topology. The resolved set lives
+    # RFC-0007 §4 closure-driven probe topology. The resolved set lives
     # at `fleet.resolved.effectiveHealthChecks.<hostName>` per
     # `lib/mk-fleet.nix`'s `resolveHealthChecks` (host > tag > fleet
     # precedence). The framework wrapper passes `fleet.resolved` here;

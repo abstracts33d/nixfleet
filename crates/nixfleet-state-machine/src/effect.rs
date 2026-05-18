@@ -1,6 +1,6 @@
 //! Reducer outputs. Descriptions of side effects, not executions.
 //!
-//! Per RFC-0009 §9: 4 agent-only variants, 5 CP-only variants, 3 shared.
+//! Per RFC-0006 §9: 4 agent-only variants, 5 CP-only variants, 3 shared.
 //! The agent applier (Phase 7) handles `Local*` + shared; the CP applier
 //! (Phase 6) handles `Remote*` + shared. The compiler's exhaustiveness
 //! check guarantees every variant has an arm in its applier — adding a
@@ -30,7 +30,7 @@ pub enum Effect {
     /// Fire `switch-to-configuration` on `closure` (rollback target read
     /// from `current_closure_at_dispatch`). Agent decides this without a
     /// CP signal — manifest's `onHealthFailure` is the single signed
-    /// source of truth (RFC-0008 §4.1).
+    /// source of truth (RFC-0005 §4.1).
     LocalFireRollbackTo {
         rollout_id: RolloutId,
         closure: ClosureHash,
@@ -44,7 +44,7 @@ pub enum Effect {
     /// Emit an outbound event to CP via `POST /v1/agent/events`. `durable`
     /// requests on-disk queuing before the network call so a crash between
     /// the local state change and the POST is recoverable on restart
-    /// (RFC-0008 §9.7 — open question; default policy decided in Phase 7).
+    /// (RFC-0005 §9.7 — open question; default policy decided in Phase 7).
     ///
     /// `rollout_id` carries the rollout this event belongs to so the agent
     /// applier can persist the outbound queue entry against the correct
@@ -61,7 +61,7 @@ pub enum Effect {
     // ─────────────────────────────────────────────────────────────────────
     /// Queue a Dispatch for the agent's next long-poll on
     /// `/v1/agent/dispatch`. Pull-only — CP never opens a connection
-    /// (RFC-0008 §2.1).
+    /// (RFC-0005 §2.1).
     RemoteQueueDispatch {
         host: String,
         rollout_id: RolloutId,
@@ -77,7 +77,7 @@ pub enum Effect {
     },
 
     // No `RemoteClearStaleQuarantine` variant: quarantines are
-    // append-only under the derived-view discipline (RFC-0012 §6.4).
+    // append-only under the derived-view discipline (RFC-0008 §6.4).
     // Operator-driven clearance, if ever needed,
     // becomes a future explicit event (mirrors `OperatorClearance`).
     /// Persist a fresh `host_rollout_records` row when CP first dispatches
@@ -89,7 +89,7 @@ pub enum Effect {
     },
 
     /// Append an inbound agent event to the audit log
-    /// (RFC-0008 §4.3 + the broader event-log pattern — every state
+    /// (RFC-0005 §4.3 + the broader event-log pattern — every state
     /// mutation, gate decision, manifest poll lands here too).
     RemoteAppendEventLog {
         host: String,
@@ -160,7 +160,7 @@ pub enum OutboundAgentEvent {
         failed_at: DateTime<Utc>,
         seq: u64,
     },
-    /// LIFT #2 (RFC-0008 §4.2): live activation skipped because
+    /// LIFT #2 (RFC-0005 §4.2): live activation skipped because
     /// `component` (dbus/systemd/kernel/init) cannot be live-swapped on
     /// a running system. Profile + bootloader updated; next reboot
     /// completes the activation. Host stays at Activating until the
@@ -194,7 +194,7 @@ pub enum OutboundAgentEvent {
         /// `None` for non-evidence probes; `Some(vec)` for evidence
         /// probes, carrying per-control sub-results. The applier's
         /// `probe_failures` co-write iterates this to populate one row
-        /// per failing control (RFC-0010 §7.1 + §7.2).
+        /// per failing control (RFC-0007 §7.1 + §7.2).
         sub_results: Option<Vec<ProbeSubResult>>,
         seq: u64,
     },

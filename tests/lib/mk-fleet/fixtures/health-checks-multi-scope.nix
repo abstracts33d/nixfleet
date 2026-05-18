@@ -1,4 +1,4 @@
-# RFC-0010 §3.2 + §4 — verifies the multi-scope healthChecks resolver
+# RFC-0007 §3.2 + §4 — verifies the multi-scope healthChecks resolver
 # produces non-empty `effectiveHealthChecks` per host.
 #
 # Coverage:

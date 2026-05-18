@@ -1,5 +1,5 @@
 //! `POST /v1/agent/heartbeat` — agent liveness + drift detection
-//! (RFC-0008 §4.3). Replaces the v0.1 `POST /v1/agent/checkin` flow.
+//! (RFC-0005 §4.3). Replaces the v0.1 `POST /v1/agent/checkin` flow.
 //!
 //! The agent posts a minimal envelope (hostname, optional rollout_id,
 //! optional current_closure). CP:
@@ -42,7 +42,7 @@ pub struct HeartbeatRequest {
     pub hostname: String,
     /// Agent's view of the active rollout. `None` when the agent has no
     /// outstanding rollout (post-Converged steady state). Serde-
-    /// transparent (RFC-0012 §6.3): the wire JSON shape is unchanged
+    /// transparent (RFC-0008 §6.3): the wire JSON shape is unchanged
     /// from a plain `String`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_id: Option<nixfleet_proto::RolloutId>,
@@ -164,7 +164,7 @@ pub(in crate::server) async fn heartbeat(
     if let Some(seq) = reply.replay_from {
         // The agent's MUST-honor header: on drift, it re-POSTs events
         // from `seq` onward to /v1/agent/events. The exact handshake is
-        // spelled out in RFC-0008 §4.3.
+        // spelled out in RFC-0005 §4.3.
         headers.insert(
             "X-Nixfleet-Replay-From",
             HeaderValue::from_str(&seq.to_string()).expect("u64 to_string is always ASCII"),

@@ -1,4 +1,4 @@
-//! Boot-recovery handshake (RFC-0008 §9.5 / Plan 07 open-question
+//! Boot-recovery handshake (RFC-0005 §9.5 / Plan 07 open-question
 //! resolution).
 //!
 //! Runs ONCE at runtime startup, before any worker is allowed to fire.
@@ -272,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_returns_replay_from_when_cp_signals_drift() {
-        // RFC-0008 §9.5 scenario 3: agent crashed mid-Activating;
+        // RFC-0005 §9.5 scenario 3: agent crashed mid-Activating;
         // /run/current-system points at the target closure; CP signals
         // Replay-From=42 so the agent knows it should rebuild from
         // that seq. We assert the handshake surfaces the seq.

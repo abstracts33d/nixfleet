@@ -33,7 +33,7 @@ pub struct ServeArgs {
     /// Permit the file-backed CA-issuance backend under `--strict`. Default
     /// `false`: in strict mode, the file backend is refused unless TPM is
     /// also configured (in which case TPM wins) or this flag is set
-    /// explicitly. See RFC-0005 §1.5.1.
+    /// explicitly. See RFC-0010 §1.5.1.
     pub allow_file_ca_key: bool,
     pub audit_log_path: Option<PathBuf>,
     pub artifact_path: PathBuf,

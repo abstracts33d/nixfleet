@@ -1,5 +1,5 @@
 //! Signed per-channel rollout manifest (`releases/rollouts/<rolloutId>.json`).
-//! LOADBEARING: per RFC-0012 §6.3, `rolloutId` is the canonical semantic
+//! LOADBEARING: per RFC-0008 §6.3, `rolloutId` is the canonical semantic
 //! identifier `RolloutId::new(&m.channel, &m.channel_ref)` (i.e.
 //! `"{channel}@{channel_ref}"`), not a content hash. Verifiers MUST (1)
 //! cryptographically verify the signed sidecar via

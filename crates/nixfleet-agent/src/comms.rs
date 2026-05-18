@@ -4,7 +4,7 @@
 //! enroll path and by the runtime workers via the `Client` they receive
 //! at spawn.
 //!
-//! Event-stream POSTs (RFC-0008 §4.2) live in
+//! Event-stream POSTs (RFC-0005 §4.2) live in
 //! `runtime/workers/longpoll.rs` and the outbound-queue drainer; they
 //! construct their own request shapes against
 //! `nixfleet_proto::agent_wire` directly.

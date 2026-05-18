@@ -6,13 +6,13 @@
   # `fleetResolvedHash` for each manifest at build time.
   fleetCanonicalJson,
   # Attrset { channelName = manifestPayload; } where each payload is the
-  # camelCase RolloutManifest struct (RFC-0012 §6.3 shape). The
+  # camelCase RolloutManifest struct (RFC-0008 §6.3 shape). The
   # `fleetResolvedHash` field MUST contain the sentinel literal
   # "__FLEET_RESOLVED_HASH__"; this derivation substitutes the actual
   # sha256 of `fleetCanonicalJson` at build time.
   manifestPayloads,
   # Attrset { channelName = "channel@channel_ref"; } — RolloutId per
-  # RFC-0012 §6.3. The derivation writes `<rolloutId>.json` + `.sig`.
+  # RFC-0008 §6.3. The derivation writes `<rolloutId>.json` + `.sig`.
   rolloutIds,
   seedSalt ? "nixfleet-harness-test-seed-2026",
   name ? "nixfleet-harness-rollout-manifests-signed",

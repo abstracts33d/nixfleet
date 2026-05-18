@@ -84,7 +84,7 @@ pub fn spawn(
         // dispatch planning, but it does NOT emit `ManifestSetUpdated`
         // to the reducer's input channel: the reducer holds a separate
         // in-memory cache fed only via this worker's emits per
-        // RFC-0011 §1 invariant #4 (one MPSC, one mutator per side).
+        // RFC-0004 §1 invariant #4 (one MPSC, one mutator per side).
         // Without an immediate first tick, every HostEvent arriving in
         // the warm-up window is dropped at the reducer.
         let mut ticker = tokio::time::interval(POLL_INTERVAL);
@@ -283,7 +283,7 @@ async fn fetch_and_verify_channel_manifest(
 }
 
 /// CP-side storage invariant: a signed rollout manifest may only be stored
-/// under the canonical RolloutId (RFC-0012 §6.3 `{channel}@{channel_ref}`)
+/// under the canonical RolloutId (RFC-0008 §6.3 `{channel}@{channel_ref}`)
 /// it claims via its own `(channel, channel_ref)` fields. Defends against a
 /// bytes-vs-url-claim substitution where the CP receives a manifest for
 /// channel B while the request is for channel A's rollout id. Mandated by
@@ -339,7 +339,7 @@ mod tests {
     fn discriminator_rejects_legacy_hex_only_request() {
         // Regression guard against accidental drift back to a 64-char
         // hex sha256 comparator: the canonical request shape under
-        // RFC-0012 §6.3 is `{channel}@{channel_ref}`, not a bare hash.
+        // RFC-0008 §6.3 is `{channel}@{channel_ref}`, not a bare hash.
         let legacy_hex = "a".repeat(64);
         let err = check_rollout_id_discriminator("stable", "abc1234", &legacy_hex)
             .expect_err("legacy hex-only request rejected");

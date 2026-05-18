@@ -243,7 +243,7 @@ pub(super) fn handle(
                     at: failed_at,
                 },
             ];
-            // RFC-0008 §4.1 + §4.2: rollback is agent-decided from manifest
+            // RFC-0005 §4.1 + §4.2: rollback is agent-decided from manifest
             // policy. No CP signal — agent fires the switch immediately.
             if matches!(policy.on_health_failure, OnHealthFailure::RollbackAndHalt)
                 && let Some(prior) = state.current_closure_at_dispatch.clone()

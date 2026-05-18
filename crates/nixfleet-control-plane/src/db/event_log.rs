@@ -1,4 +1,4 @@
-//! Append-only canonical event log (RFC-0008 §4.3 + the broader log
+//! Append-only canonical event log (RFC-0005 §4.3 + the broader log
 //! pattern: PlanActions, Effects, gate decisions, verifications, manifest
 //! polls all land here too).
 //!
@@ -10,7 +10,7 @@
 //! `(kind, ts)` for chronological / per-rollout / per-host /
 //! per-kind queries.
 //!
-//! `probe_failures` (RFC-0010 §7.2) is a **derived view** carrying the
+//! `probe_failures` (RFC-0007 §7.2) is a **derived view** carrying the
 //! typed denormalization the compliance-wave gate needs cheaply
 //! (`probe_name`, `control_id`, `framework`, `observed_at` indexed on
 //! `(rollout_id, host_id, control_id)`). Single writer: the applier's
@@ -40,11 +40,11 @@ pub struct EventLog<'a> {
 /// drives the operator-API filters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventLogKind {
-    /// Inbound POST to `/v1/agent/events` (RFC-0008 §4.2 outbound).
+    /// Inbound POST to `/v1/agent/events` (RFC-0005 §4.2 outbound).
     AgentEvent,
-    /// Output of CP's `plan_next()` (RFC-0009 §4.1).
+    /// Output of CP's `plan_next()` (RFC-0006 §4.1).
     PlanAction,
-    /// `Effect` emitted by either side's reducer (RFC-0009 §9).
+    /// `Effect` emitted by either side's reducer (RFC-0006 §9).
     Effect,
     /// One per gate evaluation (channel-edges, disruption-budget, ...).
     GateDecision,
@@ -53,9 +53,9 @@ pub enum EventLogKind {
     VerifyOutcome,
     /// `channel_refs` poll outcome.
     ManifestPoll,
-    /// CP-internal rollout-level state transition (RFC-0012 §4). Synthesized
+    /// CP-internal rollout-level state transition (RFC-0008 §4). Synthesized
     /// by the applier from per-host events; written to event_log alongside
-    /// the `rollouts` derived-view update (RFC-0012 §6.3 + §7).
+    /// the `rollouts` derived-view update (RFC-0008 §6.3 + §7).
     RolloutEvent,
 }
 
@@ -127,7 +127,7 @@ impl<'a> EventLog<'a> {
     }
 
     /// Latest seq in the log. Useful for "Replay-From" handshake in
-    /// RFC-0008 §4.3 and as a sanity check.
+    /// RFC-0005 §4.3 and as a sanity check.
     pub fn last_seq(&self) -> Result<i64> {
         let conn = super::lock_conn(self.conn)?;
         let n: Option<i64> = conn

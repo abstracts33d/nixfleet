@@ -1,4 +1,4 @@
-# RFC-0010 §3.5 channel-scope compliance shorthand. Verifies the three
+# RFC-0007 §3.5 channel-scope compliance shorthand. Verifies the three
 # accepted forms:
 #   - bare string list (uses compliance.mode default)
 #   - per-entry attrset with mode override

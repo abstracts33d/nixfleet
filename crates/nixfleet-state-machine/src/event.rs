@@ -1,4 +1,4 @@
-//! Reducer inputs. Maps RFC-0008 §4.2 wire events onto reducer transitions.
+//! Reducer inputs. Maps RFC-0005 §4.2 wire events onto reducer transitions.
 //!
 //! `Local*` variants are synthesized by the agent runtime from its own
 //! workers (probe outputs, activation outcomes, sustained-failure timing).
@@ -6,7 +6,7 @@
 //! to `/v1/agent/events`. Both halves drive the same transitions: a
 //! `LocalActivationCompleted` on the agent and a `RemoteActivationCompleted`
 //! on the CP mirror both move `Activating → Soaking` with the same
-//! invariants applied (RFC-0009 §2 principle 4).
+//! invariants applied (RFC-0006 §2 principle 4).
 
 use chrono::{DateTime, Utc};
 use nixfleet_proto::OnHealthFailure;
@@ -15,7 +15,7 @@ use crate::state::{ClosureHash, ProbeMode, ProbeName, ProbeStatus, ProbeSubResul
 
 /// One entry in a `LocalProbeTopologyDeclared` / `RemoteProbeTopologyDeclared`
 /// event. Carries the per-probe metadata CP needs to evaluate the gate
-/// without reading the agent's filesystem (RFC-0010 §8). Threading
+/// without reading the agent's filesystem (RFC-0007 §8). Threading
 /// `mode` per-event would also work, but the upfront declaration also
 /// lets the gate distinguish "this enforce probe declared but never
 /// reported" from "no enforce probe declared at all" — the difference
@@ -28,7 +28,7 @@ pub struct ProbeTopologyEntry {
 }
 
 /// Inputs to [`crate::step`]. Each variant maps to exactly one (legal)
-/// outbound or inbound RFC-0008 §4.2 event.
+/// outbound or inbound RFC-0005 §4.2 event.
 #[derive(Debug, Clone)]
 pub enum Event {
     // ─────────────────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ pub enum Event {
     /// bootstrap dependency on its own cached `SignedManifestSet`,
     /// which is fed by a separate worker (`agent_manifest_poll`) on
     /// a slower cadence and can be stale when a new rollout's
-    /// channel_ref has just been published. RFC-0011 §1 invariant 1:
+    /// channel_ref has just been published. RFC-0004 §1 invariant 1:
     /// the longpoll's just-verified value is the single source of
     /// truth at bootstrap time.
     ///
@@ -57,7 +57,7 @@ pub enum Event {
     /// `runtime::applier::open_rollout` from the manifest's
     /// `rollout_policies[policy].waves[wave_index].soak_minutes`). CP
     /// is the single source of truth for soak resolution per
-    /// RFC-0011 §1 invariant 1; the agent's bootstrap reads this
+    /// RFC-0004 §1 invariant 1; the agent's bootstrap reads this
     /// value into `state.soak_due_at` and the convergence-emission
     /// pass-gate reads it back.
     LocalActivate {
@@ -122,7 +122,7 @@ pub enum Event {
         seq: u64,
     },
 
-    /// Agent's on-disk probe declarations (RFC-0010 §8). Emitted once
+    /// Agent's on-disk probe declarations (RFC-0007 §8). Emitted once
     /// per `LocalActivationCompleted` so the CP can record the
     /// authoritative declared-probe set without reading the agent's
     /// filesystem. Visibility-only; no state change.
@@ -196,7 +196,7 @@ pub enum Event {
     /// Agent has re-verified the three Converged invariants
     /// (`soak_due_at` elapsed, all enforce-mode probes Pass, `current ==
     /// target`) and is declaring success. Observe and Disabled probes do
-    /// not gate per RFC-0010 §3.3 (ProbeMode docstring, state.rs). Drives
+    /// not gate per RFC-0007 §3.3 (ProbeMode docstring, state.rs). Drives
     /// `Soaking → Converged`.
     LocalConvergedReached {
         converged_at: DateTime<Utc>,
@@ -301,9 +301,9 @@ pub enum Event {
 
 impl Event {
     /// The monotonic per-(host, rollout) sequence number every event
-    /// carries (RFC-0008 §4). Used by the runtime layer for deduplication
+    /// carries (RFC-0005 §4). Used by the runtime layer for deduplication
     /// and out-of-order detection; the reducer itself just records it on
-    /// the state to support `Replay-From` (RFC-0008 §4.3).
+    /// the state to support `Replay-From` (RFC-0005 §4.3).
     pub fn seq(&self) -> u64 {
         match self {
             Event::LocalActivate { seq, .. }

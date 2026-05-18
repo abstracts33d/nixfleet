@@ -1,5 +1,5 @@
 //! Cross-state proptest invariants for the rollout reducer
-//! (RFC-0012 §10). Per-source-state unit tests live alongside each
+//! (RFC-0008 §10). Per-source-state unit tests live alongside each
 //! `transitions/<state>.rs`; this module covers the global invariants
 //! that hold across any legal event sequence.
 
@@ -98,7 +98,7 @@ fn arb_event(at: DateTime<Utc>) -> impl Strategy<Value = RolloutEvent> {
 }
 
 proptest! {
-    /// **Invariant** (RFC-0012 §3): if a transition fires and the new
+    /// **Invariant** (RFC-0008 §3): if a transition fires and the new
     /// state is `Terminal`, `terminal_at` is populated.
     #[test]
     fn terminal_implies_terminal_at(

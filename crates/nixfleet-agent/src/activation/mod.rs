@@ -1,4 +1,4 @@
-//! Activation pipeline (RFC-0008 §4). The runtime worker
+//! Activation pipeline (RFC-0005 §4). The runtime worker
 //! (`runtime/workers/activation.rs`) is the wire-layer entry point;
 //! this module owns the seven LOADBEARING operational steps the
 //! activation must preserve:

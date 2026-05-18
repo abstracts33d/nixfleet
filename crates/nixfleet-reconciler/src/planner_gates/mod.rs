@@ -1,5 +1,5 @@
 //! Planner gates over `&FleetState` (the v0.2 shape, replacing the
-//! v0.1 `&Observed`-based gates per RFC-0009 §12).
+//! v0.1 `&Observed`-based gates per RFC-0006 §12).
 //!
 //! Two design properties the new shape enforces that the old didn't:
 //!
@@ -8,7 +8,7 @@
 //!   `Observed::host_probes_passing` docstring). The new gates consult
 //!   the reducer state — `HostRolloutState::probe_observed_first_at`
 //!   etc. — where absence has explicit meaning (probe hasn't run yet =
-//!   soak gate fails closed). RFC-0008 §6.
+//!   soak gate fails closed). RFC-0005 §6.
 //!
 //! - **Verified manifests only.** Every gate takes `&SignedManifestSet`.
 //!   Phase 2's `Verified<T>` newtype graduates from "type exists" to

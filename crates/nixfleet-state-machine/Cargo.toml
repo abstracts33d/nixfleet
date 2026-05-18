@@ -1,6 +1,6 @@
 [package]
 name = "nixfleet-state-machine"
-description = "Pure per-host rollout state-machine reducer (RFC-0008 §3 + RFC-0009 §3). No I/O. No clock reads. The dependency list is the safety contract."
+description = "Pure per-host rollout state-machine reducer (RFC-0005 §3 + RFC-0006 §3). No I/O. No clock reads. The dependency list is the safety contract."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ name = "nixfleet_state_machine"
 path = "src/lib.rs"
 
 # LOADBEARING: this dependency list is part of the crate's safety contract
-# (RFC-0009 §8 + §11). Any addition must justify itself against the
+# (RFC-0006 §8 + §11). Any addition must justify itself against the
 # "pure functional core" property:
 #   - tokio       → forbidden (no async, no I/O)
 #   - reqwest     → forbidden (no I/O)
@@ -31,5 +31,5 @@ serde = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 # `test-helpers` enables `RolloutId::from_raw_for_tests` + `From<&str>` /
-# `From<String>` impls for test ergonomics (RFC-0012 §6.3).
+# `From<String>` impls for test ergonomics (RFC-0008 §6.3).
 nixfleet-proto = { path = "../nixfleet-proto", features = ["test-helpers"] }

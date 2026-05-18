@@ -16,7 +16,7 @@
 //! multiple articles across multiple frameworks; nesting the map
 //! avoids duplicating probe details on the wire. The agent expands
 //! each entry into one `ProbeSubResult` per `(framework, article)`
-//! tuple for per-row accounting in `probe_failures` (RFC-0010 §7.2).
+//! tuple for per-row accounting in `probe_failures` (RFC-0007 §7.2).
 //!
 //! Versioning: `schema_version: 1` is the first formally-defined
 //! evidence schema. Additive fields keep this constant (consumers

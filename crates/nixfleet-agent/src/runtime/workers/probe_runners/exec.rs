@@ -1,4 +1,4 @@
-//! Exec probe runner (RFC-0010 §3.1). Pass iff exit code 0 within
+//! Exec probe runner (RFC-0007 §3.1). Pass iff exit code 0 within
 //! `timeoutSecs` wallclock. Argv runs as the agent's user; declare
 //! absolute paths to avoid PATH surprises.
 

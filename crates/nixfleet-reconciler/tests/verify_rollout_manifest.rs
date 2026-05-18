@@ -93,7 +93,7 @@ fn verify_rollout_manifest_rejects_stale() {
 
 #[test]
 fn rollout_id_for_verified_manifest_is_canonical_composite() {
-    // RFC-0012 §6.3: rollout_id is `"{channel}@{channel_ref}"` derived
+    // RFC-0008 §6.3: rollout_id is `"{channel}@{channel_ref}"` derived
     // from the parsed manifest's typed fields. Deterministic from the
     // projection inputs (channel + channel_ref) alone; field changes
     // outside that pair do not perturb the id (architectural distinction

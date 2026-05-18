@@ -244,7 +244,7 @@ async fn handle_host_event(
         apply_effect(&ctx, effect).await;
     }
 
-    // RFC-0012 §7 reducer composition: per-host transitions feed the
+    // RFC-0008 §7 reducer composition: per-host transitions feed the
     // rollout reducer as `HostStateChanged`; aggregate signals (e.g.,
     // "all hosts in this rollout reached Converged") are computed
     // applier-side from `host_rollout_records` and emitted as
@@ -266,7 +266,7 @@ async fn handle_host_event(
 
         // Terminal aggregate: if every host in this rollout has reached
         // Converged, emit `RolloutTerminal` so the rollout reducer
-        // transitions to Terminal (RFC-0012 §3 invariant: "Terminal ⇒
+        // transitions to Terminal (RFC-0008 §3 invariant: "Terminal ⇒
         // ∀ host ∈ rollout: state == Converged").
         if next_host_state == nixfleet_state_machine::HostState::Converged
             && let Ok(rows) = db
@@ -310,7 +310,7 @@ async fn handle_heartbeat(
 ) {
     rs.last_heartbeat_at.insert(host.to_string(), at);
 
-    // Boot-recovery retroactive confirmation (RFC-0008 §9.5).
+    // Boot-recovery retroactive confirmation (RFC-0005 §9.5).
     // Closes the "agent restart mid-Activating leaves CP forever stuck
     // at Activating" defect. The flow: an agent's
     // `nixfleet-agent.service` restart kills the in-flight verify_poll
@@ -501,7 +501,7 @@ async fn maybe_synthesize_recovery_completion(
                     rollout_id = %record.rollout_id,
                     target = %record.target_closure,
                     prior_state = ?record.state,
-                    "boot-recovery: synthesizing RemoteActivationCompleted (LIFT #1; RFC-0008 §9.5)",
+                    "boot-recovery: synthesizing RemoteActivationCompleted (LIFT #1; RFC-0005 §9.5)",
                 );
                 let synth_event = nixfleet_state_machine::Event::RemoteActivationCompleted {
                     observed_current_closure: agent_current.to_string(),
@@ -539,7 +539,7 @@ async fn maybe_synthesize_recovery_completion(
 
 /// LIFT #5: drive a `Pending` HRR row through the full lifecycle to
 /// `Converged` when the agent reports `current_closure == target`.
-/// The chain preserves the event-log audit trail (RFC-0011 §1):
+/// The chain preserves the event-log audit trail (RFC-0004 §1):
 /// every transition emits its usual `RemoteAppendEventLog` effect
 /// flagged with the synthesis context via the `seq` ordering relative
 /// to the pre-synthesis `last_event_seq`.
@@ -729,7 +729,7 @@ async fn advance_current_waves(
         }
         // LOADBEARING: a wave is "done participating" when every host
         // is ordering-eligible — Converged OR Deferred (per
-        // RFC-0008 §3 terminal-for-ordering). Deferred means
+        // RFC-0005 §3 terminal-for-ordering). Deferred means
         // activation is staged but live-switch was skipped
         // (critical-component swap pending reboot); the host has done
         // what it can within the rollout step, so successor waves
@@ -757,7 +757,7 @@ async fn advance_current_waves(
     for (rollout_id, next_wave) in bumps {
         // FK is populated by the rollout reducer's
         // `RolloutEffect::UpdateCurrentWave`; the planner passes
-        // None per RFC-0012 §6.1 item 3.
+        // None per RFC-0008 §6.1 item 3.
         match db
             .rollouts()
             .set_current_wave(rollout_id.as_str(), next_wave, None)
@@ -800,7 +800,7 @@ fn build_fleet_state(db: &Arc<Db>, manifests: &SignedManifestSet) -> anyhow::Res
     // surface through the OpenRollout emission path above.
     for (channel, vm) in &manifests.rollouts {
         let manifest = vm.inner();
-        // Canonical RolloutId construction (RFC-0012 §6.3): matches
+        // Canonical RolloutId construction (RFC-0008 §6.3): matches
         // the planner's `RolloutId::new(channel, channel_ref)` so
         // lookups by rollout_id succeed even when multiple channels
         // share a channel_ref.
@@ -814,7 +814,7 @@ fn build_fleet_state(db: &Arc<Db>, manifests: &SignedManifestSet) -> anyhow::Res
         }
 
         // RolloutSummary metadata. Full row from the `rollouts` table
-        // (RFC-0012 §6.3). Missing row ⇒ rollout not opened yet ⇒ omit
+        // (RFC-0008 §6.3). Missing row ⇒ rollout not opened yet ⇒ omit
         // from `rollouts` map (gates that require RolloutSummary for
         // in-flight reasoning correctly see "not yet open" for this
         // channel).
@@ -836,7 +836,7 @@ fn build_fleet_state(db: &Arc<Db>, manifests: &SignedManifestSet) -> anyhow::Res
 
     // Distinct outstanding enforce-mode probe failures per
     // (rollout, host). Feeds the compliance_wave gate
-    // (planner_gates::compliance_wave) per RFC-0010 §7.2.
+    // (planner_gates::compliance_wave) per RFC-0007 §7.2.
     let outstanding_failing_enforce_probes = db
         .probe_failures()
         .outstanding_failing_enforce_probes_by_rollout()

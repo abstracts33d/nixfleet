@@ -4,7 +4,7 @@
 //! **Phase 9a state: STUB**. Reads from
 //! `FleetState.outstanding_failing_enforce_probes` (populated in 9b once
 //! the `probe_failures` projection writer lands). Until 9b, the source
-//! map is empty and this gate is effectively pass-through. Per RFC-0010
+//! map is empty and this gate is effectively pass-through. Per RFC-0007
 //! §7.2 the gate's input pipeline is being rebuilt against the new
 //! probe-result model; the shape is correct in 9a, data starts flowing
 //! in 9b.

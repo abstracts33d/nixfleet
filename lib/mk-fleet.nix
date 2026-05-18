@@ -139,7 +139,7 @@
           the result to `mkHost`. Typical keys: `hostSpec`, `modules`,
           `stateVersion`, `isVm`, `extraInputs`.
 
-          Operator pattern (RFC-0011 §2.2 — framework owns the wiring):
+          Operator pattern (RFC-0004 §2.2 — framework owns the wiring):
 
             fleet = mkFleet {
               hosts.cp = {
@@ -153,14 +153,14 @@
           The wrapper sets `platform = system` so operators don't repeat
           the platform string. `fleetResolved` is always `fleet.resolved` —
           operators never name it (DEFECT-002 closure-by-framework-design
-          per RFC-0011 §3 anti-pattern #4).
+          per RFC-0004 §3 anti-pattern #4).
         '';
       };
       healthChecks = mkOption {
         type = types.attrsOf healthProbeType;
         default = {};
         description = ''
-          Host-scoped probe declarations (RFC-0010 §3.2). Most-specific
+          Host-scoped probe declarations (RFC-0007 §3.2). Most-specific
           scope: collisions on probe name with tag/fleet scopes resolve
           to the host's value (host > tag > fleet). The agent on this
           host runs the effective probe set; the wave gate consults
@@ -172,7 +172,7 @@
         default = {};
         description = ''
           Per-host compliance refinement on the channel's shorthand.
-          See RFC-0010 §3.7 for the scope hierarchy + merge semantics.
+          See RFC-0007 §3.7 for the scope hierarchy + merge semantics.
         '';
       };
     };
@@ -266,7 +266,7 @@
         type = types.attrsOf healthProbeType;
         default = {};
         description = ''
-          Tag-scoped probe declarations (RFC-0010 §3.2). Applies to every
+          Tag-scoped probe declarations (RFC-0007 §3.2). Applies to every
           host carrying this tag. Overridden by a host-level declaration
           with the same probe name; overrides a fleet-level declaration
           with the same probe name (host > tag > fleet precedence).
@@ -276,7 +276,7 @@
         type = complianceScopeType;
         default = {};
         description = ''
-          Tag-scoped compliance refinement. See RFC-0010 §3.7 for the
+          Tag-scoped compliance refinement. See RFC-0007 §3.7 for the
           scope hierarchy + merge semantics.
         '';
       };
@@ -311,7 +311,7 @@
     };
   };
 
-  # RFC-0010 §3.5 channel-scope compliance shorthand. Each entry is
+  # RFC-0007 §3.5 channel-scope compliance shorthand. Each entry is
   # either a bare framework name (inherits compliance.mode) or
   # `{ name; mode ? null; }` for per-framework override. Desugars to
   # `healthChecks.evidence-<name>` entries via
@@ -331,8 +331,8 @@
 
   # Per-framework attrset at fleet / tag / host scope. Channel scope
   # uses the legacy `complianceFrameworkEntryType` list form for
-  # RFC-0010 §3.5 backward compat; the merge code at synthesis time
-  # normalises the channel entries into this same shape. See RFC-0010
+  # RFC-0007 §3.5 backward compat; the merge code at synthesis time
+  # normalises the channel entries into this same shape. See RFC-0007
   # §3.7 for `mode` / `reason` / `controlOverrides` semantics.
   complianceFrameworkScopeType = types.submodule {
     options = {
@@ -470,7 +470,7 @@
         type = types.attrsOf healthProbeType;
         default = {};
         description = ''
-          Channel-scoped probe declarations (RFC-0010 §3.5). Applies to
+          Channel-scoped probe declarations (RFC-0007 §3.5). Applies to
           every host whose `channel` field equals this channel's name.
           Sits between tag and host in the resolution order: host scope
           overrides channel; channel overrides tag; tag overrides fleet
@@ -482,7 +482,7 @@
         type = complianceType;
         default = {};
         description = ''
-          Channel-wide compliance-framework shorthand (RFC-0010 §3.5).
+          Channel-wide compliance-framework shorthand (RFC-0007 §3.5).
           Desugars to one `evidence-<framework>` entry in
           `healthChecks` per framework. Pure Nix expansion - no
           proto/runtime impact; the wire layer only ever sees
@@ -514,17 +514,17 @@
     };
   };
 
-  # Per-probe declaration (RFC-0010 §3.1). The `kind` enum:
+  # Per-probe declaration (RFC-0007 §3.1). The `kind` enum:
   #   http     — GET <url>; Pass iff response status == expectStatus.
   #   tcp      — connect host:port; Pass iff connect succeeds within
   #              connectTimeoutSecs.
   #   exec     — exec command (argv); Pass iff exit 0 within timeoutSecs.
   #   evidence — read /var/lib/nixfleet-compliance/evidence.json + verify
   #              ed25519 signature against host SSH host pubkey
-  #              (RFC-0004 §5); Pass iff signature valid AND framework's
+  #              (RFC-0009 §5); Pass iff signature valid AND framework's
   #              controls all pass. Decoupled from collector cadence.
   #
-  # `mode` (RFC-0010 §3.4) is per-probe:
+  # `mode` (RFC-0007 §3.4) is per-probe:
   #   enforce  — wave gate consults latest result; Fail blocks promotion.
   #   observe  — result recorded in event_log; gate ignores it.
   #   disabled — declared but agent does not run it (operator suppression).
@@ -851,7 +851,7 @@
   in
     (scan nodes).cycle;
 
-  # RFC-0010 §3.5: compliance shorthand desugars to evidence-<framework>
+  # RFC-0007 §3.5: compliance shorthand desugars to evidence-<framework>
   # probes merged into the channel's explicit healthChecks. Two callers
   # (checkInvariants' probeDeclSites and resolveFleet's
   # resolveHealthChecks + healthCheckOverrideWarnings) consume the
@@ -1020,7 +1020,7 @@
       )
       hostNames;
 
-    # RFC-0010 §10: validate probe declarations across all four scopes.
+    # RFC-0007 §10: validate probe declarations across all four scopes.
     # `intervalSeconds = 0` is ambiguous; the runner uses `runOnce = true`
     # for one-shot semantics. `runOnce + intervalSeconds` set together is
     # also ambiguous.
@@ -1176,7 +1176,7 @@
       # has enabled are present — declaring an override at any scope
       # against a framework the channel hasn't enabled is a silent
       # no-op (channel scope is the framework-set's source of truth
-      # per RFC-0010 §3.5; broader scopes only refine).
+      # per RFC-0007 §3.5; broader scopes only refine).
       resolveCompliance = hostName: let
         host = cfg.hosts.${hostName};
         emptyFw = {
@@ -1273,7 +1273,7 @@
           inherit (r) reason controlOverrides;
         });
 
-      # RFC-0010 §3.5 + §4 — resolve effective probe set per host with
+      # RFC-0007 §3.5 + §4 — resolve effective probe set per host with
       # host > channel > tag > fleet precedence + collision warnings.
       # The merged set flows into each host's closure via
       # `effectiveHealthChecks` in the resolved output; the host module
@@ -1429,7 +1429,7 @@
           })
           cfg.channels;
         # Per-host effective probe set, host > tag > fleet precedence
-        # (RFC-0010 §3.2). NOT part of the signed manifest schema — the
+        # (RFC-0007 §3.2). NOT part of the signed manifest schema — the
         # closure hash chain transitively signs the topology via the
         # host's NixOS module rendering this into
         # `/etc/nixfleet/agent/health-checks.json`. The CP never reads
@@ -1536,7 +1536,7 @@
               type = complianceScopeType;
               default = {};
               description = ''
-                Fleet-scoped compliance refinement. See RFC-0010 §3.7
+                Fleet-scoped compliance refinement. See RFC-0007 §3.7
                 for the scope hierarchy + merge semantics.
               '';
             };
@@ -1544,7 +1544,7 @@
               type = types.attrsOf healthProbeType;
               default = {};
               description = ''
-                Fleet-scoped probe declarations (RFC-0010 §3.2 + §4).
+                Fleet-scoped probe declarations (RFC-0007 §3.2 + §4).
                 Applies to every host in the fleet, unless overridden
                 at the tag or host scope. Operator pattern:
 

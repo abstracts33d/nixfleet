@@ -1,4 +1,4 @@
-//! Rollouts derived-view table (RFC-0012 §6.3). The applier is the sole
+//! Rollouts derived-view table (RFC-0008 §6.3). The applier is the sole
 //! writer; every state-mutating method takes an
 //! `event_log_seq: Option<i64>` so the row's `last_transition_event_log_seq`
 //! FK can be populated.
@@ -9,9 +9,9 @@
 //! is ready; Phase 10b lights up the reducer that drives them through the
 //! `RolloutEffect` interpretation in the applier.
 //!
-//! `event_log_seq` is NULL-able under the v0.2.1 baseline (RFC-0012 §6.1
+//! `event_log_seq` is NULL-able under the v0.2.1 baseline (RFC-0008 §6.1
 //! item 3 + `.claude/plans/v0.2.1-followups.md` #1); same as
-//! `probe_failures.event_log_seq` (RFC-0010 §7.2).
+//! `probe_failures.event_log_seq` (RFC-0007 §7.2).
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -73,7 +73,7 @@ impl Rollouts<'_> {
     /// `process_rollout_event`. The reducer transitions each predecessor
     /// from its current state to `Superseded` and emits a
     /// `RolloutEffect::RecordRolloutTransition` that the applier writes
-    /// via `record_rollout_transition`. Closes the last RFC-0011 §3
+    /// via `record_rollout_transition`. Closes the last RFC-0004 §3
     /// "implicit side effect" anti-pattern in Phase 10.
     pub fn record_rollout_opened(
         &self,
@@ -324,7 +324,7 @@ impl Rollouts<'_> {
     /// Phase 10b: this physical-deletion pass becomes a
     /// `RetentionExpired` event emission instead, transitioning the row
     /// to `Pruned` (the row persists for audit; v0.3 retention-
-    /// compaction handles physical deletion per RFC-0012 §3 + §13).
+    /// compaction handles physical deletion per RFC-0008 §3 + §13).
     /// For 10a we keep the physical prune so the existing operator
     /// workflow stays unchanged while the rollout reducer is
     /// unimplemented.

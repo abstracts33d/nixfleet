@@ -1,16 +1,16 @@
 //! Clock abstraction.
 //!
 //! Production code threads `ClockHandle` through constructors so tests can
-//! drive time deterministically. The pure reducer (RFC-0009 §3) takes
+//! drive time deterministically. The pure reducer (RFC-0006 §3) takes
 //! `now: DateTime<Utc>` as a parameter and never reads it from a global —
 //! consumers obtain `now` from a `Clock` at the impure boundary and pass it
 //! down.
 //!
 //! Two methods on the trait:
 //! - `now()` — wallclock `DateTime<Utc>`, agent-reported into events
-//!   (RFC-0008 §4.2). Subject to NTP step-back.
+//!   (RFC-0005 §4.2). Subject to NTP step-back.
 //! - `monotonic_instant()` — `std::time::Instant`, for measuring elapsed
-//!   durations (sustained-failure threshold, RFC-0008 §6). Never moves
+//!   durations (sustained-failure threshold, RFC-0005 §6). Never moves
 //!   backwards under NTP step; `FakeClock` preserves this property too.
 
 use std::sync::{Arc, Mutex};

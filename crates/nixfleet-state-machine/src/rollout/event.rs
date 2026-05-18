@@ -1,5 +1,5 @@
-//! Rollout-level event vocabulary (RFC-0012 §4). All CP-internal: the
-//! applier synthesizes these from per-host events (RFC-0008 §4.2) and
+//! Rollout-level event vocabulary (RFC-0008 §4). All CP-internal: the
+//! applier synthesizes these from per-host events (RFC-0005 §4.2) and
 //! channel-refs poll outcomes — agents never emit `RolloutEvent`s on the
 //! wire.
 
@@ -15,9 +15,9 @@ pub type HostId = String;
 /// Per-host state representation as seen by the rollout reducer.
 ///
 /// The rollout reducer reasons about per-host transitions at a coarser
-/// granularity than RFC-0008 §3's six states; this alias names the input
+/// granularity than RFC-0005 §3's six states; this alias names the input
 /// shape it accepts on `HostStateChanged`. Today it carries the full
-/// RFC-0008 state (re-exported from the host reducer); future projection
+/// RFC-0005 state (re-exported from the host reducer); future projection
 /// to a coarser enum is a v0.3 optimisation.
 pub type HostRolloutState = HostState;
 
@@ -31,7 +31,7 @@ pub enum RolloutEvent {
         target_ref: ChannelRef,
         at: DateTime<Utc>,
     },
-    /// A host has been dispatched into this rollout (RFC-0008 §4.1
+    /// A host has been dispatched into this rollout (RFC-0005 §4.1
     /// `Dispatch` queued). First `HostJoined` moves `Opening → Active`.
     HostJoined {
         rollout_id: RolloutId,
@@ -39,7 +39,7 @@ pub enum RolloutEvent {
         wave: u32,
         at: DateTime<Utc>,
     },
-    /// Per-host state transitioned (RFC-0008 §3). The rollout reducer
+    /// Per-host state transitioned (RFC-0005 §3). The rollout reducer
     /// aggregates these to drive the rollout-level state machine.
     HostStateChanged {
         rollout_id: RolloutId,
@@ -78,7 +78,7 @@ pub enum RolloutEvent {
         at: DateTime<Utc>,
     },
     /// Operator-issued state override (currently rare; CLI wiring is a
-    /// future v0.2.x follow-up — RFC-0012 §13 + Phase 10 brief §9.3).
+    /// future v0.2.x follow-up — RFC-0008 §13 + Phase 10 brief §9.3).
     OperatorClearance {
         rollout_id: RolloutId,
         operator: String,

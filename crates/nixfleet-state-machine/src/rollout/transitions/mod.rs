@@ -1,4 +1,4 @@
-//! Rollout-reducer transition dispatch (RFC-0012 §3 + §7).
+//! Rollout-reducer transition dispatch (RFC-0008 §3 + §7).
 //!
 //! Each source-state module holds the (legal-event) match arms; this
 //! file is the single entry point the public `step()` calls. The

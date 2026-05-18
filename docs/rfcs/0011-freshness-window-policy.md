@@ -1,4 +1,4 @@
-# RFC-0006: Freshness window policy
+# RFC-0011: Freshness window policy
 
 **Status.** Draft.
 **Targets.** v0.3.
@@ -55,7 +55,7 @@ channels.gov-prod = {
 
 ### 2.2 Defaults
 
-| Field | Online channels | Air-gap channels (RFC-0007) |
+| Field | Online channels | Air-gap channels (RFC-0012) |
 |---|---|---|
 | `freshnessWindow` | required, suggested 24h | required, suggested 90d |
 | `freshnessHardFloorMinutes` | 60 (1h) | 60 (1h) - same; air-gap windows are about the upper bound |
@@ -86,7 +86,7 @@ pub struct ActivateBlock {
 
 These fields are projections from `meta.signedAt` and the channel's `freshnessWindow` / `freshnessHardFloorMinutes` / `timeSource`. The CP copies them from the signed `fleet.resolved.json` into the per-host target response. The CI signature on `fleet.resolved.json` covers them; the CP cannot widen the window or weaken the time-source policy.
 
-Pre-RFC-0006 agents ignore the new fields (existing `serde(default)` convention). Post-RFC-0006 agents enforce them in addition to whatever local config they may carry - local config is used only as a fallback when target fields are absent (i.e., when serving from a pre-RFC-0006 CP).
+Pre-RFC-0011 agents ignore the new fields (existing `serde(default)` convention). Post-RFC-0011 agents enforce them in addition to whatever local config they may carry - local config is used only as a fallback when target fields are absent (i.e., when serving from a pre-RFC-0011 CP).
 
 ### 3.2 Agent verification
 
@@ -125,7 +125,7 @@ Agent behavior: verify that the host's `chronyd` / `systemd-timesyncd` reports s
 
 ### 4.2 Signed-time source
 
-For high-trust environments and air-gap (RFC-0007), a signed-time service is preferable:
+For high-trust environments and air-gap (RFC-0012), a signed-time service is preferable:
 
 ```nix
 timeSource = {
@@ -168,7 +168,7 @@ Channels with `freshnessWindow > 7d` (online) or `> 90d` (air-gap) are flagged i
 
 - **Skewed local clock.** `maxSkewSeconds` enforcement catches it. Operator runs NTP/chrony correction; until corrected, the host stays on its current generation.
 - **Channel intentionally stalled (frozen for audit).** Operator extends the window: `channels.audit-frozen.freshnessWindow = 60d` with a rationale comment. The framework does not assume frozen channels are unintentional.
-- **Air-gap import older than the channel's freshness window.** RFC-0007 §6 covers air-gap freshness; the bundle's signing time is what matters.
+- **Air-gap import older than the channel's freshness window.** RFC-0012 §6 covers air-gap freshness; the bundle's signing time is what matters.
 - **Wave promotion when freshness will expire mid-rollout.** The reconciler warns at rollout-start time if `target.age + estimated_rollout_duration > freshness_window`. The operator either restarts the rollout against a fresh target or extends the window.
 - **Agent online but unable to reach NTP (firewalled environment).** Falls into `TimeSourceUnavailable`. Operator either provides an internal NTP source or moves the channel to `signedTime`.
 

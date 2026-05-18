@@ -1,4 +1,4 @@
-//! Per-(rollout, host) reducer state. Maps RFC-0008 §5 `HostRolloutRecord`.
+//! Per-(rollout, host) reducer state. Maps RFC-0005 §5 `HostRolloutRecord`.
 
 use std::collections::HashMap;
 
@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use nixfleet_proto::OnHealthFailure;
 use serde::{Deserialize, Serialize};
 
-// `RolloutId` lives in `nixfleet-proto` (RFC-0012 §6.3): a newtype
+// `RolloutId` lives in `nixfleet-proto` (RFC-0008 §6.3): a newtype
 // around `"{channel}@{channel_ref}"` with constructor discipline
 // analogous to `Verified<T>`. Re-exported from here so downstream
 // crates that already `use nixfleet_state_machine::RolloutId` work
@@ -16,7 +16,7 @@ pub use nixfleet_proto::RolloutId;
 pub type ClosureHash = String;
 pub type ProbeName = String;
 
-/// 6-state rollout machine per RFC-0008 §3. Replaces the pre-v0.2 9-variant
+/// 6-state rollout machine per RFC-0005 §3. Replaces the pre-v0.2 9-variant
 /// `nixfleet_proto::HostRolloutState` (the `Queued` / `Dispatched` /
 /// `ConfirmWindow` / `Healthy` / `Soaked` variants are removed — phases 4-6
 /// delete the old enum entirely once the new machine is wired through).
@@ -49,7 +49,7 @@ pub enum HostState {
     Converged,
     /// Sustained probe failure observed by the agent and reported to CP.
     /// Agent has read `onHealthFailure` from the signed manifest and decided
-    /// autonomously what comes next (RFC-0008 §4.2 `Failed` event).
+    /// autonomously what comes next (RFC-0005 §4.2 `Failed` event).
     Failed,
     /// Agent has completed rollback to prior closure. Channel-level
     /// quarantine holds the bad SHA.
@@ -63,7 +63,7 @@ pub enum ProbeStatus {
     Fail,
 }
 
-/// Per-probe gate participation (RFC-0010 §3.4). Threaded through every
+/// Per-probe gate participation (RFC-0007 §3.4). Threaded through every
 /// probe event so CP can decide whether to gate on a result without
 /// consulting a separate topology table.
 ///
@@ -83,13 +83,13 @@ impl Default for ProbeMode {
     /// per-probe `mode` field on `ProbeRecord`: assume `Enforce`. Old
     /// state thus retains its gating semantics on rehydration; the next
     /// probe event from the agent updates the record to the actually-
-    /// declared mode per RFC-0010 §3.4.
+    /// declared mode per RFC-0007 §3.4.
     fn default() -> Self {
         ProbeMode::Enforce
     }
 }
 
-/// Per-control sub-result on a `kind = evidence` probe (RFC-0010 §7.1).
+/// Per-control sub-result on a `kind = evidence` probe (RFC-0007 §7.1).
 /// `None` aggregate for non-evidence probes; `Some(vec)` for evidence
 /// probes — the applier's `probe_failures` co-write iterates `sub_results`
 /// to populate one row per failing control_id.
@@ -126,7 +126,7 @@ pub struct ProbeSubResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeRecord {
     pub status: ProbeStatus,
-    /// Per-probe gate participation per RFC-0010 §3.4. Only
+    /// Per-probe gate participation per RFC-0007 §3.4. Only
     /// `Enforce`-mode probes contribute to the soak-gate `failing_probes`
     /// builder; `Observe` and `Disabled` record events but do not gate.
     /// `#[serde(default)]` (-> `Enforce`) keeps rehydration safe for
@@ -138,14 +138,14 @@ pub struct ProbeRecord {
     pub failure_reason: Option<String>,
 }
 
-/// Per-(rollout, host) reducer state. Mirrors RFC-0008 §5
+/// Per-(rollout, host) reducer state. Mirrors RFC-0005 §5
 /// `HostRolloutRecord`; the persistence schema in Phase 4 serializes this
 /// struct.
 ///
 /// Every transition timestamp is agent-supplied (received via the wire and
 /// stamped onto the corresponding field by the reducer). `dispatched_at` is
 /// the lone exception — it's CP-issued, so CP wallclock is the source of
-/// truth there (RFC-0008 §5).
+/// truth there (RFC-0005 §5).
 #[derive(Debug, Clone)]
 pub struct HostRolloutState {
     pub rollout_id: RolloutId,

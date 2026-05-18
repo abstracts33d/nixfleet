@@ -1,5 +1,5 @@
 //! Snapshot rehydration — effect emission rules for state restored from a
-//! CP-supplied `HostRolloutSnapshot` (RFC-0008 §9.5 / LIFT #3).
+//! CP-supplied `HostRolloutSnapshot` (RFC-0005 §9.5 / LIFT #3).
 //!
 //! LIFT #4: bootstrap-applied state must re-prime worker channels via the
 //! same `Effect` contract as ordinary transitions. The agent's reducer

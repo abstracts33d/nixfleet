@@ -5,7 +5,7 @@
 //! because sustained-failure detection on the agent is more time-
 //! critical than channel-edges checks on the CP. A late tick means
 //! Soaking → Failed transitions lag by ≤5s; that's acceptable per
-//! RFC-0008 §6's threshold semantics.
+//! RFC-0005 §6's threshold semantics.
 
 use std::time::Duration;
 

@@ -135,7 +135,7 @@ async fn manifest_set_then_local_activate_bootstraps_host_state() {
     let (cancel, rt, queue) = spawn_agent(&dir);
 
     let set = make_signed_manifest_set("stable", "host-smoke", "target-closure-abc");
-    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // RFC-0008 §6.3 + D-007: rollout_id is the canonical
     // `RolloutId::new(channel, channel_ref)` composite. The agent's
     // reducer reconstructs the same key from manifest entries to
     // match against incoming HostEvents — the test must mirror it.
@@ -201,7 +201,7 @@ async fn full_happy_path_enqueues_dispatchack_activation_and_converged() {
 
     let target = "happy-target";
     let set = make_signed_manifest_set("stable", "host-smoke", target);
-    // RFC-0012 §6.3 + D-007: rollout_id is the canonical
+    // RFC-0008 §6.3 + D-007: rollout_id is the canonical
     // `RolloutId::new(channel, channel_ref)` composite. The agent's
     // reducer reconstructs the same key from manifest entries to
     // match against incoming HostEvents — the test must mirror it.

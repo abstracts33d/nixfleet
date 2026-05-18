@@ -75,7 +75,7 @@ pub(in crate::server) async fn channel_status(
 }
 
 /// `GET /v1/hosts` - per-host status overview, projected from
-/// `host_rollout_records` (RFC-0008 §5).
+/// `host_rollout_records` (RFC-0005 §5).
 ///
 /// One entry per (rollout, host) pair across all non-superseded rollouts.
 /// Fields the v0.1 schema carried but the new schema doesn't (per-host
@@ -90,7 +90,7 @@ pub(in crate::server) async fn hosts_status(
     };
 
     // Enforce-mode probe-failure counts, keyed by (rollout, host).
-    // Source: probe_failures projection (RFC-0010 §7.2). **Phase 9a**:
+    // Source: probe_failures projection (RFC-0007 §7.2). **Phase 9a**:
     // unwritten until 9b — values flow once the applier co-write lands.
     let outstanding = db
         .probe_failures()

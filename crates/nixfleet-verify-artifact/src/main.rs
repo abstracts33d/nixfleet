@@ -45,7 +45,7 @@ enum Cmd {
         now: DateTime<Utc>,
         #[arg(long)]
         freshness_window_secs: u64,
-        /// Canonical RFC-0012 §6.3 RolloutId `"channel@channel_ref"`.
+        /// Canonical RFC-0008 §6.3 RolloutId `"channel@channel_ref"`.
         /// Catches mix-and-match / rename attacks: a manifest signed
         /// under one identity served at a different filename fails this
         /// discriminator before the bytes reach a downstream consumer.

@@ -1,4 +1,4 @@
-# RFC-0010 §3.5 + §3.4 — per-control overrides on the compliance
+# RFC-0007 §3.5 + §3.4 — per-control overrides on the compliance
 # shorthand. The framework-entry attrset carries a `controlOverrides`
 # map that desugars onto the synthesized `evidence-<framework>` probe
 # so the agent's per-control mode resolver picks it up at runtime.

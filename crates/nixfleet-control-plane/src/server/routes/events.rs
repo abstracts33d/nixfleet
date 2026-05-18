@@ -1,4 +1,4 @@
-//! `POST /v1/agent/events` — inbound event ingestion (RFC-0008 §4.2).
+//! `POST /v1/agent/events` — inbound event ingestion (RFC-0005 §4.2).
 //!
 //! The agent posts a single `AgentEvent` per call. The handler:
 //!
@@ -38,7 +38,7 @@ use crate::runtime::ReducerInput;
 
 // Wire envelope + AgentEvent + the supporting Wire enums + the
 // AgentEvent -> Event projection all live in `nixfleet_proto` and
-// `nixfleet_state_machine` (RFC-0011 §2 lift: types crossing the
+// `nixfleet_state_machine` (RFC-0004 §2 lift: types crossing the
 // agent <-> CP boundary live in a single canonical place). The
 // duplicated definitions that lived here previously - and the
 // hand-built JSON envelope on the agent side - both shipped a
@@ -126,7 +126,7 @@ pub(in crate::server) async fn events(
     };
 
     // Bounded MPSC backpressure surfaces as 503; the pull-only agent
-    // contract (RFC-0008 §2.1) means agents will retry, so the channel
+    // contract (RFC-0005 §2.1) means agents will retry, so the channel
     // never builds an unbounded queue when CP is overloaded.
     match tx.try_send(input) {
         Ok(()) => StatusCode::NO_CONTENT,

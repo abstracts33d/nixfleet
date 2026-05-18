@@ -1,8 +1,8 @@
-# RFC-0005: Trust lifecycle
+# RFC-0010: Trust lifecycle
 
 **Status.** Draft.
 **Targets.** v0.3.
-**Depends on.** RFC-0001, RFC-0003, RFC-0004, ../design/architecture.md §4.
+**Depends on.** RFC-0001, RFC-0003, RFC-0009, ../design/architecture.md §4.
 **Scope.** Specify the lifecycle of every key, credential, and authorization in the v0.2/v0.3 trust model: how each is created, held, used, rotated, and retired. Add (a) EK-bound bootstrap tokens, (b) host-attestation quarantine policy, (c) opt-in threshold-signed channels, (d) tested key-rotation runbooks. Most of this RFC is documentation + small tooling; the only meaningful new mechanism is multi-signer release coordination.
 
 ## 1. Motivation
@@ -20,7 +20,7 @@ What is missing and what auditors ask for first:
 2. How the org root key is generated, witnessed, and escrowed.
 3. How CI uses its release key without holding it directly.
 4. How a host's first mTLS cert is bound to its actual hardware (not just the operator's claim about it).
-5. What happens to a host that persistently fails attestation (RFC-0004 §4.4) or probes - beyond the existing closure-level quarantine.
+5. What happens to a host that persistently fails attestation (RFC-0009 §4.4) or probes - beyond the existing closure-level quarantine.
 6. Tested rotation procedures for each of the four root keys.
 
 The documentation gap is the larger work. The mechanism additions are: EK binding on bootstrap tokens (small), host-attestation quarantine policy (small, reuses cert-lifetime as revocation horizon), threshold-signed channels (the only nontrivial new mechanism).
@@ -35,7 +35,7 @@ At runtime the CP deserialises the file into `proto::TrustConfig`, and on every 
 
 ### 1.5.1 Amendment (2026-05-17) — CA-issuance signing key
 
-The three trust roots above (`ciReleaseKey`, `atticCacheKey`, `orgRootKey`) remain outside the CP host. A **fourth signing key** has since been added to CP's responsibility surface: the **fleet CA issuance key**, used by `/v1/enroll` and `/v1/agent/renew-cert` to sign agent mTLS client certs. This key was introduced in `feat(cp,trust): cert issuance` (commit `4808d4dc`) but the trust-model wording in this section, in RFC-0008 §2.1, and in RFC-0009 §6 N5/N6 was not amended at the time. This subsection is the canonical statement; the other RFCs reference it.
+The three trust roots above (`ciReleaseKey`, `atticCacheKey`, `orgRootKey`) remain outside the CP host. A **fourth signing key** has since been added to CP's responsibility surface: the **fleet CA issuance key**, used by `/v1/enroll` and `/v1/agent/renew-cert` to sign agent mTLS client certs. This key was introduced in `feat(cp,trust): cert issuance` (commit `4808d4dc`) but the trust-model wording in this section, in RFC-0005 §2.1, and in RFC-0006 §6 N5/N6 was not amended at the time. This subsection is the canonical statement; the other RFCs reference it.
 
 CP supports two backends for this key, selected at startup by `build_signer_from_args` (`crates/nixfleet-control-plane/src/auth/issuance.rs:264`):
 
@@ -46,7 +46,7 @@ CP supports two backends for this key, selected at startup by `build_signer_from
 
 The runtime precedence in `build_signer_from_args` is **TPM wins** when both flag triples are supplied. With the TPM backend, the §3.3 blast-radius claim ("SSH access to the CP host has the same blast radius as SSH access to any production NixOS box") holds in full — compromising the CP filesystem yields no usable signing material; the attacker would additionally need to subvert the TPM hardware policy. With the file backend, that blast radius extends to the agenix-encrypted CA key PEM, whose at-rest protection reduces to the operator's age/SOPS posture; the activated key plus the agenix identity together yield a working fleet-CA forge.
 
-Production fleets SHOULD configure the TPM backend. The runtime precedence enforces it whenever both backends are present, but does not refuse-to-start when only the file backend is configured. Per RFC-0011 §1 invariant 3 (mechanical trust over advisory trust), v0.2.x adds an additive `--strict` enforcement gate that refuses file-only CA configurations without an explicit `--allow-file-ca-key` opt-in. This converts the operator-facing recommendation above into a build-time check, in the same shape as `--strict`'s existing gates on `revocations_required` and `bootstrap_nonces_required`.
+Production fleets SHOULD configure the TPM backend. The runtime precedence enforces it whenever both backends are present, but does not refuse-to-start when only the file backend is configured. Per RFC-0004 §1 invariant 3 (mechanical trust over advisory trust), v0.2.x adds an additive `--strict` enforcement gate that refuses file-only CA configurations without an explicit `--allow-file-ca-key` opt-in. This converts the operator-facing recommendation above into a build-time check, in the same shape as `--strict`'s existing gates on `revocations_required` and `bootstrap_nonces_required`.
 
 The CA-issuance key never appears in `TrustConfig`; it is not a verifier key. It is a signer key, and that distinction is why the original "CP never holds trust private keys" claim was not literally violated by `4808d4dc` (the key is not a *trust* private key in the original sense — it does not appear in any trust slot, does not sign artifacts, and the manifest pipeline does not consult it). The amendment is necessary because operator-facing language ("CP signs nothing", "CP holds no signing key") read as a stronger universal than the original technical claim warranted; the universal must now be qualified or made mechanical via `--strict`.
 
@@ -83,14 +83,14 @@ Three operator roles. Each has a documented hardware requirement, a stated maxim
 
 ## 4. Active host-attestation quarantine
 
-When a host's RFC-0004 boot attestation or runtime probes fail persistently, the CP stops issuing fresh mTLS certs to it. Existing certs are short-lived (default 30-day per RFC-0003 §2; renewed at 50% TTL); within one renewal cycle the host falls out of the active fleet view.
+When a host's RFC-0009 boot attestation or runtime probes fail persistently, the CP stops issuing fresh mTLS certs to it. Existing certs are short-lived (default 30-day per RFC-0003 §2; renewed at 50% TTL); within one renewal cycle the host falls out of the active fleet view.
 
 This is a **distinct state machine** from closure-hash quarantine (`ClosureQuarantined`). To keep the two clearly separate:
 
 | Mechanism | Trigger | Scope | Origin |
 |---|---|---|---|
 | `ClosureQuarantined` | Same `closure_hash` fails activation 24h | Per-closure, per-host | v0.2 baseline |
-| `HostAttestationQuarantined` | Persistent attestation drift or probe failure | Per-host, all closures | RFC-0005 |
+| `HostAttestationQuarantined` | Persistent attestation drift or probe failure | Per-host, all closures | RFC-0010 |
 
 Closure quarantine prevents wasted activation cycles on a known-broken release. Attestation quarantine declares "this host is no longer trusted to act in the fleet." Different lifecycles, different operator surfaces.
 
@@ -131,13 +131,13 @@ This is policy on top of v0.2's existing short-cert design and §1 cert-revocati
 
 ## 5. EK-bound bootstrap tokens
 
-Bootstrap tokens already exist (RFC-0003 §4.5, `nixfleet mint-token` subcommand, `BootstrapToken` + `TokenClaims` in `nixfleet-proto`). RFC-0005 extends the token claims with one field:
+Bootstrap tokens already exist (RFC-0003 §4.5, `nixfleet mint-token` subcommand, `BootstrapToken` + `TokenClaims` in `nixfleet-proto`). RFC-0010 extends the token claims with one field:
 
 ```rust
 pub struct TokenClaims {
     pub hostname: String,
     pub pubkey_fingerprint: String,
-    pub expected_ek_fingerprint: Option<String>,  // NEW - RFC-0005
+    pub expected_ek_fingerprint: Option<String>,  // NEW - RFC-0010
     pub channel: String,
     pub expiry: DateTime<Utc>,
     pub nonce: [u8; 32],
@@ -174,7 +174,7 @@ For releases targeting this channel, CI refuses to publish until N hardware-key 
 
 ### 6.1 Mechanism
 
-The current `nixfleet-release` pipeline calls a single `--sign-cmd` hook (../design/architecture.md §11.3). Threshold signing extends this with a multi-process signing session:
+The current `nixfleet-release` pipeline calls a single `--sign-cmd` hook (../design/architecture.md §10.3). Threshold signing extends this with a multi-process signing session:
 
 1. CI evaluates the fleet, builds closures, canonicalizes `fleet.resolved.json` (existing pipeline through step 7).
 2. Instead of calling `--sign-cmd` directly, CI writes a **signing session** to disk: `signing-sessions/<session-id>/canonical.json` plus a `metadata.json` describing which signers must sign, the diff against the previous release, and the build provenance.
@@ -245,9 +245,9 @@ Each runbook has a microvm scenario (`tests/harness/scenarios/key-rotation/<key>
 
 ## 9. Migration
 
-Most of RFC-0005 is additive documentation. Mechanism additions are per-host or per-channel opt-in:
+Most of RFC-0010 is additive documentation. Mechanism additions are per-host or per-channel opt-in:
 
-- **Bootstrap-token EK binding** is opt-in via `expected_ek_fingerprint`. Pre-RFC-0005 tokens (and re-issued tokens for hosts whose hardware was provisioned without EK capture) work unchanged.
+- **Bootstrap-token EK binding** is opt-in via `expected_ek_fingerprint`. Pre-RFC-0010 tokens (and re-issued tokens for hosts whose hardware was provisioned without EK capture) work unchanged.
 - **Host-attestation quarantine** is opt-in per channel via `attestationQuarantine` block. Default off.
 - **Threshold-signed channels** are opt-in per channel. Default is single-signer (the existing `ciReleaseKey` flow). Operators opt in by declaring `releaseSigners`.
 - **Operator workflow** documentation is the bulk of the work and applies retroactively; no code change required.
@@ -275,7 +275,7 @@ These work items are largely independent - the documentation tooling unblocks th
 
 - **Quarantine auto-recovery threshold.** For `unquarantine = "auto"`, what value of N is right? Probably channel-specific; defaults could be 10 for production, 3 for staging.
 - **Bootstrap token expiry default.** 7 days for hardware in transit but not yet racked. Per-channel override allowed. Worth tightening for environments with short logistics windows.
-- **Threshold-signing session storage.** Pushing signing sessions through the existing Forgejo Actions artifact path is the simplest answer, but it means signers need network reach to the forge. Air-gap channels (RFC-0007) need a different transport - likely a bundle in/out of the air-gap. Defer to RFC-0007 v0.4 cycle.
+- **Threshold-signing session storage.** Pushing signing sessions through the existing Forgejo Actions artifact path is the simplest answer, but it means signers need network reach to the forge. Air-gap channels (RFC-0012) need a different transport - likely a bundle in/out of the air-gap. Defer to RFC-0012 v0.4 cycle.
 - **Transparency log target.** Git-tracked append-only file is sufficient for v0.3. v0.4+ may integrate with a public transparency service if customer environments require it.
 
 ## 13. One-sentence summary

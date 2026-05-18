@@ -1,8 +1,8 @@
-//! Rollout-level effects (RFC-0012 §5). Descriptive data; the CP applier
+//! Rollout-level effects (RFC-0008 §5). Descriptive data; the CP applier
 //! interprets each variant against the `rollouts` / `quarantined_closures`
-//! derived-view tables (RFC-0012 §6.3 + §6.4).
+//! derived-view tables (RFC-0008 §6.3 + §6.4).
 //!
-//! Effects-as-data discipline (RFC-0009 §3): the reducer cannot perform
+//! Effects-as-data discipline (RFC-0006 §3): the reducer cannot perform
 //! I/O; the applier has one match arm per variant. Adding a variant
 //! is a compiler-enforced change at every applier.
 
@@ -26,7 +26,7 @@ pub enum RolloutEffect {
     UpdateCurrentWave { rollout_id: RolloutId, wave: u32 },
     /// A rollback completed; insert a row into `quarantined_closures`
     /// referencing the triggering `event_log` seq (NULL-able under v0.2.1
-    /// baseline; RFC-0012 §6.1 item 3).
+    /// baseline; RFC-0008 §6.1 item 3).
     InsertQuarantineFromRollout {
         channel: ChannelId,
         closure_hash: ClosureHash,

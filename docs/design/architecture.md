@@ -245,64 +245,29 @@ The design earns its keep when things go wrong. Walking through the scenarios:
 
 ---
 
-## 6. Where v0.2 lands
+## 6. CP-resident state by recovery profile
 
-v0.2 establishes the spine: signed CI artefacts, mTLS agent identity bound to SSH host keys, magic-rollback as the failure mode, static plus runtime compliance gates, the signed revocations sidecar, and the CP-resident-state recovery profile.
+Every SQLite table the CP keeps falls into one of two recovery classes. The classification is load-bearing for done-criterion #1 of §7: rebuilding the CP from empty state must restore the fleet's desired-state guarantees within one reconcile cycle, not just "approximately reach steady state eventually".
 
-**Signed release pipeline.** CI signs `fleet.resolved.json` and the revocations sidecar with the release key; the binary cache signs closures independently. The CP fetches signed artefacts on every reconcile tick and refuses to reconcile if a signature does not verify.
+- **Soft state — recoverable from agent inputs on the next checkin cycle, or acceptable as a one-window operational regression:**
+  - `token_replay` — bootstrap nonces with 24h TTL. Loss extends the replay window by up to one TTL. Bounded; no breach.
+  - `pending_confirms` — in-flight activation deadlines. Loss could force the agent into an unnecessary local rollback when its confirm POST hits a 410. Mitigated by orphan-confirm recovery: when the agent's reported `closure_hash` matches the verified target, the handler synthesises a confirmed row and returns 204 instead of 410.
+  - `host_rollout_state` — per-host soak markers. Loss restarts soak windows from zero. Mitigated by agent-attested `last_confirmed_at`: the agent persists the moment of its most recent successful confirm and echoes it on every checkin; the CP repopulates `last_healthy_since` from the attestation, clamped to `min(now, attested)`.
+  - `host_reports` — SQLite-backed. Hydrated at boot; outstanding `ComplianceFailure` / `RuntimeGateError` events survive CP restarts so the wave-promotion gate stays armed across the unlock window. Soft only because individual late-arriving reports retry on the next checkin.
 
-**Pull-based agent with magic rollback.** Each managed host runs the Rust agent: polls the CP over mTLS, fetches closures from the cache with signature verification, runs nixos-rebuild switch, opens a post-activation confirm window, auto-reverts on silence.
+- **Hard state — must come from signed artifacts pre-existing in git or from operator-declared trust roots:**
+  - `cert_revocations` — agent-cert revocation list. Loss is a **security regression** — previously-revoked certs become valid again. Mitigated by the signed `revocations.json` sidecar: operator commits revocations to the fleet repo, CI signs the artifact with the same `ciReleaseKey` that signs `fleet.resolved.json`, the CP fetches + verifies + replays on every reconcile tick. Recovery from empty is "one tick later, table populated from the signed artifact."
+  - `trust.json` — the trust roots themselves. Sourced from the flake at build time; rebuildable as long as the flake survives. A deferred TPM-bound issuance CA is tracked as future work.
 
-**SSH-host-key-bound agent identity.** The agent's mTLS client cert is bound to `/etc/ssh/ssh_host_ed25519_key`. CP enrollment and renewal both refuse any CSR whose pubkey does not match the declared `nixfleet.fleetSchema.hosts.<hostname>.pubkey`.
-
-**Compliance gates.** Static gates run at CI build; runtime probes sign their output with the host SSH key and feed the CP's wave-promotion decision.
-
-**Signed revocations sidecar.** Agent-cert revocations live in a signed `revocations.json` committed to git; the CP replays the verified set on every reconcile tick. Loss of CP-side `cert_revocations` table is recoverable from the sidecar within one tick.
-
-**CP-resident state recovery profile.** Every SQLite table either re-hydrates from agent inputs on the next checkin (soft state) or from a signed artefact in git (hard state). The full classification lives in the "CP-resident state by recovery profile" subsection below.
-
-#### CP-resident state by recovery profile
-
-Every SQLite table the CP keeps falls into one of two recovery classes. The classification is load-bearing for done-criterion #1 of §8: rebuilding the CP from empty state must restore the fleet's desired-state guarantees within one reconcile cycle, not just "approximately reach steady state eventually".
-
-- **Soft state - recoverable from agent inputs on the next checkin cycle, or acceptable as a one-window operational regression:**
-  - `token_replay` - bootstrap nonces with 24h TTL. Loss extends the replay window by up to one TTL. Bounded; no breach.
-  - `pending_confirms` - in-flight activation deadlines. Loss could force the agent into an unnecessary local rollback when its confirm POST hits a 410. Mitigated by orphan-confirm recovery: when the agent's reported `closure_hash` matches the verified target, the handler synthesises a confirmed row and returns 204 instead of 410.
-  - `host_rollout_state` - per-host soak markers. Loss restarts soak windows from zero. Mitigated by agent-attested `last_confirmed_at`: the agent persists the moment of its most recent successful confirm and echoes it on every checkin; the CP repopulates `last_healthy_since` from the attestation, clamped to `min(now, attested)`.
-  - `host_reports` - SQLite-backed. Hydrated at boot via `boot: host_reports hydration complete`; outstanding `ComplianceFailure` / `RuntimeGateError` events survive CP restarts so the wave-promotion gate stays armed across the unlock window that motivated the original ring-buffer concern. Soft only because individual late-arriving reports retry on the next checkin.
-
-- **Hard state - must come from signed artifacts pre-existing in git or from operator-declared trust roots:**
-  - `cert_revocations` - agent-cert revocation list. Loss is a **security regression** - previously-revoked certs become valid again. Mitigated by the signed `revocations.json` sidecar: operator commits revocations to the fleet repo, CI signs the artifact with the same `ciReleaseKey` that signs `fleet.resolved.json`, the CP fetches + verifies + replays on every reconcile tick. Recovery from empty is "one tick later, table populated from the signed artifact."
-  - `trust.json` - the trust roots themselves. Sourced from the flake at build time; rebuildable as long as the flake survives. A deferred TPM-bound issuance CA is tracked as future work.
-
-The principle is *"the CP holds nothing whose loss creates a security regression on rebuild, and nothing whose loss creates more than a one-window operational regression."* That is the strict reading of §8 done-criterion #1; orphan-confirm recovery, the `last_confirmed_at` attestation, and the signed revocations sidecar are what make it true.
+The principle: *the CP holds nothing whose loss creates a security regression on rebuild, and nothing whose loss creates more than a one-window operational regression.* Orphan-confirm recovery, the `last_confirmed_at` attestation, and the signed revocations sidecar are what make it true.
 
 ---
 
-## 7. Non-goals
-
-Stated explicitly because pressure to add them will come and each dilutes the core:
-
-- **Not a general-purpose imperative runner.** No "run this script on all hosts". The only vocabulary is "target closure hash". If you need ad-hoc execution, you're outside the framework - use SSH.
-- **Not a multi-tenant SaaS.** The control plane assumes a single administrative domain. Cross-org federation is out of scope.
-- **Not a replacement for NixOS tooling.** `nixos-rebuild`, `nix flake`, `nix-store --verify` remain the ground truth. The framework orchestrates; it does not reimplement.
-- **Not a cloud provisioning tool.** Fleet membership is declared; hosts are not auto-created from templates. If you want autoscaling, generate the flake from a higher-level tool and commit.
-- **Not agentless.** Pull-based means an agent is required on every managed host. Acceptable cost for the sovereignty property.
-
-For the operations-grade capabilities the open kernel intentionally
-does not ship - HA replication, real-time signed-state snapshots, SLA
-observability, audit packages, hosted CP, multi-tenant federation,
-fine-grained RBAC, long-running metrics warehousing - those belong
-above the kernel, not inside it. The commercial extensions are
-maintained in a separate repository.
-
----
-
-## 8. When is it actually done
+## 7. When is it actually done
 
 Four falsifiable statements. If any is false, the design hasn't landed:
 
-1. Destroying the control plane's database and rebuilding from empty state results in full fleet visibility within one reconcile cycle, with zero operator intervention beyond restarting the service. Strict reading: every CP-resident table either repopulates from agent inputs (soft state - `token_replay`, `pending_confirms`, `host_rollout_state`) or from a signed artifact in git (hard state - `cert_revocations` via the signed `revocations.json` sidecar, `trust.json` via the flake). See §6 (CP-resident state by recovery profile) for the per-table classification.
+1. Destroying the control plane's database and rebuilding from empty state results in full fleet visibility within one reconcile cycle, with zero operator intervention beyond restarting the service. Strict reading: every CP-resident table either repopulates from agent inputs (soft state — `token_replay`, `pending_confirms`, `host_rollout_state`) or from a signed artifact in git (hard state — `cert_revocations` via the signed `revocations.json` sidecar, `trust.json` via the flake). See §6 for the per-table classification.
 2. An auditor can be handed a host's hostname + a date range, and - without access to the control plane - produce a cryptographically-verifiable statement of "on this date, this host ran closure sha256-X, which was built from commit Y, and passed compliance controls Z₁..Zₙ with signed probe outputs matching the declared schemas".
 3. The control plane's disk contents, stolen in their entirety, yield zero plaintext secret material.
 4. A deliberately-corrupted closure pushed to attic (bypassing CI) is rejected by every agent; a deliberately-modified `fleet.resolved` served by the control plane is rejected by the control plane's own signature verification.
@@ -311,7 +276,7 @@ If all four hold, the slogan is true. If not, find the gap and close it before c
 
 ---
 
-## 9. Source tree map
+## 8. Source tree map
 
 ```
 nixfleet/
@@ -386,7 +351,7 @@ nixfleet/
     ├── design/                    │  this file + contracts.md + source-layout.md
     ├── reference/                 │  harness.md + per-crate overviews
     ├── operations/                │  disaster-recovery + operator-cookbook + troubleshooting
-    ├── rfcs/                      │  RFC-0001 ... RFC-0007
+    ├── rfcs/                      │  RFC-0001 ... RFC-0012
     └── mdbook/                    ↓  composed book; `{{#include}}` wrappers
 ```
 
@@ -394,7 +359,7 @@ Convention: `_*.nix` is **skipped by `import-tree`**. Files like `_agent.nix` ar
 
 ---
 
-## 10. The Nix layer
+## 9. The Nix layer
 
 ### 10.1 Flake wiring
 
@@ -616,7 +581,7 @@ Adds `nixfleet-cli` (`nixfleet`, with subcommands `mint-token`, `derive-pubkey`,
 
 #### `_trust-json.nix` - shared trust serialiser
 
-Helper imported by `_agent.nix`, `_control-plane.nix`, `_agent-darwin.nix`. Builds the JSON payload for `/etc/nixfleet/{agent,cp}/trust.json`. `schemaVersion = 1` is **required** per [RFC-0005 §1.5](../rfcs/0005-trust-lifecycle.md) - binaries refuse to start on unknown versions.
+Helper imported by `_agent.nix`, `_control-plane.nix`, `_agent-darwin.nix`. Builds the JSON payload for `/etc/nixfleet/{agent,cp}/trust.json`. `schemaVersion = 1` is **required** per [RFC-0010 §1.5](../rfcs/0010-trust-lifecycle.md) - binaries refuse to start on unknown versions.
 
 #### Core glue (`modules/core/`)
 
@@ -624,7 +589,7 @@ Helper imported by `_agent.nix`, `_control-plane.nix`, `_agent-darwin.nix`. Buil
 
 ---
 
-## 11. The Rust layer
+## 10. The Rust layer
 
 ### 11.1 Crate map
 
@@ -692,6 +657,10 @@ pub fn canonicalize(input: &str) -> Result<String> {
 
 Every signer and every verifier feeds artifacts through this. Pinned `serde_jcs 0.2`, single source of truth. The binary is `cat`-style for use in CI sign hooks and tests.
 
+#### `nixfleet-state-machine` - pure per-host reducer
+
+Per-host rollout reducer with no I/O, no clock reads, no allocations of side-effects (effects are returned as data). Single entry point: `step(state, event, now, policy) -> Result<(state, Vec<Effect>), TransitionError>`. The same crate runs on both sides — the agent's runtime drives local state from worker output (`Local*` events); the CP-side mirror synthesises the same state from inbound wire `AgentEvent`s (`Remote*` events). Dependency list is part of the safety contract (no tokio / reqwest / rusqlite); CI verifies via `cargo tree`. Spec lives in RFC-0005 §3 (the 6-state machine) and RFC-0006 §3 (functional-core / imperative-shell pattern); RFC-0008 adds a parallel rollout-level reducer in `src/rollout/`.
+
 #### `nixfleet-reconciler` - pure decision engine
 
 The brain of the control plane, but as a pure library. No I/O, no state, no side effects. Two main exports:
@@ -719,7 +688,7 @@ pub fn reconcile(
 
 Inputs: verified fleet, `Observed` snapshot (channel refs, host states, active rollouts, compliance failures), current time. Output: a list of `Action`s (`OpenRollout`, `DispatchHost`, `PromoteWave`, `ConvergeRollout`, `HaltRollout`, `SoakHost`, `ChannelUnknown`, `Skip`, `WaveBlocked`).
 
-Internal modules: `host_state.rs` (`HostRolloutState` lives in `nixfleet-proto`; reconciler + CP both consume), `rollout_state.rs` (`RolloutState` + `advance_rollout()`), `budgets.rs` (disruption budget enforcement - currently scaffolded), `edges.rs` (DAG ordering - reserved for future), `verify.rs` (`verify_artifact`, `verify_rollout_manifest`, `verify_revocations`, `SignedSidecar` trait, `compute_canonical_hash`), `evidence.rs` (`verify_canonical_payload` for host-signed compliance evidence using OpenSSH ed25519 pubkeys), `manifest.rs` (`project_manifest`, `compute_rollout_id_for_channel`).
+Internal modules: `host_state.rs` (per-host shape; `HostRolloutState` itself now lives in `nixfleet-state-machine` per RFC-0005/0009 — reconciler + CP-side runtime consume that crate's reducer), `rollout_state.rs` (`RolloutState` + `advance_rollout()`), `budgets.rs` (disruption budget enforcement - currently scaffolded), `edges.rs` (DAG ordering - reserved for future), `verify.rs` (`verify_artifact`, `verify_rollout_manifest`, `verify_revocations`, `SignedSidecar` trait, `compute_canonical_hash`), `evidence.rs` (`verify_canonical_payload` for host-signed compliance evidence using OpenSSH ed25519 pubkeys), `manifest.rs` (`project_manifest`, `compute_rollout_id_for_channel`).
 
 ### 11.3 Runtime binaries
 
@@ -771,7 +740,7 @@ Reconcile loop (every 30s) reads inputs, calls `verify_artifact()`, projects `Ob
 
 Background tasks: `reconcile_loop` (30s), `channel_refs_poll` (60s - full `verify_artifact` on fetched bytes, update in-memory map), `revocations_poll` (60s - same trust pipeline; replay into `cert_revocations` table on every tick), `rollback_check_loop` (10s - scan `state='pending' AND confirm_deadline < now`, mark `rolled-back`, stamp `dispatch_history`), `prune_timer` (delete old `token_replay`, archive old `host_reports`). All share a `tokio::sync::CancellationToken` plumbed from `main`; `signal::ctrl_c()` triggers `axum_server::Handle::graceful_shutdown` (25s drain) followed by cancellation fan-out; `drain_background_tasks` gathers JoinHandles with a 30s deadline.
 
-**On-demand HTTP source - `rollouts_source`**: fetches a rollout manifest lazily when `GET /v1/rollouts/<rolloutId>` misses `--rollouts-dir`. URL templates with literal `{rolloutId}` token. **Trust posture**: the CP only checks `RolloutId::new(manifest.channel, manifest.channel_ref) == rolloutId` (the RFC-0012 §6.3 canonical-id discriminator). It does **not** verify the signature. The agent verifies the signature against `ciReleaseKey` on receipt. Even when forwarding a signed manifest, the CP never pretends to attest to it.
+**On-demand HTTP source - `rollouts_source`**: fetches a rollout manifest lazily when `GET /v1/rollouts/<rolloutId>` misses `--rollouts-dir`. URL templates with literal `{rolloutId}` token. **Trust posture**: the CP only checks `RolloutId::new(manifest.channel, manifest.channel_ref) == rolloutId` (the RFC-0008 §6.3 canonical-id discriminator). It does **not** verify the signature. The agent verifies the signature against `ciReleaseKey` on receipt. Even when forwarding a signed manifest, the CP never pretends to attest to it.
 
 #### `nixfleet-cli` - operator workstation tools
 
@@ -800,11 +769,11 @@ The hook contract is what makes signing pluggable: framework doesn't care how yo
 
 #### `nixfleet-verify-artifact` - offline auditor
 
-Three subcommands (pure verification, no network): `artifact` (verify a `fleet.resolved`), `rollout-manifest` (verify a rollout manifest, asserts `rolloutId` equals the canonical `{channel}@{channel_ref}` per RFC-0012 §6.3), `probe` (verify a host-signed probe payload against an OpenSSH host pubkey). Given just signed artifacts plus trust roots, an auditor can verify the chain without ever touching the control plane.
+Three subcommands (pure verification, no network): `artifact` (verify a `fleet.resolved`), `rollout-manifest` (verify a rollout manifest, asserts `rolloutId` equals the canonical `{channel}@{channel_ref}` per RFC-0008 §6.3), `probe` (verify a host-signed probe payload against an OpenSSH host pubkey). Given just signed artifacts plus trust roots, an auditor can verify the chain without ever touching the control plane.
 
 ---
 
-## 12. Testing fabric
+## 11. Testing fabric
 
 Three tiers, fastest-first.
 
@@ -817,7 +786,7 @@ Three tiers, fastest-first.
 
 ### Tier B - Rust unit/integration (~15-30s, pre-push subset, full in CI)
 
-- **`cargo nextest`** workspace-wide (currently 364 tests). Concentration: `nixfleet-control-plane` (Axum endpoint integration with in-process mTLS, SQLite transactions, mTLS CN matching, V001-V006 migration tests, graceful-shutdown drain), `nixfleet-reconciler` (state-machine transitions, signature round-trips, cycle detection), `nixfleet-proto` (round-trip serialisation, trust config), `nixfleet-canonicalize` (JCS golden vectors, RFC 8785 Appendix E), `nixfleet-release` (sign-smoke roundtrip + adversarial verify), `nixfleet-verify-artifact`, `nixfleet-agent` (boot-recovery convergence + per-variant DispatchHandler unit tests).
+- **`cargo nextest`** workspace-wide (currently ~560 tests). Concentration: `nixfleet-control-plane` (Axum endpoint integration with in-process mTLS, SQLite transactions, mTLS CN matching, V001-V006 migration tests, graceful-shutdown drain), `nixfleet-reconciler` (state-machine transitions, signature round-trips, cycle detection), `nixfleet-proto` (round-trip serialisation, trust config), `nixfleet-canonicalize` (JCS golden vectors, RFC 8785 Appendix E), `nixfleet-release` (sign-smoke roundtrip + adversarial verify), `nixfleet-verify-artifact`, `nixfleet-agent` (boot-recovery convergence + per-variant DispatchHandler unit tests).
 - **`cargo clippy`** with `-D warnings`.
 
 ### Tier A - microvm scenarios (minutes, nightly / on-demand)
@@ -849,7 +818,7 @@ CI workflows: `.github/workflows/ci.yml` - `format` job + `validate` job (`nix r
 
 ---
 
-## 13. Glossary
+## 12. Glossary
 
 | Term | Meaning |
 |---|---|
@@ -860,7 +829,7 @@ CI workflows: `.github/workflows/ci.yml` - `format` job + `validate` job (`nix r
 | **Channel ref** | The git ref a channel is currently rolled out to. CI updates this when it produces a release. |
 | **Rollout** | An in-flight transition of a channel from one ref to another. Has a state machine and per-host states. |
 | **Wave** | A subset of a rollout's hosts dispatched together, with a shared soak window before the next wave proceeds. |
-| **Rollout manifest** | Signed per-channel artifact freezing the rollout plan. Identified by the canonical RFC-0012 §6.3 composite `rolloutId = "{channel}@{channel_ref}"`. |
+| **Rollout manifest** | Signed per-channel artifact freezing the rollout plan. Identified by the canonical RFC-0008 §6.3 composite `rolloutId = "{channel}@{channel_ref}"`. |
 | **Soak window** | Time a host must remain Healthy before being marked Soaked. Wave promotes only when all members are Soaked. |
 | **Magic rollback** | If the agent doesn't post `/confirm` within `confirmDeadlineSecs`, the CP marks the dispatch rolled-back; the next checkin tells the agent to revert. |
 | **Freshness window** | Per-channel max age of `meta.signedAt` accepted by `verify_artifact`. Defends against stale-target replay by a compromised CP. |
@@ -879,7 +848,7 @@ CI workflows: `.github/workflows/ci.yml` - `format` job + `validate` job (`nix r
 
 ---
 
-## 14. How to read this codebase
+## 13. How to read this codebase
 
 1. Start with `flake.nix` - five lines of meaningful logic. Open `lib/default.nix` next, then `lib/mk-host.nix`. That's the API surface.
 2. Open `contracts/host-spec.nix`, `contracts/persistence.nix`, `contracts/trust.nix` - read each fully. Maybe 80 lines combined. They define the entire vocabulary.

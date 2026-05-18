@@ -1,4 +1,4 @@
-//! CP runtime: MPSC reducer loop + applier + workers (RFC-0009 §7.2).
+//! CP runtime: MPSC reducer loop + applier + workers (RFC-0006 §7.2).
 //!
 //! Architecture
 //! ============
@@ -22,7 +22,7 @@
 //!
 //! 2. **CP mirror runs the same `step()` as the agent.** Identical
 //!    transitions for `Local*` and `Remote*` event pairs by construction
-//!    (RFC-0009 §2 principle 4). No "leaner" CP-side reimplementation.
+//!    (RFC-0006 §2 principle 4). No "leaner" CP-side reimplementation.
 //!
 //! 3. **Shutdown via oneshot drop.** The reducer task owns a vector of
 //!    [`tokio::sync::oneshot::Sender<()>`]; each worker holds the matching
@@ -57,7 +57,7 @@ pub use event_log_writer::{EVENT_LOG_CHANNEL_CAPACITY, EventLogTx};
 /// burst: a 256-host fleet, ~2 events/host during peak rollout activation,
 /// rounded to power-of-two and doubled. Backpressure surfaces at HTTP
 /// handlers via `try_send` → 503 (caller retries), preserving the pull-only
-/// agent contract (RFC-0008 §2.1 — CP never pushes, agents always retry).
+/// agent contract (RFC-0005 §2.1 — CP never pushes, agents always retry).
 const REDUCER_INPUT_CAPACITY: usize = 1024;
 
 /// Reducer-task inputs. Workers and HTTP route handlers obtain a
@@ -70,7 +70,7 @@ const REDUCER_INPUT_CAPACITY: usize = 1024;
 ///   `SignedManifestSet` and run `plan_next()`.
 /// - [`ReducerInput::HeartbeatReceived`] — touch `last_heartbeat_at`; if
 ///   the agent's `current_closure` disagrees with the CP mirror, the reply
-///   contains the last-known-seq for `Replay-From` (RFC-0008 §4.3).
+///   contains the last-known-seq for `Replay-From` (RFC-0005 §4.3).
 /// - [`ReducerInput::PlanTick`] — safety-net periodic re-run of
 ///   `plan_next()` in case a manifest update was missed by a poller crash.
 pub enum ReducerInput {
@@ -91,7 +91,7 @@ pub enum ReducerInput {
 }
 
 /// Heartbeat reply: drift detected ⇒ `replay_from` is `Some(last_known_seq)`;
-/// agent should re-POST events from that seq onward (RFC-0008 §4.3).
+/// agent should re-POST events from that seq onward (RFC-0005 §4.3).
 /// `bootstrap_rollouts` (LIFT #3) carries CP's view of active rollouts the
 /// agent should rehydrate when its reducer was lost (boot-recovery shape;
 /// heartbeat carried `rollout_id = None` but CP holds non-terminal records

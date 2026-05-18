@@ -1,5 +1,5 @@
 #![allow(clippy::doc_lazy_continuation)]
-//! `nixfleet-agent` — RFC-0009 §7.1 runtime entry point.
+//! `nixfleet-agent` — RFC-0006 §7.1 runtime entry point.
 //!
 //! Boot sequence:
 //!   1. CLI parse + tracing init.
@@ -43,7 +43,7 @@ pub(crate) struct Args {
     client_key: Option<PathBuf>,
 
     /// Acceptance window (seconds) for `meta.signedAt` on the
-    /// fleet.resolved.json + per-rollout manifest verification (RFC-0005
+    /// fleet.resolved.json + per-rollout manifest verification (RFC-0010
     /// §1.5). Default `3600` matches the channel-refs poll cadence —
     /// any signed artifact older than one refresh cycle is rejected as
     /// stale (replay defense). Test harnesses with fixed-`signedAt`
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
         return Err(err);
     }
 
-    // Boot-recovery handshake (RFC-0008 §9.5). Best-effort:
+    // Boot-recovery handshake (RFC-0005 §9.5). Best-effort:
     // unreachable CP doesn't block startup; the steady-state heartbeat
     // worker keeps retrying.
     let clock: nixfleet_proto::clock::ClockHandle =

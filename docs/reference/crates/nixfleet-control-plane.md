@@ -9,5 +9,5 @@
 **Links.**
 
 - Generated rustdoc: [`api/nixfleet_control_plane/`](../../api/nixfleet_control_plane/index.html)
-- Relevant RFCs: [RFC-0002](../../rfcs/0002-reconciler.md), [RFC-0003](../../rfcs/0003-protocol.md), [RFC-0006](../../rfcs/0006-freshness-window-policy.md)
+- Relevant RFCs: [RFC-0002](../../rfcs/0002-reconciler.md), [RFC-0003](../../rfcs/0003-protocol.md), [RFC-0011](../../rfcs/0011-freshness-window-policy.md)
 - Architecture component: [§1.4 Control plane](../../design/architecture.md#14-control-plane-the-router), [§3 The main flow](../../design/architecture.md#3-the-main-flow)

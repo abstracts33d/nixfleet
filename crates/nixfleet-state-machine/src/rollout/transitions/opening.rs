@@ -1,5 +1,5 @@
 //! `Opening` source state. The rollout has been opened but no hosts
-//! have joined yet (RFC-0012 §3).
+//! have joined yet (RFC-0008 §3).
 
 use chrono::{DateTime, Utc};
 
@@ -22,7 +22,7 @@ pub(super) fn step(
         // joiner) but does NOT mutate `record.current_wave`. The
         // wave-promotion gate reads `current_wave` as the "wave
         // cursor for which dispatches are currently allowed" per
-        // RFC-0012 §6.3; bumping the cursor on HostJoined would leak
+        // RFC-0008 §6.3; bumping the cursor on HostJoined would leak
         // it forward — wave-N+1 hosts dispatching alongside wave-N
         // hosts on the first plan tick would set the cursor to
         // max-of-joiners' wave_index, passing wave-N+1 vacuously.
