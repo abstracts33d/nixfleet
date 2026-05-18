@@ -188,12 +188,17 @@ in
 
       print("step 3: waiting for post-wipe recovery checkins...")
       recovery_start = time.monotonic()
-      post_wipe = wait_for_checkins_since(post_wipe_cursor, timeout_s=30)
+      # Budget = HEARTBEAT_INTERVAL (60s, agent's heartbeat worker cadence,
+      # per RFC-0008 §4.3 — same window as the long-poll wait) + 30s slack
+      # for the worst-case "agent's boot heartbeat landed just before the
+      # post-wipe cursor was captured" case. Pre-LIFT cadence was 30s; the
+      # v0.2 agent dropped that to once-per-60s steady-state.
+      post_wipe = wait_for_checkins_since(post_wipe_cursor, timeout_s=90)
       recovery_end = max(post_wipe.values())
       recovery_secs = recovery_end - recovery_start
       print(
           "step 3: post-wipe checkins observed in "
-          f"{recovery_secs:.1f}s (budget 30s)"
+          f"{recovery_secs:.1f}s (budget 90s = one heartbeat cycle + slack)"
       )
 
       host.succeed(
