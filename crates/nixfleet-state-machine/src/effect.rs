@@ -160,6 +160,20 @@ pub enum OutboundAgentEvent {
         failed_at: DateTime<Utc>,
         seq: u64,
     },
+    /// LIFT #2 (RFC-0008 §4.2): live activation skipped because
+    /// `component` (dbus/systemd/kernel/init) cannot be live-swapped on
+    /// a running system. Profile + bootloader updated; next reboot
+    /// completes the activation. Host stays at Activating until the
+    /// operator reboots; CP's handle_heartbeat (LIFT #1) synthesizes
+    /// the completion on the agent's next boot-recovery handshake.
+    /// Visibility-only at the wire level — replaces the pre-LIFT #2
+    /// fake-`ActivationCompleted` that lied with `exit_code = 0` and a
+    /// stale `observed_current_closure`.
+    ActivationDeferred {
+        component: String,
+        deferred_at: DateTime<Utc>,
+        seq: u64,
+    },
     ProbeTopologyDeclared {
         probes: Vec<ProbeTopologyEntry>,
         declared_at: DateTime<Utc>,

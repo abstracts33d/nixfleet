@@ -71,6 +71,17 @@ pub enum AgentEvent {
         failed_at: DateTime<Utc>,
         seq: u64,
     },
+    /// LIFT #2 (RFC-0008 §4.2): live activation skipped because
+    /// `component` (dbus/systemd/kernel/init) cannot be live-swapped on
+    /// a running system. Profile + bootloader updated; next reboot
+    /// completes the activation. Replaces the pre-LIFT-#2 fake
+    /// `ActivationCompleted` with `exit_code: 0`.
+    #[serde(rename_all = "camelCase")]
+    ActivationDeferred {
+        component: String,
+        deferred_at: DateTime<Utc>,
+        seq: u64,
+    },
     #[serde(rename_all = "camelCase")]
     ProbeTopologyDeclared {
         probes: Vec<ProbeTopologyEntryWire>,
@@ -132,6 +143,7 @@ impl AgentEvent {
             AgentEvent::DispatchAck { seq, .. }
             | AgentEvent::ActivationStarted { seq, .. }
             | AgentEvent::ActivationCompleted { seq, .. }
+            | AgentEvent::ActivationDeferred { seq, .. }
             | AgentEvent::ActivationFailed { seq, .. }
             | AgentEvent::ProbeTopologyDeclared { seq, .. }
             | AgentEvent::ProbeObservedFirst { seq, .. }

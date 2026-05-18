@@ -136,6 +136,51 @@ pub(super) fn handle(
             Ok((state, effects))
         }
 
+        // Activating → Activating (no state change). Live switch was
+        // deferred because a critical component (dbus/systemd/kernel)
+        // cannot be live-swapped. Profile + bootloader are correct;
+        // the activation completes on next reboot via boot-recovery
+        // (LIFT #1's handle_heartbeat synthesis).
+        Event::LocalActivationDeferred {
+            component,
+            deferred_at,
+            seq,
+        } => {
+            state.last_event_seq = seq;
+            let effects = vec![Effect::LocalEmitEvent {
+                rollout_id: state.rollout_id.clone(),
+                payload: OutboundAgentEvent::ActivationDeferred {
+                    component,
+                    deferred_at,
+                    seq,
+                },
+                durable: true,
+            }];
+            Ok((state, effects))
+        }
+
+        // CP-side mirror of LocalActivationDeferred. Visibility-only;
+        // event_log captures the deferral. Same shape as the Local
+        // case but uses RemoteAppendEventLog (CP writes directly,
+        // bypassing the outbound queue).
+        Event::RemoteActivationDeferred {
+            component,
+            deferred_at,
+            seq,
+        } => {
+            state.last_event_seq = seq;
+            let effects = vec![Effect::RemoteAppendEventLog {
+                host: state.hostname.clone(),
+                rollout_id: state.rollout_id.clone(),
+                payload: OutboundAgentEvent::ActivationDeferred {
+                    component,
+                    deferred_at,
+                    seq,
+                },
+            }];
+            Ok((state, effects))
+        }
+
         // Activating → Failed
         Event::LocalActivationFailed {
             exit_code,

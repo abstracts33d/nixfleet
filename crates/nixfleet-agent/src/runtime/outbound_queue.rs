@@ -164,6 +164,7 @@ pub fn outbound_event_kind(payload: &OutboundAgentEvent) -> &'static str {
         OutboundAgentEvent::DispatchAck { .. } => "DispatchAck",
         OutboundAgentEvent::ActivationStarted { .. } => "ActivationStarted",
         OutboundAgentEvent::ActivationCompleted { .. } => "ActivationCompleted",
+        OutboundAgentEvent::ActivationDeferred { .. } => "ActivationDeferred",
         OutboundAgentEvent::ActivationFailed { .. } => "ActivationFailed",
         OutboundAgentEvent::ProbeTopologyDeclared { .. } => "ProbeTopologyDeclared",
         OutboundAgentEvent::ProbeObservedFirst { .. } => "ProbeObservedFirst",
@@ -181,6 +182,7 @@ pub fn outbound_event_seq(payload: &OutboundAgentEvent) -> u64 {
         OutboundAgentEvent::DispatchAck { seq, .. }
         | OutboundAgentEvent::ActivationStarted { seq, .. }
         | OutboundAgentEvent::ActivationCompleted { seq, .. }
+        | OutboundAgentEvent::ActivationDeferred { seq, .. }
         | OutboundAgentEvent::ActivationFailed { seq, .. }
         | OutboundAgentEvent::ProbeTopologyDeclared { seq, .. }
         | OutboundAgentEvent::ProbeObservedFirst { seq, .. }

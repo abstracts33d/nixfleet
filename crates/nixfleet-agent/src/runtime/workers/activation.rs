@@ -194,27 +194,36 @@ async fn handle_intent(input_tx: &mpsc::Sender<ReducerInput>, intent: Activation
                 }
             }
             Ok(ActivationOutcome::DeferredPendingReboot { component }) => {
-                // Profile set; switch-to-configuration boot ran (bootloader
-                // updated); live switch deferred because `component` (dbus/
-                // systemd/kernel) cannot be live-swapped per nixos-rebuild's
-                // own rules. New generation activates on next reboot. For
-                // v0.2 the state machine has no DeferredPendingReboot
-                // state; treat as Completed with the observed current still
-                // the pre-switch closure (we read it back to be honest).
+                // Profile set; bootloader updated; live switch deferred
+                // because `component` (dbus/systemd/kernel/init) cannot
+                // be live-swapped per nixos-rebuild's own rules. New
+                // generation activates on next reboot.
+                //
+                // LIFT #2: emit `LocalActivationDeferred` (state stays
+                // Activating, no fake exit_code=0, no fake
+                // observed_current_closure). On next reboot the agent's
+                // boot-recovery handshake observes current == target
+                // and CP's handle_heartbeat (LIFT #1) synthesizes the
+                // RemoteActivationCompleted that advances the cascade.
+                //
+                // Pre-LIFT-#2 this emitted LocalActivationCompleted with
+                // `exit_code: 0` (a lie — activation didn't take live)
+                // and `observed_current_closure: <pre-switch closure or
+                // fallback to target>` (also a lie — the observation
+                // pointed at the wrong thing). The state machine then
+                // transitioned Activating → Soaking with current_closure
+                // ≠ target_closure, producing a soft-converged state
+                // that misled operators about the reboot requirement.
                 tracing::warn!(
                     target: "agent_activation",
                     rollout_id = %intent.rollout_id,
                     target_closure = %intent.target_closure,
                     component = %component,
-                    "activation: deferred pending reboot (critical component swap); bootloader updated",
+                    "activation: deferred pending reboot (critical component swap); bootloader updated, host stays at Activating until reboot triggers LIFT #1's retroactive confirmation",
                 );
-                let observed = crate::activation::verify_poll::read_current_system_basename()
-                    .await
-                    .unwrap_or_else(|_| intent.target_closure.clone());
-                Event::LocalActivationCompleted {
-                    observed_current_closure: observed,
-                    exit_code: 0,
-                    completed_at: now,
+                Event::LocalActivationDeferred {
+                    component,
+                    deferred_at: now,
                     seq: 0,
                 }
             }

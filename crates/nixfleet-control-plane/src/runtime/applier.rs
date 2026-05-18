@@ -1128,6 +1128,16 @@ fn outbound_event_to_json(payload: &OutboundAgentEvent) -> Value {
             "failedAt": failed_at.to_rfc3339(),
             "seq": seq,
         }),
+        OutboundAgentEvent::ActivationDeferred {
+            component,
+            deferred_at,
+            seq,
+        } => json!({
+            "kind": "ActivationDeferred",
+            "component": component,
+            "deferredAt": deferred_at.to_rfc3339(),
+            "seq": seq,
+        }),
         OutboundAgentEvent::ProbeTopologyDeclared {
             probes,
             declared_at,

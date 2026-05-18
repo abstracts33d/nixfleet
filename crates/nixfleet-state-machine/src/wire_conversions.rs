@@ -148,6 +148,15 @@ impl From<AgentEvent> for Event {
                 failed_at,
                 seq,
             },
+            AgentEvent::ActivationDeferred {
+                component,
+                deferred_at,
+                seq,
+            } => Event::RemoteActivationDeferred {
+                component,
+                deferred_at,
+                seq,
+            },
             AgentEvent::ProbeTopologyDeclared {
                 probes,
                 declared_at,
@@ -280,6 +289,15 @@ impl From<OutboundAgentEvent> for AgentEvent {
                 exit_code,
                 stderr_tail,
                 failed_at,
+                seq,
+            },
+            OutboundAgentEvent::ActivationDeferred {
+                component,
+                deferred_at,
+                seq,
+            } => AgentEvent::ActivationDeferred {
+                component,
+                deferred_at,
                 seq,
             },
             OutboundAgentEvent::ProbeTopologyDeclared {

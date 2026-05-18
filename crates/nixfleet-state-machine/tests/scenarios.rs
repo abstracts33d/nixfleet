@@ -367,3 +367,171 @@ fn probe_result_updates_map_without_state_change() {
         }
     )));
 }
+
+/// LIFT #2: LocalActivationDeferred (agent-side). Live activation skipped
+/// because a critical component (dbus/systemd/kernel/init) cannot be
+/// live-swapped. State MUST stay Activating (no fake transition to
+/// Soaking with a wrong observed_current_closure pre-LIFT-#2). The
+/// effect MUST emit OutboundAgentEvent::ActivationDeferred via the
+/// LocalEmitEvent (durable) channel so CP sees the deferral in
+/// event_log.
+#[test]
+fn local_activation_deferred_keeps_activating_and_emits_outbound() {
+    let p = policy_halt();
+    let s = pending();
+    let (s, _) = step(
+        s,
+        Event::LocalActivate {
+            current_closure_at_dispatch: "prior".into(),
+            target_closure: "target".into(),
+            received_at: t0() + Duration::seconds(1),
+            soak_due_at: t0() + Duration::minutes(5),
+            seq: 1,
+        },
+        t0() + Duration::seconds(1),
+        &p,
+    )
+    .unwrap();
+    assert_eq!(s.state, HostState::Activating);
+
+    let (s_after, effects) = step(
+        s,
+        Event::LocalActivationDeferred {
+            component: "systemd".into(),
+            deferred_at: t0() + Duration::seconds(2),
+            seq: 2,
+        },
+        t0() + Duration::seconds(2),
+        &p,
+    )
+    .unwrap();
+
+    assert_eq!(
+        s_after.state,
+        HostState::Activating,
+        "deferred activation MUST NOT change state — host waits for reboot + LIFT #1 synthesis",
+    );
+    assert_eq!(s_after.last_event_seq, 2, "last_event_seq advances");
+    assert!(
+        s_after.current_closure.is_none(),
+        "current_closure stays None — the live switch did NOT take",
+    );
+    assert!(
+        s_after.activation_completed_at.is_none(),
+        "activation_completed_at stays None — completion happens post-reboot via LIFT #1",
+    );
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::LocalEmitEvent {
+                payload: OutboundAgentEvent::ActivationDeferred { component, .. },
+                durable: true,
+                ..
+            } if component == "systemd"
+        )),
+        "MUST emit durable OutboundAgentEvent::ActivationDeferred for CP visibility"
+    );
+}
+
+/// LIFT #2: RemoteActivationDeferred (CP-side mirror). Same shape: state
+/// stays Activating, event_log gets the deferral entry via
+/// RemoteAppendEventLog (CP writes directly, no outbound queue).
+#[test]
+fn remote_activation_deferred_keeps_activating_and_appends_event_log() {
+    let p = policy_halt();
+    let s = pending();
+    let (s, _) = step(
+        s,
+        Event::RemoteDispatchAck {
+            current_closure_at_dispatch: "prior".into(),
+            received_at: t0() + Duration::seconds(1),
+            seq: 1,
+        },
+        t0() + Duration::seconds(1),
+        &p,
+    )
+    .unwrap();
+    assert_eq!(s.state, HostState::Activating);
+
+    let (s_after, effects) = step(
+        s,
+        Event::RemoteActivationDeferred {
+            component: "dbus".into(),
+            deferred_at: t0() + Duration::seconds(2),
+            seq: 2,
+        },
+        t0() + Duration::seconds(2),
+        &p,
+    )
+    .unwrap();
+
+    assert_eq!(s_after.state, HostState::Activating);
+    assert_eq!(s_after.last_event_seq, 2);
+    assert!(s_after.current_closure.is_none());
+    assert!(s_after.activation_completed_at.is_none());
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::RemoteAppendEventLog {
+                payload: OutboundAgentEvent::ActivationDeferred { component, .. },
+                ..
+            } if component == "dbus"
+        )),
+        "MUST emit RemoteAppendEventLog for CP-side event_log capture"
+    );
+}
+
+/// LIFT #2 + LIFT #1 interaction: after a deferred activation (state =
+/// Activating, current_closure = None, activation_completed_at = None),
+/// a subsequent RemoteActivationCompleted (synthesized by LIFT #1
+/// when the agent reports current == target post-reboot) drives the
+/// normal Activating → Soaking transition. This pins the end-to-end
+/// path the operator follows when they reboot a deferred-pending host.
+#[test]
+fn deferred_then_synthesized_completion_advances_to_soaking() {
+    let p = policy_halt();
+    let s = pending();
+    let (s, _) = step(
+        s,
+        Event::RemoteDispatchAck {
+            current_closure_at_dispatch: "prior".into(),
+            received_at: t0() + Duration::seconds(1),
+            seq: 1,
+        },
+        t0() + Duration::seconds(1),
+        &p,
+    )
+    .unwrap();
+    let (s, _) = step(
+        s,
+        Event::RemoteActivationDeferred {
+            component: "kernel".into(),
+            deferred_at: t0() + Duration::seconds(2),
+            seq: 2,
+        },
+        t0() + Duration::seconds(2),
+        &p,
+    )
+    .unwrap();
+    assert_eq!(s.state, HostState::Activating);
+
+    // Operator reboots → LIFT #1 synthesis on next heartbeat.
+    let (s_after, _) = step(
+        s,
+        Event::RemoteActivationCompleted {
+            observed_current_closure: "target-closure-abc".into(),
+            exit_code: 0,
+            completed_at: t0() + Duration::minutes(2),
+            seq: 3,
+        },
+        t0() + Duration::minutes(2),
+        &p,
+    )
+    .unwrap();
+    assert_eq!(s_after.state, HostState::Soaking);
+    assert_eq!(
+        s_after.current_closure.as_deref(),
+        Some("target-closure-abc"),
+    );
+    assert!(s_after.activation_completed_at.is_some());
+}

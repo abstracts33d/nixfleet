@@ -86,6 +86,32 @@ pub enum Event {
         seq: u64,
     },
 
+    /// Activation pipeline set the profile + bootloader but skipped the
+    /// live `switch-to-configuration` because `component` (dbus, systemd,
+    /// kernel, init) cannot be safely swapped on a running system
+    /// (matches nixos-rebuild's own refusal). The target activates on
+    /// next reboot. The host is "soft-staged" — profile is correct, but
+    /// `/run/current-system` still points at the pre-switch closure.
+    ///
+    /// State stays Activating: the activation is not complete until the
+    /// host reboots and the new generation takes. When the operator
+    /// reboots and the agent restarts, the boot-recovery handshake
+    /// observes `current_closure == target_closure` and CP's
+    /// `handle_heartbeat` synthesizes `RemoteActivationCompleted`
+    /// (LIFT #1; recovery.rs scenario 3). The cascade resumes
+    /// automatically post-reboot.
+    ///
+    /// Visibility-only at the state-machine layer; emits an outbound
+    /// `ActivationDeferred` event so CP's event_log + operator queries
+    /// can surface the deferred-reboot condition (the host appears
+    /// stuck at Activating to the planner; this event tells operators
+    /// why).
+    LocalActivationDeferred {
+        component: String,
+        deferred_at: DateTime<Utc>,
+        seq: u64,
+    },
+
     /// `switch-to-configuration` returned failure. Drives
     /// `Activating → Failed`. The agent reads `onHealthFailure` from policy
     /// and (if `rollback-and-halt`) immediately fires the rollback in the
@@ -186,6 +212,18 @@ pub enum Event {
         seq: u64,
     },
 
+    /// CP-side mirror of `LocalActivationDeferred`. CP receives
+    /// `ActivationDeferred` at `/v1/agent/events`; no state change in
+    /// the mirror — the host stays Activating until the operator
+    /// reboots and LIFT #1's heartbeat synthesis advances state.
+    /// Emits a `RemoteAppendEventLog` effect so event_log captures the
+    /// deferral for operator queries + replay re-derivability.
+    RemoteActivationDeferred {
+        component: String,
+        deferred_at: DateTime<Utc>,
+        seq: u64,
+    },
+
     RemoteActivationCompleted {
         observed_current_closure: ClosureHash,
         exit_code: i32,
@@ -261,6 +299,7 @@ impl Event {
             Event::LocalActivate { seq, .. }
             | Event::LocalActivationStarted { seq, .. }
             | Event::LocalActivationCompleted { seq, .. }
+            | Event::LocalActivationDeferred { seq, .. }
             | Event::LocalActivationFailed { seq, .. }
             | Event::LocalProbeTopologyDeclared { seq, .. }
             | Event::LocalProbeObservedFirst { seq, .. }
@@ -272,6 +311,7 @@ impl Event {
             | Event::RemoteDispatchAck { seq, .. }
             | Event::RemoteActivationStarted { seq, .. }
             | Event::RemoteActivationCompleted { seq, .. }
+            | Event::RemoteActivationDeferred { seq, .. }
             | Event::RemoteActivationFailed { seq, .. }
             | Event::RemoteProbeTopologyDeclared { seq, .. }
             | Event::RemoteProbeObservedFirst { seq, .. }
