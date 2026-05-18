@@ -72,6 +72,14 @@ pub struct RecoveryOutcome {
     pub current_closure: Option<String>,
     pub replay_from: Option<u64>,
     pub heartbeat_sent_at: DateTime<Utc>,
+    /// LIFT #3: per-rollout snapshots from CP, populated when CP
+    /// detected the agent's reducer empty (boot-recovery heartbeat with
+    /// rollout_id=None) AND CP holds non-terminal records for the host.
+    /// The runtime spawn path applies each snapshot to the agent's
+    /// in-memory reducer state before workers start, restoring the
+    /// cache so probe runners + advance-ticker resume work
+    /// post-restart.
+    pub bootstrap_rollouts: Vec<nixfleet_proto::agent_wire::HostRolloutSnapshot>,
 }
 
 /// Best-effort read of `/run/current-system`'s store-path basename.
@@ -125,6 +133,7 @@ pub async fn handshake(
                 current_closure,
                 replay_from: None,
                 heartbeat_sent_at: now,
+                bootstrap_rollouts: Vec::new(),
             };
         }
     };
@@ -157,6 +166,7 @@ pub async fn handshake(
                 current_closure,
                 replay_from: None,
                 heartbeat_sent_at: now,
+                bootstrap_rollouts: Vec::new(),
             };
         }
     };
@@ -167,21 +177,39 @@ pub async fn handshake(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
-    // Drain the body so the connection can be returned to the pool;
-    // the response shape is `HeartbeatResponse` but we only need the
-    // header for replay-from drift detection.
-    if let Ok(_body) = resp.json::<HeartbeatResponse>().await {
-        // Body parsed cleanly. No-op; logged below.
-    }
+    // LIFT #3: parse the response body for bootstrap snapshots that
+    // CP-side built when it saw our rollout_id=None + non-terminal
+    // records pattern. We MUST read the body (not just drain it) to
+    // get the snapshots. Old CP responses without the field
+    // deserialize cleanly (serde-default empty Vec).
+    let bootstrap_rollouts = match resp.json::<HeartbeatResponse>().await {
+        Ok(body) => {
+            if !body.bootstrap_rollouts.is_empty() {
+                tracing::info!(
+                    target: "agent_recovery",
+                    count = body.bootstrap_rollouts.len(),
+                    "boot-recovery: CP returned bootstrap snapshots; will rehydrate agent reducer",
+                );
+            }
+            body.bootstrap_rollouts
+        }
+        Err(err) => {
+            tracing::warn!(
+                target: "agent_recovery",
+                error = %err,
+                "boot-recovery: response body parse failed; no bootstrap rehydration",
+            );
+            Vec::new()
+        }
+    };
 
     if let Some(seq) = replay_from {
-        tracing::warn!(
+        tracing::info!(
             target: "agent_recovery",
             replay_from = seq,
-            "boot-recovery: CP signaled drift; reducer in-memory state will re-converge \
-             via the steady-state heartbeat + long-poll path (synthesised-event \
-             reconstruction is documented in recovery.rs; full wiring lands in a \
-             follow-up)",
+            bootstrap_count = bootstrap_rollouts.len(),
+            "boot-recovery: CP signaled drift; bootstrap snapshots will rehydrate \
+             whatever state was lost (LIFT #3)",
         );
     }
 
@@ -189,6 +217,7 @@ pub async fn handshake(
         current_closure,
         replay_from,
         heartbeat_sent_at: now,
+        bootstrap_rollouts,
     }
 }
 

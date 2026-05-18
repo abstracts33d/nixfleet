@@ -62,6 +62,14 @@ pub struct HeartbeatResponse {
     /// agent to confirm CP saw it; null if the reducer was unable to
     /// process the heartbeat for some reason.
     pub received_at: Option<DateTime<Utc>>,
+    /// LIFT #3: per active rollout on this host, a HostRolloutSnapshot
+    /// the agent should apply to its in-memory reducer. Populated only
+    /// when the heartbeat carried `rollout_id = None` (boot-recovery
+    /// shape — agent's reducer is empty) AND CP holds non-terminal
+    /// records for the host. Empty in steady-state heartbeats.
+    /// Serde-default empty so old agents ignore the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bootstrap_rollouts: Vec<nixfleet_proto::agent_wire::HostRolloutSnapshot>,
 }
 
 pub(in crate::server) async fn heartbeat(
@@ -166,6 +174,7 @@ pub(in crate::server) async fn heartbeat(
         headers,
         Json(HeartbeatResponse {
             received_at: Some(req.at),
+            bootstrap_rollouts: reply.bootstrap_rollouts,
         }),
     ))
 }

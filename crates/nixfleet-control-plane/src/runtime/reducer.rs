@@ -310,19 +310,6 @@ async fn handle_heartbeat(
 ) {
     rs.last_heartbeat_at.insert(host.to_string(), at);
 
-    let replay_from = compute_replay_from(
-        state,
-        host,
-        rollout_id.as_ref().map(|r| r.as_str()),
-        current_closure.as_deref(),
-    );
-
-    // Reply BEFORE the synthesis call: the heartbeat HTTP handler is
-    // waiting on this oneshot and the agent expects the response within
-    // the route's REDUCER_REPLY_TIMEOUT. Synthesis runs after; it has
-    // its own DB + event_log work that shouldn't block the agent.
-    let _ = reply.send(HeartbeatReply { replay_from });
-
     // Boot-recovery retroactive confirmation (RFC-0008 §9.5).
     // Closes the "agent restart mid-Activating leaves CP forever stuck
     // at Activating" defect. The flow: an agent's
@@ -330,16 +317,22 @@ async fn handle_heartbeat(
     // before it can emit LocalActivationCompleted. The new agent's
     // boot-recovery handshake reports `current_closure` (read from
     // /run/current-system) but no rollout_id, so the steady-state
-    // replay_from path above can't match. Here we scan active
+    // replay_from path can't match. Here we scan active
     // host_rollout_records for this hostname; if any record's
     // target_closure matches the agent's current_closure AND state is
-    // Activating, we synthesize `Event::RemoteActivationCompleted` and
-    // feed it through `handle_host_event` — same path the wire-borne
-    // version takes. CP transitions Activating → Soaking, populates
+    // Activating or Deferred, we synthesize
+    // `Event::RemoteActivationCompleted` and feed it through
+    // `handle_host_event` — same path the wire-borne version takes. CP
+    // transitions Activating/Deferred → Soaking, populates
     // activation_completed_at, the planner unblocks, the cascade
     // continues. Recovery.rs:45-51 documented this design intent ("CP
-    // synthesises an ActivationCompleted-shaped Replay-From event"); the
-    // wiring was deferred to a follow-up that never landed pre-v0.2.
+    // synthesises an ActivationCompleted-shaped Replay-From event").
+    //
+    // Synthesis runs BEFORE bootstrap + reply (LIFT #3 ordering): the
+    // bootstrap reflects post-synthesis state (e.g. Soaking, not
+    // Activating). The reducer is single-threaded so the read-modify-
+    // read is race-free; synthesis is in-process and well under the
+    // route's REDUCER_REPLY_TIMEOUT.
     if let Some(agent_current) = current_closure.as_deref() {
         maybe_synthesize_recovery_completion(
             state,
@@ -351,6 +344,93 @@ async fn handle_heartbeat(
             at,
         )
         .await;
+    }
+
+    let replay_from = compute_replay_from(
+        state,
+        host,
+        rollout_id.as_ref().map(|r| r.as_str()),
+        current_closure.as_deref(),
+    );
+
+    // LIFT #3: when the agent's heartbeat carried no rollout_id (the
+    // boot-recovery shape — agent's reducer is empty post-restart), but
+    // CP holds non-terminal records for the host, build a bootstrap
+    // snapshot per record. The agent's runtime applies each snapshot to
+    // its in-memory HostRolloutState before workers spawn, restoring
+    // the cache so probe runners + advance-ticker resume work
+    // post-restart. Steady-state heartbeats (rollout_id populated)
+    // skip this — the agent's reducer already knows.
+    let bootstrap_rollouts = if rollout_id.is_none() {
+        build_bootstrap_for_host(state, host)
+    } else {
+        Vec::new()
+    };
+
+    let _ = reply.send(HeartbeatReply {
+        replay_from,
+        bootstrap_rollouts,
+    });
+}
+
+/// LIFT #3: scan active records for `host` and produce a
+/// `HostRolloutSnapshot` per record. Called only on boot-recovery-shaped
+/// heartbeats (rollout_id=None). Order is deterministic by
+/// (rollout_id, hostname) PK in SQL; the agent applies them
+/// in arrival order.
+fn build_bootstrap_for_host(
+    state: &Arc<AppState>,
+    host: &str,
+) -> Vec<nixfleet_proto::agent_wire::HostRolloutSnapshot> {
+    let Some(db) = state.db.as_ref() else {
+        return Vec::new();
+    };
+    let records = match db.host_rollout_records().active_for_host(host) {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(
+                target: "cp_reducer",
+                host,
+                error = %err,
+                "bootstrap build: active_for_host load failed; returning empty",
+            );
+            return Vec::new();
+        }
+    };
+    records
+        .into_iter()
+        .map(host_rollout_state_to_snapshot)
+        .collect()
+}
+
+fn host_rollout_state_to_snapshot(
+    record: nixfleet_state_machine::HostRolloutState,
+) -> nixfleet_proto::agent_wire::HostRolloutSnapshot {
+    use nixfleet_proto::HostRolloutState as WireState;
+    use nixfleet_state_machine::HostState;
+    let wire_state = match record.state {
+        HostState::Pending => WireState::Pending,
+        HostState::Activating => WireState::Activating,
+        HostState::Deferred => WireState::Deferred,
+        HostState::Soaking => WireState::Soaking,
+        HostState::Converged => WireState::Converged,
+        HostState::Failed => WireState::Failed,
+        HostState::Reverted => WireState::Reverted,
+    };
+    nixfleet_proto::agent_wire::HostRolloutSnapshot {
+        rollout_id: record.rollout_id,
+        hostname: record.hostname,
+        channel: record.channel,
+        state: wire_state,
+        target_closure: record.target_closure,
+        current_closure_at_dispatch: record.current_closure_at_dispatch,
+        current_closure: record.current_closure,
+        dispatched_at: record.dispatched_at,
+        dispatch_acked_at: record.dispatch_acked_at,
+        activation_started_at: record.activation_started_at,
+        activation_completed_at: record.activation_completed_at,
+        soak_due_at: record.soak_due_at,
+        last_event_seq: record.last_event_seq,
     }
 }
 

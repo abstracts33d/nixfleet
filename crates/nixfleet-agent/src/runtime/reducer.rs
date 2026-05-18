@@ -131,7 +131,69 @@ async fn handle_input(
                 "manifest cache refreshed",
             );
         }
+        ReducerInput::BootstrapHost(snapshot) => {
+            apply_bootstrap_snapshot(host_states, *snapshot).await;
+        }
     }
+}
+
+/// LIFT #3: apply a CP-supplied HostRolloutSnapshot to the agent's
+/// in-memory reducer cache. Direct assignment (snapshot-shape, not
+/// event-replay) — the canonical state lives on CP, the agent's
+/// HostRolloutState is a reconstructable cache. Called only from
+/// `runtime::spawn` after boot-recovery handshake returns snapshots,
+/// before workers spawn so probe runners + advance-ticker see populated
+/// state on first tick.
+async fn apply_bootstrap_snapshot(
+    host_states: &mut HashMap<nixfleet_proto::RolloutId, HostRolloutState>,
+    snapshot: nixfleet_proto::agent_wire::HostRolloutSnapshot,
+) {
+    use nixfleet_proto::HostRolloutState as WireState;
+    use nixfleet_state_machine::HostState;
+    let internal_state = match snapshot.state {
+        WireState::Pending => HostState::Pending,
+        WireState::Activating => HostState::Activating,
+        WireState::Deferred => HostState::Deferred,
+        WireState::Soaking => HostState::Soaking,
+        WireState::Converged => HostState::Converged,
+        WireState::Failed => HostState::Failed,
+        WireState::Reverted => HostState::Reverted,
+    };
+    let record = HostRolloutState {
+        rollout_id: snapshot.rollout_id.clone(),
+        hostname: snapshot.hostname,
+        channel: snapshot.channel,
+        state: internal_state,
+        target_closure: snapshot.target_closure,
+        current_closure_at_dispatch: snapshot.current_closure_at_dispatch,
+        current_closure: snapshot.current_closure,
+        reverted_to: None,
+        dispatched_at: snapshot.dispatched_at,
+        dispatch_acked_at: snapshot.dispatch_acked_at,
+        activation_started_at: snapshot.activation_started_at,
+        activation_completed_at: snapshot.activation_completed_at,
+        activation_failed_at: None,
+        probe_observed_first_at: None,
+        probe_failure_first_at: None,
+        soak_due_at: snapshot.soak_due_at,
+        converged_at: None,
+        failed_at: None,
+        policy_applied: None,
+        reverted_at: None,
+        // Probe state is NOT carried by the snapshot — probe runners
+        // re-emit `LocalProbeTopologyDeclared` from health-checks.json
+        // on startup and probes repopulate via fresh runs.
+        probes: HashMap::new(),
+        last_event_seq: snapshot.last_event_seq,
+    };
+    tracing::info!(
+        target: "agent_reducer",
+        rollout_id = %record.rollout_id,
+        state = ?record.state,
+        target_closure = %record.target_closure,
+        "bootstrap: rehydrating in-memory HostRolloutState from CP snapshot (LIFT #3)",
+    );
+    host_states.insert(snapshot.rollout_id, record);
 }
 
 async fn run_host_event(

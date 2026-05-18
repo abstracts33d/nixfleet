@@ -453,10 +453,10 @@ async fn heartbeat_synthesizes_activation_completed_when_agent_reports_target_in
         .await
         .unwrap();
 
-    // Reply lands first (synthesis is post-reply so the route doesn't
-    // hold the agent waiting on DB work). replay_from is None because
-    // the agent didn't supply a rollout_id; the synthesis path below
-    // is what actually progresses state.
+    // Post-LIFT-#3 ordering: synthesis runs BEFORE the reply, so the
+    // reply reflects post-synthesis state (Soaking, with bootstrap
+    // snapshots populated). replay_from is None because the agent
+    // didn't supply a rollout_id.
     let reply = tokio::time::timeout(Duration::from_secs(3), reply_rx)
         .await
         .expect("heartbeat reply within timeout")
@@ -466,8 +466,8 @@ async fn heartbeat_synthesizes_activation_completed_when_agent_reports_target_in
         "boot-recovery heartbeat with rollout_id=None ⇒ replay_from path can't match ⇒ None",
     );
 
-    // The synthesis path runs after the reply. Wait for the state
-    // transition to land. If this times out, the fix has regressed.
+    // The reducer has already transitioned to Soaking by the time the
+    // reply was sent — the synthesis runs in-line before the reply.
     let db_for_poll = db.clone();
     let rollout_for_poll = rollout_id.clone();
     wait_for(Duration::from_secs(3), move || {
@@ -484,6 +484,178 @@ async fn heartbeat_synthesizes_activation_completed_when_agent_reports_target_in
             .unwrap_or(false)
     })
     .await;
+
+    cancel.cancel();
+    drop(rt);
+}
+
+/// LIFT #3 regression: when the agent's heartbeat has `rollout_id = None`
+/// (the boot-recovery shape — agent's reducer is empty after restart)
+/// AND CP holds non-terminal records for the host, the reply MUST carry
+/// a `bootstrap_rollouts` vec with one snapshot per active record. The
+/// snapshot fields reflect post-synthesis state (e.g. Soaking after
+/// LIFT #1 fired). Pre-LIFT-#3 the reply only carried `replay_from`,
+/// the agent couldn't rehydrate its in-memory state, and downstream
+/// workers (probe runner, advance-ticker) saw an empty HashMap forever.
+#[tokio::test]
+async fn heartbeat_response_includes_bootstrap_for_active_rollouts_when_agent_supplies_no_rollout_id()
+ {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    // Seed: open rollout, advance h1 to Activating.
+    let set = signed_manifest_set_one_host("target-closure-X");
+    let rollout_id = nixfleet_proto::RolloutId::new(
+        "stable",
+        &set.rollouts.get("stable").unwrap().inner().channel_ref,
+    );
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await;
+    }
+    rt.input_tx
+        .send(ReducerInput::HostEvent {
+            host: "h1".to_string(),
+            rollout_id: rollout_id.clone(),
+            event: Event::RemoteDispatchAck {
+                current_closure_at_dispatch: "previous-closure".to_string(),
+                received_at: Utc::now(),
+                seq: 1,
+            },
+        })
+        .await
+        .unwrap();
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .map(|s| s.state == nixfleet_state_machine::HostState::Activating)
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    // Boot-recovery heartbeat: rollout_id=None, current==target.
+    // Triggers LIFT #1 synthesis (Activating→Soaking) AND LIFT #3
+    // bootstrap (snapshot reflects post-synthesis Soaking state).
+    let (reply_tx, reply_rx) = oneshot::channel::<HeartbeatReply>();
+    rt.input_tx
+        .send(ReducerInput::HeartbeatReceived {
+            host: "h1".to_string(),
+            rollout_id: None,
+            current_closure: Some("target-closure-X".to_string()),
+            at: Utc::now(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(3), reply_rx)
+        .await
+        .expect("heartbeat reply within timeout")
+        .expect("reducer must send the reply");
+
+    assert_eq!(
+        reply.bootstrap_rollouts.len(),
+        1,
+        "MUST include one bootstrap snapshot for h1's active rollout",
+    );
+    let snapshot = &reply.bootstrap_rollouts[0];
+    assert_eq!(snapshot.hostname, "h1");
+    assert_eq!(snapshot.target_closure, "target-closure-X");
+    assert_eq!(
+        snapshot.state,
+        nixfleet_proto::HostRolloutState::Soaking,
+        "snapshot reflects POST-synthesis state — LIFT #1 advanced Activating → Soaking before the reply",
+    );
+    assert_eq!(
+        snapshot.current_closure.as_deref(),
+        Some("target-closure-X"),
+        "current_closure reflects what LIFT #1 stamped at synthesis time",
+    );
+    assert!(snapshot.activation_completed_at.is_some());
+
+    cancel.cancel();
+    drop(rt);
+}
+
+/// LIFT #3 negative: when the agent's heartbeat carries a rollout_id
+/// (steady-state shape), bootstrap snapshots are NOT included. The
+/// agent already knows its rollout state; sending redundant snapshots
+/// would be wire noise and risks clobbering local state.
+#[tokio::test]
+async fn heartbeat_response_omits_bootstrap_when_agent_supplies_rollout_id() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    let set = signed_manifest_set_one_host("target-closure-X");
+    let rollout_id = nixfleet_proto::RolloutId::new(
+        "stable",
+        &set.rollouts.get("stable").unwrap().inner().channel_ref,
+    );
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await;
+    }
+
+    // Steady-state heartbeat: agent supplies rollout_id. NO bootstrap.
+    let (reply_tx, reply_rx) = oneshot::channel::<HeartbeatReply>();
+    rt.input_tx
+        .send(ReducerInput::HeartbeatReceived {
+            host: "h1".to_string(),
+            rollout_id: Some(rollout_id.clone()),
+            current_closure: None,
+            at: Utc::now(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(3), reply_rx)
+        .await
+        .expect("heartbeat reply within timeout")
+        .expect("reducer must send the reply");
+
+    assert!(
+        reply.bootstrap_rollouts.is_empty(),
+        "steady-state heartbeat (rollout_id populated) MUST NOT include bootstrap snapshots; got {:?}",
+        reply.bootstrap_rollouts,
+    );
 
     cancel.cancel();
     drop(rt);

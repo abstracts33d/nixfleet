@@ -96,6 +96,14 @@ pub enum ReducerInput {
     /// resolve `channel`/`target_closure` when bootstrapping
     /// `LocalActivate`.
     ManifestSetUpdated(Box<nixfleet_reconciler::planner_types::SignedManifestSet>),
+    /// LIFT #3: rehydrate the reducer's in-memory HostRolloutState for
+    /// an active rollout from a CP-supplied snapshot. Emitted only by
+    /// `runtime::spawn` after the boot-recovery handshake returns
+    /// snapshots, before any worker spawns. Directly assigns the
+    /// state-machine cache from the snapshot fields, bypassing the
+    /// transition machinery — the canonical source of truth lives on
+    /// CP, the agent is just rebuilding its local view post-restart.
+    BootstrapHost(Box<nixfleet_proto::agent_wire::HostRolloutSnapshot>),
 }
 
 /// Shutdown signal handed to a worker at spawn time. Reducer-task exit

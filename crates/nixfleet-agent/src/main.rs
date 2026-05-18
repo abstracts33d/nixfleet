@@ -108,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         cp = %args.control_plane_url,
         current_closure = ?recovery_outcome.current_closure,
         replay_from = ?recovery_outcome.replay_from,
+        bootstrap_count = recovery_outcome.bootstrap_rollouts.len(),
         "boot-recovery handshake complete; starting runtime",
     );
 
@@ -131,6 +132,34 @@ async fn main() -> anyhow::Result<()> {
         },
         clock,
     );
+
+    // LIFT #3: feed CP-supplied bootstrap snapshots through the reducer
+    // BEFORE any worker can fire. The reducer consumes
+    // `ReducerInput::BootstrapHost` synchronously off the MPSC; by the
+    // time we return from these sends + the channel drains, the
+    // reducer's in-memory HostRolloutState has the rehydrated records.
+    // Subsequent worker ticks (probe runs, advance-ticker walks,
+    // heartbeat round-trips) see populated state on first iteration.
+    //
+    // The MPSC is FIFO and the reducer is single-threaded; ordering
+    // matches arrival. Backpressure: capacity is REDUCER_INPUT_CAPACITY
+    // (8); typical bootstrap is ≤2 records per host. If a future fleet
+    // exceeds that we revisit, but the bound is fine for v0.2.
+    for snapshot in recovery_outcome.bootstrap_rollouts {
+        if let Err(err) = runtime
+            .input_tx
+            .send(nixfleet_agent::runtime::ReducerInput::BootstrapHost(
+                Box::new(snapshot),
+            ))
+            .await
+        {
+            tracing::warn!(
+                target: "agent_recovery",
+                error = %err,
+                "bootstrap-snapshot send failed (reducer not ready?); skipping",
+            );
+        }
+    }
 
     // Wait for SIGINT/SIGTERM, then drain.
     wait_for_shutdown_signal().await;

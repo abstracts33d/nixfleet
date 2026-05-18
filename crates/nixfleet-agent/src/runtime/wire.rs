@@ -41,6 +41,13 @@ pub struct HeartbeatRequest {
 pub struct HeartbeatResponse {
     #[serde(default)]
     pub received_at: Option<DateTime<Utc>>,
+    /// LIFT #3: per active rollout on this host, a HostRolloutSnapshot
+    /// the agent should apply to its in-memory reducer (RFC-0008 §9.5
+    /// scenario 3, agent-side half). Populated by CP only when the
+    /// heartbeat carried `rollout_id = None` AND CP holds non-terminal
+    /// records for the host. Empty in steady-state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bootstrap_rollouts: Vec<nixfleet_proto::agent_wire::HostRolloutSnapshot>,
 }
 
 /// Reset signal sent by the applier to the probe worker. Cleared on

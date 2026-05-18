@@ -92,9 +92,14 @@ pub enum ReducerInput {
 
 /// Heartbeat reply: drift detected ⇒ `replay_from` is `Some(last_known_seq)`;
 /// agent should re-POST events from that seq onward (RFC-0008 §4.3).
+/// `bootstrap_rollouts` (LIFT #3) carries CP's view of active rollouts the
+/// agent should rehydrate when its reducer was lost (boot-recovery shape;
+/// heartbeat carried `rollout_id = None` but CP holds non-terminal records
+/// for the host).
 #[derive(Debug, Clone)]
 pub struct HeartbeatReply {
     pub replay_from: Option<u64>,
+    pub bootstrap_rollouts: Vec<nixfleet_proto::agent_wire::HostRolloutSnapshot>,
 }
 
 /// Shutdown signal handed to a worker at spawn time. Workers select! between
