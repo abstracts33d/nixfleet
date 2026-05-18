@@ -19,8 +19,8 @@
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use nixfleet_proto::evidence::{EvidenceFile, SCHEMA_VERSION};
 use nixfleet_state_machine::{ProbeStatus, ProbeSubResult};
-use serde::Deserialize;
 use std::path::Path;
 
 use super::{ProbeDecl, RunnerOutcome};
@@ -81,26 +81,64 @@ pub async fn run(decl: &ProbeDecl, now: DateTime<Utc>) -> RunnerOutcome {
         return RunnerOutcome::fail(now, "evidence probe: signature verify failed");
     }
 
-    // Parse payload, filter by framework, build sub_results.
-    let parsed: EvidencePayload = match serde_json::from_slice(&payload_bytes) {
+    // Parse the canonical EvidenceFile shape (RFC-0010 §3.1 +
+    // nixfleet_proto::evidence). The producer-side contract is the
+    // proto's serde struct; if deserialise fails the agent emits a
+    // probe Fail with the parse error so operators see exactly which
+    // field is wrong (most common: nixfleet-compliance running an
+    // older emit shape without schemaVersion).
+    let parsed: EvidenceFile = match serde_json::from_slice(&payload_bytes) {
         Ok(p) => p,
         Err(err) => return RunnerOutcome::fail(now, format!("evidence probe: parse: {err}")),
     };
-    let sub_results: Vec<ProbeSubResult> = parsed
-        .controls
-        .into_iter()
-        .filter(|c| c.framework == framework)
-        .map(|c| ProbeSubResult {
-            control_id: c.control_id,
-            status: if c.passed {
-                ProbeStatus::Pass
-            } else {
-                ProbeStatus::Fail
-            },
-            framework: c.framework,
-            article: c.article,
-        })
-        .collect();
+    if parsed.schema_version != SCHEMA_VERSION {
+        return RunnerOutcome::fail(
+            now,
+            format!(
+                "evidence probe: schemaVersion {} unsupported (agent expects {SCHEMA_VERSION}); \
+                 upgrade nixfleet-compliance",
+                parsed.schema_version,
+            ),
+        );
+    }
+
+    // Expand the one-entry-per-control wire shape into one
+    // ProbeSubResult per (control, framework, article) tuple. The
+    // agent emits one sub-result per article so probe_failures rows
+    // are per-article (RFC-0010 §7.2). The control-level `passed`
+    // propagates to every tuple it covers.
+    let mut sub_results: Vec<ProbeSubResult> = Vec::new();
+    for entry in &parsed.controls {
+        let Some(articles) = entry.framework_articles.get(framework) else {
+            // Control doesn't cover this framework — skip.
+            continue;
+        };
+        let status = if entry.passed {
+            ProbeStatus::Pass
+        } else {
+            ProbeStatus::Fail
+        };
+        if articles.is_empty() {
+            // Framework matches but no article identifiers — emit one
+            // sub-result with article=None so the control still
+            // contributes to the aggregate.
+            sub_results.push(ProbeSubResult {
+                control_id: entry.control_id.clone(),
+                status,
+                framework: framework.to_string(),
+                article: None,
+            });
+        } else {
+            for article in articles {
+                sub_results.push(ProbeSubResult {
+                    control_id: entry.control_id.clone(),
+                    status,
+                    framework: framework.to_string(),
+                    article: Some(article.clone()),
+                });
+            }
+        }
+    }
     if sub_results.is_empty() {
         return RunnerOutcome::fail(
             now,
@@ -159,18 +197,7 @@ async fn resolve_host_pubkey() -> Result<[u8; 32], String> {
     Ok(out)
 }
 
-#[derive(Debug, Deserialize)]
-struct EvidencePayload {
-    #[serde(default)]
-    controls: Vec<ControlEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ControlEntry {
-    #[serde(rename = "controlId")]
-    control_id: String,
-    framework: String,
-    #[serde(default)]
-    article: Option<String>,
-    passed: bool,
-}
+// Wire shape lives in nixfleet_proto::evidence::EvidenceFile so the
+// auditor verifier (nixfleet-compliance-verify) and compliance-check
+// CLI consume the same canonical schema. Drift between producer +
+// consumer is a compile error rather than a runtime parse failure.

@@ -1,0 +1,46 @@
+{
+  "_sync": "Copied verbatim from nixfleet-compliance/docs/evidence-format-fixture.json. Update both files together when the schema bumps; the roundtrip test in src/evidence.rs catches drift.",
+  "_upstream": "https://github.com/arcanesys/nixfleet-compliance/blob/main/docs/evidence-format-fixture.json",
+  "schemaVersion": 1,
+  "hostname": "water-plant-01",
+  "collectedAt": "2026-04-05T10:00:00Z",
+  "controls": [
+    {
+      "controlId": "access-control",
+      "passed": true,
+      "frameworkArticles": {
+        "nis2-essential": ["art21.i"],
+        "iso27001": ["A.5.1"],
+        "anssi-bp028": ["HYG-21"]
+      },
+      "details": {
+        "password_auth_disabled": true,
+        "root_login_restricted": true,
+        "idle_timeout_secs": 1800
+      },
+      "schema": "anssi-bp028/v1"
+    },
+    {
+      "controlId": "secure-boot",
+      "passed": false,
+      "frameworkArticles": {
+        "nis2-essential": ["art21.e"],
+        "anssi-bp028": ["BL-01"]
+      },
+      "details": {
+        "secureboot_enabled": false,
+        "error": "EFI variable SecureBoot reads 0"
+      },
+      "schema": "anssi-bp028/v1"
+    },
+    {
+      "controlId": "synthetic",
+      "passed": false,
+      "frameworkArticles": {},
+      "details": {
+        "always_fail": true,
+        "note": "opt-in always-fail control for end-to-end rollback path testing"
+      }
+    }
+  ]
+}

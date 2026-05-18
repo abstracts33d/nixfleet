@@ -7,6 +7,7 @@ pub mod agent_wire;
 pub mod bootstrap_nonces;
 pub mod clock;
 pub mod enroll_wire;
+pub mod evidence;
 pub mod evidence_signing;
 pub mod fleet_resolved;
 pub mod fleet_view;
