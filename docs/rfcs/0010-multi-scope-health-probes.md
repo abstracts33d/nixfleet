@@ -131,6 +131,75 @@ A host on `stable` resolves the same probe set it would have under fleet/tag/hos
 
 Channel scope is a general declaration site for any probe kind (http, tcp, exec, evidence). Declaring an `http` health probe per channel is equally valid; this is not a compliance-specific affordance. The scope addresses the operator pattern "I want different probe sets on different channels without manually tagging every host," which tag scope handled awkwardly when channel and tag groupings did not naturally align.
 
+### 3.6 Compliance shorthand: capability layer vs policy layer (v0.2)
+
+Compliance probes have a presence in two distinct layers, and conflating them is the source of most operator confusion. The layering is:
+
+| Layer | Lives in | Surfaces | What it declares |
+|---|---|---|---|
+| **L1 — capability** | The host's NixOS module config (`services.nixfleet-compliance.*`) | `compliance-evidence-collector.service` systemd unit, evidence-collector binary, `/var/lib/nixfleet-compliance/evidence.json` | Whether the host *can* produce evidence at all (collector unit present, controls available, host has the deps). |
+| **L2/L3 — policy** | `fleet.nix` topology declarations (`channels.<ch>.compliance.frameworks`, plus refinements at `nixfleet.compliance` / `tags.<t>.compliance` / `hosts.<h>.compliance`) | `evidence-<framework>` probes synthesised into the host's `health-checks.json`; gate decisions | Whether the agent *consumes* that evidence, under what `mode`, and with which per-control exemptions. |
+
+The split is deliberate. L1 is a NixOS-module capability declaration — same character as enabling `services.openssh` or `programs.zsh`. L2/L3 is fleet topology — same character as channel assignments, tag membership, rollout policy. Conflating them produces two failure modes:
+
+1. Operators enable a framework at L2 without the collector unit at L1 → agent probes for missing evidence files; reports `Fail`.
+2. Operators enable the collector at L1 without declaring the framework at L2 → evidence is produced and rotting on disk; no one consumes it, no gate effect.
+
+The framework keeps L1 and L2 deliberately separate (no auto-coupling): the NixOS module owns capability; `fleet.nix` owns policy; an operator opts into both explicitly. The L1 → L2 migration guide (see `nixfleet-compliance/docs/migration-v0.1-to-v0.2.md`) walks through the pairing for the two repos' common cases (`encryptionAtRest`, `authentication.mfaRequired`, `governance.exceptions.BH-06`/`BH-07`).
+
+### 3.7 Compliance scope hierarchy (v0.2)
+
+The channel-scope `compliance.frameworks` shorthand desugars to `evidence-<framework>` probes synthesised into each host's effective probe set (RFC-0010 §3.5 mechanism — the channel scope is the framework-set's source of truth). On top of that, v0.2 adds **per-framework refinement attrsets** at fleet, tag, and host scope:
+
+```nix
+{
+  # Fleet-wide compliance refinement
+  nixfleet.compliance.frameworks.nis2-essential = {
+    mode = "observe";              # downgrade default for rollout window
+    reason = "Q2 audit window: observe mode while collectors stabilise";
+    controlOverrides."access-control" = {
+      mode = "enforce";
+      reason = "Always-enforce, even during observe window";
+    };
+  };
+
+  # Tag-scoped refinement
+  nixfleet.tags.audit.compliance.frameworks.nis2-essential = {
+    mode = "enforce";              # tag carriers go back to enforce
+    reason = "Audit-tagged hosts: always-enforce";
+  };
+
+  # Channel-scope declaration (existing, RFC-0010 §3.5)
+  nixfleet.channels.stable.compliance.frameworks = ["nis2-essential"];
+
+  # Per-host refinement (RFC-0010 §3.5 + v0.2 framework-level extension)
+  nixfleet.hosts.aether.compliance.frameworks.nis2-essential = {
+    mode = "disabled";             # Darwin host, no collector available
+    reason = "Aether is a Darwin developer host: no NixOS compliance collector";
+  };
+}
+```
+
+**Precedence at synthesis time** (broadest → most-specific, later wins for non-null/non-empty):
+
+```
+fleet < tag < channel < host
+```
+
+with three field-level merge rules:
+
+| Field | Merge rule |
+|---|---|
+| `mode` | Most-specific non-null wins. Bare-string channel entries (`frameworks = ["nis2-essential"]`) contribute `mode = null` — i.e. they explicitly defer to a broader-scope mode if any, falling back to the channel's `compliance.mode` default only when no scope declared a mode. Explicit channel-list-entry modes (`{name = "nis2-essential"; mode = "enforce";}`) DO contribute a definitive value at channel scope. |
+| `reason` | Most-specific non-empty wins. Annotates `ProbeSubResult.override_reason` for downstream audit. |
+| `controlOverrides.<id>` | Per-key deep merge: each scope's entry for a given control ID replaces the same-keyed entry from broader scopes (host > channel > tag > fleet). |
+
+**Aether/Darwin shortcut.** A `mode = "disabled"` at host scope produces an `evidence-<framework>` entry with `mode = "disabled"` in the host's `health-checks.json`; the agent's probe-runner worker skips disabled probes (per RFC-0010 §3.3). Closes the class of "exempt this single host from this framework without carving probe-shadow overrides under `nixfleet.hosts.<h>.healthChecks`."
+
+**Silent no-op for un-enabled frameworks.** Declaring a refinement at fleet/tag/host scope against a framework the channel hasn't enabled (e.g. `nixfleet.compliance.frameworks.iso27001 = { mode = "enforce"; };` when no channel includes `iso27001` in its shorthand list) is a silent no-op — channel scope is the framework-set's source of truth; broader scopes only refine. Operators who want to introduce a brand-new framework probe declare it explicitly under `healthChecks` (kind = "evidence", framework = "..."), not via the compliance shorthand.
+
+**Aside — fleet.nix vs NixOS-state asymmetry.** `healthChecks` lives wholly in `fleet.nix`: every probe declaration at every scope is a topology-layer artifact, transitively signed via the closure hash chain (§5). Compliance is asymmetric: the *capability* to produce evidence (`services.nixfleet-compliance`) is a NixOS-module declaration on the host, while the *policy* to consume it is `fleet.nix` topology. This is documented for the operator's benefit — a probe declaration like `nixfleet.compliance.frameworks.nis2-essential.mode = "disabled"` doesn't disable the collector; it disables the agent's consumption. Disabling the collector itself is a NixOS-module change on the host. RFC-0011 §3 captures the broader pattern of where capability declarations belong (NixOS modules) vs where policy declarations belong (`fleet.nix`).
+
 ## 4. Resolution semantics
 
 `mkFleet` computes the effective probe set for each host:

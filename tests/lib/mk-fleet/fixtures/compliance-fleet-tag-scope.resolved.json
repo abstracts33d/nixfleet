@@ -1,0 +1,165 @@
+{
+  "channelEdges": [],
+  "channels": {
+    "stable": {
+      "freshnessWindow": 180,
+      "reconcileIntervalMinutes": 30,
+      "rolloutPolicy": "all",
+      "signingIntervalMinutes": 60
+    }
+  },
+  "disruptionBudgets": [],
+  "edges": [],
+  "effectiveHealthChecks": {
+    "h-audit-pinned": {
+      "evidence-nis2-essential": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "controlOverrides": {
+          "fleet-only-control": {
+            "mode": "observe",
+            "reason": "Fleet-scope exemption"
+          },
+          "tag-only-control": {
+            "mode": "enforce",
+            "reason": "Tag-scope strict"
+          }
+        },
+        "controls": {},
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "nis2-essential",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      }
+    },
+    "h-strict": {
+      "evidence-nis2-essential": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "controlOverrides": {
+          "fleet-only-control": {
+            "mode": "observe",
+            "reason": "Fleet-scope exemption"
+          },
+          "host-only-control": {
+            "mode": "observe",
+            "reason": "Host-scope exemption"
+          },
+          "tag-only-control": {
+            "mode": "enforce",
+            "reason": "Tag-scope strict"
+          }
+        },
+        "controls": {},
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "nis2-essential",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      }
+    },
+    "h-untagged": {
+      "evidence-nis2-essential": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "controlOverrides": {
+          "fleet-only-control": {
+            "mode": "observe",
+            "reason": "Fleet-scope exemption"
+          }
+        },
+        "controls": {},
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "nis2-essential",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "observe",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      }
+    }
+  },
+  "hosts": {
+    "h-audit-pinned": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": [
+        "audit"
+      ]
+    },
+    "h-strict": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": [
+        "audit"
+      ]
+    },
+    "h-untagged": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": []
+    }
+  },
+  "meta": {
+    "ciCommit": null,
+    "schemaVersion": 1,
+    "signedAt": null
+  },
+  "rolloutPolicies": {
+    "all": {
+      "healthGate": {},
+      "onHealthFailure": "rollback-and-halt",
+      "strategy": "all-at-once",
+      "waves": [
+        {
+          "selector": {
+            "all": true,
+            "and": [],
+            "channel": null,
+            "hosts": [],
+            "not": null,
+            "tags": [],
+            "tagsAny": []
+          },
+          "soakMinutes": 0
+        }
+      ]
+    }
+  },
+  "schemaVersion": 1,
+  "waves": {
+    "stable": [
+      {
+        "hosts": [
+          "h-audit-pinned",
+          "h-strict",
+          "h-untagged"
+        ],
+        "soakMinutes": 0
+      }
+    ]
+  }
+}

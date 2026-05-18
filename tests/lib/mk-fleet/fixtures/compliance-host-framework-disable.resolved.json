@@ -1,0 +1,107 @@
+{
+  "channelEdges": [],
+  "channels": {
+    "stable": {
+      "freshnessWindow": 180,
+      "reconcileIntervalMinutes": 30,
+      "rolloutPolicy": "all",
+      "signingIntervalMinutes": 60
+    }
+  },
+  "disruptionBudgets": [],
+  "edges": [],
+  "effectiveHealthChecks": {
+    "h-darwin": {
+      "evidence-nis2-essential": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "controlOverrides": {},
+        "controls": {},
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "nis2-essential",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "disabled",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      }
+    },
+    "h-linux": {
+      "evidence-nis2-essential": {
+        "command": [],
+        "connectTimeoutSecs": 5,
+        "controlOverrides": {},
+        "controls": {},
+        "evidencePath": "/var/lib/nixfleet-compliance/evidence.json",
+        "expectStatus": 200,
+        "framework": "nis2-essential",
+        "host": null,
+        "intervalSeconds": 30,
+        "kind": "evidence",
+        "mode": "enforce",
+        "port": null,
+        "runOnce": false,
+        "timeoutSecs": 10,
+        "url": null
+      }
+    }
+  },
+  "hosts": {
+    "h-darwin": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": []
+    },
+    "h-linux": {
+      "channel": "stable",
+      "closureHash": null,
+      "pubkey": null,
+      "system": "x86_64-linux",
+      "tags": []
+    }
+  },
+  "meta": {
+    "ciCommit": null,
+    "schemaVersion": 1,
+    "signedAt": null
+  },
+  "rolloutPolicies": {
+    "all": {
+      "healthGate": {},
+      "onHealthFailure": "rollback-and-halt",
+      "strategy": "all-at-once",
+      "waves": [
+        {
+          "selector": {
+            "all": true,
+            "and": [],
+            "channel": null,
+            "hosts": [],
+            "not": null,
+            "tags": [],
+            "tagsAny": []
+          },
+          "soakMinutes": 0
+        }
+      ]
+    }
+  },
+  "schemaVersion": 1,
+  "waves": {
+    "stable": [
+      {
+        "hosts": [
+          "h-darwin",
+          "h-linux"
+        ],
+        "soakMinutes": 0
+      }
+    ]
+  }
+}
