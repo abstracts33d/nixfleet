@@ -724,6 +724,143 @@ async fn current_wave_advances_when_every_wave_zero_host_converges() {
     drop(rt);
 }
 
+/// **D-027 regression test.** The other-direction pin for wave-promotion:
+/// when wave-0 hosts are still Pending (not yet Converged), wave-1 hosts
+/// MUST NOT be dispatched. Pre-fix, `HostJoined` events bumped
+/// `rollouts.current_wave` to the joiner's wave_index; with a multi-wave
+/// rollout the first plan tick fired HostJoined for every host
+/// (including wave-1 ones), leaving `current_wave = waves.len() - 1`. The
+/// wave-promotion gate's `host_wave > current_wave` predicate then
+/// vacuously passed every host. Lab observed: ohm (wave 1) activated 35ms
+/// after krach (wave 0), same planner tick.
+///
+/// Post-fix, `HostJoined` does NOT mutate current_wave; the cursor stays
+/// at 0 after OpenRollout and the gate correctly blocks wave-1 hosts
+/// until `advance_current_waves` bumps the cursor (which only happens
+/// when every wave-0 host reaches Converged).
+#[tokio::test]
+async fn wave_one_hosts_do_not_dispatch_while_wave_zero_hosts_are_pending() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    // 2-wave fleet: h1 in wave 0, h2 in wave 1.
+    let fleet = FleetBuilder::new()
+        .host("h1", "stable")
+        .host_closure("h1", "h1-closure")
+        .host("h2", "stable")
+        .host_closure("h2", "h2-closure")
+        .wave("stable", &["h1"])
+        .wave("stable", &["h2"])
+        .build();
+
+    let manifest = RolloutManifest {
+        schema_version: 1,
+        display_name: "stable@wave-gating-test".into(),
+        channel: "stable".into(),
+        channel_ref: "stable".into(),
+        fleet_resolved_hash: "test-hash".into(),
+        host_set: vec![
+            HostWave {
+                hostname: "h1".into(),
+                wave_index: 0,
+                target_closure: "h1-closure".into(),
+            },
+            HostWave {
+                hostname: "h2".into(),
+                wave_index: 1,
+                target_closure: "h2-closure".into(),
+            },
+        ],
+        health_gate: HealthGate::default(),
+        disruption_budgets: Vec::new(),
+        meta: Meta {
+            schema_version: 1,
+            signed_at: Some(Utc::now()),
+            ci_commit: Some("test-ci-commit".to_string()),
+            signature_algorithm: None,
+        },
+    };
+    let mut rollouts = HashMap::new();
+    rollouts.insert(
+        "stable".to_string(),
+        Verified::unverified_for_tests(manifest, Utc::now()),
+    );
+    let set = SignedManifestSet {
+        fleet: Verified::unverified_for_tests(fleet, Utc::now()),
+        rollouts,
+    };
+
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+
+    let rollout_id = nixfleet_proto::RolloutId::new("stable", "stable");
+
+    // Wait for OpenRollout to materialize both Pending rows.
+    {
+        let db_for_poll = db.clone();
+        let rollout_id_clone = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_id_clone.as_str(), "h2")
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await;
+    }
+
+    // Fire a plan tick. Wave-0 host (h1) should be dispatched; wave-1
+    // host (h2) should NOT, because current_wave should still be 0.
+    rt.input_tx.send(ReducerInput::PlanTick).await.unwrap();
+
+    // Wait for h1's dispatch to land.
+    {
+        let db_for_poll = db.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .dispatch_queue()
+                .peek_for_host("h1")
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    // Sanity: post-OpenRollout, the rollout's current_wave MUST be 0.
+    // Pre-fix this read returned 1 (= waves.len() - 1).
+    let observed_current_wave = db
+        .rollouts()
+        .current_wave(rollout_id.as_str())
+        .unwrap()
+        .expect("rollout row present");
+    assert_eq!(
+        observed_current_wave, 0,
+        "Multi-wave rollout's current_wave MUST be 0 post-OpenRollout. \
+         Pre-D-027 fix, HostJoined events leaked the wave cursor forward \
+         to max(host wave_indices) = waves.len() - 1 = 1, vacuously \
+         passing wave-1 hosts through the wave-promotion gate.",
+    );
+
+    // The critical assertion: wave-1 host h2 MUST NOT be dispatched.
+    // Give the planner a generous window to (incorrectly) emit a
+    // dispatch — pre-fix this would have already happened.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let h2_dispatched = db.dispatch_queue().peek_for_host("h2").unwrap_or(false);
+    assert!(
+        !h2_dispatched,
+        "h2 (wave 1) MUST NOT be dispatched while h1 (wave 0) is still \
+         Pending. wave-promotion gate must block.",
+    );
+
+    cancel.cancel();
+    drop(rt);
+}
+
 /// **D-007 regression test.** D-006's fix made the planner use
 /// `manifest.channel_ref` as the rollout_id, which fixed the immediate
 /// mismatch but introduced a new bug: two channels sharing a

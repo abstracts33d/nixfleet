@@ -21,6 +21,7 @@ fn host_state_to_wire(s: HostState) -> HostRolloutState {
     match s {
         HostState::Pending => HostRolloutState::Pending,
         HostState::Activating => HostRolloutState::Activating,
+        HostState::Deferred => HostRolloutState::Deferred,
         HostState::Soaking => HostRolloutState::Soaking,
         HostState::Converged => HostRolloutState::Converged,
         HostState::Failed => HostRolloutState::Failed,

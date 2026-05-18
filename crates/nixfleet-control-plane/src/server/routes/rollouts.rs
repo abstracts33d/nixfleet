@@ -403,7 +403,9 @@ fn derive_terminal(
             r.reverted_at.map(|t| t.to_rfc3339()),
         ),
         HostState::Failed => (Some("failed".into()), r.failed_at.map(|t| t.to_rfc3339())),
-        HostState::Pending | HostState::Activating | HostState::Soaking => (None, None),
+        HostState::Pending | HostState::Activating | HostState::Deferred | HostState::Soaking => {
+            (None, None)
+        }
     }
 }
 

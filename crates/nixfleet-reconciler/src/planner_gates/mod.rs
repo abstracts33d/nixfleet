@@ -48,6 +48,17 @@ pub enum GateBlock {
         host_wave: u32,
         current_wave: u32,
     },
+    /// Default-deny variant of the wave-promotion gate: the channel
+    /// declares waves but this host is not listed in any of them.
+    /// Pre-hardening this case silently passed (`position(...)` returns
+    /// None → `?`-early-return → gate returns None → host dispatches).
+    /// That's an operator misconfiguration (host should be in a wave;
+    /// either an operator forgot to assign it, or a fleet-build bug
+    /// dropped it). Default-deny prevents silent dispatch of an
+    /// unstaged host.
+    HostUnstaged {
+        channel: String,
+    },
     HostEdge {
         gating_host: String,
     },
@@ -81,6 +92,11 @@ impl GateBlock {
             } => {
                 format!("wave-promotion: host_wave={host_wave} > current_wave={current_wave}")
             }
+            GateBlock::HostUnstaged { channel } => {
+                format!(
+                    "wave-promotion: channel '{channel}' declares waves but this host is not assigned to any of them — fix the fleet declaration or the host's tag/wave selector"
+                )
+            }
             GateBlock::HostEdge { gating_host } => {
                 format!("host-edge: gating host '{gating_host}' not yet Converged")
             }
@@ -109,6 +125,7 @@ impl GateBlock {
         match self {
             GateBlock::ChannelEdges { .. } => "channel-edges",
             GateBlock::WavePromotion { .. } => "wave-promotion",
+            GateBlock::HostUnstaged { .. } => "wave-promotion-host-unstaged",
             GateBlock::HostEdge { .. } => "host-edge",
             GateBlock::DisruptionBudget { .. } => "disruption-budget",
             GateBlock::ComplianceWave { .. } => "compliance-wave",

@@ -17,17 +17,14 @@ pub(super) fn step(
 ) -> Result<(RolloutRecord, Vec<RolloutEffect>), RolloutTransitionError> {
     match event {
         // Hosts can keep joining as later waves dispatch — stays Active.
-        RolloutEvent::HostJoined { wave, .. } => {
-            let mut effects = Vec::new();
-            if wave > record.current_wave {
-                effects.push(RolloutEffect::UpdateCurrentWave {
-                    rollout_id: record.rollout_id.clone(),
-                    wave,
-                });
-                record.current_wave = wave;
-            }
-            Ok((record, effects))
-        }
+        //
+        // LOADBEARING: HostJoined is observed (the wave is logged in
+        // event_log via the event itself) but does NOT mutate
+        // `current_wave`. Wave-cursor progression happens via
+        // `advance_current_waves` → `WaveAdvanced`. See
+        // opening.rs::step's HostJoined arm for the full rationale
+        // (D-027 diagnostic).
+        RolloutEvent::HostJoined { .. } => Ok((record, Vec::new())),
 
         // Per-host transitions drive aggregate state changes.
         RolloutEvent::HostStateChanged { to, at, .. } => match to {

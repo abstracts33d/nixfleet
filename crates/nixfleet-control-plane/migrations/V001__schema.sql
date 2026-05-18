@@ -137,7 +137,7 @@ CREATE TABLE host_rollout_records (
     hostname                      TEXT NOT NULL,
     channel                       TEXT NOT NULL,
     state                         TEXT NOT NULL
-        CHECK (state IN ('Pending', 'Activating', 'Soaking',
+        CHECK (state IN ('Pending', 'Activating', 'Deferred', 'Soaking',
                          'Converged', 'Failed', 'Reverted')),
 
     target_closure                TEXT NOT NULL,

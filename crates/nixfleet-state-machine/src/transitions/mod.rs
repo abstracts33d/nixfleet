@@ -11,6 +11,7 @@
 
 mod activating;
 mod converged;
+mod deferred;
 mod failed;
 mod pending;
 mod reverted;
@@ -47,6 +48,7 @@ pub(crate) fn dispatch(
     match state.state {
         HostState::Pending => pending::handle(state, event, now, policy),
         HostState::Activating => activating::handle(state, event, now, policy),
+        HostState::Deferred => deferred::handle(state, event, now, policy),
         HostState::Soaking => soaking::handle(state, event, now, policy),
         HostState::Failed => failed::handle(state, event, now, policy),
         HostState::Converged => converged::handle(state, event, now, policy),

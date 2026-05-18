@@ -1,7 +1,18 @@
 //! Host-edges gate (new-shape). Per-host DAG within a single rollout:
 //! `Edge { gated: A, gates: B }` holds A's dispatch until B is
-//! Converged (terminal-for-ordering in the new 6-state machine — Soaked
-//! is gone, only Converged counts).
+//! ordering-eligible: Converged (the canonical "health-verified at
+//! target") OR Deferred (the "I've staged what I can; activation
+//! completes on next reboot" terminal-for-cascade state per Option C
+//! / D-027 lift).
+//!
+//! The "Deferred counts as ordering-eligible" predicate is the
+//! lift-of-LIFT-#2: without it, a single host that hit
+//! `DeferredPendingReboot` (framework upgrade touching dbus/systemd/
+//! kernel/init) would halt the cascade indefinitely on any
+//! downstream host-edge dependency. Deferred is "this host is done
+//! participating in the rollout step from an ordering standpoint" —
+//! the actual verification (probes, soak) gets to run once the
+//! operator reboots.
 
 use nixfleet_state_machine::HostState;
 
@@ -36,8 +47,11 @@ pub fn check(
         // means the gating host hasn't started yet → block.
         let key = (rollout_id.clone(), edge.gates.clone());
         let state = fleet_state.host_states.get(&key).map(|s| s.state);
-        let terminal = matches!(state, Some(HostState::Converged));
-        if !terminal {
+        let ordering_eligible = matches!(
+            state,
+            Some(HostState::Converged) | Some(HostState::Deferred)
+        );
+        if !ordering_eligible {
             return Some(GateBlock::HostEdge {
                 gating_host: edge.gates.clone(),
             });

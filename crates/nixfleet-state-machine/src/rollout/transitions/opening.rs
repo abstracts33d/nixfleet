@@ -16,23 +16,31 @@ pub(super) fn step(
 ) -> Result<(RolloutRecord, Vec<RolloutEffect>), RolloutTransitionError> {
     match event {
         // First host dispatched into the rollout → Active.
-        RolloutEvent::HostJoined { wave, at, .. } => {
-            let mut effects = Vec::with_capacity(2);
-            effects.push(transition_effect(
-                &record,
-                RolloutState::Opening,
-                RolloutState::Active,
-                at,
-            ));
-            if wave != record.current_wave {
-                effects.push(RolloutEffect::UpdateCurrentWave {
-                    rollout_id: record.rollout_id.clone(),
-                    wave,
-                });
-                record.current_wave = wave;
-            }
+        //
+        // LOADBEARING: `wave` is in the event for event_log audit /
+        // replay reconstruction (which wave was the first joiner) but
+        // does NOT mutate `record.current_wave`. The wave-promotion
+        // gate reads `current_wave` as the "wave cursor for which
+        // dispatches are currently allowed" (RFC-0012 §6.3 / D-027
+        // diagnostic). Bumping the cursor on HostJoined leaks it
+        // forward — when wave-N+1 hosts dispatch alongside wave-N
+        // hosts on the first plan tick, max-of-joiners' wave_index
+        // becomes the cursor and the gate passes wave-N+1 vacuously.
+        // The cursor advances ONLY via deliberate progression:
+        // `advance_current_waves` in the reducer when every host in
+        // `current_wave` reaches Converged → emits `WaveAdvanced` →
+        // the active.rs transition bumps the cursor.
+        RolloutEvent::HostJoined { at, .. } => {
             record.state = RolloutState::Active;
-            Ok((record, effects))
+            Ok((
+                record.clone(),
+                vec![transition_effect(
+                    &record,
+                    RolloutState::Opening,
+                    RolloutState::Active,
+                    at,
+                )],
+            ))
         }
 
         // A successor was opened before any host joined — race condition
@@ -115,8 +123,16 @@ mod tests {
         ));
     }
 
+    /// D-027 regression pin: HostJoined MUST NOT mutate `current_wave`.
+    /// Pre-fix, the first joiner's `wave` field was assigned to
+    /// `current_wave`, leaking the wave-promotion cursor forward when
+    /// multi-wave rollouts had wave-N+1 hosts joining on the first
+    /// plan tick (because the wave-promotion gate had a separate bug
+    /// that didn't block them). With this regression test in place,
+    /// the wave cursor stays at the canonical initial value (0) and
+    /// the wave-promotion gate correctly blocks higher-wave dispatches.
     #[test]
-    fn host_joined_at_higher_wave_advances_wave() {
+    fn host_joined_does_not_mutate_current_wave_even_at_higher_wave_index() {
         let event = RolloutEvent::HostJoined {
             rollout_id: "r1".into(),
             host_id: "h1".into(),
@@ -124,12 +140,26 @@ mod tests {
             at: t0(),
         };
         let (record, effects) = step(opening_record(), event, t0()).unwrap();
-        assert_eq!(record.current_wave, 2);
-        assert!(
-            effects
-                .iter()
-                .any(|e| matches!(e, RolloutEffect::UpdateCurrentWave { wave: 2, .. }))
+        assert_eq!(
+            record.current_wave, 0,
+            "HostJoined MUST NOT bump current_wave — the wave cursor advances ONLY via advance_current_waves + WaveAdvanced"
         );
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, RolloutEffect::UpdateCurrentWave { .. })),
+            "HostJoined MUST NOT emit UpdateCurrentWave; emitting it would persist the wrong cursor in the rollouts table"
+        );
+        // The transition itself still fires.
+        assert_eq!(record.state, RolloutState::Active);
+        assert!(matches!(
+            effects[0],
+            RolloutEffect::RecordRolloutTransition {
+                from: RolloutState::Opening,
+                to: RolloutState::Active,
+                ..
+            }
+        ));
     }
 
     #[test]

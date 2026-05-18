@@ -410,6 +410,13 @@ fn base_status_label(
         return match state {
             HostRolloutState::Pending => "\u{2192} in progress".to_string(),
             HostRolloutState::Activating => "\u{2192} activating".to_string(),
+            HostRolloutState::Deferred => {
+                // Activation staged at bootloader; live switch deferred
+                // because a critical component cannot be live-swapped.
+                // Operator action: reboot the host. LIFT #1's heartbeat
+                // synthesis then transitions Deferred → Soaking.
+                "\u{25B2} pending reboot".to_string()
+            }
             HostRolloutState::Soaking => {
                 // Probe failures during soak are operator-visible even
                 // though the state itself is non-terminal.

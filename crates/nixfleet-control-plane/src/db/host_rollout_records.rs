@@ -78,7 +78,7 @@ impl<'a> HostRolloutRecords<'a> {
                     reverted_at, probes_json, last_event_seq
              FROM host_rollout_records
              WHERE hostname = ?1
-               AND state IN ('Pending', 'Activating', 'Soaking')",
+               AND state IN ('Pending', 'Activating', 'Deferred', 'Soaking')",
         )?;
         let rows = stmt.query_map(params![hostname], row_to_state)?;
         let mut out = Vec::new();
@@ -273,6 +273,7 @@ fn state_to_db(s: HostState) -> &'static str {
     match s {
         HostState::Pending => "Pending",
         HostState::Activating => "Activating",
+        HostState::Deferred => "Deferred",
         HostState::Soaking => "Soaking",
         HostState::Converged => "Converged",
         HostState::Failed => "Failed",
@@ -284,6 +285,7 @@ fn state_from_db(s: &str) -> Result<HostState, String> {
     match s {
         "Pending" => Ok(HostState::Pending),
         "Activating" => Ok(HostState::Activating),
+        "Deferred" => Ok(HostState::Deferred),
         "Soaking" => Ok(HostState::Soaking),
         "Converged" => Ok(HostState::Converged),
         "Failed" => Ok(HostState::Failed),

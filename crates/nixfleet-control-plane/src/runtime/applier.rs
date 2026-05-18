@@ -1039,6 +1039,7 @@ fn host_state_str(s: HostState) -> &'static str {
     match s {
         HostState::Pending => "Pending",
         HostState::Activating => "Activating",
+        HostState::Deferred => "Deferred",
         HostState::Soaking => "Soaking",
         HostState::Converged => "Converged",
         HostState::Failed => "Failed",

@@ -141,43 +141,72 @@ pub(super) fn handle(
         // cannot be live-swapped. Profile + bootloader are correct;
         // the activation completes on next reboot via boot-recovery
         // (LIFT #1's handle_heartbeat synthesis).
+        // Activating → Deferred. Live switch skipped because a critical
+        // component (dbus/systemd/kernel/init) cannot be live-swapped.
+        // The host is ordering-eligible (cascade can progress past it
+        // for host-edges + wave-promotion + advance_current_waves) but
+        // not health-verified (channel-edges still waits for actual
+        // Converged). On reboot, the agent's boot-recovery handshake
+        // triggers LIFT #1's `RemoteActivationCompleted` synthesis →
+        // `Deferred → Soaking` via deferred.rs.
         Event::LocalActivationDeferred {
             component,
             deferred_at,
             seq,
         } => {
+            let from = state.state;
+            state.state = HostState::Deferred;
             state.last_event_seq = seq;
-            let effects = vec![Effect::LocalEmitEvent {
-                rollout_id: state.rollout_id.clone(),
-                payload: OutboundAgentEvent::ActivationDeferred {
-                    component,
-                    deferred_at,
-                    seq,
+            let effects = vec![
+                Effect::LocalEmitEvent {
+                    rollout_id: state.rollout_id.clone(),
+                    payload: OutboundAgentEvent::ActivationDeferred {
+                        component,
+                        deferred_at,
+                        seq,
+                    },
+                    durable: true,
                 },
-                durable: true,
-            }];
+                Effect::RecordTransition {
+                    host: state.hostname.clone(),
+                    rollout_id: state.rollout_id.clone(),
+                    from,
+                    to: HostState::Deferred,
+                    at: deferred_at,
+                },
+            ];
             Ok((state, effects))
         }
 
-        // CP-side mirror of LocalActivationDeferred. Visibility-only;
-        // event_log captures the deferral. Same shape as the Local
-        // case but uses RemoteAppendEventLog (CP writes directly,
-        // bypassing the outbound queue).
+        // CP-side mirror of LocalActivationDeferred. Same transition
+        // shape (Activating → Deferred), but uses RemoteAppendEventLog
+        // (CP writes directly, bypassing the outbound queue).
         Event::RemoteActivationDeferred {
             component,
             deferred_at,
             seq,
         } => {
+            let from = state.state;
+            state.state = HostState::Deferred;
             state.last_event_seq = seq;
-            let effects = vec![Effect::RemoteAppendEventLog {
-                host: state.hostname.clone(),
-                rollout_id: state.rollout_id.clone(),
-                payload: OutboundAgentEvent::ActivationDeferred {
-                    component,
-                    deferred_at,
-                    seq,
+            let effects = vec![
+                Effect::RemoteAppendEventLog {
+                    host: state.hostname.clone(),
+                    rollout_id: state.rollout_id.clone(),
+                    payload: OutboundAgentEvent::ActivationDeferred {
+                        component,
+                        deferred_at,
+                        seq,
+                    },
                 },
-            }];
+                Effect::RecordTransition {
+                    host: state.hostname.clone(),
+                    rollout_id: state.rollout_id.clone(),
+                    from,
+                    to: HostState::Deferred,
+                    at: deferred_at,
+                },
+            ];
             Ok((state, effects))
         }
 

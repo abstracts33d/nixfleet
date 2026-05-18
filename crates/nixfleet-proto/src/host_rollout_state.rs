@@ -20,12 +20,15 @@ impl std::fmt::Display for HostRolloutStateParseError {
 
 impl std::error::Error for HostRolloutStateParseError {}
 
-/// 6-state machine per RFC-0008 §3. Pre-v0.2 carried `Queued`,
+/// 7-state machine per RFC-0008 §3. Pre-v0.2 carried `Queued`,
 /// `Dispatched`, `ConfirmWindow`, `Healthy`, `Soaked` — those are gone.
+/// `Deferred` is the v0.2.x lift addition (Option C / D-027): activation
+/// staged but live-switch skipped pending operator reboot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HostRolloutState {
     Pending,
     Activating,
+    Deferred,
     Soaking,
     Converged,
     Failed,
@@ -39,6 +42,7 @@ impl HostRolloutState {
         match self {
             HostRolloutState::Pending => "Pending",
             HostRolloutState::Activating => "Activating",
+            HostRolloutState::Deferred => "Deferred",
             HostRolloutState::Soaking => "Soaking",
             HostRolloutState::Converged => "Converged",
             HostRolloutState::Failed => "Failed",
@@ -50,6 +54,7 @@ impl HostRolloutState {
         match s {
             "Pending" => Ok(HostRolloutState::Pending),
             "Activating" => Ok(HostRolloutState::Activating),
+            "Deferred" => Ok(HostRolloutState::Deferred),
             "Soaking" => Ok(HostRolloutState::Soaking),
             "Converged" => Ok(HostRolloutState::Converged),
             "Failed" => Ok(HostRolloutState::Failed),
@@ -60,15 +65,21 @@ impl HostRolloutState {
         }
     }
 
-    /// Terminal-for-ordering: predecessor channels can release once every
-    /// host hits this state. RFC-0008 §3 collapses Soaked into Soaking —
-    /// only Converged stays terminal.
+    /// Terminal-for-ordering: predecessor hosts/waves can release once
+    /// every host hits this state. Converged is the canonical
+    /// health-verified state; Deferred is "staged for reboot,
+    /// ordering-eligible but not health-verified" — both clear
+    /// host-edges + wave-promotion gates (Option C / D-027 lift).
+    /// `channel_edges` keeps the stricter Converged-only predicate
+    /// (cross-channel cascade should wait for actual verification).
     pub fn is_terminal_for_ordering(&self) -> bool {
-        matches!(self, Self::Converged)
+        matches!(self, Self::Converged | Self::Deferred)
     }
 
     /// Host is consuming a disruption-budget slot (still moving through
-    /// activation / soak).
+    /// activation / soak). Deferred is NOT in-flight: the in-memory
+    /// activation work is done, the host is just waiting on the
+    /// operator to reboot.
     pub fn is_in_flight(&self) -> bool {
         matches!(self, Self::Pending | Self::Activating | Self::Soaking)
     }
@@ -107,6 +118,7 @@ mod tests {
         for v in [
             HostRolloutState::Pending,
             HostRolloutState::Activating,
+            HostRolloutState::Deferred,
             HostRolloutState::Soaking,
             HostRolloutState::Converged,
             HostRolloutState::Failed,

@@ -389,7 +389,16 @@ async fn maybe_synthesize_recovery_completion(
         }
     };
     for record in records {
-        if record.state != nixfleet_state_machine::HostState::Activating {
+        // LIFT #1 + Option C: synthesize for both Activating (the
+        // boot-recovery-mid-Activating case) AND Deferred (the
+        // operator-rebooted-to-finish-deferred-activation case). Both
+        // states satisfy "host has a pending activation that takes
+        // effect on the next observed current_closure == target_closure".
+        if !matches!(
+            record.state,
+            nixfleet_state_machine::HostState::Activating
+                | nixfleet_state_machine::HostState::Deferred
+        ) {
             continue;
         }
         if record.target_closure != agent_current {
@@ -400,7 +409,8 @@ async fn maybe_synthesize_recovery_completion(
             host,
             rollout_id = %record.rollout_id,
             target = %record.target_closure,
-            "boot-recovery: synthesizing RemoteActivationCompleted (agent reports current_closure == target while CP records Activating; retroactive confirmation per RFC-0008 §9.5 scenario 3)",
+            prior_state = ?record.state,
+            "boot-recovery: synthesizing RemoteActivationCompleted (agent reports current_closure == target; retroactive confirmation per RFC-0008 §9.5)",
         );
         let synth_event = nixfleet_state_machine::Event::RemoteActivationCompleted {
             observed_current_closure: agent_current.to_string(),
@@ -532,14 +542,28 @@ async fn advance_current_waves(
         if current_wave.hosts.is_empty() {
             continue;
         }
-        let all_converged = current_wave.hosts.iter().all(|host| {
+        // Option C / D-027 lift: a wave is "done participating" when
+        // every host is ordering-eligible — Converged OR Deferred.
+        // Deferred means activation is staged but live-switch was
+        // skipped (critical-component swap pending reboot); the host
+        // has done what it can within the rollout step, so successor
+        // waves should not stall waiting on it. Health verification
+        // (probes + soak) still happens after operator reboot via
+        // LIFT #1's `handle_heartbeat` synthesis (Deferred → Soaking).
+        let all_ordering_eligible = current_wave.hosts.iter().all(|host| {
             fleet_state
                 .host_states
                 .get(&(rollout_id.clone(), host.clone()))
-                .map(|s| s.state == nixfleet_state_machine::HostState::Converged)
+                .map(|s| {
+                    matches!(
+                        s.state,
+                        nixfleet_state_machine::HostState::Converged
+                            | nixfleet_state_machine::HostState::Deferred
+                    )
+                })
                 .unwrap_or(false)
         });
-        if all_converged {
+        if all_ordering_eligible {
             bumps.push((rollout_id.clone(), summary.current_wave + 1));
         }
     }

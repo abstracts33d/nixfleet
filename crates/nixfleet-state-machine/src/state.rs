@@ -27,6 +27,20 @@ pub enum HostState {
     /// Agent acked; switch-to-configuration is firing or has fired pending
     /// confirmation.
     Activating,
+    /// Activation pipeline set the profile + bootloader but skipped the
+    /// live `switch-to-configuration` because a critical component
+    /// (dbus/systemd/kernel/init) cannot be live-swapped on a running
+    /// system. The new generation activates on next reboot. **Ordering-
+    /// eligible** (host-edges + wave-promotion + advance_current_waves
+    /// treat Deferred ≡ Converged for cascade-progression purposes —
+    /// the host has done what it can within the rollout step) but
+    /// **not health-verified** (probes haven't run against the new
+    /// closure; channel-edges stays strict and waits for actual
+    /// Converged). On operator reboot, the agent's boot-recovery
+    /// handshake observes `current_closure == target_closure` and
+    /// CP's `handle_heartbeat` synthesis (LIFT #1) drives
+    /// `Deferred → Soaking` via `RemoteActivationCompleted`.
+    Deferred,
     /// Agent reports activation succeeded; probes have started; soak window
     /// has not yet elapsed.
     Soaking,

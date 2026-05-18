@@ -96,18 +96,11 @@ pub(super) fn step(
             Ok((record, effects))
         }
 
-        // HostJoined on a later wave bumps current_wave but stays
-        // Converging until WaveAdvanced fires.
-        RolloutEvent::HostJoined { wave, .. } if wave > record.current_wave => {
-            record.current_wave = wave;
-            Ok((
-                record.clone(),
-                vec![RolloutEffect::UpdateCurrentWave {
-                    rollout_id: record.rollout_id,
-                    wave,
-                }],
-            ))
-        }
+        // HostJoined is observed but does NOT mutate `current_wave` —
+        // the wave-cursor progresses ONLY via `advance_current_waves`
+        // and the resulting `WaveAdvanced` event (RFC-0012 §6.3 /
+        // D-027 diagnostic). See opening.rs's HostJoined arm for the
+        // full rationale.
         RolloutEvent::HostJoined { .. } => Ok((record, Vec::new())),
 
         RolloutEvent::RolloutOpened { .. }
