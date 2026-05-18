@@ -122,6 +122,69 @@
     name = "${derivationName}-signed";
     jsonContent = builtins.toJSON stamped;
   };
+
+  # Per-channel rollout manifest projection (mirrors
+  # `nixfleet_reconciler::project_manifest`). Produces one
+  # `<channel>@<channel_ref>.json` per channel that has at least one
+  # host with a closureHash. Mounted by `cp-real.nix` via a local
+  # HTTP server so CP's `manifest_poll` can fetch + verify them.
+  shortRef = builtins.substring 0 8 fixedCiCommit;
+  allHosts = baseHosts // extraHosts;
+  hostsOnChannel = channelName:
+    lib.filterAttrs (
+      hostname: _host:
+        (allHosts.${hostname}.channel or null)
+        == channelName
+        && hostClosureHashes ? ${hostname}
+    )
+    allHosts;
+  channelsWithClosures =
+    lib.filter (ch: (hostsOnChannel ch) != {})
+    (lib.attrNames fleetInput.channels);
+  manifestPayloadFor = channelName: let
+    matched = hostsOnChannel channelName;
+    policyName = fleetInput.channels.${channelName}.rolloutPolicy;
+    policy = fleetInput.rolloutPolicies.${policyName};
+    healthGate = policy.healthGate or {};
+  in {
+    schemaVersion = 1;
+    displayName = "${channelName}@${shortRef}";
+    channel = channelName;
+    channelRef = fixedCiCommit;
+    fleetResolvedHash = "__FLEET_RESOLVED_HASH__";
+    hostSet =
+      lib.sort (a: b: a.hostname < b.hostname)
+      (lib.mapAttrsToList (hostname: _host: {
+          inherit hostname;
+          waveIndex = 0;
+          targetClosure = hostClosureHashes.${hostname};
+        })
+        matched);
+    inherit healthGate;
+    disruptionBudgets = [];
+    meta = {
+      schemaVersion = 1;
+      signedAt = fixedSignedAt;
+      ciCommit = fixedCiCommit;
+      signatureAlgorithm = fixedAlgorithm;
+    };
+  };
+  manifestPayloads =
+    lib.genAttrs channelsWithClosures manifestPayloadFor;
+  rolloutIds =
+    lib.genAttrs channelsWithClosures
+    (ch: "${ch}@${fixedCiCommit}");
+  signedRollouts =
+    if channelsWithClosures == []
+    then null
+    else
+      import ./sign-rollout-manifests.nix {
+        inherit pkgs lib nixfleet-canonicalize seedSalt;
+        name = "${derivationName}-rollouts-signed";
+        fleetCanonicalJson = "${signed}/canonical.json";
+        inherit manifestPayloads rolloutIds;
+      };
+
   # FOOTGUN: signedAt+1h via literal string replace (Nix lacks chrono parser); asserts midnight suffix to avoid silent wrong now.
   signedAtMidnightSuffix = "T00:00:00Z";
   signedAtPlusHourSuffix = "T01:00:00Z";
@@ -150,4 +213,9 @@ in
       "orgRootKey": { "current": null }
     }
     EOF
+
+    mkdir -p "$out/rollouts"
+    ${lib.optionalString (signedRollouts != null) ''
+      cp -r ${signedRollouts}/. "$out/rollouts/"
+    ''}
   ''
