@@ -35,30 +35,24 @@ pub fn plan_next(
     // 1. Open rollouts for channels whose verified manifest advertises
     //    a target_ref that has no rollout row yet.
     //
-    // Predicate is `rollouts.contains_key(&rollout_id)` — rollout-id-
-    // keyed, not channel-keyed. `active_rollout_per_channel` filters by
-    // `terminal_at.is_none()` (reducer.rs's build_fleet_state); using it
-    // as the OpenRollout guard would cause two latent failures: (a)
-    // re-firing OpenRollout against a Terminal rollout for the same
-    // target_ref every reconcile tick — the applier's effect handler
-    // is idempotent on the `rollouts` table but upserts
-    // `host_rollout_records` back to Pending, clobbering Converged and
-    // blocking the channel-edges gate (OBSERVATION-016 / D-018); and
-    // (b) failing to open a successor rollout when a new target_ref
-    // arrives while a predecessor is still Active — the channel-keyed
-    // check stays true under the predecessor, so the successor is
-    // never emitted, and supersession at applier.rs:114-180 never
-    // triggers (OBSERVATION-015 steady-state).
+    // LOADBEARING: predicate is `rollouts.contains_key(&rollout_id)` —
+    // rollout-id-keyed, not channel-keyed. A channel-keyed predicate
+    // would (a) re-fire OpenRollout against a Terminal rollout for the
+    // same target_ref on every tick (clobbering Converged
+    // host_rollout_records back to Pending and blocking the
+    // channel-edges gate), and (b) fail to open a successor rollout
+    // when a new target_ref arrives while a predecessor is still
+    // Active (the channel-keyed check stays true under the
+    // predecessor, supersession never triggers).
     //
     // The rollout-id-keyed predicate splits the two intents: this site
-    // asks "has this specific target_ref been opened?", channel-edges
-    // asks "is anything in flight on this predecessor channel?" — the
-    // latter remains keyed on `active_rollout_per_channel`.
+    // asks "has this specific target_ref been opened?"; channel-edges
+    // asks "is anything in flight on this predecessor channel?".
     //
-    // `rollout_id` is the canonical `"{channel}@{channel_ref}"` composite
-    // (RFC-0012 §6.3 + D-007 amendment `0320c2fa`). `target_ref` stays
-    // as the raw channel_ref since it identifies the channel pointer,
-    // not the rollout.
+    // `rollout_id` is the canonical `"{channel}@{channel_ref}"`
+    // composite (RFC-0012 §6.3). `target_ref` stays as the raw
+    // channel_ref since it identifies the channel pointer, not the
+    // rollout.
     for (channel, rollout_manifest) in &manifests.rollouts {
         let channel_ref = rollout_manifest.inner().channel_ref.clone();
         let rollout_id = RolloutId::new(channel, &channel_ref);
@@ -75,13 +69,14 @@ pub fn plan_next(
     //    the gate stack. Pass → QueueDispatch. Block → DeferDispatch
     //    (telemetry). No state change either way — applier acts.
     //
-    // **Within-tick budget accumulator (D-008 §2).** With `Pending`
-    // removed from `is_in_flight` (D-008 §1), the gate would otherwise
+    // LOADBEARING: within-tick budget accumulator. With `Pending`
+    // excluded from `is_in_flight` (see
+    // `planner_gates/disruption_budget.rs`), the gate would otherwise
     // wave through N Pending hosts on a `max_in_flight = 1` budget
     // because none have transitioned to Activating yet within the same
-    // tick. `tick_dispatched` carries per-budget dispatch counts emitted
-    // earlier in this loop; the gate adds them to the live in-flight
-    // count before checking against `max`. Locks in Test B's regression.
+    // tick. `tick_dispatched` carries per-budget dispatch counts
+    // emitted earlier in this loop; the gate adds them to the live
+    // in-flight count before checking against `max`.
     let mut tick_dispatched: std::collections::HashMap<
         planner_gates::disruption_budget::BudgetId,
         u32,
@@ -150,11 +145,12 @@ pub fn plan_next(
         }
     }
 
-    // Terminal-transition emission moved to the rollout reducer in
-    // Phase 10b (RFC-0012 §3 + §7). The planner no longer emits
+    // Terminal-transition emission lives on the rollout reducer (per
+    // RFC-0012 §3 + §7). The planner does not emit
     // `MarkChannelTerminal`; the rollout reducer's
     // `RolloutEffect::RecordRolloutTransition` drives the transition
-    // when it consumes the last per-host `HostStateChanged → Converged`.
+    // when it consumes the last per-host
+    // `HostStateChanged → Converged`.
 
     actions
 }
@@ -195,7 +191,6 @@ mod tests {
     fn empty_fleet_state() -> FleetState {
         FleetState {
             host_states: HashMap::new(),
-            active_rollout_per_channel: HashMap::new(),
             rollouts: HashMap::new(),
             outstanding_failing_enforce_probes: HashMap::new(),
         }
@@ -265,8 +260,6 @@ mod tests {
                 budgets: Vec::new(),
             },
         );
-        fs.active_rollout_per_channel
-            .insert("stable".into(), "r1".into());
         fs.host_states.insert(
             ("r1".into(), "h1".into()),
             host_in("r1", "h1", HostState::Pending),
@@ -299,8 +292,6 @@ mod tests {
                 budgets: Vec::new(),
             },
         );
-        fs.active_rollout_per_channel
-            .insert("stable".into(), "r1".into());
         let mut h1 = host_in("r1", "h1", HostState::Pending);
         h1.target_closure = "bad-hash".into();
         fs.host_states.insert(("r1".into(), "h1".into()), h1);
@@ -363,17 +354,18 @@ mod tests {
 
     #[test]
     fn plan_next_emits_open_rollout_for_unopened_channel() {
-        // A channel with a verified rollout manifest but no entry in
-        // active_rollout_per_channel — planner emits OpenRollout for
+        // A channel with a verified rollout manifest but no
+        // host_rollout_records yet — planner emits OpenRollout for
         // the applier to create the per-host records.
         //
-        // **D-006 regression guard**: pin `rollout_id == channel_ref`
-        // (NOT `channel`). The applier-side `build_fleet_state` reads
-        // `manifest.channel_ref` to look up the rollout; if the planner
-        // emits `channel` here, `fleet_state.host_states` will come
-        // back empty for the rollout and Pending → QueueDispatch
-        // iterates zero hosts. Fixture deliberately uses
-        // `channel != channel_ref` to surface the mismatch.
+        // LOADBEARING: rollout_id is the canonical
+        // `RolloutId::new(channel, channel_ref)` composite. The
+        // applier-side `build_fleet_state` reads `manifest.channel_ref`
+        // to look up host_rollout_records; a mismatched rollout_id
+        // shape leaves `fleet_state.host_states` empty for the
+        // rollout and Pending → QueueDispatch iterates zero hosts.
+        // Fixture uses `channel != channel_ref` to surface the
+        // mismatch.
         let fleet = FleetBuilder::new().host("h1", "stable").build();
         let mut manifests = signed_manifest_set(fleet);
 
@@ -414,14 +406,14 @@ mod tests {
                 _ => None,
             })
             .expect("OpenRollout for stable must be emitted");
-        // D-007 regression guard: rollout_id is the canonical
-        // `"{channel}@{channel_ref}"` composite, not channel_ref alone.
-        // D-006's fix used channel_ref-only which collides when multiple
-        // channels share a ref; D-007 lifted the identity contract.
+        // LOADBEARING: rollout_id is the canonical
+        // `"{channel}@{channel_ref}"` composite (RFC-0012 §6.3), not
+        // channel_ref alone — multiple channels can share a ref, so a
+        // ref-only identity would collide.
         assert_eq!(
             open.0.as_str(),
             "stable@r1",
-            "rollout_id MUST equal RolloutId::new(channel, channel_ref) per RFC-0012 §6.3 (D-007 guard)"
+            "rollout_id MUST equal RolloutId::new(channel, channel_ref) per RFC-0012 §6.3"
         );
         assert_eq!(
             open.1, "r1",
@@ -431,24 +423,14 @@ mod tests {
 
     #[test]
     fn plan_next_does_not_re_emit_open_rollout_for_terminal_rollout() {
-        // D-018 regression guard. Terminal rollouts stay in the
-        // `rollouts` table (per db::rollouts:263 + RFC-0012 §6.3) so the
-        // channel-edges gate can read `terminal_at`. The pre-fix
-        // predicate keyed OpenRollout on
-        // `active_rollout_per_channel.contains_key(channel)`, which
-        // EXCLUDES Terminal rollouts (reducer.rs:472 filters by
-        // `terminal_at.is_none()`) — so a Terminal rollout for the same
-        // target_ref fell through the guard and re-fired OpenRollout
-        // every reconcile tick. Applier's effect handler is idempotent
-        // on the `rollouts` table but upserts `host_rollout_records`
-        // back to Pending, clobbering Converged and freezing the
-        // channel-edges gate closed. The rollout-id-keyed predicate
-        // closes the loop.
-        //
-        // Symptom in lab (2026-05-17, OBSERVATION-016): after
-        // edge@f8c46e47 transitioned Active → Terminal, OpenRollout
-        // re-fired at seq 174, 176, 183, 246, 253, 260, 267, 274 ...
-        // every reconcile interval.
+        // LOADBEARING: Terminal rollouts stay in the `rollouts` table
+        // (RFC-0012 §6.3) so the channel-edges gate can read
+        // `terminal_at`. The OpenRollout predicate MUST be
+        // rollout-id-keyed; a channel-keyed predicate that filtered
+        // by `terminal_at.is_none()` would re-fire OpenRollout for a
+        // Terminal rollout's target_ref every tick (the applier's
+        // host_rollout_records upsert would clobber Converged back to
+        // Pending, freezing the channel-edges gate closed).
         let fleet = FleetBuilder::new().host("h1", "stable").build();
         let mut manifests = signed_manifest_set(fleet);
 
@@ -474,9 +456,7 @@ mod tests {
         );
 
         // Terminal rollout for the SAME target_ref: present in
-        // `rollouts` (channel-edges still needs to see terminal_at),
-        // absent from `active_rollout_per_channel` (mirrors
-        // reducer.rs's terminal_at-filtered population).
+        // `rollouts` (channel-edges still needs to see terminal_at).
         let rollout_id = nixfleet_proto::RolloutId::new("stable", "r1");
         let mut fs = empty_fleet_state();
         fs.rollouts.insert(
@@ -507,16 +487,13 @@ mod tests {
 
     #[test]
     fn plan_next_emits_open_rollout_for_new_target_ref_while_predecessor_active() {
-        // D-018 bonus closure for the steady-state half of
-        // OBSERVATION-015 (supersession on new release while
-        // predecessor in-flight). Under the pre-fix predicate
-        // (`active_rollout_per_channel.contains_key(channel)`), a new
-        // target_ref arriving while the predecessor was still Active
-        // never triggered OpenRollout — the channel-keyed guard stayed
-        // true. The applier's supersession path at
-        // applier.rs:114-180 was thus unreachable in steady state.
-        // The rollout-id-keyed predicate makes "new target_ref means
-        // new rollout_id" the natural trigger.
+        // LOADBEARING: a new target_ref on a channel with an already-
+        // Active rollout MUST trigger OpenRollout for the new
+        // rollout_id. The rollout-id-keyed predicate ("new target_ref
+        // → new rollout_id → not in `rollouts` table → OpenRollout
+        // fires") is what reaches the applier's supersession path
+        // (predecessor rollout transitions to Superseded when the
+        // successor opens).
         let fleet = FleetBuilder::new().host("h1", "stable").build();
         let mut manifests = signed_manifest_set(fleet);
 
@@ -557,9 +534,6 @@ mod tests {
                 budgets: Vec::new(),
             },
         );
-        fs.active_rollout_per_channel
-            .insert("stable".into(), pred_id);
-
         let quarantines = std::collections::HashMap::new();
         let actions = plan_next(&manifests, &fs, &quarantines, t0());
 

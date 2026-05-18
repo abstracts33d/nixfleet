@@ -801,13 +801,14 @@
       )
       normalizedChannelEdges;
 
-    # v0.1 path: operator pre-builds the nixosConfiguration and passes
-    # it as `configuration`; we verify the contract before mkFleet
-    # consumes it. v0.2 path: operator declares `nixosArgs`, the
-    # framework `mkFleet` wrapper builds via `mkHost` itself, and
-    # `configuration` stays at its `null` default — this branch
-    # skips when null (mkHost's own evaluation catches structural
-    # errors downstream).
+    # Two operator paths converge here:
+    #   - operator pre-builds the nixosConfiguration and passes it as
+    #     `configuration` (validated below before mkFleet consumes it)
+    #   - operator declares `nixosArgs`, the framework `mkFleet`
+    #     wrapper builds via `mkHost` itself, and `configuration`
+    #     stays at its `null` default — this branch skips when null
+    #     (mkHost's own evaluation catches structural errors
+    #     downstream).
     configurationErrors =
       lib.concatMap (
         n: let

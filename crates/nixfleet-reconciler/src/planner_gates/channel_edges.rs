@@ -49,16 +49,14 @@ pub fn check(
 /// 3. Manifest present, rollout row exists ⇒ return `terminal_at.is_none()`
 ///    — in-flight blocks, Terminal passes.
 ///
-/// Keyed by canonical `RolloutId::new(channel, channel_ref)` (RFC-0012
-/// §6.3), NOT by channel. The channel-level key (D-020's pre-fix path,
-/// via `active_rollout_per_channel`) conflates "no rollout yet on this
-/// channel" with "rollout for this target_ref terminal" because
-/// `active_rollout_per_channel` filters by `terminal_at.is_none()` in
-/// reducer.rs — Terminal rollouts are absent from that map, causing the
-/// fallthrough's fresh-boot protection to misfire as a permanent block
-/// after legitimate completion (lab observation 2026-05-17,
-/// OBSERVATION-016 successor side). Mirror of D-018's planner fix at
-/// planner.rs:54-68.
+/// LOADBEARING: keyed by canonical `RolloutId::new(channel,
+/// channel_ref)` (RFC-0012 §6.3), NOT by channel. A channel-level
+/// key would conflate "no rollout yet on this channel" with "rollout
+/// for this target_ref terminal" — the `terminal_at.is_none()`
+/// filter on a channel-keyed map causes the fresh-boot protection to
+/// misfire as a permanent block after legitimate completion. Mirror
+/// of the planner's rollout-id-keyed OpenRollout predicate at
+/// planner.rs's section 1.
 fn predecessor_active(
     fleet_state: &FleetState,
     manifests: &SignedManifestSet,

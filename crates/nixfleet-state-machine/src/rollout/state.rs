@@ -7,10 +7,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-// `RolloutId` re-exported from `nixfleet-proto` (RFC-0012 §6.3 +
-// D-007 amendment `0320c2fa`); kept here for ergonomic
-// `crate::rollout::state::RolloutId` access in the rollout reducer's
-// callsites.
+// `RolloutId` re-exported from `nixfleet-proto` (RFC-0012 §6.3);
+// kept here for ergonomic `crate::rollout::state::RolloutId` access
+// in the rollout reducer's callsites.
 pub use nixfleet_proto::{ChannelRef, RolloutId};
 
 pub type ChannelId = String;

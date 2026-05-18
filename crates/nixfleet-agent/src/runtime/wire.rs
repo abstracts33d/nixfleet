@@ -14,9 +14,8 @@ use serde::{Deserialize, Serialize};
 /// dispatch for this agent. Empty body / 204 means no work pending.
 ///
 /// `rollout_id` is the canonical `"{channel}@{channel_ref}"` composite
-/// (RFC-0012 §6.3 + D-007); serde-transparent so the wire JSON format
-/// is identical to the prior `String` shape — only Rust typing
-/// changes.
+/// (RFC-0012 §6.3); serde-transparent so the wire JSON shape is
+/// indistinguishable from a plain `String`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct DispatchResponse {
     pub hostname: String,

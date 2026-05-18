@@ -17,15 +17,15 @@ pub(super) fn step(
     match event {
         // First host dispatched into the rollout → Active.
         //
-        // LOADBEARING: `wave` is in the event for event_log audit /
-        // replay reconstruction (which wave was the first joiner) but
-        // does NOT mutate `record.current_wave`. The wave-promotion
-        // gate reads `current_wave` as the "wave cursor for which
-        // dispatches are currently allowed" (RFC-0012 §6.3 / D-027
-        // diagnostic). Bumping the cursor on HostJoined leaks it
-        // forward — when wave-N+1 hosts dispatch alongside wave-N
-        // hosts on the first plan tick, max-of-joiners' wave_index
-        // becomes the cursor and the gate passes wave-N+1 vacuously.
+        // LOADBEARING: `wave` is recorded in the event for event_log
+        // audit / replay reconstruction (which wave was the first
+        // joiner) but does NOT mutate `record.current_wave`. The
+        // wave-promotion gate reads `current_wave` as the "wave
+        // cursor for which dispatches are currently allowed" per
+        // RFC-0012 §6.3; bumping the cursor on HostJoined would leak
+        // it forward — wave-N+1 hosts dispatching alongside wave-N
+        // hosts on the first plan tick would set the cursor to
+        // max-of-joiners' wave_index, passing wave-N+1 vacuously.
         // The cursor advances ONLY via deliberate progression:
         // `advance_current_waves` in the reducer when every host in
         // `current_wave` reaches Converged → emits `WaveAdvanced` →
@@ -57,11 +57,11 @@ pub(super) fn step(
             Ok((record, effects))
         }
 
-        // OperatorClearance is rare from Opening; treat as a structural
-        // no-op (record an event_log entry but no state change).
-        // Wiring is out of scope for Phase 10 per brief §9.3; mark as
-        // illegal so a future wiring step explicitly addresses the
-        // semantic.
+        // OperatorClearance from Opening would be a no-op (record an
+        // event_log entry but no state change). Wiring deferred per
+        // v0.2.1-followups; marked illegal here so a future wiring
+        // step explicitly addresses the semantic instead of silently
+        // accepting it.
         RolloutEvent::OperatorClearance { .. }
         | RolloutEvent::RolloutOpened { .. }
         | RolloutEvent::HostStateChanged { .. }
@@ -123,14 +123,12 @@ mod tests {
         ));
     }
 
-    /// D-027 regression pin: HostJoined MUST NOT mutate `current_wave`.
-    /// Pre-fix, the first joiner's `wave` field was assigned to
-    /// `current_wave`, leaking the wave-promotion cursor forward when
-    /// multi-wave rollouts had wave-N+1 hosts joining on the first
-    /// plan tick (because the wave-promotion gate had a separate bug
-    /// that didn't block them). With this regression test in place,
-    /// the wave cursor stays at the canonical initial value (0) and
-    /// the wave-promotion gate correctly blocks higher-wave dispatches.
+    /// Regression pin: HostJoined MUST NOT mutate `current_wave`.
+    /// Assigning the joiner's `wave` to the cursor would leak the
+    /// wave-promotion cursor forward when multi-wave rollouts have
+    /// wave-N+1 hosts joining on the first plan tick — the cursor
+    /// must stay at the canonical initial value (0) so the
+    /// wave-promotion gate correctly blocks higher-wave dispatches.
     #[test]
     fn host_joined_does_not_mutate_current_wave_even_at_higher_wave_index() {
         let event = RolloutEvent::HostJoined {

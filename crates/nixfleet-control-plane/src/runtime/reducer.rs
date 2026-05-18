@@ -622,13 +622,14 @@ async fn advance_current_waves(
         if current_wave.hosts.is_empty() {
             continue;
         }
-        // Option C / D-027 lift: a wave is "done participating" when
-        // every host is ordering-eligible — Converged OR Deferred.
-        // Deferred means activation is staged but live-switch was
-        // skipped (critical-component swap pending reboot); the host
-        // has done what it can within the rollout step, so successor
-        // waves should not stall waiting on it. Health verification
-        // (probes + soak) still happens after operator reboot via
+        // LOADBEARING: a wave is "done participating" when every host
+        // is ordering-eligible — Converged OR Deferred (per
+        // RFC-0008 §3 terminal-for-ordering). Deferred means
+        // activation is staged but live-switch was skipped
+        // (critical-component swap pending reboot); the host has done
+        // what it can within the rollout step, so successor waves
+        // should not stall waiting on it. Health verification (probes
+        // + soak) still happens after operator reboot via
         // LIFT #1's `handle_heartbeat` synthesis (Deferred → Soaking).
         let all_ordering_eligible = current_wave.hosts.iter().all(|host| {
             fleet_state
@@ -649,8 +650,9 @@ async fn advance_current_waves(
     }
 
     for (rollout_id, next_wave) in bumps {
-        // FK populated by Phase 10b's rollout reducer (RolloutEffect::
-        // UpdateCurrentWave); 10a passes None per RFC-0012 §6.1 item 3.
+        // FK is populated by the rollout reducer's
+        // `RolloutEffect::UpdateCurrentWave`; the planner passes
+        // None per RFC-0012 §6.1 item 3.
         match db
             .rollouts()
             .set_current_wave(rollout_id.as_str(), next_wave, None)
@@ -684,22 +686,7 @@ async fn advance_current_waves(
 /// negligible.
 fn build_fleet_state(db: &Arc<Db>, manifests: &SignedManifestSet) -> anyhow::Result<FleetState> {
     let mut host_states: HashMap<(RolloutId, HostId), HostRolloutState> = HashMap::new();
-    let mut active_rollout_per_channel: HashMap<String, RolloutId> = HashMap::new();
     let mut rollouts: HashMap<RolloutId, RolloutSummary> = HashMap::new();
-
-    // active_rollout_per_channel must reflect ACTUAL state (the `rollouts`
-    // table), not the manifest's view. The planner reads this to decide
-    // whether to emit `OpenRollout`: if we pre-populated this from
-    // `manifests.rollouts`, the guard `!contains_key(channel)` would
-    // always be false and OpenRollout would never fire — the gate stays
-    // architecturally-correct-but-never-called. (Bug caught by the 7b
-    // smoke test before deletion of the legacy reconcile path.)
-    let active_rollouts = db.rollouts().list_active()?;
-    for ar in active_rollouts.iter() {
-        if ar.terminal_at.is_none() {
-            active_rollout_per_channel.insert(ar.channel.clone(), ar.rollout_id.clone());
-        }
-    }
 
     // For each channel with a verified rollout manifest, load all
     // host_rollout_records under the manifested rollout_id so the
@@ -708,11 +695,10 @@ fn build_fleet_state(db: &Arc<Db>, manifests: &SignedManifestSet) -> anyhow::Res
     // surface through the OpenRollout emission path above.
     for (channel, vm) in &manifests.rollouts {
         let manifest = vm.inner();
-        // Canonical RolloutId construction (RFC-0012 §6.3 + D-007
-        // amendment `0320c2fa`). Matches the planner's
-        // `RolloutId::new(channel, channel_ref)` so lookups by
-        // rollout_id succeed even when multiple channels share a
-        // channel_ref.
+        // Canonical RolloutId construction (RFC-0012 §6.3): matches
+        // the planner's `RolloutId::new(channel, channel_ref)` so
+        // lookups by rollout_id succeed even when multiple channels
+        // share a channel_ref.
         let rollout_id = nixfleet_proto::RolloutId::new(channel, &manifest.channel_ref);
 
         let rows = db
@@ -743,12 +729,9 @@ fn build_fleet_state(db: &Arc<Db>, manifests: &SignedManifestSet) -> anyhow::Res
         }
     }
 
-    // Distinct outstanding enforce-mode probe failures per (rollout, host).
-    // Feeds the compliance_wave gate (planner_gates::compliance_wave) per
-    // RFC-0010 §7.2. **Phase 9a**: the source projection
-    // (`probe_failures`) is unwritten — 9b's applier co-write turns it
-    // on. Until then the map is always empty and the gate is
-    // pass-through.
+    // Distinct outstanding enforce-mode probe failures per
+    // (rollout, host). Feeds the compliance_wave gate
+    // (planner_gates::compliance_wave) per RFC-0010 §7.2.
     let outstanding_failing_enforce_probes = db
         .probe_failures()
         .outstanding_failing_enforce_probes_by_rollout()
@@ -764,7 +747,6 @@ fn build_fleet_state(db: &Arc<Db>, manifests: &SignedManifestSet) -> anyhow::Res
 
     Ok(FleetState {
         host_states,
-        active_rollout_per_channel,
         rollouts,
         outstanding_failing_enforce_probes,
     })

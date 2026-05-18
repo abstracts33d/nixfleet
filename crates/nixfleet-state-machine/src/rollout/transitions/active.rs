@@ -22,8 +22,7 @@ pub(super) fn step(
         // event_log via the event itself) but does NOT mutate
         // `current_wave`. Wave-cursor progression happens via
         // `advance_current_waves` → `WaveAdvanced`. See
-        // opening.rs::step's HostJoined arm for the full rationale
-        // (D-027 diagnostic).
+        // opening.rs::step's HostJoined arm for the full rationale.
         RolloutEvent::HostJoined { .. } => Ok((record, Vec::new())),
 
         // Per-host transitions drive aggregate state changes.

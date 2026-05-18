@@ -20,10 +20,9 @@ impl std::fmt::Display for HostRolloutStateParseError {
 
 impl std::error::Error for HostRolloutStateParseError {}
 
-/// 7-state machine per RFC-0008 §3. Pre-v0.2 carried `Queued`,
-/// `Dispatched`, `ConfirmWindow`, `Healthy`, `Soaked` — those are gone.
-/// `Deferred` is the v0.2.x lift addition (Option C / D-027): activation
-/// staged but live-switch skipped pending operator reboot.
+/// 7-state machine per RFC-0008 §3. `Deferred` covers the
+/// "activation staged but live-switch skipped pending operator
+/// reboot" case (critical-component swap; see RFC-0008 §3.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HostRolloutState {
     Pending,
@@ -69,9 +68,9 @@ impl HostRolloutState {
     /// every host hits this state. Converged is the canonical
     /// health-verified state; Deferred is "staged for reboot,
     /// ordering-eligible but not health-verified" — both clear
-    /// host-edges + wave-promotion gates (Option C / D-027 lift).
-    /// `channel_edges` keeps the stricter Converged-only predicate
-    /// (cross-channel cascade should wait for actual verification).
+    /// host-edges + wave-promotion gates. `channel_edges` keeps the
+    /// stricter Converged-only predicate (cross-channel cascade
+    /// should wait for actual verification).
     pub fn is_terminal_for_ordering(&self) -> bool {
         matches!(self, Self::Converged | Self::Deferred)
     }

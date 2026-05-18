@@ -241,14 +241,12 @@ impl ManifestCache {
     /// Disk-cache hit re-verifies bytes (defense in depth); miss OR cache
     /// verify-failure fetches from CP, verifies, writes through. Public so
     /// the periodic `manifest_poll` worker can fetch rollouts independently
-    /// of any dispatch arrival (per the Option-C agent-side feed lift).
+    /// of any dispatch arrival (agent-side feed).
     ///
-    /// Verify-failure falls through to fetch (D-021): the pre-fix shape
-    /// `return self.verify_bytes(...)` propagated freshness/signature
-    /// errors as the function's return value without ever attempting CP
-    /// refresh, leaving a stale cached manifest permanently stuck. The
-    /// rollout-manifest variant of OBSERVATION-017's
-    /// `fetch_or_load_fleet` bug.
+    /// LOADBEARING: verify-failure falls through to fetch. Returning the
+    /// verify error directly would leave a stale cached manifest
+    /// permanently stuck on freshness/signature errors without ever
+    /// attempting a CP refresh.
     pub async fn fetch_or_load(
         &self,
         client: &reqwest::Client,
@@ -374,14 +372,12 @@ impl ManifestCache {
     /// worker's tick logic as a cross-consistency check between the
     /// two signed sources).
     ///
-    /// Verify-failure falls through to fetch (D-021): pre-fix the
-    /// cache-hit branch propagated `verify_fleet_bytes` Err via `?`
-    /// without ever attempting CP refresh; once the cached manifest aged
-    /// past `freshness_window` (3600s) the agent entered a permanent
-    /// stuck state — every `manifest_poll` tick re-verified the same
-    /// stale bytes, returned `Stale`, retained the cold reducer cache,
-    /// and the reducer's `advance_tick` pass-gate had no fresh manifest
-    /// to consult (OBSERVATION-017 from lab 2026-05-17T18:25+).
+    /// LOADBEARING: verify-failure falls through to fetch. Returning
+    /// the cache's verify Err without attempting CP refresh would
+    /// leave an aged-out cached manifest permanently stuck — every
+    /// `manifest_poll` tick re-verifying the same stale bytes,
+    /// returning `Stale`, and the reducer's `advance_tick` pass-gate
+    /// would have no fresh manifest to consult.
     pub async fn fetch_or_load_fleet(
         &self,
         client: &reqwest::Client,
@@ -615,20 +611,14 @@ mod tests {
 
     #[test]
     fn fleet_cache_verify_failure_falls_through_to_fetch() {
-        // D-021 regression guard (OBSERVATION-017). Before the fix,
-        // `fetch_or_load_fleet`'s cache-hit branch propagated the
-        // `verify_fleet_bytes` Err via `?` and the fetch-from-CP path
-        // below was never reached. Once cached fleet bytes aged past
-        // `freshness_window` (3600s) the agent entered a permanent
-        // stuck state: every manifest_poll tick re-verified the same
-        // stale bytes and returned `Stale`, never asking CP for fresher
-        // bytes.
-        //
-        // After the fix: verify-failure (any reason — stale, corrupt,
-        // bad signature) falls through to the fetch path. Test
-        // discriminates by error variant: pre-fix would return
-        // `VerifyFailed` from the cache; post-fix returns `Missing`
-        // from the unreachable-CP fetch.
+        // Regression guard for the cache-hit fall-through contract.
+        // `fetch_or_load_fleet` must NOT propagate
+        // `verify_fleet_bytes` Err directly from the cache-hit branch;
+        // it must fall through to the fetch path so an aged-out or
+        // corrupt cached manifest can be replaced. Test discriminates
+        // by error variant: a regression returns `VerifyFailed` from
+        // the cache; correct behavior returns `Missing` from the
+        // (unreachable-in-test) CP fetch.
         let dir = tempfile::tempdir().expect("tempdir");
         let trust_path = dir.path().join("trust.json");
         std::fs::write(&trust_path, minimal_trust_json()).expect("write trust");
@@ -659,11 +649,9 @@ mod tests {
 
     #[test]
     fn rollout_manifest_cache_verify_failure_falls_through_to_fetch() {
-        // D-021 regression guard, parallel site to fleet cache (above).
-        // The rollout-manifest `fetch_or_load` had the same shape bug:
-        // cache-hit branch returned `verify_bytes` result directly,
-        // skipping the fetch path on verify failure. Both sites
-        // converge to the same fall-through discipline.
+        // Parallel regression guard to the fleet-cache fall-through
+        // test above — the rollout-manifest `fetch_or_load` must
+        // share the same cache-then-fetch discipline.
         let dir = tempfile::tempdir().expect("tempdir");
         let trust_path = dir.path().join("trust.json");
         std::fs::write(&trust_path, minimal_trust_json()).expect("write trust");

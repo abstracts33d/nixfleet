@@ -28,7 +28,6 @@ fn signed_manifest_set(fleet: FleetResolved) -> SignedManifestSet {
 fn empty_fleet_state() -> FleetState {
     FleetState {
         host_states: HashMap::new(),
-        active_rollout_per_channel: HashMap::new(),
         rollouts: HashMap::new(),
         outstanding_failing_enforce_probes: HashMap::new(),
     }
@@ -91,7 +90,7 @@ fn quarantine_passes_when_target_clean() {
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Build a rollout-manifest-bearing SignedManifestSet from a fleet builder.
-/// Used by the channel-edges tests below — the post-D-020 predicate keys
+/// Used by the channel-edges tests below — the gate's predicate keys
 /// on `manifests.rollouts.get(predecessor).inner().channel_ref` to
 /// construct the canonical RolloutId for `fleet_state.rollouts` lookup.
 fn signed_set_with_rollout(
@@ -145,23 +144,9 @@ fn channel_edges_blocks_when_predecessor_active() {
 
 #[test]
 fn channel_edges_passes_when_predecessor_terminal() {
-    // D-020 regression guard. The pre-fix predicate keyed on
-    // `active_rollout_per_channel.get(predecessor)`; once the
-    // predecessor's rollout reached Terminal, reducer.rs filtered it
-    // out of that map (per its `terminal_at.is_none()` populator), the
-    // gate's fallthrough at line 57 then hit
-    // `manifests.rollouts.contains_key(predecessor)` (intended for
-    // fresh-boot protection) and returned true → permanent block.
-    //
-    // This fixture mirrors production state: `active_rollout_per_channel`
-    // does NOT carry the Terminal rollout entry (matching reducer.rs's
-    // filter); `fleet_state.rollouts` does (matching db/rollouts.rs:263's
-    // "terminal rollouts stay visible" comment). The rollout-id-keyed
-    // predicate reads `terminal_at` directly from the summary.
-    //
-    // Lab evidence (2026-05-17 18:18:07): edge rollout transitioned
-    // Active -> Terminal; gate decisions at 18:21:36 still emitted
-    // "predecessor channel 'edge' not converged" every 15s.
+    // LOADBEARING: a Terminal predecessor MUST NOT block its successor.
+    // The gate reads `terminal_at` directly off the `RolloutSummary` in
+    // `fleet_state.rollouts`; a `Some(_)` value means converged → pass.
     let fleet = FleetBuilder::new()
         .host("h1", "stable")
         .host("h2", "infra")
@@ -175,8 +160,6 @@ fn channel_edges_passes_when_predecessor_terminal() {
         rollout_id.clone(),
         summary(rollout_id.as_str(), "infra", 0, vec![], true),
     );
-    // Deliberately do NOT insert into active_rollout_per_channel —
-    // production reducer.rs filters Terminal rollouts out of that map.
 
     let block = planner_gates::channel_edges::check(&fs, &manifests, &"stable".to_string());
     assert!(

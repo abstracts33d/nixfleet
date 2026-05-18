@@ -10,16 +10,15 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-/// Pipeline input. Replaces the legacy `nixfleet_proto::agent_wire::EvaluatedTarget`
-/// that was deleted in Phase 8d-2 (`0e220c63`) alongside the rest of the v0.1
-/// wire surface. Carries the minimum the pipeline needs: the target closure
-/// hash (drives realise + set-profile + verify-poll) and the channel_ref (for
-/// tracing-only correlation with CP's rollout records).
+/// Pipeline input. Carries the minimum the activation pipeline needs:
+/// the target closure hash (drives realise + set-profile +
+/// verify-poll) and the channel_ref (for tracing-only correlation
+/// with CP's rollout records).
 ///
-/// Constructed from `runtime::wire::ActivationIntent` at the worker entry
-/// (`runtime::workers::activation::handle_intent`); shape is intentionally
-/// minimal so future wire-format evolutions don't ripple through the
-/// activation internals.
+/// Constructed from `runtime::wire::ActivationIntent` at the worker
+/// entry (`runtime::workers::activation::handle_intent`); shape is
+/// intentionally minimal so future wire-format evolutions don't
+/// ripple through the activation internals.
 #[derive(Debug, Clone)]
 pub struct ActivationTarget {
     pub closure_hash: String,
@@ -63,11 +62,11 @@ pub enum ActivationOutcome {
 #[derive(Debug)]
 pub enum RollbackOutcome {
     /// Rollback subprocess returned, `/run/current-system` settled on
-    /// `reverted_to_closure` (the basename of the post-rollback symlink
-    /// target, read by `verify_poll`). The worker uses this value to
-    /// emit `Event::LocalRollbackCompleted` which drives the reducer
-    /// `Failed → Reverted` transition and populates
-    /// `state.reverted_to` (D-031 fix).
+    /// `reverted_to_closure` (the basename of the post-rollback
+    /// symlink target, read by `verify_poll`). The worker uses this
+    /// value to emit `Event::LocalRollbackCompleted` which drives the
+    /// reducer `Failed → Reverted` transition and populates
+    /// `state.reverted_to`.
     FiredAndPolled { reverted_to_closure: String },
     Failed {
         phase: String,

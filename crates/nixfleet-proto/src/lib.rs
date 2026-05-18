@@ -25,8 +25,7 @@ pub mod testing;
 /// so both pure crates can depend on it without cross-edges (RFC-0012 §7).
 pub type ChannelRef = String;
 
-/// Content-addressed rollout identifier (RFC-0012 §6.3 + D-007 amendment
-/// `0320c2fa`).
+/// Content-addressed rollout identifier (RFC-0012 §6.3).
 ///
 /// Identity contract: a `RolloutId` is the canonical
 /// `"{channel}@{channel_ref}"` composite. Constructed only via

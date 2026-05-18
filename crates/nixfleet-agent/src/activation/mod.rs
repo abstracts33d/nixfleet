@@ -1,15 +1,7 @@
-//! Activation pipeline. Restored from main commit `7469b4bd^` (the parent of
-//! Phase 8d-1's "delete legacy activation/ pipeline + dead comms surface"
-//! sweep). The 8d-1 deletion was premature: Phase 7's runtime worker
-//! replacement (`runtime/workers/activation.rs`) was a fire-and-forget
-//! shim that did NOT preserve the operational logic the pipeline encoded.
-//! Subsequent demo + lab validation (post-D-016 cascade) surfaced the
-//! regression chain (OBSERVATION-018/019/020). D-026 closes it by
-//! restoring the pipeline and wiring it into the existing v0.2 worker
-//! entry point.
-//!
-//! The pipeline preserves seven LOADBEARING operational steps that the
-//! shim dropped:
+//! Activation pipeline (RFC-0008 §4). The runtime worker
+//! (`runtime/workers/activation.rs`) is the wire-layer entry point;
+//! this module owns the seven LOADBEARING operational steps the
+//! activation must preserve:
 //!
 //!   1. `realise.rs` — `nix-store --realise` forces fetch + signature
 //!      verification of the target closure with trust-failure detection

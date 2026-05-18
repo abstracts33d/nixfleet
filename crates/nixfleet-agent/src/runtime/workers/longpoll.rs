@@ -208,17 +208,17 @@ async fn handle_dispatch(
 
     let event = nixfleet_state_machine::Event::LocalActivate {
         current_closure_at_dispatch: dispatch.target_closure.clone(),
-        // Validated dispatch target carried verbatim (D-024). The
-        // ensure_for_dispatch call above asserted this value matches
-        // the freshly-verified per-rollout manifest's declared
+        // LOADBEARING: validated dispatch target carried verbatim.
+        // `ensure_for_dispatch` above asserted this value matches the
+        // freshly-verified per-rollout manifest's declared
         // target_closure for this host; the reducer's bootstrap
-        // consumes it without re-derivation (eliminates the TOCTOU
+        // consumes it without re-derivation (eliminates TOCTOU
         // against the reducer's stale manifests snapshot).
         target_closure: dispatch.target_closure.clone(),
         received_at: dispatch.enqueued_at,
-        // CP-resolved soak deadline (RFC-0011 §1 invariant 1 single
-        // source of truth). Pre-D-019 the agent reducer hardcoded
-        // `now + 5min` here, diverging from CP's policy-resolved value.
+        // CP-resolved soak deadline (RFC-0011 §1 invariant 1: CP is
+        // the single source of truth for the policy-resolved soak
+        // window).
         soak_due_at: dispatch.soak_due_at,
         seq: 0, // reducer assigns
     };

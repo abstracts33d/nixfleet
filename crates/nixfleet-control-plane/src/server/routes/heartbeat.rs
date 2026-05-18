@@ -42,8 +42,8 @@ pub struct HeartbeatRequest {
     pub hostname: String,
     /// Agent's view of the active rollout. `None` when the agent has no
     /// outstanding rollout (post-Converged steady state). Serde-
-    /// transparent: the wire JSON shape is unchanged from the prior
-    /// `String` typing (RFC-0012 §6.3 + D-007).
+    /// transparent (RFC-0012 §6.3): the wire JSON shape is unchanged
+    /// from a plain `String`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_id: Option<nixfleet_proto::RolloutId>,
     /// Agent's observed `current` closure hash (what the host is

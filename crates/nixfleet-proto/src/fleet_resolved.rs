@@ -438,14 +438,14 @@ mod tests {
 
     #[test]
     fn normalize_synthesizes_implicit_wave_for_all_at_once_without_waves() {
-        // D-017 regression guard. Demo's fleet.nix declares
-        // `rolloutPolicies.all-at-once = {strategy = "all-at-once";};`
-        // — terse form with no explicit waves. Pre-normalization, the
-        // applier's `waves.get(wave_index)` returned None, falling
-        // through to `DEFAULT_SOAK_MINUTES = 60` — a 1-hour soak hold
-        // on a strategy whose semantic name is "ship everywhere with no
-        // staging." Normalization synthesizes the implicit match-all
-        // zero-soak wave.
+        // The terse all-at-once form
+        // (`rolloutPolicies.all-at-once = {strategy = "all-at-once";};`,
+        // no explicit waves) must produce one match-all zero-soak
+        // wave at normalization time; otherwise `waves.get(wave_index)`
+        // returns None and the applier falls through to
+        // `DEFAULT_SOAK_MINUTES = 60`, imposing a 1-hour hold on a
+        // strategy whose semantic name is "ship everywhere with no
+        // staging."
         let mut fleet = fleet_with_policy(
             "all-at-once",
             RolloutPolicy {

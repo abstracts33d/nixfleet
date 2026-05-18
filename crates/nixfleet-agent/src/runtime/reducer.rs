@@ -51,12 +51,8 @@ use super::{
 /// (60s), so under-shooting safely: real probe-failure detection
 /// still fires, just 60s later than a tuned deployment would. Safe
 /// for v0.2 demo + lab work; not appropriate for production fleets
-/// with tight SLOs.
-///
-/// **Do NOT delete this comment without the NixOS-module wire-through
-/// landing**. The Tier-1 deletion in Phase 8 only removes scar
-/// tissue from defunct architecture; this is a known gap with a
-/// dated deferral and explicit operator-facing impact.
+/// with tight SLOs. NixOS-module wire-through to make this
+/// operator-tunable is tracked in `v0.2.1-followups.md`.
 const SUSTAINED_FAILURE_THRESHOLD_SECS: i64 = 120;
 
 #[allow(clippy::too_many_arguments)]
@@ -208,16 +204,17 @@ async fn run_host_event(
     // event must be a fresh dispatch. `target_closure` is carried on
     // the event payload, having been validated by the longpoll
     // worker's `manifest_cache.ensure_for_dispatch` call against the
-    // freshly-fetched per-rollout manifest. The reducer's own
-    // `manifests` cache is NOT consulted at bootstrap (D-024): that
-    // cache is fed by `agent_manifest_poll` on a slower cadence and
-    // can be stale immediately after a new rollout's channel_ref is
-    // published, producing a TOCTOU between longpoll's verify and
-    // the reducer's snapshot read. Carrying the validated value with
-    // the event makes the trust chain explicit: longpoll verifies
-    // against the signed manifest, longpoll passes the value forward,
-    // reducer consumes it without re-derivation. RFC-0011 §1
-    // invariant 1.
+    // freshly-fetched per-rollout manifest.
+    //
+    // LOADBEARING: the reducer's own `manifests` cache is NOT
+    // consulted at bootstrap — that cache is fed by
+    // `agent_manifest_poll` on a slower cadence and can be stale
+    // immediately after a new rollout's channel_ref is published,
+    // producing a TOCTOU between longpoll's verify and the reducer's
+    // snapshot read. Carrying the validated value with the event
+    // makes the trust chain explicit: longpoll verifies against the
+    // signed manifest, longpoll passes the value forward, reducer
+    // consumes it without re-derivation. RFC-0011 §1 invariant 1.
     let prior = host_states.get(&rollout_id).cloned();
     let (state, policy_channel) = match (prior, &event) {
         (Some(s), _) => {
@@ -372,13 +369,12 @@ async fn run_advance_tick(
 /// First-touch bootstrap for a fresh `LocalActivate` event. Pure: derives
 /// channel from the canonical `RolloutId` composite (RFC-0012 §6.3); the
 /// caller threads in the manifest-looked-up `target_closure` for this
-/// host (selecting by `hostname == cfg.machine_id`, NOT
-/// `host_set.first()` — that was the SR-2 bug) and the CP-resolved
-/// `soak_due_at` carried by the `LocalActivate` event from
-/// `DispatchResponse.soak_due_at` (D-019 fix — pre-fix this was
-/// hardcoded to `now + 5min` on the agent side, ignoring CP's
-/// policy-resolved window per RFC-0011 §1 invariant 1). Caller also
-/// threads `now` so the helper stays clock-injection-free.
+/// host (selecting by `hostname == cfg.machine_id`) and the
+/// CP-resolved `soak_due_at` carried by the `LocalActivate` event
+/// from `DispatchResponse.soak_due_at` (CP is the single source of
+/// truth for the policy-resolved soak window per RFC-0011 §1
+/// invariant 1). Caller also threads `now` so the helper stays
+/// clock-injection-free.
 fn bootstrap_pending_state(
     rollout_id: &nixfleet_proto::RolloutId,
     target_closure: &str,
@@ -619,14 +615,14 @@ mod tests {
 
     #[test]
     fn bootstrap_uses_caller_provided_soak_due_at_not_hardcoded() {
-        // D-019 regression guard: soak_due_at is the CP-resolved value
-        // carried by the LocalActivate event (from
-        // DispatchResponse.soak_due_at, computed by CP from the manifest's
-        // rollout_policies[policy].waves[wave_index].soak_minutes). The
-        // pre-fix bootstrap hardcoded `now + 5min` here, ignoring CP's
-        // resolution and causing every host to soak 5 minutes regardless
-        // of policy. Demo's all-at-once policy with soak_minutes=0
-        // (via D-017's normalize_rollout_policies) was the surfacing case.
+        // LOADBEARING: soak_due_at is the CP-resolved value carried
+        // by the LocalActivate event (from
+        // DispatchResponse.soak_due_at, computed by CP from the
+        // manifest's
+        // rollout_policies[policy].waves[wave_index].soak_minutes).
+        // A hardcoded agent-side default would ignore CP's
+        // resolution and force every host through the same soak
+        // window regardless of policy.
         let rid = nixfleet_proto::RolloutId::new("stable", "abc1234deadbeef");
         let now = fixed_now();
         let dispatched_soak = now + chrono::Duration::seconds(0);
@@ -648,34 +644,19 @@ mod tests {
 
     #[test]
     fn bootstrap_target_closure_independent_of_manifests_snapshot() {
-        // D-024 regression guard. The pre-fix run_host_event bootstrap
-        // arm read target_closure from
-        // `manifests.rollouts.get(channel).host_set[hostname].target_closure`
-        // — a snapshot fed by `agent_manifest_poll` on a slower cadence
-        // than longpoll's dispatch arrival. When a new rollout's
-        // channel_ref had just been published, this snapshot could
-        // still hold the OLD per-rollout manifest (the per-rollout
-        // fetch hadn't completed inside manifest_poll's next tick yet),
-        // so the bootstrap stamped state.target_closure with the OLD
-        // value even though longpoll's `ensure_for_dispatch` had just
-        // verified a FRESH dispatch target against the NEW per-rollout
-        // manifest. The race produced agents stuck in Soaking against
-        // an OLD target while CP knew the canonical target was NEW
-        // — Converged events would be rejected by CP's verifier.
-        //
-        // Lab observation (2026-05-17 ~19:09): edge channel_ref changed
-        // from one signing run to the next. Agent's longpoll fetched +
-        // verified the NEW per-rollout manifest, but the reducer's
-        // manifests.rollouts["edge"] still held the OLD set at bootstrap
-        // time → state.target_closure = OLD → permanent stuck state.
-        //
-        // The lift carries the longpoll-validated target_closure on the
-        // LocalActivate event itself. The bootstrap pure helper here is
+        // LOADBEARING: bootstrap MUST read target_closure from the
+        // LocalActivate event (which longpoll filled with the
+        // freshly-validated dispatch target), NOT from the reducer's
+        // `manifests` snapshot. The snapshot is fed by
+        // `agent_manifest_poll` on a slower cadence than longpoll's
+        // dispatch arrival; when a new rollout's channel_ref is
+        // freshly published, the snapshot can still hold the OLD
+        // per-rollout manifest even after longpoll verified the NEW
+        // target — producing a TOCTOU that strands the agent in
+        // Soaking against an OLD target while CP has already moved on
+        // (RFC-0011 §1 invariant 1). The pure helper is
         // caller-driven; the call site in run_host_event extracts the
-        // field from the event and passes it through. No manifests
-        // lookup involved in the target_closure decision. This test
-        // pins the pure helper's caller-driven shape; the call-site
-        // change in run_host_event is what relies on it.
+        // field from the event and passes it through.
         let rid = nixfleet_proto::RolloutId::new("edge", "f8c46e472deadbeef");
         let now = fixed_now();
         let soak = now;
@@ -790,11 +771,8 @@ mod tests {
 
     #[test]
     fn all_enforce_probes_pass_ignores_failing_observe_and_disabled() {
-        // RFC-0010 §3.3 regression guard for the convergence-emission
-        // path (D-016 demo symptom: web-02 with passing nginx enforce +
-        // failing evidence-nis2 observe stayed stuck in Soaking because
-        // no emission path existed; even with one, an unfiltered probe
-        // loop would gate on the observe failure). Mirror of the
+        // RFC-0010 §3.3 regression guard: observe + disabled probe
+        // failures MUST NOT gate convergence. Mirror of the
         // collect_failing_enforce_probes filter on the soak-fail side.
         let mut probes = HashMap::new();
         probes.insert(

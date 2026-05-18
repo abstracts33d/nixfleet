@@ -139,7 +139,8 @@ impl GateBlock {
 ///
 /// `tick_dispatched` is the per-budget counter the planner maintains
 /// across a single `plan_next()` call so within-tick over-commit is
-/// caught (D-008 §2). Empty map = first host in the tick.
+/// caught (see `planner_gates::disruption_budget` for the rationale).
+/// Empty map = first host in the tick.
 //
 // Eight parameters because each gate's input set is load-bearing and
 // distinct; bundling into a `GateCtx` struct would just move the

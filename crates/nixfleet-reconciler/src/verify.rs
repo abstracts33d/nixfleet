@@ -206,12 +206,13 @@ pub fn verify_artifact(
     )?;
     // Post-deserialization normalization: synthesize the implicit
     // match-all zero-soak wave for `all-at-once` policies declared
-    // without explicit waves. Signed bytes are not modified (signature
-    // covered the wire form with empty waves); the in-memory form
-    // every consumer sees is canonical. Inner field is module-private
-    // — direct mutation is the chosen access path so the witness type
-    // doesn't grow a public mutator. See `nixfleet_proto::normalize_
-    // rollout_policies` for the design rationale (D-017).
+    // without explicit waves. Signed bytes are not modified
+    // (signature covered the wire form with empty waves); the
+    // in-memory form every consumer sees is canonical. Inner field is
+    // module-private — direct mutation is the chosen access path so
+    // the witness type doesn't grow a public mutator. See
+    // `nixfleet_proto::normalize_rollout_policies` for the design
+    // rationale.
     nixfleet_proto::normalize_rollout_policies(&mut verified.inner);
     Ok(verified)
 }

@@ -1,18 +1,16 @@
-//! Host-edges gate (new-shape). Per-host DAG within a single rollout:
+//! Host-edges gate. Per-host DAG within a single rollout:
 //! `Edge { gated: A, gates: B }` holds A's dispatch until B is
-//! ordering-eligible: Converged (the canonical "health-verified at
-//! target") OR Deferred (the "I've staged what I can; activation
-//! completes on next reboot" terminal-for-cascade state per Option C
-//! / D-027 lift).
+//! ordering-eligible — Converged (canonical "health-verified at
+//! target") OR Deferred (activation staged, live-switch pending
+//! operator reboot per RFC-0008 §3 terminal-for-ordering).
 //!
-//! The "Deferred counts as ordering-eligible" predicate is the
-//! lift-of-LIFT-#2: without it, a single host that hit
-//! `DeferredPendingReboot` (framework upgrade touching dbus/systemd/
-//! kernel/init) would halt the cascade indefinitely on any
-//! downstream host-edge dependency. Deferred is "this host is done
-//! participating in the rollout step from an ordering standpoint" —
-//! the actual verification (probes, soak) gets to run once the
-//! operator reboots.
+//! LOADBEARING: Deferred counts as ordering-eligible. Without this,
+//! a single host that hit `DeferredPendingReboot` (framework upgrade
+//! touching dbus/systemd/kernel/init) would halt the cascade
+//! indefinitely on downstream host-edge dependencies. Deferred is
+//! "this host is done participating in the rollout step from an
+//! ordering standpoint"; actual health verification (probes, soak)
+//! runs once the operator reboots.
 
 use nixfleet_state_machine::HostState;
 

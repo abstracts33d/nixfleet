@@ -206,11 +206,9 @@ fn spawn_ticker(
     clock: ClockHandle,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        // D-030: floor probe interval at MIN_INTERVAL_SECS (5s) — guards
-        // against a misconfigured 0/1-second probe DOSing the host.
-        // Restored from canonical health.rs (a9ff4f43^); Phase 7g's
-        // migration to per-kind runner modules dropped the constant and
-        // the worker's clamp regressed to `.max(1)`.
+        // LOADBEARING: floor probe interval at MIN_INTERVAL_SECS (5s)
+        // — guards against a misconfigured 0/1-second probe DOSing
+        // the host.
         let interval = std::time::Duration::from_secs(
             decl.interval_seconds
                 .max(super::probe_runners::MIN_INTERVAL_SECS),

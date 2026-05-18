@@ -17,28 +17,21 @@ pub mod exec;
 pub mod http;
 pub mod tcp;
 
-/// Floor on probe interval. Guards against a misconfigured 0/1-second
-/// probe DOSing the host. Operator-declared `intervalSeconds` values
-/// below this are rounded up at the worker layer
-/// (`crate::runtime::workers::probe::spawn` clamps via
-/// `interval_seconds.max(MIN_INTERVAL_SECS)`).
-///
-/// Restored from `a9ff4f43^:crates/nixfleet-agent/src/health.rs` (D-030)
-/// where it was `MIN_INTERVAL_SECS: u64 = 5`. Phase 7g's migration to
-/// per-kind runner modules dropped the constant and the worker's clamp
-/// regressed to `.max(1)` — still a clamp, but a misconfigured 1-second
-/// HTTP probe could still issue 60 reqs/min against a backend the
-/// operator didn't intend to load.
+/// LOADBEARING: floor on probe interval guards against a misconfigured
+/// 0/1-second probe DOSing the host. Operator-declared
+/// `intervalSeconds` values below this are rounded up at the worker
+/// layer (`crate::runtime::workers::probe::spawn` clamps via
+/// `interval_seconds.max(MIN_INTERVAL_SECS)`). A weaker `.max(1)`
+/// floor would still let a 1-second HTTP probe issue 60 reqs/min
+/// against an operator-unintended backend.
 pub const MIN_INTERVAL_SECS: u64 = 5;
 
-/// Per-failure cap on `failure_reason` string length to keep the wire
-/// body bounded. Runners pass their failure-reason strings through
-/// [`truncate_reason`] before constructing a `RunnerOutcome::Fail`.
-///
-/// Restored from `a9ff4f43^:crates/nixfleet-agent/src/health.rs` (D-030).
-/// Pre-restoration runners could emit arbitrarily long stderr / response
-/// bodies as `failure_reason`, which inflated the outbound queue's
-/// JSON payloads and event-log row sizes without value.
+/// LOADBEARING: per-failure cap on `failure_reason` string length keeps
+/// the wire body bounded. Without truncation, runners can emit
+/// arbitrarily long stderr / response bodies that inflate the outbound
+/// queue's JSON payloads and event-log row sizes. Runners pass their
+/// failure-reason strings through [`truncate_reason`] before
+/// constructing a `RunnerOutcome::Fail`.
 pub const FAILURE_REASON_MAX_LEN: usize = 512;
 
 /// Truncate to `FAILURE_REASON_MAX_LEN` chars; appends `"...[truncated]"`
@@ -129,9 +122,9 @@ impl RunnerOutcome {
         Self {
             status: ProbeStatus::Fail,
             observed_at,
-            // D-030: truncate at construction time so every runner gets
-            // the FAILURE_REASON_MAX_LEN cap without having to remember
-            // (defense-in-depth via the type-system funnel).
+            // Truncate at construction time so every runner gets the
+            // FAILURE_REASON_MAX_LEN cap via the type funnel
+            // (defense-in-depth — runners can't accidentally bypass).
             failure_reason: Some(truncate_reason(reason.into())),
             sub_results: None,
         }
@@ -195,11 +188,10 @@ mod tests {
 
     #[test]
     fn fail_outcome_applies_truncation_at_construction() {
-        // D-030 regression guard: every RunnerOutcome::fail call routes
-        // through truncate_reason. Runners can construct outcomes with
-        // arbitrary failure-reason content (stderr tails, response
-        // bodies, exception traces) without worrying about wire-size
-        // amplification.
+        // Regression guard: every RunnerOutcome::fail call routes
+        // through truncate_reason so runners can produce arbitrary
+        // failure-reason content (stderr tails, response bodies,
+        // exception traces) without wire-size amplification.
         let huge = "fail reason ".repeat(200); // ~2400 chars
         let outcome = RunnerOutcome::fail(t0(), huge);
         let reason = outcome.failure_reason.expect("failure_reason set");

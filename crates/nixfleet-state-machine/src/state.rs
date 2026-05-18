@@ -6,11 +6,11 @@ use chrono::{DateTime, Utc};
 use nixfleet_proto::OnHealthFailure;
 use serde::{Deserialize, Serialize};
 
-// `RolloutId` lives in `nixfleet-proto` (RFC-0012 §6.3 + D-007 amendment
-// `0320c2fa`): a newtype around `"{channel}@{channel_ref}"` with
-// constructor discipline analogous to `Verified<T>`. Re-exported from
-// here so downstream crates that already `use nixfleet_state_machine::RolloutId`
-// keep working without a renaming churn pass.
+// `RolloutId` lives in `nixfleet-proto` (RFC-0012 §6.3): a newtype
+// around `"{channel}@{channel_ref}"` with constructor discipline
+// analogous to `Verified<T>`. Re-exported from here so downstream
+// crates that already `use nixfleet_state_machine::RolloutId` work
+// without a renaming churn pass.
 pub use nixfleet_proto::RolloutId;
 
 pub type ClosureHash = String;

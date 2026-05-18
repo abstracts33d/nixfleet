@@ -4,17 +4,6 @@
 //! `LocalActivationCompleted` / `LocalActivationFailed` based on the
 //! pipeline's outcome.
 //!
-//! D-026 restored the rich pipeline (realise → set-profile → fire →
-//! verify-poll → self-correct) after Phase 8d-1 (`7469b4bd`) prematurely
-//! deleted the legacy `crate::activation` module on a "zero callers"
-//! rule. Phase 7's runtime worker replacement (this file) was a
-//! fire-and-forget shim that did not preserve the operational logic;
-//! the deletion exposed the regression on Phase N>1 cascades
-//! (OBSERVATION-020 on demo: nix-env --set missing, so
-//! switch-to-configuration self-switched the old closure; D-025
-//! addressed the fire-and-forget polling but couldn't restore the
-//! missing operations alone).
-//!
 //! Test-mode (`NIXFLEET_AGENT_ACTIVATION_TEST_MODE`) short-circuits in
 //! this worker BEFORE entering the pipeline — smoke tests + integration
 //! tests rely on this to avoid spawning real subprocesses.
@@ -64,16 +53,15 @@ pub fn spawn(
 
 async fn handle_intent(input_tx: &mpsc::Sender<ReducerInput>, intent: ActivationIntent) {
     let started_at = Utc::now();
-    // Forward path emits `LocalActivationStarted` so the reducer can stamp
-    // `activation_started_at` (visibility per RFC-0008 §4.2). The rollback
-    // path SKIPS this event because Failed → Activating is not a legal
-    // state-machine transition (rollback drives Failed → Reverted via
-    // `LocalRollbackCompleted` directly per `failed.rs`). Emitting an
-    // Activation* event from Failed state is what D-031 closed —
-    // pre-fix the reducer rejected both LocalActivationStarted and
-    // LocalActivationCompleted with "step() rejected event — illegal
-    // transition or invariant violation" warnings, and the Failed →
-    // Reverted bookkeeping + quarantine populate were silently blocked.
+    // LOADBEARING: Failed → Activating is not a legal state-machine
+    // transition; rollback drives Failed → Reverted directly via
+    // `LocalRollbackCompleted` (RFC-0008 §3 / `failed.rs`). The forward
+    // path emits `LocalActivationStarted` to stamp
+    // `activation_started_at` (RFC-0008 §4.2); the rollback path skips
+    // it — emitting an Activation* event from Failed state causes the
+    // reducer to silently reject both LocalActivationStarted and
+    // LocalActivationCompleted, blocking Failed → Reverted bookkeeping
+    // and the quarantine populate.
     if !intent.rollback {
         let switch_method = "switch-to-configuration".to_string();
         if let Err(err) = input_tx
@@ -142,13 +130,13 @@ async fn handle_intent(input_tx: &mpsc::Sender<ReducerInput>, intent: Activation
                     %reverted_to_closure,
                     "activation: rollback pipeline completed; firing LocalRollbackCompleted",
                 );
-                // D-031: must be LocalRollbackCompleted (not
-                // LocalActivationCompleted) — only LocalRollbackCompleted
-                // and RemoteRollbackComplete are legal from Failed state
-                // per state-machine `failed.rs`. The reverted_to_closure
-                // is the post-rollback `/run/current-system` basename
-                // observed by `verify_poll` in `activation::rollback::
-                // rollback_with`.
+                // LOADBEARING: only `LocalRollbackCompleted` (not
+                // `LocalActivationCompleted`) is legal from Failed
+                // state per state-machine `failed.rs`. The
+                // reverted_to_closure is the post-rollback
+                // `/run/current-system` basename observed by
+                // `verify_poll` in
+                // `activation::rollback::rollback_with`.
                 Event::LocalRollbackCompleted {
                     reverted_to_closure,
                     exit_code: 0,
@@ -352,28 +340,28 @@ mod tests {
         }
     }
 
-    /// D-031 regression guard. Pre-fix the rollback path emitted
-    /// `LocalActivationStarted` followed by `LocalActivationCompleted`
-    /// from the worker — both illegal from Failed state per the
-    /// state-machine `failed.rs` handler (only `LocalRollbackCompleted`
-    /// and `RemoteRollbackComplete` are legal). The reducer rejected
-    /// both with "step() rejected event — illegal transition" warnings;
-    /// Failed → Reverted never fired; quarantine never populated.
+    /// Regression guard for the rollback path's event-type contract.
+    /// The state-machine handler at `failed.rs:29-62` legalises only
+    /// `LocalRollbackCompleted` and `RemoteRollbackComplete` from
+    /// Failed state; emitting `LocalActivationStarted` or
+    /// `LocalActivationCompleted` instead would be rejected by the
+    /// reducer as "illegal transition", silently blocking Failed →
+    /// Reverted and the quarantine populate.
     ///
-    /// The fix routes the rollback path through:
-    ///   (a) skip `LocalActivationStarted` entirely (rollback doesn't
-    ///       start activation, it starts rollback)
-    ///   (b) emit `LocalRollbackCompleted { reverted_to_closure, ... }`
-    ///       on success — the state-machine handler at `failed.rs:29-62`
-    ///       sets state.state = Reverted, populates `reverted_at` +
-    ///       `reverted_to`, and emits `OutboundAgentEvent::RollbackComplete`
-    ///       for CP propagation (which drives CP's
-    ///       `Effect::RemoteInsertQuarantine` on the bad SHA).
+    /// The rollback path:
+    ///   (a) skips `LocalActivationStarted` (rollback doesn't start
+    ///       activation)
+    ///   (b) emits `LocalRollbackCompleted { reverted_to_closure, ... }`
+    ///       on success — handler sets state.state = Reverted, populates
+    ///       `reverted_at` + `reverted_to`, and emits
+    ///       `OutboundAgentEvent::RollbackComplete` for CP propagation
+    ///       (driving CP's `Effect::RemoteInsertQuarantine` on the bad
+    ///       SHA).
     ///
     /// This test pins the worker's test-mode short-circuit path for
-    /// rollback intents. The full pipeline path (production) is the
-    /// same code branch with real `run_rollback_pipeline()` instead of
-    /// the test gate.
+    /// rollback intents. The production pipeline path is the same code
+    /// branch with real `run_rollback_pipeline()` instead of the test
+    /// gate.
     #[tokio::test]
     async fn rollback_intent_emits_local_rollback_completed_not_activation_completed() {
         use crate::runtime::wire::ActivationIntent;
@@ -425,7 +413,7 @@ mod tests {
                 );
             }
             other => {
-                panic!("rollback path must emit LocalRollbackCompleted (D-031); got: {other:?}")
+                panic!("rollback path must emit LocalRollbackCompleted; got: {other:?}")
             }
         }
 

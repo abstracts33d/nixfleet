@@ -47,20 +47,19 @@ pub enum Event {
     /// bootstrap dependency on its own cached `SignedManifestSet`,
     /// which is fed by a separate worker (`agent_manifest_poll`) on
     /// a slower cadence and can be stale when a new rollout's
-    /// channel_ref has just been published (D-024 race). RFC-0011 §1
-    /// invariant 1: the longpoll's just-verified value is the single
-    /// source of truth at bootstrap time.
+    /// channel_ref has just been published. RFC-0011 §1 invariant 1:
+    /// the longpoll's just-verified value is the single source of
+    /// truth at bootstrap time.
     ///
     /// `soak_due_at` is the CP-resolved soak deadline carried verbatim
-    /// from the `/v1/agent/dispatch` response (`DispatchResponse.soak_due_at`,
-    /// computed by `runtime::applier::open_rollout` from the manifest's
-    /// `rollout_policies[policy].waves[wave_index].soak_minutes`). CP is
-    /// the single source of truth for soak resolution per RFC-0011 §1
-    /// invariant 1; the agent's bootstrap reads this value into
-    /// `state.soak_due_at` and the convergence-emission path
-    /// (`runtime::reducer::run_advance_tick` pass-gate, D-016) reads it
-    /// back. A pre-D-019 implementation hardcoded a 5-minute window on
-    /// the agent side, ignoring CP's resolution.
+    /// from the `/v1/agent/dispatch` response
+    /// (`DispatchResponse.soak_due_at`, computed by
+    /// `runtime::applier::open_rollout` from the manifest's
+    /// `rollout_policies[policy].waves[wave_index].soak_minutes`). CP
+    /// is the single source of truth for soak resolution per
+    /// RFC-0011 §1 invariant 1; the agent's bootstrap reads this
+    /// value into `state.soak_due_at` and the convergence-emission
+    /// pass-gate reads it back.
     LocalActivate {
         current_closure_at_dispatch: ClosureHash,
         target_closure: ClosureHash,

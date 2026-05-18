@@ -3,11 +3,10 @@
 //! `FleetResolved.waves[channel]` (positional). `current_wave` lives on
 //! `RolloutSummary` and is maintained by the applier.
 //!
-//! **Default-deny on inconsistent inputs** (D-027 hardening): the
-//! pre-hardening gate silently passed when host-wave resolution
-//! returned None (host not listed in any wave for its channel),
-//! masking operator misconfiguration. Post-hardening, an unstaged host
-//! in a channel that declares waves is blocked with
+//! **Default-deny on inconsistent inputs.** A silent pass when
+//! host-wave resolution returns None (host not listed in any wave for
+//! its channel) would mask operator misconfiguration. An unstaged
+//! host in a channel that declares waves is blocked with
 //! `GateBlock::HostUnstaged`. The "channel has no waves at all"
 //! shape (typical of all-at-once policies; mk-fleet builds
 //! `fleet.waves[channel] = []` when the policy declares no explicit
@@ -44,7 +43,7 @@ pub fn check(
     {
         Some(idx) => idx,
         None => {
-            // D-027 hardening: a channel with declared waves but no
+            // Default-deny: a channel with declared waves but no
             // assignment for this host is a misconfiguration. Block
             // dispatch rather than silently passing.
             return Some(GateBlock::HostUnstaged {
@@ -97,18 +96,15 @@ mod tests {
         );
         FleetState {
             host_states: HashMap::new(),
-            active_rollout_per_channel: HashMap::new(),
             rollouts,
             outstanding_failing_enforce_probes: HashMap::new(),
         }
     }
 
-    /// D-027 hardening regression: a channel that declares waves but
+    /// Default-deny regression: a channel that declares waves but
     /// where the host being evaluated is not listed in any of them
-    /// MUST block with `HostUnstaged`. Pre-hardening this case
-    /// silently passed (`position(...) → None → ?-early-return →
-    /// gate returns None`), masking operator misconfiguration that
-    /// would let an unstaged host dispatch outside the wave plan.
+    /// MUST block with `HostUnstaged`. A silent pass would let an
+    /// unstaged host dispatch outside the wave plan.
     #[test]
     fn host_not_in_any_wave_blocks_with_host_unstaged() {
         let fleet = FleetBuilder::new()

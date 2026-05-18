@@ -25,8 +25,8 @@ pub type HostId = String;
 pub type ClosureHash = String;
 
 // `RolloutId` is a newtype around `"{channel}@{channel_ref}"`
-// (RFC-0012 §6.3 + D-007 amendment `0320c2fa`); lives in nixfleet-proto.
-// Re-exported here so callers that already
+// (RFC-0012 §6.3); lives in nixfleet-proto. Re-exported here so
+// callers that already
 // `use nixfleet_reconciler::planner_types::RolloutId` keep working.
 pub use nixfleet_proto::RolloutId;
 
@@ -66,10 +66,6 @@ pub struct FleetState {
     /// `db::HostRolloutRecords::all_for_rollout` per active rollout.
     pub host_states: HashMap<(RolloutId, HostId), HostRolloutState>,
 
-    /// One active rollout per channel. The mapping is updated by the
-    /// applier when `OpenRollout` actions fire.
-    pub active_rollout_per_channel: HashMap<ChannelId, RolloutId>,
-
     pub rollouts: HashMap<RolloutId, RolloutSummary>,
 
     /// Per-(rollout, host) outstanding enforce-mode probe failure count.
@@ -77,11 +73,6 @@ pub struct FleetState {
     /// at `FleetState` construction time (RFC-0010 §7.2). Read by the
     /// compliance-wave gate; absent entries mean zero failing enforce
     /// probes (RFC-0008 §6 — no fail-open fallback).
-    ///
-    /// **Phase 9a**: shape is correct, but the projection's source rows
-    /// (`probe_failures` table) aren't written until 9b's applier
-    /// co-write lands — so the map is always empty in 9a. See
-    /// `planner_gates::compliance_wave` for the gate-side note.
     pub outstanding_failing_enforce_probes: HashMap<RolloutId, HashMap<HostId, usize>>,
 }
 

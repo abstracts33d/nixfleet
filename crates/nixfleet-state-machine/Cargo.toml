@@ -31,5 +31,5 @@ serde = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 # `test-helpers` enables `RolloutId::from_raw_for_tests` + `From<&str>` /
-# `From<String>` impls for test ergonomics (RFC-0012 §6.3 + D-007).
+# `From<String>` impls for test ergonomics (RFC-0012 §6.3).
 nixfleet-proto = { path = "../nixfleet-proto", features = ["test-helpers"] }
