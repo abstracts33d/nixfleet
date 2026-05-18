@@ -93,15 +93,18 @@ async fn heartbeat_once(
     clock: &ClockHandle,
     input_tx: &mpsc::Sender<ReducerInput>,
 ) -> anyhow::Result<()> {
-    // For 7c the heartbeat carries the agent's identity + current
-    // wallclock; the `current_closure` + `rollout_id` payload that the
-    // reducer maintains land in 7f's boot-recovery wiring (the
-    // reducer publishes them via a shared snapshot the heartbeat
-    // worker reads on each tick).
+    // LIFT #5: read /run/current-system on each heartbeat. The agent's
+    // observed closure is the load-bearing soft-state input the CP
+    // needs to rebuild `host_rollout_records` from agent traffic alone
+    // after a wipe-restart (architecture.md §305 acceptance gate 1).
+    // `rollout_id` stays None: that keeps the heartbeat in the
+    // boot-recovery shape so CP's LIFT #1 + LIFT #5 synthesis fires
+    // when it sees `current_closure == record.target_closure`.
+    let current_closure = crate::runtime::recovery::read_current_closure(&cfg.current_system_path);
     let req = HeartbeatRequest {
         hostname: cfg.machine_id.clone(),
         rollout_id: None,
-        current_closure: None,
+        current_closure,
         at: clock.now(),
     };
     // Per-request timeout override: comms::build_client uses a 30s

@@ -225,6 +225,7 @@ async fn longpoll_worker_presents_mtls_cert_on_dispatch_request() {
         ca_cert: Some(ca_path),
         client_cert: Some(cert_path),
         client_key: Some(key_path),
+        current_system_path: dir.path().join("missing-current-system"),
     };
 
     let (input_tx, _input_rx) = mpsc::channel::<ReducerInput>(8);
@@ -406,6 +407,7 @@ async fn heartbeat_worker_forwards_bootstrap_rollouts_to_reducer() {
         ca_cert: Some(ca_path),
         client_cert: Some(cert_path),
         client_key: Some(key_path),
+        current_system_path: dir.path().join("missing-current-system"),
     };
 
     let (input_tx, mut input_rx) = mpsc::channel::<ReducerInput>(8);

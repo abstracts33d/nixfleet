@@ -764,6 +764,110 @@ async fn heartbeat_does_not_synthesize_when_current_closure_does_not_match_targe
     drop(rt);
 }
 
+/// LIFT #5 regression: when CP is wiped + restarted while agents stay
+/// up, the planner re-opens the rollout in `Pending` and the agent's
+/// next heartbeat carries `current_closure == target_closure`. CP MUST
+/// drive the row through the full `Pending → Activating → Soaking →
+/// Converged` synthesis chain on that one heartbeat so the §305
+/// "one reconcile cycle, zero operator intervention" property holds.
+#[tokio::test]
+async fn heartbeat_synthesizes_pending_to_converged_when_agent_already_at_target() {
+    let state = make_state();
+    let db = state.db.clone().unwrap();
+    let cancel = CancellationToken::new();
+    let clock = Arc::new(SystemClock::new());
+    let rt = runtime::spawn(cancel.clone(), state.clone(), clock);
+
+    let set = signed_manifest_set_one_host("target-closure-X");
+    let rollout_id = nixfleet_proto::RolloutId::new(
+        "stable",
+        &set.rollouts.get("stable").unwrap().inner().channel_ref,
+    );
+    rt.input_tx
+        .send(ReducerInput::ManifestSetUpdated(Box::new(set)))
+        .await
+        .unwrap();
+    // Wait for planner-driven OpenRollout to create the Pending row.
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .map(|s| s.state == nixfleet_state_machine::HostState::Pending)
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    // Post-wipe heartbeat: rollout_id=None, current==target. The
+    // agent's reducer pre-wipe was at Converged; CP has just re-opened
+    // the rollout in Pending. The synthesis chain must close the gap
+    // without any operator action on the agent.
+    let (reply_tx, reply_rx) = oneshot::channel::<HeartbeatReply>();
+    rt.input_tx
+        .send(ReducerInput::HeartbeatReceived {
+            host: "h1".to_string(),
+            rollout_id: None,
+            current_closure: Some("target-closure-X".to_string()),
+            at: Utc::now(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+    let _reply = tokio::time::timeout(Duration::from_secs(3), reply_rx)
+        .await
+        .expect("heartbeat reply within timeout")
+        .expect("reducer must send the reply");
+
+    // The synthesis chain is in-process and runs before the reply
+    // returns, but the upserts go through the reducer's MPSC. Poll
+    // briefly until the row reaches Converged.
+    {
+        let db_for_poll = db.clone();
+        let rollout_for_poll = rollout_id.clone();
+        wait_for(Duration::from_secs(3), || {
+            db_for_poll
+                .host_rollout_records()
+                .load(rollout_for_poll.as_str(), "h1")
+                .ok()
+                .flatten()
+                .map(|s| s.state == nixfleet_state_machine::HostState::Converged)
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    let final_state = db
+        .host_rollout_records()
+        .load(rollout_id.as_str(), "h1")
+        .unwrap()
+        .expect("h1 record present after synthesis");
+    assert_eq!(
+        final_state.state,
+        nixfleet_state_machine::HostState::Converged,
+        "Pending → Converged synthesis chain must land at Converged",
+    );
+    assert!(
+        final_state.converged_at.is_some(),
+        "Converged transition must stamp converged_at (the v0.2.0 teardown harness gates on this)",
+    );
+    assert!(
+        final_state.activation_completed_at.is_some(),
+        "synthesised Activating → Soaking transition must stamp activation_completed_at",
+    );
+    assert!(
+        final_state.dispatch_acked_at.is_some(),
+        "synthesised Pending → Activating transition must stamp dispatch_acked_at",
+    );
+
+    cancel.cancel();
+    drop(rt);
+}
+
 #[tokio::test]
 async fn current_wave_advances_when_every_wave_zero_host_converges() {
     // Regression for the wave-promotion bump. Without it,

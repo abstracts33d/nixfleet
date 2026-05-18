@@ -428,6 +428,7 @@ async fn manifest_poll_emits_signed_manifest_set_within_one_tick() {
         ca_cert: Some(ca_path),
         client_cert: Some(cert_path),
         client_key: Some(key_path),
+        current_system_path: agent_state.path().join("missing-current-system"),
     };
     let clock: ClockHandle = Arc::new(SystemClock::new());
     let (input_tx, mut input_rx) = mpsc::channel::<ReducerInput>(8);

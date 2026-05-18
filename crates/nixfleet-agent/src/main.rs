@@ -144,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
             ca_cert: args.ca_cert.clone(),
             client_cert: args.client_cert.clone(),
             client_key: args.client_key.clone(),
+            current_system_path: nixfleet_agent::runtime::recovery::default_current_system_path(),
         },
         clock,
     );

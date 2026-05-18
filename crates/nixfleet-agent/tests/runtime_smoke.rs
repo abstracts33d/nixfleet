@@ -121,6 +121,7 @@ fn spawn_agent(
         ca_cert: None,
         client_cert: None,
         client_key: None,
+        current_system_path: state_dir.path().join("missing-current-system"),
     };
     let clock: nixfleet_proto::clock::ClockHandle = Arc::new(SystemClock::new());
     let queue = Arc::new(OutboundQueue::open(&cfg.state_dir).expect("open outbound queue"));

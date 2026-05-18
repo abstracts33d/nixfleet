@@ -184,6 +184,15 @@ pub struct AgentConfig {
     pub ca_cert: Option<std::path::PathBuf>,
     pub client_cert: Option<std::path::PathBuf>,
     pub client_key: Option<std::path::PathBuf>,
+    /// Path to the NixOS `current-system` symlink. The agent reads it
+    /// to populate `current_closure` on every steady-state heartbeat
+    /// (LIFT #5) so CP can rebuild `host_rollout_records` from agent
+    /// inputs alone after a wipe-and-restart, per the architectural
+    /// promise in `docs/design/architecture.md` §305. Production:
+    /// `/run/current-system`. Test fixtures point at a non-existent
+    /// path; `read_current_closure` returns `None` and the heartbeat
+    /// behaves as it did pre-LIFT-#5.
+    pub current_system_path: std::path::PathBuf,
 }
 
 /// Spawn the reducer + worker constellation.

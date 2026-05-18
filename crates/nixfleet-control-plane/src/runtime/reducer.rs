@@ -434,16 +434,35 @@ fn host_rollout_state_to_snapshot(
     }
 }
 
-/// Scan active host_rollout_records for `host`; for each record in
-/// `Activating` state whose `target_closure` matches the agent's
-/// reported `current_closure`, synthesize a `RemoteActivationCompleted`
-/// event and feed it through `handle_host_event`. Idempotent: if the
-/// state has already advanced past Activating (e.g. a concurrent agent
-/// emit beat us to it), the record won't match and the synthesis is a
-/// no-op. The synthesized event uses `last_event_seq + 1` so it lands
-/// at the head of the per-host event stream; subsequent agent events
-/// for the same rollout will use higher seqs on the agent's durable
-/// queue and won't conflict.
+/// Scan active host_rollout_records for `host`; for each record whose
+/// `target_closure` matches the agent's reported `current_closure`,
+/// synthesize the event chain that advances the row to a state
+/// consistent with the agent's observation. Idempotent: if the state
+/// has already advanced (e.g. concurrent agent emit), the record won't
+/// match and the synthesis is a no-op.
+///
+/// LOADBEARING: this is the CP-side half of architecture.md §305
+/// acceptance gate 1 ("destroying the CP database and rebuilding from
+/// empty state results in full fleet visibility within one reconcile
+/// cycle, with zero operator intervention beyond restarting the
+/// service"). The agent's heartbeat carries `current_closure` (LIFT
+/// #5) on every tick; CP rebuilds soft-state HRR rows from those
+/// inputs.
+///
+/// Three reachable starting states:
+///   - `Activating` — LIFT #1: agent restarted mid-rollout, boot
+///     observed `current == target`. Synthesise `RemoteActivationCompleted`.
+///   - `Deferred`   — Option C: operator rebooted to finish a
+///     critical-component activation. Same synthesis.
+///   - `Pending`    — LIFT #5: CP itself was wiped, planner re-opened
+///     the rollout in `Pending`, but the agent has been running the
+///     target closure all along. Synthesise the full
+///     `RemoteDispatchAck → RemoteActivationCompleted → RemoteConverged`
+///     chain. `RemoteConverged`'s soak-elapsed invariant is satisfied
+///     by stamping `converged_at = max(at, record.soak_due_at)` — the
+///     soak window's purpose (give probes time to fail) was exercised
+///     pre-wipe, so the post-wipe row's freshly-stamped `soak_due_at`
+///     does not gate convergence.
 async fn maybe_synthesize_recovery_completion(
     state: &Arc<AppState>,
     clock: &ClockHandle,
@@ -469,47 +488,133 @@ async fn maybe_synthesize_recovery_completion(
         }
     };
     for record in records {
-        // LIFT #1 + Option C: synthesize for both Activating (the
-        // boot-recovery-mid-Activating case) AND Deferred (the
-        // operator-rebooted-to-finish-deferred-activation case). Both
-        // states satisfy "host has a pending activation that takes
-        // effect on the next observed current_closure == target_closure".
-        if !matches!(
-            record.state,
-            nixfleet_state_machine::HostState::Activating
-                | nixfleet_state_machine::HostState::Deferred
-        ) {
-            continue;
-        }
         if record.target_closure != agent_current {
             continue;
         }
-        tracing::info!(
-            target: "cp_reducer",
-            host,
-            rollout_id = %record.rollout_id,
-            target = %record.target_closure,
-            prior_state = ?record.state,
-            "boot-recovery: synthesizing RemoteActivationCompleted (agent reports current_closure == target; retroactive confirmation per RFC-0008 §9.5)",
-        );
-        let synth_event = nixfleet_state_machine::Event::RemoteActivationCompleted {
-            observed_current_closure: agent_current.to_string(),
-            exit_code: 0,
-            completed_at: at,
-            seq: record.last_event_seq + 1,
-        };
         let rollout_id = record.rollout_id.clone();
-        handle_host_event(
-            state,
-            clock,
-            event_log_tx,
-            rs,
-            host,
-            &rollout_id,
-            synth_event,
-        )
-        .await;
+        match record.state {
+            nixfleet_state_machine::HostState::Activating
+            | nixfleet_state_machine::HostState::Deferred => {
+                tracing::info!(
+                    target: "cp_reducer",
+                    host,
+                    rollout_id = %record.rollout_id,
+                    target = %record.target_closure,
+                    prior_state = ?record.state,
+                    "boot-recovery: synthesizing RemoteActivationCompleted (LIFT #1; RFC-0008 §9.5)",
+                );
+                let synth_event = nixfleet_state_machine::Event::RemoteActivationCompleted {
+                    observed_current_closure: agent_current.to_string(),
+                    exit_code: 0,
+                    completed_at: at,
+                    seq: record.last_event_seq + 1,
+                };
+                handle_host_event(
+                    state,
+                    clock,
+                    event_log_tx,
+                    rs,
+                    host,
+                    &rollout_id,
+                    synth_event,
+                )
+                .await;
+            }
+            nixfleet_state_machine::HostState::Pending => {
+                synthesize_pending_to_converged(
+                    state,
+                    clock,
+                    event_log_tx,
+                    rs,
+                    &record,
+                    agent_current,
+                    at,
+                )
+                .await;
+            }
+            _ => continue,
+        }
     }
+}
+
+/// LIFT #5: drive a `Pending` HRR row through the full lifecycle to
+/// `Converged` when the agent reports `current_closure == target`.
+/// The chain preserves the event-log audit trail (RFC-0011 §1):
+/// every transition emits its usual `RemoteAppendEventLog` effect
+/// flagged with the synthesis context via the `seq` ordering relative
+/// to the pre-synthesis `last_event_seq`.
+async fn synthesize_pending_to_converged(
+    state: &Arc<AppState>,
+    clock: &ClockHandle,
+    event_log_tx: &EventLogTx,
+    rs: &mut ReducerState,
+    record: &nixfleet_state_machine::HostRolloutState,
+    agent_current: &str,
+    at: DateTime<Utc>,
+) {
+    let host = record.hostname.as_str();
+    let rollout_id = &record.rollout_id;
+    tracing::info!(
+        target: "cp_reducer",
+        host,
+        rollout_id = %rollout_id,
+        target = %record.target_closure,
+        "post-wipe recovery: synthesizing Pending → Converged chain (LIFT #5; architecture.md §305)",
+    );
+
+    // 1. Pending → Activating. `current_closure_at_dispatch` is the
+    //    pre-dispatch closure; CP has no way to know it post-wipe.
+    //    Empty string is the documented placeholder — rollback never
+    //    fires from a synthesis chain that lands at Converged (terminal),
+    //    so the rollback-target ambiguity is inert.
+    let dispatch_ack = nixfleet_state_machine::Event::RemoteDispatchAck {
+        current_closure_at_dispatch: String::new(),
+        received_at: at,
+        seq: record.last_event_seq + 1,
+    };
+    handle_host_event(state, clock, event_log_tx, rs, host, rollout_id, dispatch_ack).await;
+
+    // 2. Activating → Soaking.
+    let activation_completed = nixfleet_state_machine::Event::RemoteActivationCompleted {
+        observed_current_closure: agent_current.to_string(),
+        exit_code: 0,
+        completed_at: at,
+        seq: record.last_event_seq + 2,
+    };
+    handle_host_event(
+        state,
+        clock,
+        event_log_tx,
+        rs,
+        host,
+        rollout_id,
+        activation_completed,
+    )
+    .await;
+
+    // 3. Soaking → Converged. `converged_at` is anchored to
+    //    `soak_due_at` when the heartbeat arrives before soak has
+    //    elapsed, so soaking.rs's `converged_at >= soak_due_at`
+    //    invariant passes. The actual agent-side convergence happened
+    //    pre-wipe; CP can't reconstruct that timestamp, so it stamps
+    //    the post-wipe-floor instead.
+    let Some(db) = state.db.as_ref() else {
+        return;
+    };
+    let post_activation = match db.host_rollout_records().load(rollout_id.as_str(), host) {
+        Ok(Some(r)) => r,
+        _ => return,
+    };
+    let synth_converged_at = match post_activation.soak_due_at {
+        Some(soak_due) if soak_due > at => soak_due,
+        _ => at,
+    };
+    let converged = nixfleet_state_machine::Event::RemoteConverged {
+        converged_at: synth_converged_at,
+        current_closure: agent_current.to_string(),
+        seq: record.last_event_seq + 3,
+    };
+    handle_host_event(state, clock, event_log_tx, rs, host, rollout_id, converged).await;
 }
 
 fn compute_replay_from(
