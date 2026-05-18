@@ -54,7 +54,11 @@ pub fn spawn(
                 return;
             }
         };
-        let manifest_cache = ManifestCache::new(&cfg.state_dir, &cfg.trust_file);
+        let manifest_cache = ManifestCache::new_with_freshness(
+            &cfg.state_dir,
+            &cfg.trust_file,
+            std::time::Duration::from_secs(cfg.manifest_freshness_window_secs),
+        );
         let url = format!(
             "{}/v1/agent/dispatch?wait={}",
             cfg.control_plane_url.trim_end_matches('/'),

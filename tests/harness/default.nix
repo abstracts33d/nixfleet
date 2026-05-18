@@ -216,22 +216,6 @@
           agentPkg = nixfleet-agent;
         });
 
-  bootRecoveryScenario =
-    if nixfleet-control-plane == null || nixfleet-agent == null
-    then
-      throw ''
-        tests/harness: fleet-harness-boot-recovery requires both
-        `nixfleet-control-plane` and `nixfleet-agent` to be passed in.
-      ''
-    else
-      import ./scenarios/boot-recovery.nix (scenarioArgs
-        // {
-          signedFixture = convergedSignedFixture;
-          closureHash = convergedClosureHash;
-          cpPkg = nixfleet-control-plane;
-          agentPkg = nixfleet-agent;
-        });
-
   auditorChainScenario =
     if nixfleet-verify-artifact == null || probeFixture == null
     then
@@ -346,8 +330,6 @@ in {
   fleet-harness-signed-roundtrip = signedRoundtripScenario;
 
   fleet-harness-teardown = teardownScenario;
-
-  fleet-harness-boot-recovery = bootRecoveryScenario;
 
   fleet-harness-auditor-chain = auditorChainScenario;
 

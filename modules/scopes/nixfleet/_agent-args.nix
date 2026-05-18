@@ -11,6 +11,8 @@
   (lib.escapeShellArg cfg.machineId)
   "--trust-file"
   (lib.escapeShellArg (toString cfg.trustFile))
+  "--manifest-freshness-window-secs"
+  (toString cfg.manifestFreshnessWindowSecs)
 ]
 ++ lib.optionals (cfg.renewalThresholdFraction != null) [
   "--renewal-threshold-fraction"

@@ -74,7 +74,11 @@ pub fn spawn_with_trust_path(
                 return;
             }
         };
-        let manifest_cache = ManifestCache::new(&cfg.state_dir, &trust_path);
+        let manifest_cache = ManifestCache::new_with_freshness(
+            &cfg.state_dir,
+            &trust_path,
+            std::time::Duration::from_secs(cfg.manifest_freshness_window_secs),
+        );
         let cp_url = cfg.control_plane_url.clone();
 
         // First tick at Instant::now() (no startup delay) so the reducer's

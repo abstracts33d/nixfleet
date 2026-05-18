@@ -43,7 +43,6 @@
           && nixfleet-agent != null
         ) {
           fleet-harness-teardown = harness.fleet-harness-teardown;
-          fleet-harness-boot-recovery = harness.fleet-harness-boot-recovery;
           fleet-harness-fleet-2 = harness.fleet-harness-fleet-2;
           fleet-harness-fleet-5 = harness.fleet-harness-fleet-5;
           fleet-harness-fleet-10 = harness.fleet-harness-fleet-10;

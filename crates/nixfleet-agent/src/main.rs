@@ -42,6 +42,20 @@ pub(crate) struct Args {
     #[arg(long, env = "NIXFLEET_AGENT_CLIENT_KEY")]
     client_key: Option<PathBuf>,
 
+    /// Acceptance window (seconds) for `meta.signedAt` on the
+    /// fleet.resolved.json + per-rollout manifest verification (RFC-0005
+    /// §1.5). Default `3600` matches the channel-refs poll cadence —
+    /// any signed artifact older than one refresh cycle is rejected as
+    /// stale (replay defense). Test harnesses with fixed-`signedAt`
+    /// fixtures override to a much larger value (e.g. 1 year) to avoid
+    /// regenerating signatures on every test run.
+    #[arg(
+        long,
+        env = "NIXFLEET_AGENT_MANIFEST_FRESHNESS_WINDOW_SECS",
+        default_value_t = nixfleet_agent::manifest_cache::DEFAULT_FRESHNESS_WINDOW_SECS
+    )]
+    manifest_freshness_window_secs: u64,
+
     /// When `client_cert` is absent and this is set, agent enrolls via /v1/enroll.
     #[arg(long, env = "NIXFLEET_AGENT_BOOTSTRAP_TOKEN_FILE")]
     bootstrap_token_file: Option<PathBuf>,
@@ -122,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
             machine_id: args.machine_id.clone(),
             state_dir: args.state_dir.clone(),
             trust_file: args.trust_file.clone(),
+            manifest_freshness_window_secs: args.manifest_freshness_window_secs,
             // mTLS paths threaded through so workers can build an
             // authenticated client via `comms::build_client`. Same
             // three paths the enrollment path at

@@ -424,6 +424,7 @@ async fn manifest_poll_emits_signed_manifest_set_within_one_tick() {
         machine_id: "h1".to_string(),
         state_dir: agent_state.path().to_path_buf(),
         trust_file: agent_state.path().join("trust.json"),
+        manifest_freshness_window_secs: 3600,
         ca_cert: Some(ca_path),
         client_cert: Some(cert_path),
         client_key: Some(key_path),

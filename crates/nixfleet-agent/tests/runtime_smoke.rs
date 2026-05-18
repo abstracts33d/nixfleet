@@ -114,6 +114,7 @@ fn spawn_agent(
         machine_id: "host-smoke".to_string(),
         state_dir: state_dir.path().to_path_buf(),
         trust_file: state_dir.path().join("trust.json"),
+        manifest_freshness_window_secs: 3600,
         // mTLS paths None in this smoke harness — workers build a
         // TLS-only client (no client cert). The smoke test only
         // exercises the durable-queue path; no real CP contact.

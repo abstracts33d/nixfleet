@@ -172,6 +172,15 @@ pub struct AgentConfig {
     /// (`manifest_poll`, `longpoll`) MUST read this — the startup check
     /// alone doesn't propagate into runtime trust loading.
     pub trust_file: std::path::PathBuf,
+    /// Acceptance window for `meta.signedAt` on fleet.resolved.json +
+    /// per-rollout manifest verification (RFC-0005 §1.5 replay
+    /// defense). Production: 3600s — matches the channel-refs poll
+    /// cadence so any signed artifact older than one refresh cycle is
+    /// rejected. Test harnesses with fixed-`signedAt` fixtures override
+    /// to a much larger value (e.g. 1 year) since their fixture bytes
+    /// are deterministic and committed; bumping the window is the
+    /// alternative to regenerating signatures on every test run.
+    pub manifest_freshness_window_secs: u64,
     pub ca_cert: Option<std::path::PathBuf>,
     pub client_cert: Option<std::path::PathBuf>,
     pub client_key: Option<std::path::PathBuf>,

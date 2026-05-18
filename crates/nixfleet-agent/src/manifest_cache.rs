@@ -34,18 +34,39 @@ impl ManifestError {
     }
 }
 
+/// Production freshness window for signed-artifact verification. Matches
+/// CP's channel-refs poll cadence (RFC-0005 §1.5).
+pub const DEFAULT_FRESHNESS_WINDOW_SECS: u64 = 3600;
+
 pub struct ManifestCache {
     rollouts_dir: PathBuf,
     fleet_dir: PathBuf,
     trust_path: PathBuf,
+    freshness_window: std::time::Duration,
 }
 
 impl ManifestCache {
     pub fn new(state_dir: &Path, trust_path: &Path) -> Self {
+        Self::new_with_freshness(
+            state_dir,
+            trust_path,
+            std::time::Duration::from_secs(DEFAULT_FRESHNESS_WINDOW_SECS),
+        )
+    }
+
+    /// Tunable-freshness constructor. Tests with fixed-`signedAt` fixtures
+    /// pass a longer window so old signed bytes still verify; production
+    /// uses [`Self::new`] which pins [`DEFAULT_FRESHNESS_WINDOW_SECS`].
+    pub fn new_with_freshness(
+        state_dir: &Path,
+        trust_path: &Path,
+        freshness_window: std::time::Duration,
+    ) -> Self {
         Self {
             rollouts_dir: state_dir.join("rollouts"),
             fleet_dir: state_dir.join("fleet"),
             trust_path: trust_path.to_path_buf(),
+            freshness_window,
         }
     }
 
@@ -116,12 +137,15 @@ impl ManifestCache {
         signature_bytes: &[u8],
         advertised_rollout_id: &str,
     ) -> Result<VerifiedRolloutManifest, ManifestError> {
-        // 1h window matches channel-refs poll posture.
+        // Window comes from `ManifestCache::freshness_window` — production
+        // uses `DEFAULT_FRESHNESS_WINDOW_SECS` (1h, matching channel-refs
+        // poll posture); test harnesses with fixed-`signedAt` fixtures
+        // override via `new_with_freshness`.
         let now = Utc::now();
         let (trusted_keys, reject_before) = self
             .load_trust_roots(now)
             .map_err(|err| ManifestError::VerifyFailed(format!("load trust roots: {err:#}")))?;
-        let window = std::time::Duration::from_secs(3600);
+        let window = self.freshness_window;
         let verified = nixfleet_reconciler::verify_rollout_manifest(
             manifest_bytes,
             signature_bytes,
@@ -327,7 +351,7 @@ impl ManifestCache {
         let (trusted_keys, reject_before) = self
             .load_trust_roots(now)
             .map_err(|err| ManifestError::VerifyFailed(format!("load trust roots: {err:#}")))?;
-        let window = std::time::Duration::from_secs(3600);
+        let window = self.freshness_window;
         verify_artifact(
             artifact_bytes,
             signature_bytes,

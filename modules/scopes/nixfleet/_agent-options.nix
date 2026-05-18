@@ -60,6 +60,20 @@
       '';
     };
 
+    manifestFreshnessWindowSecs = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 3600;
+      description = ''
+        Acceptance window (seconds) for `meta.signedAt` on fleet.resolved.json
+        + per-rollout manifest verification (RFC-0005 §1.5 replay defense).
+        Default `3600` matches the channel-refs poll cadence — CP re-signs
+        every hour, agents reject anything older as stale. Test harnesses
+        with fixed-`signedAt` fixtures override to a much larger value (e.g.
+        `31536000` for 1 year) to avoid regenerating signatures on every
+        test run.
+      '';
+    };
+
     tls = {
       caCert = lib.mkOption {
         type = lib.types.nullOr lib.types.str;

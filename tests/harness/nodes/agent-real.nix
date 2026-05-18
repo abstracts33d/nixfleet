@@ -60,6 +60,13 @@
     controlPlaneUrl = "https://cp:${toString controlPlanePort}";
     machineId = agentHostName;
     trustFile = "/etc/nixfleet-agent/test-trust.json";
+    # Harness signed fixtures carry a fixed `signedAt = 2026-05-01T00:00:00Z`
+    # (deterministic Nix-derived bytes; regenerating signatures every test
+    # run would break fixture caching). Override the agent's freshness
+    # window to 1 year so the fixture verifies regardless of wallclock
+    # drift between fixture-build-time and test-run-time. Production sets
+    # the default `3600` (RFC-0005 §1.5 replay defense).
+    manifestFreshnessWindowSecs = 365 * 24 * 3600;
     stateDir = "/var/lib/nixfleet-agent";
     tls = {
       caCert = "/etc/nixfleet-agent/ca.pem";
