@@ -96,7 +96,8 @@ Writes `~/.config/nixfleet/config.toml` (mode 0600). Override values per-invocat
 ```sh
 nixfleet status                  # rendered fleet table
 nixfleet status --json           # raw HostsResponse for piping
-nixfleet rollout trace <id>      # wave-major dispatch history
+nixfleet rollout hosts <id>      # per-host summary for a rollout
+nixfleet rollout events <id>     # chronological event-log stream
 ```
 
 For the full CLI surface (subcommands, flags, status-label precedence, pin markers), see [reference/crates/nixfleet-cli](../reference/crates/nixfleet-cli.md).

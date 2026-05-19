@@ -174,5 +174,5 @@ Every decision writes a structured event:
 }
 ```
 
-Events are queryable via CLI (`nixfleet rollout trace <id>`) and emitted as structured logs. Every skip, every wait, every failure carries its reasoning - "why didn't this host upgrade yet?" must always be answerable from logs alone.
+Events are queryable via CLI (`nixfleet rollout events <id>`) and emitted as structured logs. Every skip, every wait, every failure carries its reasoning - "why didn't this host upgrade yet?" must always be answerable from logs alone.
 

@@ -54,7 +54,7 @@
     apps.nixfleet = {
       type = "app";
       program = "${workspace.packages.nixfleet-cli}/bin/nixfleet";
-      meta.description = "Operator CLI - `nixfleet status`, planned: rollout trace + diff";
+      meta.description = "Operator CLI - `nixfleet status`, `nixfleet rollout hosts/events`, `nixfleet config init`, mint/derive helpers";
     };
 
     apps.nixfleet-canonicalize = {

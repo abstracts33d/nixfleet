@@ -11,8 +11,9 @@ in {
   options.nixfleet.operator = {
     enable = lib.mkEnableOption ''
       operator-workstation tooling: installs the `nixfleet` umbrella
-      binary (with subcommands `status`, `rollout trace`, `config init`,
-      `mint-token`, `derive-pubkey`, `mint-operator-cert`) system-wide.
+      binary (with subcommands `status`, `rollout hosts`, `rollout events`,
+      `config init`, `mint-token`, `derive-pubkey`, `mint-operator-cert`)
+      system-wide.
     '';
 
     orgRootKeyFile = lib.mkOption {
