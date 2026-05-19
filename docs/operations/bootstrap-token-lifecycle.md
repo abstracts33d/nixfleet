@@ -1,7 +1,7 @@
 # Bootstrap-token lifecycle
 
 Operator runbook for minting, declaring, deploying, and consuming
-bootstrap tokens under the post-#96 allowlist regime.
+bootstrap tokens under the signed-nonce allowlist regime.
 
 ## Minting + declaring
 

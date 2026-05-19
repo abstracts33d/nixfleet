@@ -218,7 +218,7 @@ Emitted when `switch-to-configuration` set the profile + bootloader but refused 
 }
 ```
 
-Added in v0.2.1 (RFC-0007 §8.1). Emitted once per `ActivationCompleted` by the agent's probe worker after re-reading `/etc/nixfleet/agent/health-checks.json`. CP treats the payload as the authoritative set of probes the agent has committed to running for this rollout. Required for the wave-promotion gate to distinguish "enforce probe hasn't reported yet — hold" from "no enforce probes declared — advance." Missing this event holds the wave with reason `"awaiting probe topology"`.
+Per RFC-0007 §8.1. Emitted once per `ActivationCompleted` by the agent's probe worker after re-reading `/etc/nixfleet/agent/health-checks.json`. CP treats the payload as the authoritative set of probes the agent has committed to running for this rollout. Required for the wave-promotion gate to distinguish "enforce probe hasn't reported yet — hold" from "no enforce probes declared — advance." Missing this event holds the wave with reason `"awaiting probe topology"`.
 
 #### `ProbeObservedFirst` — gates may now consult probes
 
@@ -233,7 +233,7 @@ Added in v0.2.1 (RFC-0007 §8.1). Emitted once per `ActivationCompleted` by the 
 }
 ```
 
-CP records `probe_observed_first_at` for this rollout. The soak gate (was `host_probes_observed`) consults THIS field, not a snapshot. Agents emit one per declared probe on first run after activation. The `mode` field (added in v0.2.1 per RFC-0007 §8.2) makes the event self-describing for replay — readers don't need to join against the topology declaration to interpret per-probe enforcement.
+CP records `probe_observed_first_at` for this rollout. The soak gate (was `host_probes_observed`) consults THIS field, not a snapshot. Agents emit one per declared probe on first run after activation. The `mode` field (RFC-0007 §8.2) makes the event self-describing for replay: readers don't need to join against the topology declaration to interpret per-probe enforcement.
 
 #### `ProbeResult`
 
@@ -253,7 +253,7 @@ CP records `probe_observed_first_at` for this rollout. The soak gate (was `host_
 
 Streamed on each probe run. CP updates its per-rollout probe map. Note: `Unknown` is NOT reported — first result is always `Pass` or `Fail`. (Unknown is the bootstrap state before any run.)
 
-**v0.2.1 additions** (RFC-0007 §7.1 + §8.2):
+**Payload fields** (RFC-0007 §7.1 + §8.2):
 
 - `mode` (always present): one of `enforce | observe | disabled`. Self-describing for replay; redundant with the topology declaration but cheap (4 bytes) and removes a table join at gate-eval time.
 - `sub_results` (`Option<Vec<ProbeSubResult>>`): populated for `kind = "evidence"` probes only; `None` for HTTP/TCP/exec. Each entry carries `{control_id, status, framework, article}` so operator dashboards preserve per-control failure visibility. Aggregate `status` is `Pass` iff every `sub_result.status == Pass`. The applier expands `sub_results` into per-control rows in the `probe_failures` derived view (RFC-0007 §7.2) within the same transaction that appends to `event_log`.
@@ -312,7 +312,7 @@ Emitted by the agent after it has autonomously executed the rollback (no CP sign
 CP transition: `Failed → Reverted`. CP:
 - Stamps `reverted_at = completed_at`.
 - Sets `current_closure = reverted_to_closure`.
-- Inserts the dispatched-but-bad `target_closure` into the channel's `quarantined_closures` set (already the v0.2.0 fix #6 mechanism — unchanged, just consumes the agent-reported event rather than CP-derived state).
+- Inserts the dispatched-but-bad `target_closure` into the channel's `quarantined_closures` set (existing quarantine mechanism, now consuming the agent-reported event rather than CP-derived state).
 
 #### `Converged` — Soaking → Converged
 
@@ -413,7 +413,7 @@ Every gate in `crates/nixfleet-reconciler/src/gates/` becomes a pure function of
 | Channel-edges | `predecessor.is_active_for_ordering()` (consults `host_states.values().all(...)` heuristic; needed `terminal_at` retrofit) | Predecessor channel's rollout `state == Converged` for all its hosts. Direct read. |
 | Soak gate (Healthy → Soaked) | `host_probes_observed && host_probes_passing && soak_elapsed` — observed/passing inferred from current checkin snapshot | `probe_observed_first_at.is_some() && now > soak_due_at && all_enforce_mode_probes_pass` (per RFC-0007 §3.3) |
 | Sustained-failure sweep | CP wallclock first-noticed `first_seen`, threshold = 60 s | Removed from CP. Agent reports `Failed` event directly when its own threshold elapses (agent has true probe-failure-start timestamp). |
-| Quarantine (dispatch refuses bad SHA) | Channel's `quarantined_closures` table | Same. Populated by `RollbackComplete` handler. (No change from v0.2 fix #6.) |
+| Quarantine (dispatch refuses bad SHA) | Channel's `quarantined_closures` table | Same. Populated by `RollbackComplete` handler. |
 
 ## 7. Wire version
 

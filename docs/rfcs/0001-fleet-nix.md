@@ -5,7 +5,7 @@
 
 ## 1. Motivation
 
-Every seam in nixfleet today routes around a missing object: "the fleet as declared". The control plane has desired state in SQLite; the CLI has flags; the operator has intent in their head. None of these are git-tracked, reviewable, or composable. Before any of the spine items above #1 can land, we need one thing: **a pure, evaluable Nix value representing the fleet**. Everything downstream consumes it.
+Every seam in nixfleet today routes around a missing object: "the fleet as declared". The control plane has desired state in SQLite; the CLI has flags; the operator has intent in their head. None of these are git-tracked, reviewable, or composable. Before any of the downstream spine work can land, we need one thing: **a pure, evaluable Nix value representing the fleet**. Everything downstream consumes it.
 
 Design goals, in order:
 
@@ -13,7 +13,7 @@ Design goals, in order:
 2. **Self-contained.** No cross-referencing outside the flake - hosts, tags, policies all resolved at eval time.
 3. **Typed.** Module system with option types; misuse fails at `nix flake check`.
 4. **Composable.** A `fleet` is a value; multiple flakes can merge fleets (for org-wide super-fleets).
-5. **Minimal.** Schema covers what's needed for #2/#3/#4; resists feature creep.
+5. **Minimal.** Schema covers what's needed for RFC-0002 / RFC-0003 / RFC-0004; resists feature creep.
 
 ## 2. Schema
 
@@ -50,7 +50,7 @@ outputs = { self, nixpkgs, nixfleet, ... }: {
 
     # ------------------------------------------------------------
     # 2.3 Channels - release trains.
-    # Pinned to a git ref at reconcile time (see issue #3).
+    # Pinned to a git ref at reconcile time (see RFC-0003).
     # ------------------------------------------------------------
     channels.stable = {
       description            = "Main production channel.";

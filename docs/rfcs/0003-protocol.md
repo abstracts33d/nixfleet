@@ -9,13 +9,13 @@
 1. **Pull-only for control flow.** Agents initiate every connection. Control plane never needs to reach an agent - works behind CGNAT, hotel WiFi, intermittent links.
 2. **Stateless on the wire.** Each request is self-describing. No sessions, no long-lived connections, no WebSockets in v1.
 3. **Declarative intent, not commands.** The control plane answers "what should host X be running?", never "run this command". Scripted execution is outside the agent's vocabulary on purpose.
-4. **Zero-knowledge for secrets.** Secrets do not transit the control plane in plaintext (see nixfleet #6). The protocol carries closure hashes and references, not secret material.
+4. **Zero-knowledge for secrets.** Secrets do not transit the control plane in plaintext. The protocol carries closure hashes and references, not secret material.
 5. **Explicitly versioned.** Every request and response carries a protocol version. Mismatches fail loudly.
 
 ## 2. Identity model
 
 - **Host key = SSH host ed25519 key.** Machine-lifetime key already present on every NixOS host (`/etc/ssh/ssh_host_ed25519_key`). Signs probe outputs (RFC-0002 §5.3), decrypts agenix secrets, anchors the agent's cryptographic identity. Not transmitted to the control plane; only its public half is declared in `fleet.nix`.
-- **Agent identity = mTLS client certificate, derived from the host key.** At enrollment (nixfleet #9), the agent generates the CSR using the SSH host key as the signing key; the public key in the cert is the host's SSH public key. CN = `hostname`, SANs carry declared host attributes (channel, tags - redundant with fleet.resolved, used only for sanity checking). This binding means compromising the mTLS cert and compromising the host key are the same event; short-lived certs bound the exposure of that event.
+- **Agent identity = mTLS client certificate, derived from the host key.** At enrollment, the agent generates the CSR using the SSH host key as the signing key; the public key in the cert is the host's SSH public key. CN = `hostname`, SANs carry declared host attributes (channel, tags - redundant with fleet.resolved, used only for sanity checking). This binding means compromising the mTLS cert and compromising the host key are the same event; short-lived certs bound the exposure of that event.
 - **Cert issuance.** Agent sends the CSR + a one-shot bootstrap token (signed by the org root key, scoped to `expectedHostname` + `expectedPubkeyFingerprint`). Control plane verifies both, issues cert with 30-day validity. A mismatch between the CSR's public key and the token's `expectedPubkeyFingerprint` aborts enrollment.
 - **Cert rotation.** Agent requests renewal at 50% of remaining validity. Old cert valid until expiry; overlap prevents downtime.
 - **Cert revocation.** Control plane maintains a small revocation set (hostname -> notBefore timestamp). Agents with certs issued before `notBefore` for their hostname are rejected. Simpler than CRLs; works because cert lifetime is short.
@@ -49,7 +49,7 @@ The agent verifies every `target_closure` against the signed manifest fetched vi
 
 Optional. If the host cannot reach the binary cache directly (restricted network), the control plane can proxy closures. Preference remains: agents fetch from cache, not control plane - this endpoint exists as a fallback, not a default path.
 
-### 4.3 Enrollment endpoints (nixfleet #9)
+### 4.3 Enrollment endpoints
 
 Out of scope for this RFC in detail. Summary:
 

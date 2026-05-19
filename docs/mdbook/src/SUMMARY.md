@@ -10,7 +10,6 @@
 
 # Reference
 
-- [Test harness](reference/harness.md)
 - [Crates](reference/crates/index.md)
   - [nixfleet-agent](reference/crates/nixfleet-agent.md)
   - [nixfleet-canonicalize](reference/crates/nixfleet-canonicalize.md)

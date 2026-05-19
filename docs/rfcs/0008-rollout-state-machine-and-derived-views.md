@@ -199,10 +199,10 @@ A CP DB table is **derived** if and only if:
 
 1. The applier is its only writer.
 2. Every row carries an `event_log_seq INTEGER REFERENCES event_log(seq)` column (or a compound key including one). The FK is the proof obligation for re-derivability.
-3. The derived-view row is co-written by the applier in tight temporal coupling with the canonical `event_log` append. **Target shape:** single SQL transaction (atomic). **Current v0.2.1 baseline shape** (matches `probe_failures` in RFC-0007 §7.2): the event_log writer is a fire-and-forget bounded-mpsc task, so the applier inserts the derived-view row with `event_log_seq = NULL` and tightens to NOT NULL once the writer gains synchronous seq return. Tracked in `.claude/plans/v0.2.1-followups.md`. The eventual-consistency window between the event_log row landing and the derived-view row landing is bounded (single-applier-task ordering) and operator-observable via the prune-timer's audit metric.
+3. The derived-view row is co-written by the applier in tight temporal coupling with the canonical `event_log` append. **Target shape:** single SQL transaction (atomic). **Current v0.2 shape** (matches `probe_failures` in RFC-0007 §7.2): the event_log writer is a fire-and-forget bounded-mpsc task, so the applier inserts the derived-view row with `event_log_seq = NULL` and tightens to NOT NULL once the writer gains synchronous seq return. The eventual-consistency window between the event_log row landing and the derived-view row landing is bounded (single-applier-task ordering) and operator-observable via the prune-timer's audit metric.
 4. Walking `event_log` chronologically can reproduce the table from empty.
 
-The looser current shape (item 3 v0.2.1 baseline) preserves invariants 1, 2, and 4 — what's deferred is only the atomicity guarantee against a crash between the mpsc-send and the derived-view insert. Operators on v0.2.1 monitor this window via the prune-timer metric; the v0.2.1 follow-up tightens it to true single-transaction.
+The looser current shape (item 3) preserves invariants 1, 2, and 4. What is deferred is only the atomicity guarantee against a crash between the mpsc-send and the derived-view insert. Operators monitor this window via the prune-timer metric; a follow-up tightens it to true single-transaction.
 
 ### 6.2 Tables and their classifications post-RFC-0008
 
@@ -238,11 +238,11 @@ CREATE TABLE rollouts (
         CHECK (state IN ('Opening', 'Active', 'Converging', 'Terminal',
                          'Reverted', 'Failed', 'Superseded', 'Pruned')),
     current_wave          INTEGER NOT NULL DEFAULT 0,
-    -- FK columns are NULL-able in v0.2.1 baseline (matches probe_failures
-    -- per §6.1 item 3 + RFC-0007 §7.2): the bounded-mpsc event_log writer
-    -- is fire-and-forget so the applier doesn't know `seq` at co-write
-    -- time. v0.2.1-followups #1 tightens these to NOT NULL when the
-    -- writer gains synchronous seq return.
+    -- FK columns are NULL-able under the v0.2 derived-view shape (matches
+    -- probe_failures per §6.1 item 3 + RFC-0007 §7.2): the bounded-mpsc
+    -- event_log writer is fire-and-forget so the applier doesn't know
+    -- `seq` at co-write time. A follow-up tightens these to NOT NULL when
+    -- the writer gains synchronous seq return.
     opened_event_log_seq  INTEGER REFERENCES event_log(seq),
     last_transition_event_log_seq INTEGER REFERENCES event_log(seq),
     opened_at             TEXT NOT NULL,
@@ -266,9 +266,9 @@ CREATE TABLE quarantined_closures (
     channel              TEXT NOT NULL,
     closure_hash         TEXT NOT NULL,
     quarantined_at       TEXT NOT NULL,
-    -- NULL-able in v0.2.1 baseline; tightens to NOT NULL via
-    -- v0.2.1-followups #1 (same writer-side change as rollouts +
-    -- probe_failures). See §6.1 item 3.
+    -- NULL-able under the v0.2 derived-view shape; tightens to NOT NULL
+    -- with the same writer-side change as rollouts + probe_failures.
+    -- See §6.1 item 3.
     triggering_event_log_seq INTEGER REFERENCES event_log(seq),
     PRIMARY KEY (channel, closure_hash)
 );

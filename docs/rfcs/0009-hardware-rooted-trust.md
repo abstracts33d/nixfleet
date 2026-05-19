@@ -282,7 +282,7 @@ Enforcement (boot-evidence as a wave-promotion gate) is the subject of RFC-0010 
 
 ## 10. Open questions
 
-- **PCR set defaults.** Proposal `[0 2 4 7 8 9 11 12 13 14]` covers firmware + secure-boot databases + bootloader + kernel + initrd + cmdline. This is what nixfleet#83 already gestures at. Tighter sets are possible (just `[0 7]` for firmware + secure-boot DBs) but lose useful attestation surface. Lean: declared-per-host with a `[0 2 4 7 8 9 11 12 13 14]` default.
+- **PCR set defaults.** Proposal `[0 2 4 7 8 9 11 12 13 14]` covers firmware + secure-boot databases + bootloader + kernel + initrd + cmdline. Tighter sets are possible (just `[0 7]` for firmware + secure-boot DBs) but lose useful attestation surface. Lean: declared-per-host with a `[0 2 4 7 8 9 11 12 13 14]` default.
 - **Auto-derived `firmwareGeneration`.** Manual is v0.3; the natural follow-up is a capture tool that writes a checked-in evidence file `mkFleet` reads, removing the operator-forgot-to-bump failure mode. Out of scope for v0.3 but on the v0.4 shortlist.
 - **PCR prediction tooling.** `nixfleet-pcr-predict` as a small Rust derivation builder vs calling out to `systemd-measure` directly. Lean: wrap `systemd-measure` for v0.3, replace with native code only if reproducibility issues appear.
 - **agenix integration shape.** Wrapper around `age` vs Clevis-style pluggable backend. Lean: wrapper for v0.3 (smaller surface), Clevis if a customer needs it.

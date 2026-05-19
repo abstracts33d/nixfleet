@@ -7,13 +7,13 @@
 
 ## 1. Problem statement
 
-Pre-v0.2.1 nixfleet has three places where probe-or-probe-like declarations live, with three different shapes, lifecycles, and owners:
+Pre-v0.2 nixfleet had three places where probe-or-probe-like declarations lived, with three different shapes, lifecycles, and owners:
 
 | Site | Scope | Shape | Who declares it |
 |---|---|---|---|
 | `services.nixfleet-agent.healthChecks` (NixOS module) | per-host | `{ http, tcp, exec }` declarations | host author |
 | `fleet_resolved::HealthGate.compliance_probes.required: bool` (signed manifest, channel-level) | per-channel | gate-enforcement flag | fleet author |
-| (deleted in commit `a9ff4f43`, Phase 7g) `crates/nixfleet-agent/src/compliance.rs` | per-host implicit | code-driven collector wiring | nobody — implicit |
+| `crates/nixfleet-agent/src/compliance.rs` (deleted) | per-host implicit | code-driven collector wiring | nobody, implicit |
 
 The split has two operational consequences:
 
@@ -36,7 +36,7 @@ This RFC unifies the three sites and adds explicit scope-level declarations.
 
 ## 3. Declaration model
 
-### 3.1 Four scopes (channel scope added in v0.2.1)
+### 3.1 Four scopes
 
 ```nix
 {
@@ -104,11 +104,11 @@ Validation at fleet-eval time refuses the manifest if any required field is abse
 
 ### 3.4 No channel-level mode override
 
-Per-probe `mode` is the **sole** source of truth for the gate decision. The pre-v0.2.1 `Channel.compliance.mode` field is removed alongside `HealthGate.compliance_probes.required` (see §6 manifest schema delta). What v0.2.1 adds (§3.5 below) is channel-scoped **declaration**, not a channel-level mode override: an operator can say "all stable-channel hosts run this evidence probe set" without per-host tagging, but each probe still carries its own `mode` wherever it is declared and the gate consults that `mode` exclusively.
+Per-probe `mode` is the **sole** source of truth for the gate decision. The pre-v0.2 `Channel.compliance.mode` field is removed alongside `HealthGate.compliance_probes.required` (see §6 manifest schema delta). What §3.5 below introduces is channel-scoped **declaration**, not a channel-level mode override: an operator can say "all stable-channel hosts run this evidence probe set" without per-host tagging, but each probe still carries its own `mode` wherever it is declared and the gate consults that `mode` exclusively.
 
 All probe kinds resolve through the same multi-scope hierarchy; evidence is not a special case at any scope.
 
-### 3.5 Channel scope (v0.2.1)
+### 3.5 Channel scope
 
 Channel-scoped declarations sit between tag and host in the resolution order. Operators declare probes attached to a specific channel so all hosts assigned to that channel pick them up:
 
@@ -207,12 +207,12 @@ with three field-level merge rules:
 effective[host] = merge(
     nixfleet.healthChecks,                                              # fleet-wide
     ∪{nixfleet.tags.<tag>.healthChecks | tag ∈ host.tags},              # tag-scoped
-    nixfleet.channels.<host.channel>.healthChecks,                      # channel-scoped (v0.2.1)
+    nixfleet.channels.<host.channel>.healthChecks,                      # channel-scoped
     nixfleet.hosts.<host>.healthChecks,                                 # host-scoped
 )
 ```
 
-**Precedence (v0.2.1)**: host > channel > tag > fleet. A probe of the same name at a lower scope (lower number above means lower in the merge) **wins outright** — the higher-scope declaration is shadowed in full, not field-merged. This matches the precedence convention from RFC-0001 §"infra tag pin example".
+**Precedence:** host > channel > tag > fleet. A probe of the same name at a lower scope (lower number above means lower in the merge) **wins outright** - the higher-scope declaration is shadowed in full, not field-merged. This matches the precedence convention from RFC-0001 §"infra tag pin example".
 
 **`mkFleet` access to `host.tags`**: tags are already in scope of fleet-eval per RFC-0001 §3 (tag-driven scope inclusion). The resolver reuses the existing tag mechanism — no new fleet-eval graph traversal required.
 
@@ -264,26 +264,26 @@ This is the same flow-back pattern `mkFleet`/`mkHost` already uses for scopes, c
 **Removed from `fleet_resolved`:**
 
 ```
-HealthGate.compliance_probes      (placeholder, unused since Phase 7g)
+HealthGate.compliance_probes      (dead placeholder)
 Channel.compliance.mode           (channel-level enforcement kill-switch)
 Channel.compliance.strict         (channel-level probe-error tolerance flag)
 ```
 
 All three are replaced by per-probe `mode`. The wave-promotion gate's source of truth is now the `probe_failures` derived view written by the applier from `ProbeResult` events where the probe declaration had `mode = "enforce"` and `status = "Fail"`, per the projection in §7.2.
 
-**Probe-error semantics under v0.2.1:** uniform `strict = true` behaviour. A probe that errors (nonzero exit code, malformed output, network timeout) counts as `status = "Fail"` regardless of probe kind or channel. Operators who want "tolerate probe errors" use per-probe `mode = "observe"` — observe-mode failures (whether genuine or erroneous) surface in `event_log` for visibility but do not gate wave promotion. The legacy `Channel.compliance.strict = false` affordance collapses into this one axis.
+**Probe-error semantics:** uniform `strict = true` behaviour. A probe that errors (nonzero exit code, malformed output, network timeout) counts as `status = "Fail"` regardless of probe kind or channel. Operators who want "tolerate probe errors" use per-probe `mode = "observe"`. Observe-mode failures (whether genuine or erroneous) surface in `event_log` for visibility but do not gate wave promotion. The legacy `Channel.compliance.strict = false` affordance collapses into this one axis.
 
 **No additions** to the manifest schema. Probe declarations live in the closure (rendered from the multi-scope merge), not in the signed manifest payload.
 
-### 6.1 DB schema delta (not part of the wire manifest, but ships in V001-equivalent for v0.2.1)
+### 6.1 DB schema delta (not part of the wire manifest)
 
-**Removed:** `host_reports` table (v0.1 artifact; no producer since Phase 7g; schema columns dead under v0.2).
+**Removed:** `host_reports` table (v0.1 artifact, no producer in v0.2, schema columns dead).
 
 **Added:** `probe_failures` table — derived view of `event_log`, back-referenced via `event_log_seq` foreign key. Schema in §7.2.
 
 ## 7. Compliance as a probe kind
 
-The pre-v0.2.1 `compliance-evidence-collector.service` retains its current shape: a systemd unit on each host that, on its own schedule (operator-configurable via `services.compliance-evidence-collector.interval`), produces a signed evidence file at `/var/lib/nixfleet-compliance/evidence.json`.
+The `compliance-evidence-collector.service` is a systemd unit on each host that, on its own schedule (operator-configurable via `services.compliance-evidence-collector.interval`), produces a signed evidence file at `/var/lib/nixfleet-compliance/evidence.json`.
 
 An `evidence` probe declaration tells the agent to consume the latest evidence file:
 
@@ -334,7 +334,7 @@ This preserves operator and auditor visibility into *which* controls fail on *wh
 
 ### 7.2 CP-side projection rebuild
 
-The `compliance_wave` gate previously consumed `db::reports::outstanding_compliance_events_by_rollout`, a projection built over the v0.1-era `host_reports` table. That input pipeline has had no producer since commit `a9ff4f43` (Phase 7g) deleted `agent::compliance::*`. Under "v0.2 is a full rewrite, opt for optimal shapes," `host_reports` itself is also deleted in this RFC (its v0.1 schema is suboptimal for v0.2 query patterns — `signature_status` is dead, `report_json` duplicates `event_log.payload`, `event_id UNIQUE` is redundant with `event_log.seq` monotonicity).
+The `compliance_wave` gate previously consumed `db::reports::outstanding_compliance_events_by_rollout`, a projection built over the v0.1-era `host_reports` table. That input pipeline has no producer in v0.2 (`agent::compliance::*` was removed). Under "v0.2 is a full rewrite, opt for optimal shapes," `host_reports` itself is also deleted in this RFC. The v0.1 schema is suboptimal for v0.2 query patterns: `signature_status` is dead, `report_json` duplicates `event_log.payload`, `event_id UNIQUE` is redundant with `event_log.seq` monotonicity.
 
 Replacement pipeline:
 
@@ -436,4 +436,4 @@ Change the probe's `mode` to `"disabled"`, push. The probe entry stays in the de
 Add or remove a tag on a host. The merge changes; the host's effective probe set changes accordingly on the next closure activation. Standard tag-membership semantics from RFC-0001.
 
 
-A new fleet rollout under v0.2.1 picks up the new shape automatically on the next push; no manual wipe required beyond the standard v0.2 fresh-DB story.
+A new fleet rollout under v0.2 picks up the new shape automatically on the next push; no manual wipe required beyond the standard fresh-DB story.

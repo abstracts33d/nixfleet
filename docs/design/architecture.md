@@ -748,7 +748,7 @@ State:
   - `token_replay` (24h TTL) - soft state.
   - `cert_revocations` - **hard state**, replayed from signed `revocations.json` sidecar every reconcile tick.
   - `host_dispatch_state` (hostname PK, rollout_id, channel, wave, target_closure_hash, target_channel_ref, dispatched_at, confirm_deadline, confirmed_at, state ∈ {`pending`, `confirmed`, `rolled-back`, `cancelled`}) - operational, one row per host.
-  - `dispatch_history` (id PK, hostname, rollout_id, channel, wave, target_closure_hash, target_channel_ref, dispatched_at, terminal_state ∈ {`converged`, `rolled-back`, `cancelled`}, terminal_at) - audit log; one row per dispatch event. Pre-#81 these two lived in a single `pending_confirms` table; the split landed in V006.
+  - `dispatch_history` (id PK, hostname, rollout_id, channel, wave, target_closure_hash, target_channel_ref, dispatched_at, terminal_state ∈ {`converged`, `rolled-back`, `cancelled`}, terminal_at) - audit log; one row per dispatch event.
   - `host_rollout_state` (rollout_id, hostname, host_state, last_healthy_since, updated_at) - soak-window tracking, repopulated from agent-attested `last_confirmed_at` on rebuild.
   - `host_reports` (event_id, hostname, received_at, event_kind, rollout, signature_status, report_json) - telemetry.
 - **Filesystem**: `artifact_path`, `signature_path`, `observed_path`.
