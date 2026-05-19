@@ -60,12 +60,23 @@ impl<'a> HostRolloutRecords<'a> {
         Ok(out)
     }
 
-    /// Active (non-terminal) records for a hostname across all rollouts.
-    /// Used by the heartbeat handler to drive boot-recovery retroactive
-    /// confirmation (RFC-0005 §9.5): when an agent restart drops the
-    /// in-memory verify-poll loop, the next heartbeat carries
-    /// `current_closure` but no `rollout_id` — CP scans active records
-    /// for this host to find the one whose `target_closure` matches.
+    /// Non-terminal-non-reverted records for a hostname across all
+    /// rollouts. Used by the heartbeat handler to drive boot-recovery
+    /// synthesis (RFC-0005 §9.5): when the agent's wire ack drops
+    /// (mid-rollout agent restart, post-rollback `nixfleet-agent`
+    /// SIGTERM, CP wipe), the next heartbeat carries `current_closure`
+    /// but no `rollout_id` — CP scans these records and matches:
+    ///   - In-flight rollout (Pending/Activating/Deferred/Soaking)
+    ///     with `target_closure == agent_current` → synthesise
+    ///     `RemoteActivationCompleted` (the activation took, ack lost).
+    ///   - Failed rollout with `current_closure_at_dispatch ==
+    ///     agent_current` → synthesise `RemoteRollbackComplete` (the
+    ///     rollback took, ack lost).
+    ///
+    /// `Failed` is included because the rollback-recovery synth runs
+    /// against records whose state-machine transition is still
+    /// pending CP-side. `Reverted` and `Converged` are excluded —
+    /// those are terminal-on-the-agent and need no recovery synth.
     pub fn active_for_host(&self, hostname: &str) -> Result<Vec<HostRolloutState>> {
         let conn = super::lock_conn(self.conn)?;
         let mut stmt = conn.prepare(
@@ -78,7 +89,7 @@ impl<'a> HostRolloutRecords<'a> {
                     reverted_at, probes_json, last_event_seq
              FROM host_rollout_records
              WHERE hostname = ?1
-               AND state IN ('Pending', 'Activating', 'Deferred', 'Soaking')",
+               AND state IN ('Pending', 'Activating', 'Deferred', 'Soaking', 'Failed')",
         )?;
         let rows = stmt.query_map(params![hostname], row_to_state)?;
         let mut out = Vec::new();
@@ -404,6 +415,70 @@ mod tests {
         }
         let got = table.all_for_rollout("r1").unwrap();
         assert_eq!(got.len(), 3);
+    }
+
+    /// Pins the recovery-synth contract: `active_for_host` returns
+    /// the non-terminal-non-reverted set, which includes `Failed`.
+    /// The rollback-recovery synth path
+    /// (`maybe_synthesize_recovery_completion`'s Failed arm) iterates
+    /// the output of this query, so the filter must include every
+    /// state that needs a wire-ack synth — drop `Failed` from here
+    /// and the synth becomes silently dead code.
+    #[test]
+    fn active_for_host_includes_failed_excludes_terminal() {
+        let db = fresh_db();
+        let table = HostRolloutRecords { conn: &db.conn };
+
+        let states_and_expected = [
+            (HostState::Pending, true),
+            (HostState::Activating, true),
+            (HostState::Deferred, true),
+            (HostState::Soaking, true),
+            (HostState::Failed, true),
+            (HostState::Converged, false),
+            (HostState::Reverted, false),
+        ];
+
+        for (idx, (state, _)) in states_and_expected.iter().enumerate() {
+            let rollout_id = format!("r{idx}");
+            let mut s = HostRolloutState::new_pending(
+                rollout_id.into(),
+                "h1".into(),
+                "stable".into(),
+                "abc123".into(),
+                t0(),
+                t0() + Duration::minutes(5),
+            );
+            s.state = *state;
+            if matches!(state, HostState::Soaking | HostState::Converged) {
+                s.current_closure = Some("abc123".into());
+                s.activation_completed_at = Some(t0() + Duration::seconds(5));
+            }
+            if matches!(state, HostState::Failed | HostState::Reverted) {
+                s.failed_at = Some(t0() + Duration::seconds(125));
+                s.current_closure_at_dispatch = Some("prior-closure".into());
+            }
+            if matches!(state, HostState::Reverted) {
+                s.reverted_at = Some(t0() + Duration::seconds(135));
+                s.reverted_to = Some("prior-closure".into());
+                s.current_closure = Some("prior-closure".into());
+            }
+            if matches!(state, HostState::Converged) {
+                s.converged_at = Some(t0() + Duration::minutes(6));
+            }
+            table.upsert(&s).unwrap();
+        }
+
+        let returned = table.active_for_host("h1").unwrap();
+        let returned_states: Vec<HostState> = returned.iter().map(|r| r.state).collect();
+
+        for (state, expected_included) in states_and_expected {
+            let included = returned_states.contains(&state);
+            assert_eq!(
+                included, expected_included,
+                "state {state:?}: expected included={expected_included}, got {included}",
+            );
+        }
     }
 
     #[test]

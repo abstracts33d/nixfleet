@@ -371,18 +371,16 @@ fn display_hash(h: Option<&str>, fallback: &str) -> String {
 /// 2. `pending_closure_hash` rendered with a trailing arrow —
 ///    mid-rollout: agent has acked, switch in progress, host still
 ///    on this closure.
-/// 3. Arrow alone — rollout opened, no DispatchAck yet (brief
-///    Pending window, ≤ one long-poll cycle).
-/// 4. `<unseen>` — no rollout, no agent observation.
+/// 3. `<unseen>` — no closure observation. The STATUS column
+///    already conveys in-flight state via its `→ in progress` /
+///    `→ activating` labels; CURRENT staying `<unseen>` is honest
+///    about the lack of closure data.
 fn current_column(host: &HostStatusEntry) -> String {
     if let Some(c) = host.current_closure_hash.as_deref() {
         return display_hash(Some(c), "");
     }
     if let Some(p) = host.pending_closure_hash.as_deref() {
         return format!("{} \u{2192}", display_hash(Some(p), ""));
-    }
-    if host.rollout_state.is_some() {
-        return "\u{2192}".to_string();
     }
     "<unseen>".to_string()
 }
@@ -1270,33 +1268,23 @@ mod tests {
         );
     }
 
-    /// CURRENT-column fallback: rollout opened but no DispatchAck yet
-    /// (brief Pending window). No closure observation either way; the
-    /// arrow alone conveys "in flight, no observation yet."
+    /// CURRENT-column fallback: with no closure observation in either
+    /// field, `<unseen>` is the honest answer regardless of rollout
+    /// state. The STATUS column already carries the in-flight signal
+    /// via its `→ in progress` / `→ activating` labels — duplicating
+    /// it in CURRENT (bare arrow) just made every transitional row
+    /// visually noisy with a double-arrow `→  → in progress` pattern.
     #[test]
-    fn current_column_shows_arrow_alone_for_unacked_pending() {
+    fn current_column_renders_unseen_when_no_closure_data() {
         use nixfleet_proto::HostRolloutState;
         let mut h = fixture_host("a", "stable", false, None, 0);
         h.current_closure_hash = None;
         h.pending_closure_hash = None;
+        // Both with and without rollout_state → still `<unseen>`.
         h.rollout_state = Some(HostRolloutState::Pending);
-        let rendered = current_column(&h);
-        assert_eq!(
-            rendered, "\u{2192}",
-            "unacked-pending must render just the arrow: {rendered}",
-        );
-    }
-
-    /// CURRENT-column fallback: with no rollout open + no observation,
-    /// `<unseen>` is preserved as the honest answer.
-    #[test]
-    fn current_column_preserves_unseen_with_no_data() {
-        let mut h = fixture_host("a", "stable", false, None, 0);
-        h.current_closure_hash = None;
-        h.pending_closure_hash = None;
+        assert_eq!(current_column(&h), "<unseen>");
         h.rollout_state = None;
-        let rendered = current_column(&h);
-        assert_eq!(rendered, "<unseen>");
+        assert_eq!(current_column(&h), "<unseen>");
     }
 
     /// CURRENT-column fallback: post-activation observation wins over
