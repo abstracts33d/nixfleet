@@ -58,7 +58,7 @@ The framework ships kernel + contract impls. Service wraps, hardware bundles, ro
 - **Not a multi-tenant SaaS.** Single administrative domain.
 - **Not a replacement for NixOS tooling.** `nixos-rebuild`, `nix flake`, `nix-store --verify` remain ground truth.
 - **Not a cloud provisioning tool.** Fleet membership is declared; hosts aren't auto-created from templates.
-- **Not agentless.** Pull-based means an agent runs on every managed host. Acceptable cost for the sovereignty property.
+- **Not agentless.** An agent runs on every managed host (outbound-only connectivity). Acceptable cost for the sovereignty property.
 
 ## Documentation
 

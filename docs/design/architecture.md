@@ -160,8 +160,9 @@ The happy path, one commit from push to all hosts converged:
    verifies fleet.resolved signature
    reconciler emits action plan for new rollout
                                              │
-5. agent (workstation, canary wave) polls ─▶ control plane
-   control plane replies: target = sha256-X, rollout R, wave 0
+5. agent (workstation, canary wave) long-polls ─▶ control plane
+   control plane responds on /v1/agent/dispatch:
+     target = sha256-X, rollout R, wave 0
                                              │
 6. agent fetches sha256-X from attic
    verifies attic signature, verifies hash
@@ -170,8 +171,8 @@ The happy path, one commit from push to all hosts converged:
                                              │
 7. agent boots new generation
    runs runtime probes, signs outputs with host key
-   phones home /agent/confirm with boot ID + probe results
-   control plane accepts confirmation
+   posts ActivationCompleted to /v1/agent/events
+   control plane reduces the event into rollout state
                                              │
 8. soak elapses -> wave 0 promoted -> wave 1 begins
    attic-01 receives dispatch; same sequence
