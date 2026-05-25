@@ -1207,12 +1207,12 @@
         # for every channel-declared framework. Operator overrides at
         # any scope (fleet / tag / channel / host) still win.
         platformFw =
-          if lib.hasSuffix "-linux" host.system
+          if lib.hasSuffix "-linux" host.platform
           then {}
           else
             lib.genAttrs (lib.attrNames channelByName) (_: {
               mode = "disabled";
-              reason = "non-NixOS host (${host.system}): no compliance collector (capability gap)";
+              reason = "non-NixOS host (${host.platform}): no compliance collector (capability gap)";
               controlOverrides = {};
             });
         # Apply precedence broadest -> most-specific. Each mergeFwAttrs

@@ -1,4 +1,4 @@
-# Platform-derived compliance disable: a host with `system` not ending
+# Platform-derived compliance disable: a host with `platform` not ending
 # in `-linux` cannot honestly run the NixOS compliance collector, so
 # `mkFleet` auto-disables every channel-declared framework on it at the
 # lowest precedence layer. Operator declarations at any other scope
@@ -7,13 +7,13 @@
 {mkFleet, ...}:
 mkFleet {
   hosts.h-darwin = {
-    system = "aarch64-darwin";
+    platform = "aarch64-darwin";
     configuration = import ./_stub-configuration.nix {};
     tags = [];
     channel = "stable";
   };
   hosts.h-linux = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = [];
     channel = "stable";
