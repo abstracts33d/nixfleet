@@ -57,14 +57,14 @@ fields is fine; renaming requires coordination with renderers).
 ### `nix-derivation` (declarative shape)
 
 `collectors/nix_derivation.rs`. Pure data extraction. Reads
-`ctx.host.{closure_hash, channel, system}` and surfaces them as a
+`ctx.host.{closure_hash, channel, platform}` and surfaces them as a
 `CollectorEntry`. No subprocess. No fetched data needed.
 
 ```rust
 let data = NixDerivationData {
     closure_hash: ctx.host.closure_hash.clone(),
     channel: ctx.host.channel.clone(),
-    system: ctx.host.system.clone(),
+    platform: ctx.host.platform.clone(),
 };
 ```
 

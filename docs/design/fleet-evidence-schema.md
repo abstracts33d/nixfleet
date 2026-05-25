@@ -106,7 +106,7 @@ The verbatim parsed per-host `evidence.json` (JSON value), or `null` when the ho
 
 ```json
 [
-  { "collectorId": "nix-derivation", "data": { "closureHash": "sha256-abc...", "channel": "stable", "system": "x86_64-linux" } },
+  { "collectorId": "nix-derivation", "data": { "closureHash": "sha256-abc...", "channel": "stable", "platform": "x86_64-linux" } },
   { "collectorId": "facter",         "data": { "available": true, "raw": { ... } } }
 ]
 ```

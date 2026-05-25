@@ -18,8 +18,10 @@ struct NixDerivationData {
     /// for channel-derived assertions in `evidence.json.controls`.
     channel: String,
     /// System triple (e.g., `x86_64-linux`). Closures pin per-platform
-    /// store paths; the auditor needs this when reconciling.
-    system: String,
+    /// store paths; the auditor needs this when reconciling. Field name
+    /// mirrors `Host.platform` from the fleet wire format - same value,
+    /// same concept, kept name-aligned to remove input/output asymmetry.
+    platform: String,
 }
 
 pub struct NixDerivationCollector;
@@ -33,7 +35,7 @@ impl EvidenceCollector for NixDerivationCollector {
         let data = NixDerivationData {
             closure_hash: ctx.host.closure_hash.clone(),
             channel: ctx.host.channel.clone(),
-            system: ctx.host.platform.clone(),
+            platform: ctx.host.platform.clone(),
         };
         Ok(CollectorEntry {
             collector_id: self.id().to_string(),
@@ -71,7 +73,7 @@ mod tests {
         let parsed: NixDerivationData = serde_json::from_value(entry.data).unwrap();
         assert_eq!(parsed.closure_hash.as_deref(), Some("sha256-abc123"));
         assert_eq!(parsed.channel, "stable");
-        assert_eq!(parsed.system, "x86_64-linux");
+        assert_eq!(parsed.platform, "x86_64-linux");
     }
 
     #[test]
