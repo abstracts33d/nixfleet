@@ -236,7 +236,7 @@ mod fleet_resolved_tests {
             "schemaVersion": 1,
             "hosts": {
                 "test-host": {
-                    "system": "x86_64-linux",
+                    "platform": "x86_64-linux",
                     "tags": [],
                     "channel": "stable",
                     "closureHash": null,
@@ -303,7 +303,7 @@ mod fleet_resolved_tests {
             "schemaVersion": 1,
             "hosts": {
                 "test-host": {
-                    "system": "x86_64-linux",
+                    "platform": "x86_64-linux",
                     "tags": [],
                     "channel": "stable",
                     "closureHash": null,

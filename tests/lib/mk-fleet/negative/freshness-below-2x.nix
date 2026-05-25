@@ -3,7 +3,7 @@
 in
   mkFleet {
     hosts.m = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = stub;
       tags = [];
       channel = "stable";

@@ -122,7 +122,7 @@ fn write_signed_fleet_with_host(
         "schemaVersion": 1,
         "hosts": {
             hostname: {
-                "system": "x86_64-linux",
+                "platform": "x86_64-linux",
                 "tags": [],
                 "channel": "stable",
                 "closureHash": "test-closure",

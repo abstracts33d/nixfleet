@@ -848,7 +848,7 @@ mod tests {
         hosts.insert(
             "test-host".to_string(),
             Host {
-                system: "x86_64-linux".into(),
+                platform: "x86_64-linux".into(),
                 tags: vec![],
                 channel: "stable".into(),
                 closure_hash: None,
@@ -859,7 +859,7 @@ mod tests {
         hosts.insert(
             "host-03".to_string(),
             Host {
-                system: "aarch64-darwin".into(),
+                platform: "aarch64-darwin".into(),
                 tags: vec![],
                 channel: "stable".into(),
                 closure_hash: None,
@@ -960,7 +960,7 @@ mod tests {
         hosts.insert(
             "agent-02".to_string(),
             Host {
-                system: "x86_64-linux".into(),
+                platform: "x86_64-linux".into(),
                 tags: vec![],
                 channel: "stable".into(),
                 closure_hash: Some("aaaa-host-b".into()),
@@ -971,7 +971,7 @@ mod tests {
         hosts.insert(
             "agent-01".to_string(),
             Host {
-                system: "x86_64-linux".into(),
+                platform: "x86_64-linux".into(),
                 tags: vec![],
                 channel: "stable".into(),
                 closure_hash: Some("aaaa-host-a".into()),
@@ -982,7 +982,7 @@ mod tests {
         hosts.insert(
             "agent-no-closure".to_string(),
             Host {
-                system: "x86_64-linux".into(),
+                platform: "x86_64-linux".into(),
                 tags: vec![],
                 channel: "stable".into(),
                 closure_hash: None,

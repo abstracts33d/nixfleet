@@ -28,7 +28,7 @@ fn nixfleet_mint_token_subcommand_emits_signed_token() {
         "schemaVersion": 1,
         "hosts": {
             "test-host": {
-                "system": "x86_64-linux",
+                "platform": "x86_64-linux",
                 "tags": [],
                 "channel": "stable",
                 "closureHash": null,

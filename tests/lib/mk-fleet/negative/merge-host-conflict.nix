@@ -2,7 +2,7 @@
   stub = import ../fixtures/_stub-configuration.nix {};
   shared = hostTags: {
     hosts.duplicated = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = stub;
       tags = hostTags;
       channel = "stable";

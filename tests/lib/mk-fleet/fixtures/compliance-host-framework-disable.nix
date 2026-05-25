@@ -6,13 +6,13 @@
 {mkFleet, ...}:
 mkFleet {
   hosts.h-linux = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = [];
     channel = "stable";
   };
   hosts.h-darwin = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = [];
     channel = "stable";

@@ -39,21 +39,21 @@
 
   baseHosts = {
     agent-01 = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = stubConfiguration;
       tags = ["harness"];
       channel = "stable";
       pubkey = pubkeyFor "agent-01";
     };
     agent-02 = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = stubConfiguration;
       tags = ["harness"];
       channel = "stable";
       pubkey = pubkeyFor "agent-02";
     };
     cp = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = stubConfiguration;
       tags = ["harness" "control-plane"];
       channel = "stable";
@@ -65,7 +65,7 @@
   # hosts to the fleet. Lets enroll-replay add `agent-99` without
   # tracking it explicitly in this file.
   extraHosts = lib.mapAttrs (_name: openssh: {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = stubConfiguration;
     tags = ["harness"];
     channel = "stable";

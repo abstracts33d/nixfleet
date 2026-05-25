@@ -4,19 +4,19 @@ in
   mkFleet {
     hosts = {
       a = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = ["web"];
         channel = "stable";
       };
       b = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = ["web" "deprecated"];
         channel = "stable";
       };
       c = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = ["web"];
         channel = "stable";

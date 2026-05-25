@@ -4,25 +4,25 @@ in
   mkFleet {
     hosts = {
       eu-server = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = ["eu-fr" "server"];
         channel = "stable";
       };
       eu-workstation = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = ["eu-fr" "workstation"];
         channel = "stable";
       };
       us-server = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = ["us-east" "server"];
         channel = "stable";
       };
       sensor = {
-        system = "aarch64-linux";
+        platform = "aarch64-linux";
         configuration = stub;
         tags = ["eu-fr" "sensor"];
         channel = "stable";

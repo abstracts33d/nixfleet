@@ -1,6 +1,6 @@
 //! Fluent FleetResolved builder for tests across reconciler/CP/release.
 //!
-//! Defaults: `system = "x86_64-linux"`, `closure_hash = Some("{host}-closure")`,
+//! Defaults: `platform = "x86_64-linux"`, `closure_hash = Some("{host}-closure")`,
 //! policy strategy `all-at-once` with one `Selector::default` wave at 5 min soak,
 //! `OnHealthFailure::Halt`. Override via `host_*` / `channel_*` / `policy_*` setters.
 
@@ -12,7 +12,7 @@ use crate::{
 };
 
 const DEFAULT_POLICY: &str = "p";
-const DEFAULT_SYSTEM: &str = "x86_64-linux";
+const DEFAULT_PLATFORM: &str = "x86_64-linux";
 const DEFAULT_SOAK_MINUTES: u32 = 5;
 
 pub struct FleetBuilder {
@@ -51,14 +51,14 @@ impl FleetBuilder {
         Self::default()
     }
 
-    /// Add a host on `channel` with default system + `{name}-closure`.
+    /// Add a host on `channel` with default platform + `{name}-closure`.
     /// Auto-creates the channel and the default policy if missing.
     pub fn host(mut self, name: &str, channel: &str) -> Self {
         self.ensure_channel(channel);
         self.hosts.insert(
             name.to_string(),
             Host {
-                system: DEFAULT_SYSTEM.into(),
+                platform: DEFAULT_PLATFORM.into(),
                 tags: Vec::new(),
                 channel: channel.to_string(),
                 closure_hash: Some(format!("{name}-closure")),
@@ -69,12 +69,12 @@ impl FleetBuilder {
         self
     }
 
-    pub fn host_system(mut self, name: &str, system: &str) -> Self {
+    pub fn host_platform(mut self, name: &str, platform: &str) -> Self {
         let h = self
             .hosts
             .get_mut(name)
-            .unwrap_or_else(|| panic!("FleetBuilder.host_system: unknown host {name}"));
-        h.system = system.to_string();
+            .unwrap_or_else(|| panic!("FleetBuilder.host_platform: unknown host {name}"));
+        h.platform = platform.to_string();
         self
     }
 
@@ -271,7 +271,7 @@ mod tests {
             f.hosts["host-05"].closure_hash.as_deref(),
             Some("host-05-closure")
         );
-        assert_eq!(f.hosts["host-05"].system, "x86_64-linux");
+        assert_eq!(f.hosts["host-05"].platform, "x86_64-linux");
     }
 
     #[test]

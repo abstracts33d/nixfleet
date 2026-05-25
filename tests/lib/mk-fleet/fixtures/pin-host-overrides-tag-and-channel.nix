@@ -2,7 +2,7 @@
 mkFleet {
   hosts = {
     web-01 = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = import ./_stub-configuration.nix {};
       tags = ["infra"];
       channel = "stable";
@@ -13,14 +13,14 @@ mkFleet {
       };
     };
     web-02 = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = import ./_stub-configuration.nix {};
       tags = ["infra"];
       channel = "stable";
       # No host pin -> tag-level "infra-freeze" pin applies.
     };
     edge-01 = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = import ./_stub-configuration.nix {};
       tags = [];
       channel = "stable";

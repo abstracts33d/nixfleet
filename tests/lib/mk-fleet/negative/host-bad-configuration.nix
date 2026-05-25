@@ -1,7 +1,7 @@
 {mkFleet, ...}:
 mkFleet {
   hosts.bad = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = "not-a-nixos-config";
     tags = [];
     channel = "stable";

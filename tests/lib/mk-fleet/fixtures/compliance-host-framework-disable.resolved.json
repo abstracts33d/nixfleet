@@ -55,14 +55,14 @@
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": []
     },
     "h-linux": {
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": []
     }
   },

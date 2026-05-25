@@ -83,7 +83,17 @@
 
   hostType = types.submodule {
     options = {
-      system = mkOption {type = types.str;};
+      platform = mkOption {
+        type = types.str;
+        description = ''
+          Dispatch hint for the framework to choose between nixosSystem
+          and darwinSystem. Must match the value the host's modules set
+          for `nixpkgs.hostPlatform`; mkHost throws at eval time if the
+          two disagree. The canonical platform lives in the operator's
+          module set; this field exists only to keep mkHost dispatch a
+          pure function of inputs (chosen pre-eval).
+        '';
+      };
       configuration = mkOption {
         type = types.nullOr types.unspecified;
         default = null;
@@ -135,25 +145,29 @@
           Per-host arguments forwarded to `mkHost` by the framework.
           Free-form attrset; `lib/default.nix`'s `mkFleet` wrapper
           merges this with the framework-supplied
-          `{ hostName, platform = system, fleetResolved }` and hands
-          the result to `mkHost`. Typical keys: `hostSpec`, `modules`,
+          `{ hostName, platform, fleetResolved }` and hands the result
+          to `mkHost`. Typical keys: `hostSpec`, `modules`,
           `stateVersion`, `isVm`, `extraInputs`.
 
-          Operator pattern (RFC-0004 §2.2 — framework owns the wiring):
+          Operator pattern (RFC-0004 §2.2 - framework owns the wiring):
 
             fleet = mkFleet {
               hosts.cp = {
-                system = "x86_64-linux";
+                platform = "x86_64-linux";
                 channel = "stable";
-                nixosArgs.modules = [./hosts/cp];
+                nixosArgs.modules = [
+                  { nixpkgs.hostPlatform = "x86_64-linux"; }
+                  ./hosts/cp
+                ];
               };
             };
             nixosConfigurations = fleet.nixosConfigurations;
 
-          The wrapper sets `platform = system` so operators don't repeat
-          the platform string. `fleetResolved` is always `fleet.resolved` —
-          operators never name it (DEFECT-002 closure-by-framework-design
-          per RFC-0004 §3 anti-pattern #4).
+          The `platform` field is a dispatch hint; the canonical
+          declaration lives in `nixpkgs.hostPlatform` inside `modules`.
+          mkHost throws if the two disagree. `fleetResolved` is always
+          `fleet.resolved` and operators never name it (DEFECT-002
+          closure-by-framework-design per RFC-0004 §3 anti-pattern #4).
         '';
       };
       healthChecks = mkOption {
@@ -1417,7 +1431,7 @@
               pin = resolvePin n;
             in
               {
-                inherit (h) system tags channel pubkey;
+                inherit (h) platform tags channel pubkey;
                 closureHash = null; # Filled by CI from h.configuration.config.system.build.toplevel.
               }
               // lib.optionalAttrs (pin != null) {inherit pin;}

@@ -160,7 +160,7 @@ pub fn build_fleet_resolved_json(declared_closure: &str, ci_commit: &str) -> (St
         "schemaVersion": 1,
         "hosts": {
             "test-host": {
-                "system": "x86_64-linux",
+                "platform": "x86_64-linux",
                 "tags": [],
                 "channel": "stable",
                 "closureHash": declared_closure,

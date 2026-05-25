@@ -20,7 +20,7 @@
         "reason": "stable lags edge by N commits"
       },
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": []
     },
     "web-01": {
@@ -32,7 +32,7 @@
         "reason": "investigating CVE-2026-9999"
       },
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": [
         "infra"
       ]
@@ -46,7 +46,7 @@
         "reason": "audit-window freeze"
       },
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": [
         "infra"
       ]

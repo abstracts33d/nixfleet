@@ -4,13 +4,13 @@ in
   mkFleet {
     hosts = {
       a = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = [];
         channel = "stable";
       };
       b = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = [];
         channel = "stable";

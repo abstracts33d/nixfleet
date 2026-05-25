@@ -2,7 +2,7 @@
   stub = import ./_stub-configuration.nix {};
   paris = {
     hosts.paris-1 = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = stub;
       tags = ["paris" "eu-fr"];
       channel = "stable";
@@ -31,7 +31,7 @@
   };
   lyon = {
     hosts.lyon-1 = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = stub;
       tags = ["lyon" "eu-fr"];
       channel = "edge";

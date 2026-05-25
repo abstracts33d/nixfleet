@@ -3,7 +3,7 @@
   stub = import ../fixtures/_stub-configuration.nix {};
   fleetWithChannel = hostName: freshness: {
     hosts.${hostName} = {
-      system = "x86_64-linux";
+      platform = "x86_64-linux";
       configuration = stub;
       tags = [];
       channel = "stable";

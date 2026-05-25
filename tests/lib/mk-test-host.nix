@@ -7,6 +7,10 @@
   mkHost = import ../../lib/mk-host.nix {inherit inputs lib;};
 
   qemuTestRigModules = [
+    # VM smoke tests run on x86_64-linux only; lifted here from the
+    # framework-injected default so direct mkHost callers satisfy the
+    # post-build platformCheck assert in lib/mk-host.nix.
+    {nixpkgs.hostPlatform = "x86_64-linux";}
     ../fixtures/qemu/disk-config.nix
     ../fixtures/qemu/hardware-configuration.nix
     ({

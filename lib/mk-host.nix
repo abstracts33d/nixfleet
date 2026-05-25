@@ -70,7 +70,6 @@ in
 
     frameworkNixosModules =
       [
-        {nixpkgs.hostPlatform = platform;}
         hostSpecModule
         {hostSpec = lib.mapAttrs (_: v: lib.mkDefault v) effectiveHostSpec;}
         # LOADBEARING: hostName is not mkDefault; must match exactly.
@@ -100,7 +99,6 @@ in
       ];
 
     frameworkDarwinModules = [
-      {nixpkgs.hostPlatform = platform;}
       hostSpecModule
       {hostSpec = lib.mapAttrs (_: v: lib.mkDefault v) effectiveHostSpec;}
       {hostSpec.hostName = hostName;}
@@ -123,7 +121,26 @@ in
       specialArgs = {inputs = effectiveInputs;};
       modules = frameworkDarwinModules ++ modules;
     };
+
+    built =
+      if isDarwin
+      then buildDarwin
+      else buildNixos;
+
+    # LOADBEARING: `platform` is a pure dispatch hint (chosen pre-eval
+    # to pick nixosSystem vs darwinSystem). Canonical platform lives in
+    # operator-supplied `nixpkgs.hostPlatform`. This seq throws if the
+    # two disagree, so the dispatch hint cannot silently lie about the
+    # built closure's actual target. RFC-0011 §1 invariant 3.
+    evaluatedPlatform = built.config.nixpkgs.hostPlatform.system;
+    platformCheck =
+      if evaluatedPlatform == platform
+      then null
+      else
+        throw ''
+          mkHost: dispatch platform "${platform}" does not match config.nixpkgs.hostPlatform.system "${evaluatedPlatform}" for host "${hostName}".
+          The framework no longer injects nixpkgs.hostPlatform; declare it in your host modules, e.g.:
+            { nixpkgs.hostPlatform = "${platform}"; }
+        '';
   in
-    if isDarwin
-    then buildDarwin
-    else buildNixos
+    builtins.seq platformCheck built

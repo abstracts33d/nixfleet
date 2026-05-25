@@ -32,19 +32,19 @@ mkFleet {
     };
   };
   hosts.h-untagged = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = [];
     channel = "stable";
   };
   hosts.h-audit-pinned = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = ["audit"];
     channel = "stable";
   };
   hosts.h-strict = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = ["audit"];
     channel = "stable";

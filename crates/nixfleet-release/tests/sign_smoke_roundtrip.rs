@@ -15,7 +15,7 @@ fn dummy_resolved() -> FleetResolved {
     hosts.insert(
         "test-host".to_string(),
         Host {
-            system: "x86_64-linux".into(),
+            platform: "x86_64-linux".into(),
             tags: vec![],
             channel: "stable".into(),
             closure_hash: Some("abc123-nixos-system-test-host-26.05".into()),

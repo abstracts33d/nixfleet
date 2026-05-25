@@ -30,7 +30,7 @@ pub struct FleetResolved {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Host {
-    pub system: String,
+    pub platform: String,
     pub tags: Vec<String>,
     pub channel: String,
     #[serde(default)]

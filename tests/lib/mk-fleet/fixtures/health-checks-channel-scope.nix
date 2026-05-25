@@ -6,7 +6,7 @@
 {mkFleet, ...}:
 mkFleet {
   hosts.h-web = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = ["web"];
     channel = "stable";

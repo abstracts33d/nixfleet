@@ -7,7 +7,7 @@
 {mkFleet, ...}:
 mkFleet {
   hosts.h-default = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = [];
     channel = "stable";
@@ -15,7 +15,7 @@ mkFleet {
     # only.
   };
   hosts.h-legacy = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = [];
     channel = "stable";

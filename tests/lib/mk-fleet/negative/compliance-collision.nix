@@ -6,7 +6,7 @@
 {mkFleet, ...}:
 mkFleet {
   hosts.h = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ../fixtures/_stub-configuration.nix {};
     tags = [];
     channel = "stable";

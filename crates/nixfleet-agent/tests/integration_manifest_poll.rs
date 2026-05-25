@@ -297,7 +297,7 @@ async fn manifest_poll_emits_signed_manifest_set_within_one_tick() {
     hosts.insert(
         "h1".to_string(),
         Host {
-            system: "x86_64-linux".to_string(),
+            platform: "x86_64-linux".to_string(),
             tags: vec![],
             channel: "stable".to_string(),
             closure_hash: Some("closure-A".to_string()),

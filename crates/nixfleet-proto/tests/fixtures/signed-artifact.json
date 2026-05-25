@@ -14,7 +14,7 @@
       "channel": "stable",
       "closureHash": "sha256-abc123",
       "pubkey": "ssh-ed25519 AAAA...",
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": [
         "production"
       ]

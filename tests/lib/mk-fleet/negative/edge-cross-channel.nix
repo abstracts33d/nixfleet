@@ -9,13 +9,13 @@ in
   mkFleet {
     hosts = {
       host-05 = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = [];
         channel = "edge";
       };
       host-01 = {
-        system = "x86_64-linux";
+        platform = "x86_64-linux";
         configuration = stub;
         tags = [];
         channel = "stable";

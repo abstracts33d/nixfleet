@@ -15,7 +15,7 @@
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": [
         "eu-fr",
         "server"
@@ -25,7 +25,7 @@
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": [
         "eu-fr",
         "workstation"
@@ -35,7 +35,7 @@
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
-      "system": "aarch64-linux",
+      "platform": "aarch64-linux",
       "tags": [
         "eu-fr",
         "sensor"
@@ -45,7 +45,7 @@
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": [
         "us-east",
         "server"

@@ -41,7 +41,7 @@
       # the resolved fleet topology.
       flake.fleet = inputs.nixfleet.lib.mkFleet {
         hosts.lab-endpoint = {
-          system = "x86_64-linux";
+          platform = "x86_64-linux";
           channel = "stable";
           tags = [];
           # Per-host mkHost arguments passed through by the framework.
@@ -54,14 +54,19 @@
               keyboardLayout = "fr";
             };
             modules = [
-              # Sécurix base — bundles lanzaboote + agenix + disko + the
+              # Canonical platform declaration. The mkFleet `platform`
+              # field above is a dispatch hint; this is the value mkHost
+              # asserts against post-build (lib/mk-host.nix platformCheck).
+              {nixpkgs.hostPlatform = "x86_64-linux";}
+
+              # Sécurix base - bundles lanzaboote + agenix + disko + the
               # full ANSSI module tree (anssi, bastion, vpn, pam,
               # auditd, ...).
               inputs.securix.nixosModules.securix-base
 
               # SKU hardware profile. Pick from: e14-g7, elitebook645g11,
               # elitebook850g8, latitude5340, t14g6, x9-15, x280.
-              # Omit on VM — vm-overrides.nix neutralizes the hardware bits.
+              # Omit on VM - vm-overrides.nix neutralizes the hardware bits.
               inputs.securix.nixosModules.securix-hardware.t14g6
 
               # Host-specific: operators + securix.self metadata + agent.

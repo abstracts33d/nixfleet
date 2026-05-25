@@ -1,7 +1,7 @@
 {mkFleet, ...}:
 mkFleet {
   hosts.m = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = ["role-a"];
     channel = "stable";

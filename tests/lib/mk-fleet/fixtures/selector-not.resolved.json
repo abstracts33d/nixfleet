@@ -15,7 +15,7 @@
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": [
         "web"
       ]
@@ -24,7 +24,7 @@
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": [
         "web",
         "deprecated"
@@ -34,7 +34,7 @@
       "channel": "stable",
       "closureHash": null,
       "pubkey": null,
-      "system": "x86_64-linux",
+      "platform": "x86_64-linux",
       "tags": [
         "web"
       ]

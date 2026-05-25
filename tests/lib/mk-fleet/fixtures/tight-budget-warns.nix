@@ -5,7 +5,7 @@
 }: let
   stub = import ./_stub-configuration.nix {};
   mkStubHost = tag: {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = stub;
     tags = [tag];
     channel = "stable";

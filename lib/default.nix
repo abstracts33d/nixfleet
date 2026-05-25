@@ -18,9 +18,12 @@
   #
   #   let fleet = mkFleet {
   #         hosts.cp = {
-  #           system = "x86_64-linux";
+  #           platform = "x86_64-linux";
   #           channel = "stable";
-  #           nixosArgs.modules = [./hosts/cp];
+  #           nixosArgs.modules = [
+  #             { nixpkgs.hostPlatform = "x86_64-linux"; }
+  #             ./hosts/cp
+  #           ];
   #         };
   #         channels.stable = {...};
   #         rolloutPolicies = {...};
@@ -41,7 +44,7 @@
           mkHost (
             {
               inherit hostName;
-              platform = hostCfg.system;
+              platform = hostCfg.platform;
               fleetResolved = rawFleet.resolved;
             }
             // (hostCfg.nixosArgs or {})

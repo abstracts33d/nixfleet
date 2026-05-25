@@ -10,7 +10,7 @@
 {mkFleet, ...}:
 mkFleet {
   hosts.h-stable = {
-    system = "x86_64-linux";
+    platform = "x86_64-linux";
     configuration = import ./_stub-configuration.nix {};
     tags = [];
     channel = "stable";
