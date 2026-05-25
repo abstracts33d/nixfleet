@@ -19,9 +19,11 @@ nixfleet-proto = { path = "../nixfleet-proto" }
 nixfleet-canonicalize = { path = "../nixfleet-canonicalize" }
 clap = { workspace = true }
 serde_json = { workspace = true }
+serde_jcs = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
+ssh-key = { workspace = true, features = ["ed25519"] }
 base64 = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }

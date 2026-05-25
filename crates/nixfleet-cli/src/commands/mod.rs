@@ -3,5 +3,6 @@
 //! `pub fn run(args: Args) -> Result<()>` handler.
 
 pub mod derive_pubkey;
+pub mod evidence;
 pub mod mint_operator_cert;
 pub mod mint_token;

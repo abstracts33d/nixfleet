@@ -24,6 +24,11 @@ enum Commands {
     /// Operator-side config management.
     #[command(subcommand)]
     Config(ConfigCommands),
+    /// Compliance evidence: collect signed evidence from the fleet,
+    /// re-verify a record. Aggregator runs operator-side and signs
+    /// nothing; per-host signatures remain the trust anchor.
+    #[command(subcommand)]
+    Evidence(nixfleet_cli::commands::evidence::EvidenceCommands),
     /// Derive base64 ed25519 pubkey from a raw private key file.
     DerivePubkey(nixfleet_cli::commands::derive_pubkey::Args),
     /// Mint an mTLS client cert from the offline fleet root CA.
@@ -187,6 +192,7 @@ async fn main() -> Result<()> {
             eprintln!("wrote {}", written.display());
             Ok(())
         }
+        Commands::Evidence(cmd) => nixfleet_cli::commands::evidence::dispatch(cmd).await,
         Commands::DerivePubkey(args) => nixfleet_cli::commands::derive_pubkey::run(args),
         Commands::MintOperatorCert(args) => nixfleet_cli::commands::mint_operator_cert::run(args),
         Commands::MintToken(args) => nixfleet_cli::commands::mint_token::run(args),
