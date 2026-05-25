@@ -78,15 +78,22 @@ pub struct ReleaseConfig {
     /// Reuse `signedAt` when closureHashes match - produces byte-stable
     /// releases on no-op runs.
     pub reuse_unchanged_signature: bool,
-    /// Flake attr yielding the revocations list. When set, the pipeline signs
+    /// Path to the revocations source file (a JSON array of
+    /// `RevocationEntry`). When set, the pipeline reads + signs
     /// `revocations.json` alongside `fleet.resolved.json` via the same
-    /// `sign_cmd`. `None` skips the revocations artifact.
-    pub revocations_attr: Option<String>,
-    /// Flake attr yielding the bootstrap-nonces list. When set, the pipeline
-    /// signs `bootstrap-nonces.json` alongside `fleet.resolved.json` via the
-    /// same `sign_cmd`. `None` skips the artifact entirely (which means CP
-    /// enrolment is unusable in strict mode - only used in dev/test).
-    pub bootstrap_nonces_attr: Option<String>,
+    /// `sign_cmd`. Missing file -> empty list (still emitted + signed).
+    /// `None` skips the artifact entirely. Audit-permanent: read but
+    /// not written back (unlike bootstrap nonces).
+    pub revocations_file: Option<PathBuf>,
+    /// Path to the bootstrap-nonces source file (a JSON array of
+    /// `BootstrapNonceEntry`). When set, the pipeline reads + prunes +
+    /// signs `bootstrap-nonces.json` alongside `fleet.resolved.json` via
+    /// the same `sign_cmd`, then writes the pruned list back to this
+    /// path so it is self-clearing. Missing file is treated as empty
+    /// list (the pipeline still emits + signs an empty artifact so
+    /// CP-rebuild has a verifiable source). `None` skips the artifact
+    /// entirely (dev/test only - strict-mode CP rejects every enrol).
+    pub bootstrap_nonces_file: Option<PathBuf>,
     /// Source URL for building pinned hosts at non-current commits. Optional
     /// at the type level but required at runtime iff any non-expired host pin
     /// specifies a commit different from the current release commit
@@ -193,8 +200,8 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
     // primes `cert_revocations` from this; a missing file would unlock every
     // revoked cert on rebuild.
     let mut revocations_paths: Vec<PathBuf> = Vec::new();
-    if let Some(attr) = &config.revocations_attr {
-        let entries = eval_revocations(config, attr)?;
+    if let Some(source_path) = &config.revocations_file {
+        let entries = read_revocations_file(source_path)?;
         let revs = Revocations {
             schema_version: 1,
             revocations: entries,
@@ -238,9 +245,14 @@ pub fn run(config: &ReleaseConfig) -> Result<RunOutcome> {
     // primes the in-memory allowlist from this; a missing file would
     // re-open the replay-after-wipe window for unprocessed nonces.
     let mut bootstrap_nonces_paths: Vec<PathBuf> = Vec::new();
-    if let Some(attr) = &config.bootstrap_nonces_attr {
-        let raw_entries = eval_bootstrap_nonces(config, attr)?;
+    if let Some(source_path) = &config.bootstrap_nonces_file {
+        let raw_entries = read_bootstrap_nonces_file(source_path)?;
         let pruned = prune_expired_bootstrap_nonces(raw_entries, signed_at);
+        // Self-clearing source: write the pruned list back so expired
+        // entries vanish after each release. Topology declaration
+        // (`fleet.nix`) stays free of operational ledger state; the
+        // file is the audit log, git history is the long-term record.
+        write_bootstrap_nonces_file(source_path, &pruned)?;
         let bn = nixfleet_proto::BootstrapNonces {
             schema_version: 1,
             bootstrap_nonces: pruned,
@@ -455,39 +467,55 @@ pub(crate) fn prune_expired_bootstrap_nonces(
         .collect()
 }
 
-fn eval_revocations(config: &ReleaseConfig, attr: &str) -> Result<Vec<RevocationEntry>> {
-    let output = Command::new("nix")
-        .args(["eval", "--json", "--no-warn-dirty", &format!(".#{attr}")])
-        .current_dir(&config.flake_dir)
-        .output()
-        .with_context(|| format!("invoke `nix eval .#{attr}`"))?;
-    if !output.status.success() {
-        bail!(
-            "nix eval .#{attr}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+/// Read the revocations source file (a JSON array of `RevocationEntry`).
+/// Missing file yields an empty list. Revocations are audit-permanent, so
+/// unlike bootstrap nonces the pipeline does NOT write back to this path.
+pub(crate) fn read_revocations_file(path: &Path) -> Result<Vec<RevocationEntry>> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .with_context(|| format!("parse revocations file {}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(anyhow::Error::from(err).context(format!("read {}", path.display()))),
     }
-    serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("parse revocations from `nix eval .#{attr}`"))
 }
 
-fn eval_bootstrap_nonces(
-    config: &ReleaseConfig,
-    attr: &str,
+/// Read the bootstrap-nonces source file (a JSON array of
+/// `BootstrapNonceEntry`). Missing file yields an empty list so a fresh
+/// fleet can run the pipeline before any `mint-token --append` has
+/// created the file. Malformed JSON errors loudly.
+pub(crate) fn read_bootstrap_nonces_file(
+    path: &Path,
 ) -> Result<Vec<nixfleet_proto::BootstrapNonceEntry>> {
-    let output = Command::new("nix")
-        .args(["eval", "--json", "--no-warn-dirty", &format!(".#{attr}")])
-        .current_dir(&config.flake_dir)
-        .output()
-        .with_context(|| format!("invoke `nix eval .#{attr}`"))?;
-    if !output.status.success() {
-        bail!(
-            "nix eval .#{attr}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .with_context(|| format!("parse bootstrap-nonces file {}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => {
+            Err(anyhow::Error::from(err).context(format!("read {}", path.display())))
+        }
     }
-    serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("parse bootstrap nonces from `nix eval .#{attr}`"))
+}
+
+/// Atomically write the pruned bootstrap-nonces list back to the source
+/// file. Pretty-printed for git readability; the signed sidecar
+/// (`releases/bootstrap-nonces.json`) is the canonicalized authority.
+pub(crate) fn write_bootstrap_nonces_file(
+    path: &Path,
+    entries: &[nixfleet_proto::BootstrapNonceEntry],
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create parent dir of {}", path.display()))?;
+    }
+    let mut body = serde_json::to_string_pretty(entries)
+        .context("serialise pruned bootstrap-nonces list")?;
+    body.push('\n');
+    let tmp = path.with_extension("in.json.tmp");
+    std::fs::write(&tmp, &body)
+        .with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
 }
 
 /// Enumerate attribute names; missing attrset -> empty. "Missing attribute"
@@ -836,6 +864,77 @@ mod bootstrap_nonces_tests {
         let kept = prune_expired_bootstrap_nonces(vec![], signed_at);
         assert!(kept.is_empty());
     }
+
+    #[test]
+    fn read_missing_file_yields_empty_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("does-not-exist.in.json");
+        let entries = read_bootstrap_nonces_file(&path).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn write_then_read_round_trip_is_byte_stable_on_second_pass() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("bootstrap-nonces.in.json");
+        let entries = vec![
+            entry("a", "2026-06-01T00:00:00Z"),
+            entry("b", "2026-07-01T00:00:00Z"),
+        ];
+        write_bootstrap_nonces_file(&path, &entries).unwrap();
+        let read_back = read_bootstrap_nonces_file(&path).unwrap();
+        assert_eq!(read_back.len(), 2);
+        assert_eq!(read_back[0].nonce, "a");
+        assert_eq!(read_back[1].nonce, "b");
+
+        // Round-tripping the read-back through write produces the same file
+        // bytes - the source is self-stable, so no churn on no-op releases.
+        let bytes1 = std::fs::read(&path).unwrap();
+        write_bootstrap_nonces_file(&path, &read_back).unwrap();
+        let bytes2 = std::fs::read(&path).unwrap();
+        assert_eq!(bytes1, bytes2);
+    }
+
+    #[test]
+    fn write_empty_list_creates_valid_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("bootstrap-nonces.in.json");
+        write_bootstrap_nonces_file(&path, &[]).unwrap();
+        let entries = read_bootstrap_nonces_file(&path).unwrap();
+        assert!(entries.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod revocations_file_tests {
+    use super::*;
+
+    #[test]
+    fn read_missing_revocations_file_yields_empty_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("does-not-exist.in.json");
+        let entries = read_revocations_file(&path).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn read_revocations_file_parses_array() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("revocations.in.json");
+        let body = r#"[
+            {
+                "hostname": "old-laptop",
+                "notBefore": "2026-04-26T00:00:00Z",
+                "reason": "decommissioned",
+                "revokedBy": "s33d"
+            }
+        ]"#;
+        std::fs::write(&path, body).unwrap();
+        let entries = read_revocations_file(&path).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].hostname, "old-laptop");
+        assert_eq!(entries[0].reason.as_deref(), Some("decommissioned"));
+    }
 }
 
 #[cfg(test)]
@@ -1150,8 +1249,8 @@ mod tests {
             git_user_email: None,
             smoke_verify: true,
             reuse_unchanged_signature: false,
-            revocations_attr: None,
-            bootstrap_nonces_attr: None,
+            revocations_file: None,
+            bootstrap_nonces_file: None,
             pin_source_url: None,
         }
     }

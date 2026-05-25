@@ -35,6 +35,8 @@ enum Commands {
     MintOperatorCert(nixfleet_cli::commands::mint_operator_cert::Args),
     /// Mint a bootstrap token for first-boot fleet enrollment.
     MintToken(nixfleet_cli::commands::mint_token::Args),
+    /// Declare an agent-cert revocation for the signed sidecar.
+    MintRevocation(nixfleet_cli::commands::mint_revocation::Args),
 }
 
 #[derive(Subcommand, Debug)]
@@ -196,5 +198,6 @@ async fn main() -> Result<()> {
         Commands::DerivePubkey(args) => nixfleet_cli::commands::derive_pubkey::run(args),
         Commands::MintOperatorCert(args) => nixfleet_cli::commands::mint_operator_cert::run(args),
         Commands::MintToken(args) => nixfleet_cli::commands::mint_token::run(args),
+        Commands::MintRevocation(args) => nixfleet_cli::commands::mint_revocation::run(args),
     }
 }

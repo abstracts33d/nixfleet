@@ -5,4 +5,5 @@
 pub mod derive_pubkey;
 pub mod evidence;
 pub mod mint_operator_cert;
+pub mod mint_revocation;
 pub mod mint_token;

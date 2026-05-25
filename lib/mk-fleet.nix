@@ -192,73 +192,6 @@
     };
   };
 
-  revocationType = types.submodule {
-    options = {
-      hostname = mkOption {
-        type = types.str;
-        description = "Hostname whose certs are being revoked.";
-      };
-      notBefore = mkOption {
-        type = types.str;
-        description = ''
-          RFC3339 timestamp. Any cert for `hostname` whose
-          notBefore is strictly older than this is rejected at
-          mTLS handshake time.
-        '';
-      };
-      reason = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Free-form operator note (decommissioned, compromised, rotated, etc.).";
-      };
-      revokedBy = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Who declared the revocation. Surfaces in audit logs.";
-      };
-    };
-  };
-
-  bootstrapNonceType = types.submodule {
-    options = {
-      nonce = mkOption {
-        type = types.str;
-        description = ''
-          Hex-encoded nonce from the token's claims. Matches
-          `BootstrapToken.claims.nonce` exactly. CP refuses any
-          `/v1/enroll` whose nonce is not present in the signed
-          allowlist.
-        '';
-      };
-      hostname = mkOption {
-        type = types.str;
-        description = ''
-          Host this nonce is valid for. Must match the token's
-          `claims.hostname`; defends against mis-targeted token swap.
-        '';
-      };
-      expiresAt = mkOption {
-        type = types.str;
-        description = ''
-          RFC3339 timestamp. Authoritative validity window - may be
-          tighter than the token's own `expires_at` claim.
-          `nixfleet-release` prunes entries with `expiresAt < signedAt`
-          before signing the artifact.
-        '';
-      };
-      mintedAt = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Optional audit trail: when the token was minted.";
-      };
-      mintedBy = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Optional audit trail: who minted the token.";
-      };
-    };
-  };
-
   tagType = types.submodule {
     options = {
       description = mkOption {
@@ -1265,12 +1198,31 @@
           {}
           host.tags;
         hostFw = host.compliance.frameworks;
+        # Platform-derived layer: the compliance collector is NixOS-only
+        # (RFC-0007 §3.5, evidence kind reads /var/lib/nixfleet-compliance/
+        # evidence.json produced by the NixOS module). Hosts on non-Linux
+        # systems cannot honestly emit evidence; declaring this as a
+        # capability gap at the lowest precedence layer means consumers
+        # don't hand-write a per-Darwin-host `mode = "disabled"` override
+        # for every channel-declared framework. Operator overrides at
+        # any scope (fleet / tag / channel / host) still win.
+        platformFw =
+          if lib.hasSuffix "-linux" host.system
+          then {}
+          else
+            lib.genAttrs (lib.attrNames channelByName) (_: {
+              mode = "disabled";
+              reason = "non-NixOS host (${host.system}): no compliance collector (capability gap)";
+              controlOverrides = {};
+            });
         # Apply precedence broadest -> most-specific. Each mergeFwAttrs
         # call promotes the right operand's non-null/non-empty fields.
         scoped =
           mergeFwAttrs
           (mergeFwAttrs
-            (mergeFwAttrs fleetFw tagFwMerged)
+            (mergeFwAttrs
+              (mergeFwAttrs platformFw fleetFw)
+              tagFwMerged)
             channelByName)
           hostFw;
       in
@@ -1578,41 +1530,6 @@
                 expansion).
               '';
             };
-            revocations = mkOption {
-              type = types.listOf revocationType;
-              default = [];
-              description = ''
-                Operator-declared agent-cert revocations. The release
-                pipeline signs these alongside `fleet.resolved` so the
-                CP can rebuild `cert_revocations` from empty state
-                without a security regression. Empty list is the
-                steady state - it still gets signed so a CP rebuild
-                has a verifiable source.
-              '';
-            };
-            bootstrapNonces = mkOption {
-              type = types.listOf bootstrapNonceType;
-              default = [];
-              description = ''
-                Operator-declared allowlist of valid bootstrap-token
-                nonces. Closes the replay-after-DB-wipe vector
-                (nixfleet#96): CP refuses /v1/enroll whose nonce is
-                not in this signed list. Empty list = no enrolments
-                accepted.
-
-                Operator workflow:
-                  1. `nixfleet mint-token --hostname X ...` (prints
-                     a Nix snippet)
-                  2. Paste snippet here, commit, push
-                  3. CI signs the sidecar `bootstrap-nonces.json`
-                  4. CP polls + applies (within 60s)
-                  5. Deploy token to host, agent enrolls
-
-                Entries can be left in this list as an audit log;
-                `nixfleet-release` filters out entries with
-                `expiresAt` in the past at sign time.
-              '';
-            };
           };
         }
         input
@@ -1622,8 +1539,6 @@
     evaluated.config
     // {
       resolved = resolveFleet evaluated.config;
-      revocations = evaluated.config.revocations;
-      bootstrapNonces = evaluated.config.bootstrapNonces;
     };
 
   # LOADBEARING: hosts/tags/channels strict-merge (collision throws); rolloutPolicies later-wins; edges/channelEdges/disruptionBudgets concat.

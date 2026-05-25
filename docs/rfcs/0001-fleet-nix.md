@@ -134,8 +134,7 @@ The following additional top-level keys exist; they're spec'd in the RFCs that o
 
 - `healthChecks` / `tags.<t>.healthChecks` / `hosts.<h>.healthChecks` — multi-scope probe declarations (RFC-0007).
 - `compliance` / `tags.<t>.compliance` / `hosts.<h>.compliance` — multi-scope compliance refinement (RFC-0007 §3.7).
-- `revocations` — signed agent-cert revocation list (RFC-0003 §4.5 + RFC-0010).
-- `bootstrapNonces` — durable replay-invariant allowlist for `/v1/enroll` (RFC-0003 §4.5).
+The signed agent-cert revocation list (RFC-0003 §4.5 + RFC-0010) and the replay-invariant allowlist for `/v1/enroll` (RFC-0003 §4.5) are *not* `mkFleet` fields. Their sources are out-of-band JSON files (default `releases/revocations.in.json` and `releases/bootstrap-nonces.in.json`) read by `nixfleet-release --revocations-file` / `--bootstrap-nonces-file`. The release pipeline signs each as a sidecar (`revocations.json`, `bootstrap-nonces.json`) and writes the pruned bootstrap-nonces source back (revocations are audit-permanent and not written back). Topology declarations stay free of operational ledger state.
 
 ## 3. Selector algebra
 

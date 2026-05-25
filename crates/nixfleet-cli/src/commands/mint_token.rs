@@ -2,7 +2,7 @@
 //! org root key, derives the host fingerprint from either fleet.resolved or
 //! a flag override.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -10,6 +10,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 // Alias avoids clashing with `struct Args` below.
 use clap::Args as ClapArgs;
 use ed25519_dalek::{Signer, SigningKey};
+use nixfleet_proto::BootstrapNonceEntry;
 use nixfleet_proto::enroll_wire::{BootstrapToken, TokenClaims};
 use rand::RngCore;
 
@@ -41,6 +42,15 @@ pub struct Args {
 
     #[arg(long, default_value_t = 1)]
     version: u32,
+
+    /// Append the minted nonce as a new `BootstrapNonceEntry` to the source
+    /// file consumed by `nixfleet-release --bootstrap-nonces-file`. Without
+    /// this flag the command prints the entry as JSON on stderr for the
+    /// operator to record manually (dev/test ergonomics). With it, the
+    /// command writes the file atomically; commit + push and CI re-signs
+    /// the sidecar within the next release run.
+    #[arg(long)]
+    append: Option<PathBuf>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -81,26 +91,66 @@ pub fn run(args: Args) -> Result<()> {
     eprintln!("nonce: {}", token.claims.nonce);
     eprintln!("expiresAt: {}", token.claims.expires_at.to_rfc3339());
     eprintln!();
-    eprintln!("Add to fleet.nix `bootstrapNonces`, commit, and push:");
-    eprintln!();
-    eprintln!("  {{");
-    eprintln!("    nonce = \"{}\";", token.claims.nonce);
-    eprintln!("    hostname = \"{}\";", token.claims.hostname);
-    eprintln!(
-        "    expiresAt = \"{}\";",
-        token.claims.expires_at.to_rfc3339()
-    );
-    eprintln!(
-        "    mintedAt = \"{}\";",
-        token.claims.issued_at.to_rfc3339()
-    );
-    if let Ok(user) = std::env::var("USER") {
-        eprintln!("    mintedBy = \"{}\";", user);
+
+    let entry = BootstrapNonceEntry {
+        nonce: token.claims.nonce.clone(),
+        hostname: token.claims.hostname.clone(),
+        expires_at: token.claims.expires_at,
+        minted_at: Some(token.claims.issued_at),
+        minted_by: std::env::var("USER").ok(),
+    };
+
+    match args.append.as_deref() {
+        Some(path) => {
+            append_bootstrap_nonce_entry(path, &entry)?;
+            eprintln!(
+                "Appended to {}. Commit + push; CI re-signs the sidecar",
+                path.display()
+            );
+            eprintln!("within the release pipeline's next run.");
+        }
+        None => {
+            let entry_json =
+                serde_json::to_string_pretty(&entry).context("serialise BootstrapNonceEntry")?;
+            eprintln!("Append the entry below to the bootstrap-nonces source file");
+            eprintln!("(consumed by `nixfleet-release --bootstrap-nonces-file`):");
+            eprintln!();
+            eprintln!("{entry_json}");
+            eprintln!();
+            eprintln!("Or rerun with `--append <path>` to write it automatically.");
+        }
     }
-    eprintln!("  }}");
+
     eprintln!();
     eprintln!("Once CI signs the sidecar (~2 min), deploy the token bytes and");
     eprintln!("restart the agent.");
+    Ok(())
+}
+
+/// Read the source file (a JSON array of `BootstrapNonceEntry`), append the
+/// new entry, and write back atomically. Missing file -> single-entry array.
+fn append_bootstrap_nonce_entry(path: &Path, entry: &BootstrapNonceEntry) -> Result<()> {
+    let mut entries: Vec<BootstrapNonceEntry> = match std::fs::read_to_string(path) {
+        Ok(raw) => {
+            serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => {
+            return Err(anyhow::Error::from(err).context(format!("read {}", path.display())));
+        }
+    };
+    entries.push(entry.clone());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create parent dir of {}", path.display()))?;
+    }
+    let mut body = serde_json::to_string_pretty(&entries)
+        .context("serialise bootstrap-nonces source file")?;
+    body.push('\n');
+    let tmp = path.with_extension("in.json.tmp");
+    std::fs::write(&tmp, &body).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
 

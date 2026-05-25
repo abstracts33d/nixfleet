@@ -124,7 +124,8 @@
 
     bootstrapTokenFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
-      default = null;
+      default = "/var/lib/nixfleet/bootstrap-token-${config.services.nixfleet-agent.machineId}.json";
+      defaultText = lib.literalExpression ''"/var/lib/nixfleet/bootstrap-token-''${machineId}.json"'';
       example = "/run/secrets/bootstrap-token-host-01";
       description = ''
         Path to a one-shot bootstrap token (operator-minted by
@@ -133,6 +134,13 @@
         cert exists at `tls.clientCert`, the token is never read
         again. Renewal at 50% of cert validity uses the existing
         cert (mTLS-authenticated /v1/agent/renew), not this token.
+
+        Defaults to `/var/lib/nixfleet/bootstrap-token-<machineId>.json`
+        (the convention consumer fleets already adopt). Operator
+        deploys the minted token to this path on first boot; the agent
+        reads it iff `tls.clientCert` is absent. Set to `null` to opt
+        out of first-boot enrollment entirely (hosts that receive
+        their cert via a different channel).
       '';
     };
 

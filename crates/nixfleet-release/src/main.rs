@@ -68,15 +68,27 @@ struct Cli {
     #[arg(long)]
     reuse_unchanged_signature: bool,
 
-    /// Flake attr yielding the revocations list. Unset -> no artifact.
+    /// Path to the revocations source file (a JSON array of
+    /// `RevocationEntry`). Unset -> no artifact emitted; CP cannot
+    /// rebuild `cert_revocations` from a wipe. Missing file is
+    /// treated as empty list (the pipeline still emits + signs an
+    /// empty artifact so CP-rebuild has a verifiable source). Unlike
+    /// bootstrap nonces, revocations are audit-permanent: the
+    /// pipeline reads but does not write back.
     #[arg(long)]
-    revocations_attr: Option<String>,
+    revocations_file: Option<PathBuf>,
 
-    /// Flake attr yielding the bootstrap-nonces allowlist. Unset -> no
-    /// artifact. Strongly recommended for production: CP enrolment
-    /// in strict mode requires this artifact.
+    /// Path to the bootstrap-nonces source file (a JSON array of
+    /// `BootstrapNonceEntry`). Unset -> no artifact emitted; CP
+    /// rejects every /v1/enroll in strict mode. Missing file is
+    /// treated as empty list (the pipeline still emits + signs an
+    /// empty artifact so CP-rebuild has a verifiable source). The
+    /// pipeline writes the pruned list (entries with
+    /// `expiresAt < signedAt` removed) back to this path so the
+    /// source file is self-clearing - the topology declaration
+    /// (`fleet.nix`) stays free of operational ledger state.
     #[arg(long)]
-    bootstrap_nonces_attr: Option<String>,
+    bootstrap_nonces_file: Option<PathBuf>,
 
     /// Source URL the pinned-host build path uses as `nix build "<url>?rev=<commit>#..."`.
     /// Required iff any non-expired host pin specifies a commit different from
@@ -176,8 +188,8 @@ fn main() -> ExitCode {
         git_user_email: cli.git_user_email,
         smoke_verify: cli.smoke_verify,
         reuse_unchanged_signature: cli.reuse_unchanged_signature,
-        revocations_attr: cli.revocations_attr,
-        bootstrap_nonces_attr: cli.bootstrap_nonces_attr,
+        revocations_file: cli.revocations_file,
+        bootstrap_nonces_file: cli.bootstrap_nonces_file,
         pin_source_url: cli.pin_source_url,
     };
 
