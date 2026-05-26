@@ -298,6 +298,7 @@ mod tests {
                 signature: Some(sig_b64.clone().into_bytes()),
                 host_pubkey: None,
                 facter_json: None,
+                osquery_evidence_json: None,
             },
             verification: VerificationOutcome {
                 present: true,

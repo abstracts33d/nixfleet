@@ -2,6 +2,12 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `osquery` EvidenceCollector adapter (`crates/nixfleet-cli/src/commands/evidence/collectors/osquery.rs`). `nixfleet evidence collect` now reads each host's `/var/lib/nixfleet-compliance/osquery-evidence.json` (produced by the `compliance.evidence.osquery` NixOS module in nixfleet-compliance, dev branch f647506) and embeds it into the fleet-evidence record as `hosts[].collectors[]` with `collectorId: "osquery"`. Best-effort enrichment, mirroring the existing `facter` adapter: missing file → `available: false`, malformed JSON → `available: false` with `parse_error` recorded, valid bytes → `raw` set verbatim. SSH + local fetch sources both updated to pull the new file when present; fetch failure for it never flips host `ok` to false. Apache 2.0 / GPL v2 dual-licensed upstream; subprocess invocation only — no schema or C++ vendored into the MIT closure.
+
 ## [0.2.0] - 2026-05-11
 
 v0.2 is a complete rewrite from v0.1. The architecture inverts the v0.1 trust model: truth now lives in git and signing keys, the control plane is a caching router for already-signed intent, and the agent independently verifies every artefact it is asked to run. The v0.1 ABI is not preserved; v0.2 is a hard break, not an upgrade path.

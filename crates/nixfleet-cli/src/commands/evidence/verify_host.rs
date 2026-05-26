@@ -262,6 +262,7 @@ mod tests {
             signature: Some(format!("{sig_b64}\n").into_bytes()),
             host_pubkey: Some(format!("{pub_str}\n").into_bytes()),
             facter_json: None,
+            osquery_evidence_json: None,
         };
 
         let declared = if declared_matches {
@@ -333,6 +334,7 @@ mod tests {
             signature: None,
             host_pubkey: None,
             facter_json: None,
+            osquery_evidence_json: None,
         };
         let v = verify_fetched(&fh, None);
         assert!(!v.present);

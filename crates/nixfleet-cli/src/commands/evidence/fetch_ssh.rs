@@ -30,6 +30,11 @@ pub const HOST_PUBKEY_FILENAME: &str = "evidence.host.pub";
 /// `nixos-facter` probe. Best-effort: missing is OK and the
 /// `facter` collector records `available: false` in that case.
 pub const FACTER_FILENAME: &str = "facter.json";
+/// Optional runtime-state snapshot produced by a host-side `osqueryi`
+/// probe (the `compliance.evidence.osquery` producer module in
+/// nixfleet-compliance). Best-effort: missing is OK and the `osquery`
+/// collector records `available: false` in that case.
+pub const OSQUERY_EVIDENCE_FILENAME: &str = "osquery-evidence.json";
 
 /// Default cap on in-flight host fetches. SSH multiplexing handles
 /// a dozen-ish concurrent in practice; 16 leaves headroom on larger
@@ -56,6 +61,14 @@ pub struct FetchedHost {
     /// never flips `ok` to false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facter_json: Option<Vec<u8>>,
+    /// Best-effort: populated only when the host produces an
+    /// `osquery-evidence.json` snapshot alongside the evidence files.
+    /// Absent = the `compliance.evidence.osquery` producer is not
+    /// enabled on this host, which the `osquery` collector records
+    /// as `available: false`. Fetch failure for this file never
+    /// flips `ok` to false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osquery_evidence_json: Option<Vec<u8>>,
 }
 
 /// Operator-side connection parameters. `user = None` means
@@ -103,10 +116,15 @@ async fn fetch_one_host(hostname: String, params: SshParams) -> FetchedHost {
     }
 
     let ok = error.is_none();
-    let facter_json = if ok {
-        ssh_cat(&hostname, &params, FACTER_FILENAME).await.ok()
+    let (facter_json, osquery_evidence_json) = if ok {
+        (
+            ssh_cat(&hostname, &params, FACTER_FILENAME).await.ok(),
+            ssh_cat(&hostname, &params, OSQUERY_EVIDENCE_FILENAME)
+                .await
+                .ok(),
+        )
     } else {
-        None
+        (None, None)
     };
 
     FetchedHost {
@@ -118,6 +136,7 @@ async fn fetch_one_host(hostname: String, params: SshParams) -> FetchedHost {
         signature,
         host_pubkey,
         facter_json,
+        osquery_evidence_json,
     }
 }
 
@@ -207,6 +226,7 @@ mod tests {
             signature: Some(b"sig".to_vec()),
             host_pubkey: Some(b"pub".to_vec()),
             facter_json: None,
+            osquery_evidence_json: None,
         };
         let v = serde_json::to_value(&fh).unwrap();
         assert_eq!(v["source"], "ssh");

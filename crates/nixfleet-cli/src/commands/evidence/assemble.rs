@@ -236,6 +236,7 @@ mod tests {
                 signature: Some(b"sig\n".to_vec()),
                 host_pubkey: Some(b"pub\n".to_vec()),
                 facter_json: None,
+                osquery_evidence_json: None,
             },
             verification: VerificationOutcome {
                 present: true,
@@ -331,6 +332,7 @@ mod tests {
                 signature: None,
                 host_pubkey: None,
                 facter_json: None,
+                osquery_evidence_json: None,
             },
             verification: VerificationOutcome {
                 present: false,

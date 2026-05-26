@@ -94,6 +94,7 @@ mod tests {
             signature: Some(b"sig".to_vec()),
             host_pubkey: Some(b"pub".to_vec()),
             facter_json: facter_json.map(|b| b.to_vec()),
+            osquery_evidence_json: None,
         }
     }
 

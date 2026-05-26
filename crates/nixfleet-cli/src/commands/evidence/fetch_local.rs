@@ -19,7 +19,8 @@
 //!     evidence.json
 //!     evidence.json.sig
 //!     evidence.host.pub
-//!     facter.json          (optional)
+//!     facter.json              (optional)
+//!     osquery-evidence.json    (optional)
 //!   <hostname-2>/
 //!     ...
 //! ```
@@ -32,7 +33,8 @@
 use std::path::PathBuf;
 
 use super::fetch_ssh::{
-    EVIDENCE_FILENAME, FACTER_FILENAME, FetchedHost, HOST_PUBKEY_FILENAME, SIGNATURE_FILENAME,
+    EVIDENCE_FILENAME, FACTER_FILENAME, FetchedHost, HOST_PUBKEY_FILENAME,
+    OSQUERY_EVIDENCE_FILENAME, SIGNATURE_FILENAME,
 };
 
 /// Read the three required files (plus best-effort facter.json) from
@@ -67,10 +69,13 @@ fn fetch_one(hostname: &str, dir: &std::path::Path) -> FetchedHost {
     }
 
     let ok = error.is_none();
-    let facter_json = if ok {
-        std::fs::read(host_dir.join(FACTER_FILENAME)).ok()
+    let (facter_json, osquery_evidence_json) = if ok {
+        (
+            std::fs::read(host_dir.join(FACTER_FILENAME)).ok(),
+            std::fs::read(host_dir.join(OSQUERY_EVIDENCE_FILENAME)).ok(),
+        )
     } else {
-        None
+        (None, None)
     };
 
     FetchedHost {
@@ -82,6 +87,7 @@ fn fetch_one(hostname: &str, dir: &std::path::Path) -> FetchedHost {
         signature,
         host_pubkey,
         facter_json,
+        osquery_evidence_json,
     }
 }
 
@@ -119,6 +125,31 @@ mod tests {
         assert!(result[0].error.is_none());
         assert_eq!(result[0].evidence_json.as_deref(), Some(b"{}".as_slice()));
         assert!(result[0].facter_json.is_some());
+        assert!(result[0].osquery_evidence_json.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_local_reads_optional_osquery_evidence_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let host_dir = tmp.path().join("h1");
+        std::fs::create_dir(&host_dir).unwrap();
+        std::fs::write(host_dir.join(EVIDENCE_FILENAME), b"{}").unwrap();
+        std::fs::write(host_dir.join(SIGNATURE_FILENAME), b"sig\n").unwrap();
+        std::fs::write(
+            host_dir.join(HOST_PUBKEY_FILENAME),
+            b"ssh-ed25519 AAAA test\n",
+        )
+        .unwrap();
+        std::fs::write(
+            host_dir.join(OSQUERY_EVIDENCE_FILENAME),
+            br#"[{"name":"os_version","hostIdentifier":"h1"}]"#,
+        )
+        .unwrap();
+
+        let result = fetch_all_local(vec!["h1".into()], tmp.path().to_path_buf()).await;
+        assert_eq!(result.len(), 1);
+        assert!(result[0].ok);
+        assert!(result[0].osquery_evidence_json.is_some());
     }
 
     #[tokio::test]
@@ -137,7 +168,9 @@ mod tests {
                 .unwrap()
                 .contains("read evidence.json.sig")
         );
-        // Optional facter not attempted because we never reached the ok branch.
+        // Optional facter + osquery not attempted because we never reached
+        // the ok branch.
         assert!(result[0].facter_json.is_none());
+        assert!(result[0].osquery_evidence_json.is_none());
     }
 }

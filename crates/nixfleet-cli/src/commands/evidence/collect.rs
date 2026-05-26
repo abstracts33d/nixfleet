@@ -125,6 +125,7 @@ pub async fn run(args: Args) -> Result<()> {
     let collectors: Vec<Box<dyn super::collector::EvidenceCollector>> = vec![
         Box::new(super::collectors::nix_derivation::NixDerivationCollector),
         Box::new(super::collectors::facter::FacterCollector),
+        Box::new(super::collectors::osquery::OsqueryCollector),
     ];
 
     let mut inputs: Vec<super::assemble::PerHostInput> = Vec::with_capacity(fetched.len());
