@@ -31,8 +31,8 @@ on stdout.
 ## Trust posture (read this once)
 
 - The wrapper is **untrusted stitching**. The aggregator signs nothing.
-- The trust chain is per-host: each `evidence.json` is signed by the host's ed25519 SSH key. That signature lives verbatim inside the wrapper at `hosts[].signature`. An auditor re-verifies it independently via `nixfleet-compliance-verify`.
-- Tampering with the wrapper either (a) breaks one of the embedded per-host signatures, or (b) leaves them intact but changes the wrapper's `summary` block — which the auditor recomputes deterministically from the canonical `hosts` array.
+- The trust chain is per-host: each `evidence.json` is signed by the host's ed25519 SSH key. The 64-byte signature (`hosts[].signature.signatureBytes`) and the 32-byte pubkey (`hosts[].signature.publicKey`) live verbatim inside the wrapper. An auditor re-verifies them independently via `nixfleet evidence verify` (in-tree) or `nixfleet-compliance-verify` (auditor-side stand-alone).
+- Tampering with the wrapper either (a) breaks one of the embedded per-host signatures - `nixfleet evidence verify` reports `sig=INVALID` - or (b) leaves them intact but changes the wrapper's `summary` block, which `nixfleet evidence verify` catches by recomputing deterministically from the canonical `hosts` array.
 - The wrapper output is JCS-canonical (RFC 8785). Re-running with the same inputs and the same wall-clock minute produces byte-identical bytes; diffing two outputs reflects state change, not serializer state.
 
 ## Reading the per-host status table
@@ -144,5 +144,6 @@ Expected: `hostsBySignatureStatus.valid` equals the demo's host count once the h
 
 ## See also
 
+- [evidence-verify.md](./evidence-verify.md) — defensive re-verify of a collected record
 - [docs/design/fleet-evidence-schema.md](../design/fleet-evidence-schema.md) — per-field reference
 - [docs/design/evidence-collector-trait.md](../design/evidence-collector-trait.md) — adapter authoring

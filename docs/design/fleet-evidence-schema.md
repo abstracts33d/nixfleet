@@ -85,6 +85,7 @@ The verbatim parsed per-host `evidence.json` (JSON value), or `null` when the ho
   "present": true,
   "valid": true,
   "publicKey": "<base64 32-byte ed25519 pubkey>",
+  "signatureBytes": "<base64 64-byte ed25519 signature>",
   "algorithm": "ed25519",
   "pubkeyMatchesDeclared": "match",
   "verifiedAt": "2026-05-22T12:00:00Z",
@@ -97,10 +98,15 @@ The verbatim parsed per-host `evidence.json` (JSON value), or `null` when the ho
 | `present` | bool | `true` ⇔ `evidence.json.sig` was fetched. |
 | `valid` | bool | `true` ⇔ ed25519 verification of the signature against the JCS-canonical evidence bytes passed. |
 | `publicKey` | string \| null | Raw 32-byte ed25519 pubkey (base64, standard alphabet). The auditor re-verifies offline against this — no OpenSSH re-parsing required. |
+| `signatureBytes` | string \| null | Raw 64-byte ed25519 signature (base64, standard alphabet) the host produced over the JCS-canonical evidence bytes. Populated whenever the sidecar was fetched and decoded as 64 bytes, even when `valid = false` — replay tooling needs the original bytes in either case. `null` on records produced before this field was added; `nixfleet evidence verify` downgrades to summary-only re-checking for such entries. |
 | `algorithm` | string | Always `"ed25519"` at v1. Explicit so a future algorithm transition is not silent. |
 | `pubkeyMatchesDeclared` | enum | Cross-check outcome between the fetched `evidence.host.pub` and the pubkey declared in `fleet.resolved.json` for this host. One of `"match"`, `"mismatch"`, `"declared-absent"`, `"fetched-absent"`. `"mismatch"` is the MitM / unrecorded-rotation signal. |
 | `verifiedAt` | RFC 3339 UTC | When verification ran. |
 | `error` | string \| null | Reason when `valid = false` or when parse / fetch failed in a way the wrapper records here. |
+
+#### Offline replay (auditor recipe)
+
+JCS-canonicalise the `evidence` value, base64-decode `signatureBytes` to 64 raw bytes, base64-decode `publicKey` to 32 raw bytes, run ed25519 verify. This is exactly what `nixfleet evidence verify` does internally; an auditor can replay it with any ed25519 + JCS-capable toolchain (`nixfleet-compliance-verify` ships one).
 
 ### `collectors[]`
 

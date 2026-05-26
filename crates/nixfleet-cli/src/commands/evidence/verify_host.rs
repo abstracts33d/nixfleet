@@ -39,6 +39,12 @@ pub struct VerificationOutcome {
     /// uses this to re-verify offline without re-parsing OpenSSH
     /// format.
     pub public_key_b64: Option<String>,
+    /// Raw 64-byte ed25519 signature (base64, standard alphabet) the
+    /// host produced over the JCS-canonical `evidence.json` bytes.
+    /// Populated whenever a sidecar signature was fetched and parsed
+    /// as 64 bytes, even if subsequent verification failed - the
+    /// auditor needs the original bytes to replay the verify offline.
+    pub signature_b64: Option<String>,
     /// Always "ed25519" at schema v1. Kept explicit so a future
     /// algorithm transition is not silent.
     pub algorithm: &'static str,
@@ -78,6 +84,7 @@ pub fn verify_fetched(fh: &FetchedHost, declared_pubkey: Option<&str>) -> Verifi
             valid: false,
             pubkey_matches_declared: PubkeyMatch::FetchedAbsent,
             public_key_b64: None,
+            signature_b64: None,
             algorithm: "ed25519",
             error: Some("upstream fetch did not complete".into()),
         };
@@ -89,6 +96,7 @@ pub fn verify_fetched(fh: &FetchedHost, declared_pubkey: Option<&str>) -> Verifi
             valid: false,
             pubkey_matches_declared: PubkeyMatch::FetchedAbsent,
             public_key_b64: None,
+            signature_b64: None,
             algorithm: "ed25519",
             error: Some("no evidence.host.pub fetched".into()),
         };
@@ -102,6 +110,7 @@ pub fn verify_fetched(fh: &FetchedHost, declared_pubkey: Option<&str>) -> Verifi
                 valid: false,
                 pubkey_matches_declared: PubkeyMatch::FetchedAbsent,
                 public_key_b64: None,
+                signature_b64: None,
                 algorithm: "ed25519",
                 error: Some(format!("parse fetched pubkey: {e}")),
             };
@@ -136,6 +145,7 @@ pub fn verify_fetched(fh: &FetchedHost, declared_pubkey: Option<&str>) -> Verifi
             valid: false,
             pubkey_matches_declared,
             public_key_b64: Some(fetched_b64),
+            signature_b64: None,
             algorithm: "ed25519",
             error: Some("no evidence.json.sig fetched".into()),
         };
@@ -146,10 +156,16 @@ pub fn verify_fetched(fh: &FetchedHost, declared_pubkey: Option<&str>) -> Verifi
             valid: false,
             pubkey_matches_declared,
             public_key_b64: Some(fetched_b64),
+            signature_b64: None,
             algorithm: "ed25519",
             error: Some("no evidence.json fetched".into()),
         };
     };
+
+    // Capture the raw 64-byte signature regardless of verify outcome - the
+    // auditor needs it to replay verification offline, including against a
+    // wrapper that recorded `valid: false`.
+    let signature_b64 = parse_signature_b64(sig_bytes);
 
     let outcome = ed25519_verify(evidence_bytes, sig_bytes, &fetched_key_bytes);
     match outcome {
@@ -158,6 +174,7 @@ pub fn verify_fetched(fh: &FetchedHost, declared_pubkey: Option<&str>) -> Verifi
             valid: true,
             pubkey_matches_declared,
             public_key_b64: Some(fetched_b64),
+            signature_b64,
             algorithm: "ed25519",
             error: None,
         },
@@ -166,10 +183,24 @@ pub fn verify_fetched(fh: &FetchedHost, declared_pubkey: Option<&str>) -> Verifi
             valid: false,
             pubkey_matches_declared,
             public_key_b64: Some(fetched_b64),
+            signature_b64,
             algorithm: "ed25519",
             error: Some(e.to_string()),
         },
     }
+}
+
+/// Normalise the on-disk `evidence.json.sig` content (whitespace-trimmed
+/// base64) into the canonical 64-byte standard-base64 form stored in the
+/// wrapper. Returns `None` if the sidecar bytes do not decode to 64
+/// bytes; callers fall back to leaving `signature_b64` unset.
+fn parse_signature_b64(sig_bytes: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(sig_bytes).ok()?.trim();
+    let raw = base64::engine::general_purpose::STANDARD.decode(s).ok()?;
+    if raw.len() != 64 {
+        return None;
+    }
+    Some(base64::engine::general_purpose::STANDARD.encode(raw))
 }
 
 /// Parse a single-line OpenSSH ed25519 public key (e.g.

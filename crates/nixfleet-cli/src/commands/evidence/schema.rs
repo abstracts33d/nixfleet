@@ -79,6 +79,20 @@ pub struct SignatureInfo {
     /// `null` when no fetched pubkey parsed cleanly.
     #[serde(default)]
     pub public_key: Option<String>,
+    /// Raw 64-byte ed25519 signature (base64, standard alphabet) the
+    /// host produced over the JCS-canonical `evidence.json` bytes.
+    /// Populated whenever a sidecar signature was fetched and decoded
+    /// to 64 bytes, regardless of whether the wrapper recorded
+    /// `valid: true`. Trust anchor for offline replay: `nixfleet
+    /// evidence verify` reads this back, JCS-recanonicalises
+    /// `evidence`, and re-runs ed25519 verify. Auditor replay tooling
+    /// (`nixfleet-compliance-verify`) accepts the same triple.
+    ///
+    /// `null` on records produced before this field was added; verify
+    /// downgrades to summary-only re-checking for those entries with
+    /// an explicit note rather than failing the run.
+    #[serde(default)]
+    pub signature_bytes: Option<String>,
     /// Always `"ed25519"` at v1. Explicit so a future algorithm
     /// transition is not silent.
     pub algorithm: String,

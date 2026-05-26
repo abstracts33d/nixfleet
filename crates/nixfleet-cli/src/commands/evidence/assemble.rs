@@ -88,6 +88,7 @@ fn build_per_host(input: PerHostInput, now: DateTime<Utc>) -> PerHost {
             present: verification.present,
             valid: verification.valid,
             public_key: verification.public_key_b64,
+            signature_bytes: verification.signature_b64,
             algorithm: verification.algorithm.to_string(),
             pubkey_matches_declared: verification.pubkey_matches_declared,
             verified_at: now,
@@ -97,7 +98,11 @@ fn build_per_host(input: PerHostInput, now: DateTime<Utc>) -> PerHost {
     }
 }
 
-fn summarize(hosts: &[PerHost]) -> Summary {
+/// Compute the canonical `Summary` block from the per-host array.
+/// Exposed so `nixfleet evidence verify` can recompute and compare
+/// against the stored summary — the auditor's primary check that the
+/// wrapper's summary block was not post-hoc tampered with.
+pub fn summarize(hosts: &[PerHost]) -> Summary {
     let mut hosts_by_sig = HostsBySignatureStatus::default();
     let mut hosts_by_pub = HostsByPubkeyMatch::default();
     let mut controls = ControlsByStatus::default();
@@ -237,6 +242,7 @@ mod tests {
                 valid: sig_valid,
                 pubkey_matches_declared: PubkeyMatch::Match,
                 public_key_b64: Some("AAAA".into()),
+                signature_b64: Some("c2lnLWZpeHR1cmU=".into()),
                 algorithm: "ed25519",
                 error: None,
             },
@@ -331,6 +337,7 @@ mod tests {
                 valid: false,
                 pubkey_matches_declared: PubkeyMatch::FetchedAbsent,
                 public_key_b64: None,
+                signature_b64: None,
                 algorithm: "ed25519",
                 error: Some("upstream fetch did not complete".into()),
             },
