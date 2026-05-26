@@ -10,8 +10,8 @@
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = inputs.self.packages.${pkgs.system}.nixfleet-agent;
-      defaultText = lib.literalExpression "inputs.self.packages.\${pkgs.system}.nixfleet-agent";
+      default = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.nixfleet-agent;
+      defaultText = lib.literalExpression "inputs.self.packages.\${pkgs.stdenv.hostPlatform.system}.nixfleet-agent";
       description = ''
         The agent package that provides `bin/nixfleet-agent`. Defaults
         to the flake's crane-built package; tests and pinned-version

@@ -6,7 +6,7 @@
     ...
   }: let
     stubInputs = {
-      self.packages.${pkgs.system} = {
+      self.packages.${pkgs.stdenv.hostPlatform.system} = {
         nixfleet-agent = pkgs.hello;
         nixfleet-control-plane = pkgs.hello;
         nixfleet-cli = pkgs.hello;

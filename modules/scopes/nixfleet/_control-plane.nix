@@ -57,8 +57,8 @@ in {
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = inputs.self.packages.${pkgs.system}.nixfleet-control-plane;
-      defaultText = lib.literalExpression "inputs.self.packages.\${pkgs.system}.nixfleet-control-plane";
+      default = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.nixfleet-control-plane;
+      defaultText = lib.literalExpression "inputs.self.packages.\${pkgs.stdenv.hostPlatform.system}.nixfleet-control-plane";
       description = ''
         The control-plane package that provides
         `bin/nixfleet-control-plane`. Defaults to the flake's

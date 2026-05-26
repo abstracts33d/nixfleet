@@ -6,7 +6,7 @@
   ...
 }: let
   cfg = config.nixfleet.operator;
-  nixfleet-cli = inputs.self.packages.${pkgs.system}.nixfleet-cli;
+  nixfleet-cli = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.nixfleet-cli;
 in {
   options.nixfleet.operator = {
     enable = lib.mkEnableOption ''
