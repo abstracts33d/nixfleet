@@ -1,13 +1,60 @@
 # Persistence impl: upstream `impermanence` + btrfs root-wipe initrd hook.
+#
+# Supports BOTH initrd backends:
+#   - classic initrd: `boot.initrd.postResumeCommands` shell hook
+#   - systemd-initrd: `boot.initrd.systemd.services.impermanence-root-wipe`
+#
+# The active branch is selected by `config.boot.initrd.systemd.enable`. Hosts
+# pairing impermanence with lanzaboote / srvos / measured boot want
+# systemd-initrd; hosts on a minimal config can stay classic. Either path
+# produces the same on-disk outcome: @root is rotated into old_roots/<ts>
+# and a fresh empty @root is created at every boot.
 {
   inputs,
   config,
   lib,
+  pkgs,
   ...
 }: let
   hS = config.hostSpec;
   cfg = config.nixfleet.persistence;
   impl = config.nixfleet.persistence.impermanence;
+
+  # Same root-wipe semantics in both initrd backends.
+  rootWipeScript = ''
+    mkdir -p /btrfs_tmp
+    mount ${impl.rootDevice} /btrfs_tmp
+    if [[ -e /btrfs_tmp/@root ]]; then
+        mkdir -p /btrfs_tmp/old_roots
+        timestamp=$(date --date="@$(stat -c %Y /btrfs_tmp/@root)" "+%Y-%m-%-d_%H:%M:%S")
+        mv /btrfs_tmp/@root "/btrfs_tmp/old_roots/$timestamp"
+    fi
+    delete_subvolume_recursively() {
+        IFS=$'\n'
+        for i in $(btrfs subvolume list -o "$1" | cut -f 9- -d ' '); do
+            delete_subvolume_recursively "/btrfs_tmp/$i"
+        done
+        btrfs subvolume delete "$1"
+    }
+    for i in $(find /btrfs_tmp/old_roots/ -maxdepth 1 -mtime +${toString impl.oldRootsRetentionDays}); do
+        delete_subvolume_recursively "$i"
+    done
+    btrfs subvolume create /btrfs_tmp/@root
+    umount /btrfs_tmp
+  '';
+
+  # Translate a /dev path into the systemd .device unit name.
+  # systemd unit naming: strip leading '/', then dashes inside path components
+  # become '\x2d' and component separators become '-'.
+  # e.g. /dev/disk/by-label/root  ->  dev-disk-by\x2dlabel-root.device
+  escapeUnit = path: let
+    stripped = lib.removePrefix "/" path;
+    withHex = lib.replaceStrings ["-"] ["\\x2d"] stripped;
+    withDashes = lib.replaceStrings ["/"] ["-"] withHex;
+  in
+    withDashes;
+
+  rootDeviceUnit = "${escapeUnit impl.rootDevice}.device";
 in {
   imports = [inputs.impermanence.nixosModules.impermanence];
 
@@ -34,46 +81,59 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    environment.persistence.${cfg.persistRoot} = {
-      directories = cfg.directories;
-      files = cfg.files;
-    };
+  config = lib.mkIf cfg.enable (lib.mkMerge [
+    {
+      environment.persistence.${cfg.persistRoot} = {
+        directories = cfg.directories;
+        files = cfg.files;
+      };
 
-    # GOTCHA: pre-create persist home dir with correct ownership so HM bind-mounts succeed; recursive chown on .keys covers rotation.
-    system.activationScripts.persistHomeOwnership = lib.mkIf (hS.userName != "") {
-      text = ''
-        install -d -o ${lib.escapeShellArg hS.userName} -g users ${lib.escapeShellArg "${cfg.persistRoot}/home/${hS.userName}"}
-        if [ -d ${lib.escapeShellArg "${cfg.persistRoot}/home/${hS.userName}/.keys"} ]; then
-          chown -R ${lib.escapeShellArg hS.userName}:users ${lib.escapeShellArg "${cfg.persistRoot}/home/${hS.userName}/.keys"}
-        fi
-      '';
-      deps = [];
-    };
+      # GOTCHA: pre-create persist home dir with correct ownership so HM bind-mounts succeed; recursive chown on .keys covers rotation.
+      system.activationScripts.persistHomeOwnership = lib.mkIf (hS.userName != "") {
+        text = ''
+          install -d -o ${lib.escapeShellArg hS.userName} -g users ${lib.escapeShellArg "${cfg.persistRoot}/home/${hS.userName}"}
+          if [ -d ${lib.escapeShellArg "${cfg.persistRoot}/home/${hS.userName}/.keys"} ]; then
+            chown -R ${lib.escapeShellArg hS.userName}:users ${lib.escapeShellArg "${cfg.persistRoot}/home/${hS.userName}/.keys"}
+          fi
+        '';
+        deps = [];
+      };
 
-    # FOOTGUN: btrfs root-wipe - moves @root -> old_roots/<ts> and recreates empty @root every boot; prunes past retention.
-    boot.initrd.postResumeCommands = lib.mkAfter ''
-      mkdir /btrfs_tmp
-      mount ${impl.rootDevice} /btrfs_tmp
-      if [[ -e /btrfs_tmp/@root ]]; then
-          mkdir -p /btrfs_tmp/old_roots
-          timestamp=$(date --date="@$(stat -c %Y /btrfs_tmp/@root)" "+%Y-%m-%-d_%H:%M:%S")
-          mv /btrfs_tmp/@root "/btrfs_tmp/old_roots/$timestamp"
-      fi
-      delete_subvolume_recursively() {
-          IFS=$'\n'
-          for i in $(btrfs subvolume list -o "$1" | cut -f 9- -d ' '); do
-              delete_subvolume_recursively "/btrfs_tmp/$i"
-          done
-          btrfs subvolume delete "$1"
-      }
-      for i in $(find /btrfs_tmp/old_roots/ -maxdepth 1 -mtime +${toString impl.oldRootsRetentionDays}); do
-          delete_subvolume_recursively "$i"
-      done
-      btrfs subvolume create /btrfs_tmp/@root
-      umount /btrfs_tmp
-    '';
+      fileSystems.${cfg.persistRoot}.neededForBoot = true;
+    }
 
-    fileSystems.${cfg.persistRoot}.neededForBoot = true;
-  };
+    # systemd-initrd branch (modern; required for srvos / lanzaboote / measured boot).
+    (lib.mkIf config.boot.initrd.systemd.enable {
+      # systemd-initrd ships systemd binaries + a minimal set; everything else
+      # we use in the wipe service must be declared explicitly.
+      boot.initrd.systemd.storePaths = with pkgs; [
+        btrfs-progs
+        coreutils
+        findutils
+        util-linux
+      ];
+
+      boot.initrd.systemd.services.impermanence-root-wipe = {
+        description = "Wipe root subvolume on boot (impermanence)";
+        wantedBy = ["initrd.target"];
+        # Wait for udev to settle so the by-label / by-uuid symlink exists.
+        requires = [rootDeviceUnit];
+        after = [rootDeviceUnit];
+        # Run before NixOS bind-mounts the new root at /sysroot.
+        before = ["sysroot.mount"];
+        unitConfig.DefaultDependencies = "no";
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = rootWipeScript;
+      };
+    })
+
+    # Classic initrd branch (default for minimal configs without systemd-initrd).
+    (lib.mkIf (!config.boot.initrd.systemd.enable) {
+      # FOOTGUN: btrfs root-wipe - moves @root -> old_roots/<ts> and recreates empty @root every boot; prunes past retention.
+      boot.initrd.postResumeCommands = lib.mkAfter rootWipeScript;
+    })
+  ]);
 }
