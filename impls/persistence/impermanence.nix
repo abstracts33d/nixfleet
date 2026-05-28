@@ -128,6 +128,17 @@ in {
 
     # systemd-initrd branch (modern; required for srvos / lanzaboote / measured boot).
     (lib.mkIf config.boot.initrd.systemd.enable {
+      # /nix MUST be mounted at /sysroot/nix BEFORE switch_root because the
+      # kernel cmdline 'init=/nix/store/<sys>/init' resolves through that
+      # mount. systemd-initrd auto-generates a .mount unit in initrd only
+      # when fileSystems.<path>.neededForBoot=true. Default for /nix is
+      # false, so without this it stays empty in initrd, switch_root
+      # cannot find init, and the boot fails with "switch root target
+      # contains no usable init". (Classic-initrd masked this because its
+      # stage-1 script does its own switch_root that doesn't require /nix
+      # mounted in initrd.)
+      fileSystems."/nix".neededForBoot = true;
+
       # systemd-initrd ships systemd binaries + a minimal set; everything else
       # we use in the wipe service must be declared explicitly.
       boot.initrd.systemd.storePaths = with pkgs; [
