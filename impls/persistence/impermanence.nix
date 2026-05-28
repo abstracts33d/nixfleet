@@ -21,9 +21,20 @@
   impl = config.nixfleet.persistence.impermanence;
 
   # Same root-wipe semantics in both initrd backends.
+  #
+  # CRITICAL — mountpoint pre-creation: after recreating an empty @root,
+  # mount that fresh subvolume and `mkdir` the structural mountpoints the
+  # rest of the fileSystems config expects: /nix, /persist, /boot, plus
+  # optionally /.swapvol. Without these, sysroot's submounts (e.g.
+  # /sysroot/nix.mount for @nix) fail because the target directory does
+  # not exist, and the kernel's `init=/nix/store/<sys>/init` path becomes
+  # unreachable after switch_root, producing "switch root target contains
+  # no usable init" and a stuck initrd boot. Classic initrd's shell
+  # stage-1 script created these dirs implicitly while running mount
+  # commands; systemd-initrd does not.
   rootWipeScript = ''
     mkdir -p /btrfs_tmp
-    mount ${impl.rootDevice} /btrfs_tmp
+    mount -o subvol=/ ${impl.rootDevice} /btrfs_tmp
     if [[ -e /btrfs_tmp/@root ]]; then
         mkdir -p /btrfs_tmp/old_roots
         timestamp=$(date --date="@$(stat -c %Y /btrfs_tmp/@root)" "+%Y-%m-%-d_%H:%M:%S")
@@ -40,6 +51,19 @@
         delete_subvolume_recursively "$i"
     done
     btrfs subvolume create /btrfs_tmp/@root
+
+    # Mount the fresh @root briefly to lay down the mount-point dirs the
+    # subsequent sysroot submounts need. See banner comment above for why.
+    mkdir -p /btrfs_tmp_root
+    mount -o subvol=@root ${impl.rootDevice} /btrfs_tmp_root
+    mkdir -p \
+      /btrfs_tmp_root/nix \
+      /btrfs_tmp_root/persist \
+      /btrfs_tmp_root/boot \
+      /btrfs_tmp_root/.swapvol
+    umount /btrfs_tmp_root
+    rmdir /btrfs_tmp_root 2>/dev/null || true
+
     umount /btrfs_tmp
   '';
 
